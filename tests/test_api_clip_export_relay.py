@@ -1,0 +1,212 @@
+from __future__ import annotations
+
+import hashlib
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import BinaryIO
+
+from fastapi.testclient import TestClient
+
+from backend.app.main import create_app, no_lifespan
+from shared.events.evidence_export_contract import BackendCapabilities, ClipReceipt, DeliveryFailure
+
+TOKEN = "relay-token"
+EVENT_ID = "00000000-0000-4000-8000-000000000001"
+MEDIA_SHA256 = hashlib.sha256(b"mp4x").hexdigest()
+
+
+@dataclass
+class FakeBackendEvidenceClient:
+    capability_result: BackendCapabilities | DeliveryFailure = BackendCapabilities(1, 1)
+    clip_result: ClipReceipt | DeliveryFailure = ClipReceipt("clip-1", "READY", 2, MEDIA_SHA256, 4)
+    ready_calls: int = 0
+    before_read: Callable[[], None] | None = None
+    opened_media: BinaryIO | None = field(default=None, init=False)
+    uploaded_bytes: bytes | None = field(default=None, init=False)
+
+    def for_camera(self, _camera_id: str):
+        return self
+
+    def probe_capabilities(self, _camera_id: str):
+        return self.capability_result
+
+    def publish_ready(self, request, media: BinaryIO):
+        self.ready_calls += 1
+        assert request.clip_id == "clip-1"
+        self.opened_media = media
+        if self.before_read is not None:
+            self.before_read()
+        self.uploaded_bytes = media.read()
+        return self.clip_result
+
+    def report_unavailable(self, request):
+        return self.clip_result
+
+
+def _client(tmp_path: Path, backend: FakeBackendEvidenceClient, *, enabled: bool) -> TestClient:
+    app = create_app(lifespan=no_lifespan)
+    app.state.edge_relay_token = TOKEN
+    app.state.camera_inventory = {
+        "camera-1": {
+            "camera_id": "camera-1",
+            "facility_id": "facility-1",
+            "resident_id": None,
+        }
+    }
+    app.state.backend_evidence_client = backend
+    app.state.event_clip_export_enabled = enabled
+    app.state.clip_store_root = tmp_path / "clip-store"
+    return TestClient(app)
+
+
+def _ready_payload() -> dict[str, object]:
+    return {
+        "state": "READY",
+        "camera_id": "camera-1",
+        "facility_id": "facility-1",
+        "event_refs": [EVENT_ID],
+        "state_version": 2,
+        "sha256": MEDIA_SHA256,
+        "size_bytes": 4,
+        "mime_type": "video/mp4",
+        "codec": "h264",
+        "duration_ms": 1000,
+        "clip_start_at": "2026-07-16T00:00:00Z",
+        "clip_end_at": "2026-07-16T00:00:01Z",
+        "finalized_at": "2026-07-16T00:00:02Z",
+    }
+
+
+def test_capability_requires_auth_local_enablement_and_backend_proof(tmp_path: Path) -> None:
+    # Given: local support is enabled and a backend probe proves both capabilities.
+    backend = FakeBackendEvidenceClient()
+    client = _client(tmp_path, backend, enabled=True)
+
+    # When: unauthenticated and authenticated callers probe the relay.
+    denied = client.get("/api/v1/relay/capabilities", params={"camera_id": "camera-1"})
+    accepted = client.get(
+        "/api/v1/relay/capabilities",
+        params={"camera_id": "camera-1"},
+        headers={"X-Edge-Relay-Token": TOKEN},
+    )
+
+    # Then: only the authenticated backend-proven result is advertised.
+    assert denied.status_code == 401
+    assert accepted.status_code == 200
+    assert accepted.json() == {"event_idempotency": 1, "clip_export": 1}
+
+
+def test_capability_stays_zero_when_feature_is_disabled(tmp_path: Path) -> None:
+    # Given: the compatibility image ships with export disabled.
+    backend = FakeBackendEvidenceClient()
+    client = _client(tmp_path, backend, enabled=False)
+
+    # When: the worker probes the local relay.
+    response = client.get(
+        "/api/v1/relay/capabilities",
+        params={"camera_id": "camera-1"},
+        headers={"X-Edge-Relay-Token": TOKEN},
+    )
+
+    # Then: environment support alone never advertises backend readiness.
+    assert response.status_code == 200
+    assert response.json() == {"event_idempotency": 1, "clip_export": 0}
+
+
+def test_ready_relay_resolves_owned_media_by_clip_id_and_returns_typed_receipt(
+    tmp_path: Path,
+) -> None:
+    # Given: strict shared-store bytes exist under the route clip ID.
+    media = tmp_path / "clip-store" / "clips" / "clip-1" / "clip.mp4"
+    media.parent.mkdir(parents=True)
+    media.write_bytes(b"mp4x")
+    backend = FakeBackendEvidenceClient()
+    client = _client(tmp_path, backend, enabled=True)
+
+    # When: the worker relays metadata without supplying a path.
+    response = client.put(
+        "/api/v1/relay/clips/clip-1",
+        json=_ready_payload(),
+        headers={"X-Edge-Relay-Token": TOKEN},
+    )
+
+    # Then: ml-api alone opens the owned file and returns the backend receipt.
+    assert response.status_code == 200
+    assert response.json() == {
+        "clip_id": "clip-1",
+        "state": "READY",
+        "state_version": 2,
+        "sha256": MEDIA_SHA256,
+        "size_bytes": 4,
+    }
+    assert backend.ready_calls == 1
+    assert backend.uploaded_bytes == b"mp4x"
+    assert backend.opened_media is not None and backend.opened_media.closed
+
+
+def test_ready_relay_uploads_verified_descriptor_when_path_is_swapped(
+    tmp_path: Path,
+) -> None:
+    # Given: an attacker swaps the pathname only after ml-api verifies and opens it.
+    media = tmp_path / "clip-store" / "clips" / "clip-1" / "clip.mp4"
+    media.parent.mkdir(parents=True)
+    media.write_bytes(b"mp4x")
+    backend = FakeBackendEvidenceClient()
+
+    def swap_path() -> None:
+        media.unlink()
+        media.write_bytes(b"evil")
+
+    backend.before_read = swap_path
+    client = _client(tmp_path, backend, enabled=True)
+
+    # When: backend upload begins after the pathname swap.
+    response = client.put(
+        "/api/v1/relay/clips/clip-1",
+        json=_ready_payload(),
+        headers={"X-Edge-Relay-Token": TOKEN},
+    )
+
+    # Then: upload uses the already verified inode and closes that descriptor.
+    assert response.status_code == 200
+    assert backend.uploaded_bytes == b"mp4x"
+    assert media.read_bytes() == b"evil"
+    assert backend.opened_media is not None and backend.opened_media.closed
+
+
+def test_clip_relay_rejects_duplicate_or_non_uuid4_event_refs(tmp_path: Path) -> None:
+    backend = FakeBackendEvidenceClient()
+    client = _client(tmp_path, backend, enabled=True)
+    for refs in ([EVENT_ID, EVENT_ID], ["not-a-uuid"]):
+        payload = _ready_payload()
+        payload["event_refs"] = refs
+        response = client.put(
+            "/api/v1/relay/clips/clip-1",
+            json=payload,
+            headers={"X-Edge-Relay-Token": TOKEN},
+        )
+        assert response.status_code == 422
+    assert backend.ready_calls == 0
+
+
+def test_ready_relay_rejects_missing_or_cross_facility_media_without_backend_call(
+    tmp_path: Path,
+) -> None:
+    # Given: no owned media exists and the payload claims another facility.
+    backend = FakeBackendEvidenceClient()
+    client = _client(tmp_path, backend, enabled=True)
+    payload = _ready_payload()
+    payload["facility_id"] = "facility-other"
+
+    # When: the worker submits the invalid ownership tuple.
+    response = client.put(
+        "/api/v1/relay/clips/clip-1",
+        json=payload,
+        headers={"X-Edge-Relay-Token": TOKEN},
+    )
+
+    # Then: the route fails before backend egress and leaks no local path.
+    assert response.status_code == 403
+    assert "clip-store" not in response.text
+    assert backend.ready_calls == 0

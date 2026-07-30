@@ -1,0 +1,571 @@
+"""Worker-to-api ingest relay routes."""
+
+from __future__ import annotations
+
+import base64
+import binascii
+import hashlib
+import json
+import logging
+import os
+import sqlite3
+from collections.abc import Callable
+from typing import Annotated, Any, Protocol
+
+from fastapi import APIRouter, Header, HTTPException, Request, status
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from backend.app.features.cameras.router import worker_config_snapshot
+from backend.app.features.cameras.store import CameraRegistryStore
+from backend.app.features.clips.catalog import CatalogConflictError, get_catalog_store
+from backend.app.features.status.heartbeat_store import get_heartbeat_store
+from backend.app.features.status.runtime_status_store import get_runtime_status_store
+from backend.app.lifespan import API_EDGE_RELAY_TOKEN_ENV, API_FACILITY_ID_ENV
+from contracts import AlertEventType
+from contracts.decode_diagnostics import DECODE_BACKENDS, DECODE_FALLBACK_REASONS
+from contracts.worker_config import RESTART_EPOCH_KEY
+from shared.events.evidence_export_contract import (
+    DeliveryDisposition,
+    DeliveryFailure,
+    EventReceipt,
+)
+
+RELAY_TOKEN_HEADER = "X-Edge-Relay-Token"
+
+router = APIRouter(prefix="/relay", tags=["relay"])
+logger = logging.getLogger(__name__)
+
+# Catalog records are an auxiliary index, not the alert delivery path. A typical
+# clip manifest is about 600 bytes; 16 KiB leaves ample room for event evidence
+# while preventing a worker mistake from growing the SQLite catalog without bound.
+MAX_CATALOG_PAYLOAD_BYTES = 16 * 1024
+# The relay accepts at most 200 KiB of decoded inline evidence. Limit encoded
+# input before decoding so an oversized Base64 string cannot trigger allocation.
+MAX_INLINE_SNAPSHOT_BYTES = 200 * 1024
+MAX_INLINE_SNAPSHOT_BASE64_CHARS = 4 * ((MAX_INLINE_SNAPSHOT_BYTES + 2) // 3)
+# Eight container levels supports structured detector output without accepting
+# arbitrarily recursive JSON from a trusted-but-fallible worker.
+MAX_CATALOG_PAYLOAD_DEPTH = 8
+
+
+class RelayAuditEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    config_version: int | None = None
+    model_version: str | None = None
+    detector_version: str | None = None
+    operating_threshold: float | None = None
+    clock_source: str | None = None
+
+
+class RelaySnapshotMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    snapshot_id: str = Field(min_length=1)
+    path: str = Field(min_length=1)
+    sha256: str = Field(min_length=1)
+    size_bytes: int = Field(ge=0)
+    mime_type: str = Field(min_length=1)
+    captured_at: str = Field(min_length=1)
+    camera_id: str = Field(min_length=1)
+    edge_event_id: str | None = None
+
+
+class RelayAlertRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    edge_event_id: str | None = Field(default=None, pattern=r"^[0-9a-f-]{36}$")
+    event_type: AlertEventType
+    probability: float = Field(ge=0.0, le=1.0)
+    detected_at: str = Field(min_length=1)
+    camera_id: str = Field(min_length=1)
+    facility_id: str = Field(min_length=1)
+    resident_id: str | None = None
+    evidence: dict[str, Any] | None = None
+    audit: RelayAuditEnvelope | None = None
+    snapshot_jpeg_base64: str | None = Field(
+        default=None, max_length=MAX_INLINE_SNAPSHOT_BASE64_CHARS
+    )
+    attempt_ordinal: int | None = Field(default=None, ge=1)
+    snapshot: RelaySnapshotMetadata | None = None
+
+    @model_validator(mode="after")
+    def snapshot_matches_inline_evidence(self) -> RelayAlertRequest:
+        snapshot_bytes = _decode_snapshot(self.snapshot_jpeg_base64)
+        if self.snapshot is not None:
+            if self.snapshot.camera_id != self.camera_id:
+                raise ValueError("snapshot camera_id must match alert camera_id")
+            if self.snapshot.edge_event_id != self.edge_event_id:
+                raise ValueError("snapshot edge_event_id must match alert edge_event_id")
+            if snapshot_bytes is not None:
+                if self.edge_event_id is None or self.snapshot.edge_event_id is None:
+                    raise ValueError("inline snapshot requires an edge_event_id")
+                if self.snapshot.mime_type != "image/jpeg":
+                    raise ValueError("inline snapshot MIME type must be image/jpeg")
+                if (
+                    self.snapshot.size_bytes <= 0
+                    or self.snapshot.size_bytes != len(snapshot_bytes)
+                ):
+                    raise ValueError("inline snapshot size_bytes must exactly match decoded bytes")
+                if self.snapshot.sha256 != hashlib.sha256(snapshot_bytes).hexdigest():
+                    raise ValueError("inline snapshot sha256 must match decoded bytes")
+        return self
+
+
+class RelayHeartbeatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    camera_id: str = Field(min_length=1)
+    facility_id: str = Field(min_length=1)
+    config_version: int | None = None
+
+
+class RelayDecodeDiagnostics(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requested: str = Field(min_length=1)
+    selected: str | None = Field(default=None)
+    fallback_count: int = Field(ge=0)
+    last_reason: str | None = Field(default=None)
+    updated_at_sec: float = Field()
+
+    @field_validator("requested", "selected")
+    @classmethod
+    def valid_backend(cls, value: str | None) -> str | None:
+        if value is not None and value not in DECODE_BACKENDS:
+            raise ValueError("decode backend is invalid")
+        return value
+
+    @field_validator("last_reason")
+    @classmethod
+    def valid_last_reason(cls, value: str | None) -> str | None:
+        if value is not None and value not in DECODE_FALLBACK_REASONS:
+            raise ValueError("last_reason is not a decode fallback reason")
+        return value
+
+
+class RelayRuntimeStatusCamera(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    camera_id: str = Field(min_length=1)
+    decode: RelayDecodeDiagnostics
+    measured_fps: float | None = Field(default=None, ge=0.0)
+
+
+class RelayGpuStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    nvml_available: bool = Field()
+    cuda_context_ok: bool = Field()
+    driver_version: str | None = Field(default=None)
+    device_name: str | None = Field(default=None)
+    captured_at_sec: float = Field()
+    nvml_error: str | None = Field(default=None)
+
+
+class RelayWorkerStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    alive: bool = Field()
+    pid: int | None = Field(default=None, ge=0)
+    started_at_sec: float | None = Field(default=None)
+    profile_boot_error: str | None = Field(default=None)
+
+
+class RelayClipRecorderStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    available: bool = Field()
+    dropped_frames: int | None = Field(default=None, ge=0)
+    dropped_events: int | None = Field(default=None, ge=0)
+    failed_writes: int | None = Field(default=None, ge=0)
+    finalized_clips: int | None = Field(default=None, ge=0)
+    video_unavailable_clips: int | None = Field(default=None, ge=0)
+    active_clips: int | None = Field(default=None, ge=0)
+    encoder: str | None = Field(default=None)
+
+
+class RelayRuntimeStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    facility_id: str = Field(min_length=1)
+    generation: int | None = Field(default=None, ge=0)
+    seq: int = Field(ge=0)
+    cameras: list[RelayRuntimeStatusCamera] = Field()
+    clip_recorder: RelayClipRecorderStatus
+    gpu: RelayGpuStatus | None = Field(default=None)
+    worker: RelayWorkerStatus | None = Field(default=None)
+
+
+class RelayRuntimeStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    accepted: bool
+    generation: int
+
+
+class BackendIngestClient(Protocol):
+    def send_alert(
+        self,
+        *,
+        event_type: AlertEventType,
+        detected_at: str,
+        probability: float,
+        audit: dict[str, object] | None = None,
+        snapshot_bytes: bytes | None = None,
+        clip_id: str | None = None,
+    ) -> bool: ...
+
+    def send_alert_receipt(
+        self,
+        *,
+        edge_event_id: str,
+        event_type: AlertEventType,
+        detected_at: str,
+        probability: float,
+        audit: dict[str, object] | None = None,
+        snapshot_bytes: bytes | None = None,
+        clip_id: str | None = None,
+        on_accepted: Callable[[float], None] | None = None,
+    ) -> EventReceipt | DeliveryFailure: ...
+
+    def send_heartbeat(self) -> bool: ...
+
+
+@router.get("/config")
+def worker_config(
+    request: Request,
+    relay_token: Annotated[str | None, Header(alias=RELAY_TOKEN_HEADER)] = None,
+) -> dict[str, object]:
+    _authorize(request, relay_token)
+    return worker_config_snapshot(request, require_available=True)
+
+
+@router.post("/restart", status_code=status.HTTP_202_ACCEPTED)
+def bump_restart(
+    request: Request,
+    relay_token: Annotated[str | None, Header(alias=RELAY_TOKEN_HEADER)] = None,
+) -> dict[str, int]:
+    _authorize(request, relay_token)
+    request.app.state.restart_epoch = int(getattr(request.app.state, "restart_epoch", 0)) + 1
+    return {RESTART_EPOCH_KEY: request.app.state.restart_epoch}
+
+
+@router.post("/alerts", status_code=status.HTTP_202_ACCEPTED)
+def relay_alert(
+    payload: RelayAlertRequest,
+    request: Request,
+    relay_token: Annotated[str | None, Header(alias=RELAY_TOKEN_HEADER)] = None,
+) -> dict[str, str]:
+    _authorize(request, relay_token)
+    binding = _camera_binding(request, payload.camera_id, payload.facility_id)
+    canonical_camera_id = str(binding.get("camera_id") or payload.camera_id)
+    client = _backend_ingest_client(request, camera_id=canonical_camera_id)
+    alert_kwargs: dict[str, object] = {
+        "event_type": payload.event_type,
+        "detected_at": payload.detected_at,
+        "probability": payload.probability,
+    }
+    clip_id = _payload_clip_id(payload)
+    if clip_id is not None:
+        alert_kwargs["clip_id"] = clip_id
+    # Envelope-less alerts forward the exact prior 3-field shape; audit/snapshot
+    # kwargs are added ONLY when present (backward-compat with the route contract).
+    if payload.audit is not None:
+        alert_kwargs["audit"] = payload.audit.model_dump(exclude_none=True)
+    snapshot_bytes = _decode_snapshot(payload.snapshot_jpeg_base64)
+    if snapshot_bytes is not None:
+        alert_kwargs["snapshot_bytes"] = snapshot_bytes
+    if payload.edge_event_id is not None:
+        result = client.send_alert_receipt(
+            edge_event_id=payload.edge_event_id,
+            on_accepted=lambda accepted_at: _record_alert_latency(request, payload, accepted_at),
+            **alert_kwargs,
+        )
+        if isinstance(result, DeliveryFailure):
+            if result.disposition is DeliveryDisposition.RETRY:
+                code = status.HTTP_503_SERVICE_UNAVAILABLE
+            elif result.disposition is DeliveryDisposition.COMPATIBILITY:
+                code = status.HTTP_404_NOT_FOUND
+            else:
+                code = result.status_code or status.HTTP_502_BAD_GATEWAY
+            headers = None
+            if result.retry_after_seconds is not None:
+                headers = {"Retry-After": str(max(0, int(result.retry_after_seconds)))}
+            raise HTTPException(
+                status_code=code,
+                detail="backend ingest rejected alert",
+                headers=headers,
+            )
+        response = {
+            "status": result.status,
+            "edge_event_id": result.edge_event_id,
+            "event_id": result.event_id,
+        }
+        return _alert_response(response, _record_catalog(request, payload))
+    accepted = client.send_alert(**alert_kwargs)
+    if not accepted:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="backend ingest rejected alert",
+        )
+    return _alert_response({"status": "accepted"}, _record_catalog(request, payload))
+
+
+@router.post("/heartbeat", status_code=status.HTTP_202_ACCEPTED)
+def relay_heartbeat(
+    payload: RelayHeartbeatRequest,
+    request: Request,
+    relay_token: Annotated[str | None, Header(alias=RELAY_TOKEN_HEADER)] = None,
+) -> dict[str, str]:
+    _authorize(request, relay_token)
+    binding = _camera_binding(request, payload.camera_id, payload.facility_id)
+    # Stamp local liveness AFTER auth + camera binding and BEFORE backend egress
+    # so /status reflects edge-local truth even if backend egress fails.
+    get_heartbeat_store(request.app).record(
+        payload.camera_id,
+        payload.facility_id,
+        config_version=payload.config_version,
+    )
+    # Backend egress uses the canonical identity (explicit backend mapping when
+    # present); the backend only knows its own camera ids, not local registry ids.
+    canonical_camera_id = str(binding.get("camera_id") or payload.camera_id)
+    client = _backend_ingest_client(request, camera_id=canonical_camera_id)
+    if not client.send_heartbeat():
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="backend ingest rejected heartbeat",
+        )
+    return {"status": "accepted"}
+
+
+@router.post("/runtime-status", response_model=RelayRuntimeStatusResponse)
+def relay_runtime_status(
+    payload: RelayRuntimeStatusRequest,
+    request: Request,
+    relay_token: Annotated[str | None, Header(alias=RELAY_TOKEN_HEADER)] = None,
+    authorization: Annotated[str | None, Header()] = None,
+) -> RelayRuntimeStatusResponse:
+    _authorize(request, relay_token or _bearer_token(authorization))
+    _runtime_status_facility_binding(request, payload.facility_id)
+    for camera in payload.cameras:
+        _camera_binding(request, camera.camera_id, payload.facility_id)
+    data = payload.model_dump()
+    if data["worker"] is not None and data["worker"]["profile_boot_error"] is None:
+        data["worker"].pop("profile_boot_error")
+    result = get_runtime_status_store(request.app).record(data)
+    if not result.accepted:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=result.reason)
+    return RelayRuntimeStatusResponse(accepted=True, generation=result.generation)
+
+
+def _record_catalog(request: Request, payload: RelayAlertRequest) -> str | None:
+    try:
+        event = payload.model_dump(
+            exclude={"attempt_ordinal", "snapshot_jpeg_base64"}, exclude_none=True
+        )
+        rejection_reason = _catalog_payload_rejection_reason(event)
+        if rejection_reason is not None:
+            # Do not reject the relay request: the catalog is a secondary index, and
+            # an index limit must never prevent a safety alert reaching the backend.
+            # The accepted response names the catalog failure and app state/logs make
+            # it observable to local operators.
+            request.app.state.catalog_error = rejection_reason
+            logger.warning("catalog record skipped: %s", rejection_reason)
+            return rejection_reason
+
+        store = get_catalog_store(request.app)
+        if store is None:
+            return getattr(request.app.state, "catalog_error", "catalog unavailable")
+
+        records: list[tuple[str, str, dict[str, Any]]] = []
+        if payload.edge_event_id is not None:
+            records.append(("events", payload.edge_event_id, event))
+        if payload.snapshot is not None:
+            snapshot = payload.snapshot.model_dump(exclude_none=True)
+            records.append(("snapshots", payload.snapshot.snapshot_id, snapshot))
+        if records:
+            store.record_many(tuple(records))
+    except CatalogConflictError:
+        reason = "catalog idempotency conflict"
+    except (OSError, sqlite3.Error) as exc:
+        reason = f"catalog operational failure: {exc}"
+    except Exception as exc:  # noqa: BLE001 - auxiliary catalog failures must never block alert egress
+        reason = f"catalog unexpected failure: {exc}"
+    else:
+        return None
+
+    request.app.state.catalog_error = reason
+    logger.warning("catalog record skipped: %s", reason)
+    return reason
+
+
+def _catalog_payload_rejection_reason(event: dict[str, Any]) -> str | None:
+    evidence = event.get("evidence")
+    if _json_depth(evidence) > MAX_CATALOG_PAYLOAD_DEPTH:
+        return f"catalog evidence exceeds maximum depth of {MAX_CATALOG_PAYLOAD_DEPTH}"
+    encoded = json.dumps(event, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
+    if len(encoded) > MAX_CATALOG_PAYLOAD_BYTES:
+        return f"catalog payload exceeds maximum size of {MAX_CATALOG_PAYLOAD_BYTES} bytes"
+    return None
+
+
+def _json_depth(value: Any) -> int:
+    if isinstance(value, dict):
+        return 1 + max((_json_depth(item) for item in value.values()), default=0)
+    if isinstance(value, list):
+        return 1 + max((_json_depth(item) for item in value), default=0)
+    return 0
+
+
+def _alert_response(response: dict[str, str], catalog_error: str | None) -> dict[str, str]:
+    if catalog_error is not None:
+        return {
+            **response,
+            "catalog": "not_recorded",
+            "catalog_reason": catalog_error,
+        }
+    return response
+
+
+def _decode_snapshot(snapshot_jpeg_base64: str | None) -> bytes | None:
+    if snapshot_jpeg_base64 is None:
+        return None
+    try:
+        snapshot_bytes = base64.b64decode(snapshot_jpeg_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("snapshot_jpeg_base64 must be valid Base64") from exc
+    if len(snapshot_bytes) > MAX_INLINE_SNAPSHOT_BYTES:
+        raise ValueError(
+            "snapshot_jpeg_base64 exceeds maximum decoded size of "
+            f"{MAX_INLINE_SNAPSHOT_BYTES} bytes"
+        )
+    return snapshot_bytes
+
+
+def _record_alert_latency(request: Request, payload: RelayAlertRequest, received_at: float) -> None:
+    if payload.attempt_ordinal != 1:
+        return
+    get_runtime_status_store(request.app).record_latency(
+        payload.facility_id, payload.detected_at, received_at=received_at
+    )
+
+
+def _authorize(request: Request, relay_token: str | None) -> None:
+    expected = getattr(request.app.state, "edge_relay_token", None) or os.environ.get(
+        API_EDGE_RELAY_TOKEN_ENV
+    )
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="relay token is not configured",
+        )
+    if relay_token is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="relay token required")
+    if relay_token != expected:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="relay token mismatch")
+
+
+def _bearer_token(authorization: str | None) -> str | None:
+    if authorization is None:
+        return None
+    scheme, separator, token = authorization.partition(" ")
+    if separator and scheme.lower() == "bearer" and token:
+        return token
+    return None
+
+
+def _runtime_status_facility_binding(request: Request, facility_id: str) -> None:
+    expected = os.environ.get(API_FACILITY_ID_ENV)
+    if expected and facility_id != expected.strip():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="camera facility mismatch",
+        )
+    inventory = getattr(request.app.state, "camera_inventory", {})
+    if not isinstance(inventory, dict) or not inventory:
+        return
+    facilities = {
+        binding.get("facility_id")
+        for binding in inventory.values()
+        if isinstance(binding, dict) and binding.get("facility_id") is not None
+    }
+    if facilities and facility_id not in facilities:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="camera facility mismatch",
+        )
+
+
+def _payload_clip_id(payload: RelayAlertRequest) -> str | None:
+    if payload.evidence is None:
+        return None
+    value = payload.evidence.get("clip_id")
+    if isinstance(value, str) and value.strip() != "":
+        return value
+    return None
+
+
+def _camera_binding(request: Request, camera_id: str, facility_id: str) -> dict[str, str | None]:
+    registry_binding = _camera_binding_from_registry(request, camera_id, facility_id)
+    if registry_binding is not None:
+        return registry_binding
+    inventory = getattr(request.app.state, "camera_inventory", {})
+    binding = inventory.get(camera_id) if isinstance(inventory, dict) else None
+    if binding is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="unknown camera")
+    binding_facility = binding.get("facility_id") if isinstance(binding, dict) else None
+    if binding_facility != facility_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="camera facility mismatch"
+        )
+    return dict(binding)
+
+
+def _camera_binding_from_registry(
+    request: Request,
+    camera_id: str,
+    facility_id: str,
+) -> dict[str, str | None] | None:
+    store = getattr(request.app.state, "camera_registry", None)
+    if not isinstance(store, CameraRegistryStore):
+        return None
+    snapshot = store.snapshot()
+    cameras = snapshot.get("cameras")
+    if not isinstance(cameras, list) or not cameras:
+        return None
+    expected_facility = os.environ.get(API_FACILITY_ID_ENV, "local-facility").strip()
+    if expected_facility and facility_id != expected_facility:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="camera facility mismatch"
+        )
+    for record in cameras:
+        if not isinstance(record, dict):
+            continue
+        local_id = record.get("id")
+        backend_id = record.get("backend_camera_id")
+        if camera_id in {local_id, backend_id}:
+            canonical_id = backend_id or local_id
+            return {
+                "camera_id": str(canonical_id),
+                "facility_id": facility_id,
+                "resident_id": None,
+            }
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="unknown camera")
+
+
+def _backend_ingest_client(request: Request, *, camera_id: str) -> BackendIngestClient:
+    client = getattr(request.app.state, "backend_ingest_client", None)
+    if client is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="backend ingest client is not configured",
+        )
+    if hasattr(client, "for_camera"):
+        return client.for_camera(camera_id)
+    return client
+
+
+__all__ = ["router"]

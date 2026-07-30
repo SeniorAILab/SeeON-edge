@@ -1,0 +1,37 @@
+# syntax=docker/dockerfile:1.7
+FROM node:20-bookworm-slim AS front-build
+
+WORKDIR /src/front
+RUN corepack enable
+COPY front/package.json front/pnpm-lock.yaml ./
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    pnpm i --frozen-lockfile
+COPY front ./
+ARG VITE_ML_API_BASE_URL=/api/v1
+RUN pnpm build
+
+
+FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
+
+ENV UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/app/.venv/bin:${PATH}"
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-default-groups --no-install-project
+
+COPY contracts ./contracts
+COPY shared ./shared
+COPY backend ./backend
+COPY --from=front-build /src/front/dist /app/front
+RUN mkdir -p /app/models/fall /app/models/pose /app/models/bed
+
+ENV HOST=127.0.0.1 \
+    PORT=8000
+EXPOSE 8000
+CMD ["sh", "-c", "uvicorn backend.app.main:app --host ${HOST} --port ${PORT}"]

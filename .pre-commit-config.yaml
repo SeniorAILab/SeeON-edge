@@ -1,0 +1,18 @@
+# Stage 0 guardrail (deep-interview → ralplan plan): local hooks matching the
+# repo toolchain (uv/uvx). Enforces Ruff lint + import-linter architecture
+# contracts before commit. Contracts are tightened per strangler stage.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff check
+        entry: uvx ruff check --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+      - id: import-linter
+        name: import-linter (architecture contracts)
+        entry: uv run --group lint lint-imports
+        language: system
+        pass_filenames: false
+        always_run: true

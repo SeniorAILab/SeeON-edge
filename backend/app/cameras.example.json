@@ -1,0 +1,15 @@
+{
+  "registry_version": 1,
+  "cameras": [
+    {
+      "id": "example-room-camera",
+      "label": "Example Room Camera",
+      "rtsp_url": "rtsp://camera.example.invalid/trackID=1",
+      "space_id": "example-room",
+      "backend_camera_id": null,
+      "mapping_pending": false,
+      "status": "unknown",
+      "created_at": "2026-01-01T00:00:00.000Z"
+    }
+  ]
+}

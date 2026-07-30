@@ -1,0 +1,73 @@
+# Python runtime and test output
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Node/dashboard output
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+.npm/
+.pnpm-store/
+coverage/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+!.env.edge.prod.example
+/edge-cameras*.json
+worker/ml-worker.local.yaml
+worker/ml-worker.*.local.yaml
+.runtime/
+
+# Large model artifacts and private data
+models/
+weights/
+checkpoints/
+*.pt
+*.pth
+*.onnx
+*.pte
+*.tflite
+*.safetensors
+*.ckpt
+*.h5
+data/
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.webp
+*.bmp
+*.tif
+*.tiff
+*.wav
+*.mp3
+*.m4a
+
+# Generated experiments, evidence, and scratch
+artifacts/
+experiments/loop_status.json
+.scratch/
+.gjc/
+.omo/
+.omc/
+.omx/
+.gstack/
+
+# Editor and OS files
+.DS_Store
+.dataset-ops/

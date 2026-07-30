@@ -1,0 +1,160 @@
+[project]
+name = "ml"
+version = "0.1.0"
+description = "Fall/bed-exit ML: FastAPI backend + edge inference worker + React front. Training in eldercare-dataset-ops (ADR-0004)."
+readme = "README.md"
+license = "AGPL-3.0-only"
+requires-python = ">=3.11"
+
+# Serving (online) dependencies — always-on path. Kept minimal for PoC.
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2",
+    "pydantic-settings>=2",
+    "numpy>=1.26",
+    "opencv-python-headless>=4.10",
+    "pyyaml>=6",
+]
+
+# Lifecycle separation: test/worker deps are isolated from the slim backend path.
+[dependency-groups]
+lint = [
+    "import-linter>=2.13",
+    "ruff==0.16.0",
+]
+test = [
+    "pytest>=8.3",
+    "httpx>=0.27",
+]
+worker = [
+    "torch>=2.3",
+    "scikit-learn>=1.5",
+    "joblib>=1.4",
+    "ultralytics>=8.3",
+    "nvidia-ml-py>=12",
+]
+
+[tool.uv]
+package = false
+# A bare `uv run` sees test+worker (edge runtime + tests). A slim backend build
+# opts out via --no-default-groups.
+default-groups = ["test", "worker"]
+# Keep ultralytics from pulling the GUI OpenCV wheel alongside the repo-selected
+# headless wheel; both distributions own cv2/ and corrupt clean uv installs.
+override-dependencies = ["opencv-python ; sys_platform == 'never'"]
+
+# GPU: pin torch/torchvision to the PyTorch CUDA wheel index so the worker gets a
+# real CUDA build WITH Blackwell sm_120 kernels. In this environment only the
+# cu130 index ships a torch (2.13.0) whose `torch.cuda.get_arch_list()` includes
+# sm_120; the cu128 index's latest (2.11.0) has an empty arch_list. Two root
+# causes were diagnosed (ADR-0002):
+#  1. the default PyPI torch wheel had an empty arch_list (no GPU kernels) ->
+#     `cuda.is_available()==False` -> silent CPU fallback (fixed by this pin);
+#  2. SECOND, driver-level: NVIDIA driver 580.x + CUDA 13.0 fails `cuInit(0)` with
+#     CUDA_ERROR_NO_DEVICE (a known-bad pairing). That is an OPS fix, not a torch
+#     fix — align the host driver/CUDA to a validated pairing on the real edge
+#     node (see ADR-0002 "Driver / CUDA pairing"). If ops standardizes on CUDA
+#     12.x, repin to a cu12x wheel that also includes sm_120.
+# `explicit = true` keeps this index scoped to the packages that reference it.
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+# cu130 has no macOS wheels; scope it to Linux so Darwin/others resolve torch
+# from PyPI (arm64 + MPS). Linux still gets 2.13.0+cu130 with sm_120 (Blackwell).
+torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
+torchvision = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
+
+# uv workspace (F1: each instance is an independent build unit with its own
+# pyproject). Members are package=false: they declare each instance's
+# dependency contract and share one lockfile. `contracts`/`edge.features` stay
+# path-importable (contracts is vendored ADR-0004 and cannot carry a pyproject,
+# so `uv sync --package` build-isolation is intentionally not used); per-instance
+# slim images are produced by Dockerfile.backend/edge via dependency-groups.
+[tool.uv.workspace]
+members = ["backend", "edge", "shared"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [".scratch", ".venv"]
+
+# Stability deny-list (docs/rules/code-stability.md, ADR):
+#   B    bugbear — B904 raise-from, B006 mutable defaults
+#   BLE  blind except Exception (boundary catches need `# noqa: BLE001` + reason)
+#   S110/S112  try-except-pass / try-except-continue
+#   TRY  tryceratops — TRY002 vanilla raise, TRY400 logging.exception in handlers
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "BLE", "S110", "S112", "TRY", "TID", "FAST"]
+# FAST (FastAPI rules) enabled with the backend vertical-slice; Header/Query deps
+# use typing.Annotated (FAST002).
+# TRY003 (no long messages outside exception class) is ignored deliberately:
+# informative inline `raise ValueError(f"...")` messages ARE the explicit-refusal
+# style this codebase wants; demanding a custom exception class per message
+# discourages raising. All other TRY rules stay on.
+ignore = ["TRY003"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+# Declarative architecture contracts (deep-interview → ralplan plan). Boundaries
+# between the front/backend/edge instances + shared, and 2-depth ownership inside
+# each, are enforced here via `uv run --group lint lint-imports` (also a
+# pre-commit hook and CI step).
+[tool.importlinter]
+root_packages = ["backend", "edge", "contracts", "shared"]
+
+[[tool.importlinter.contracts]]
+name = "backend and edge are independent (edge→backend relay boundary only)"
+type = "independence"
+modules = ["backend", "edge"]
+
+[[tool.importlinter.contracts]]
+name = "contracts is a leaf (imports nothing internal)"
+type = "forbidden"
+source_modules = ["contracts"]
+forbidden_modules = ["backend", "edge", "shared.events"]
+
+[[tool.importlinter.contracts]]
+name = "edge.features is pure feature-math (depends only on contracts)"
+type = "forbidden"
+source_modules = ["edge.features"]
+forbidden_modules = ["backend", "shared.events", "edge.sources", "edge.perception", "edge.domains", "edge.runtime", "edge.evidence", "edge.serving_client", "edge.runners"]
+
+[[tool.importlinter.contracts]]
+# Stage 2b: 2-depth ownership inside backend — base (core/shared) must not import
+# the upper feature/route/app layers (enforces the vertical-slice direction).
+name = "backend base (core/shared) does not import upper layers"
+type = "forbidden"
+source_modules = ["backend.app.core", "backend.app.shared"]
+forbidden_modules = ["backend.app.features", "backend.app.routes", "backend.app.main", "backend.app.lifespan"]
+
+[[tool.importlinter.contracts]]
+# Stage 3b: the serving seam is a low-level provisioning boundary — it must not
+# depend on the edge orchestration/perception/domain/evidence layers, so the GPU
+# serving plane can later be extracted behind this interface.
+name = "edge.serving_client is a low-level seam"
+type = "forbidden"
+source_modules = ["edge.serving_client"]
+forbidden_modules = ["edge.domains", "edge.perception", "edge.sources", "edge.evidence", "edge.runtime"]
+
+[[tool.importlinter.contracts]]
+# Stage 3b: edge internal 2-depth ownership — a strict layer order so lower
+# I/O/perception layers never import the higher orchestration/interpretation ones.
+name = "edge internal 2-depth layers"
+type = "layers"
+layers = ["edge.runtime", "edge.evidence", "edge.domains", "edge.perception", "edge.sources"]
+[[tool.importlinter.contracts]]
+# Boot-time seam: profile resolution may use only the low-level bootstrap Stage
+# primitive (edge.runtime.pipeline_bootstrap), edge.runners device probing, and
+# contracts — never the orchestration/interpretation layers or sources.
+name = "edge.runtime.profile is a boot-time seam"
+type = "forbidden"
+source_modules = ["edge.runtime.profile"]
+forbidden_modules = ["edge.domains", "edge.perception", "edge.evidence", "edge.serving_client", "edge.features", "edge.sources", "edge.runtime.edge_worker", "edge.runtime.camera_worker", "edge.runtime.edge_worker_supervisor", "edge.runtime.edge_worker_config", "backend", "shared.events"]

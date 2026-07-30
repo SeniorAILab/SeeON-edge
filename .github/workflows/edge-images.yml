@@ -1,0 +1,93 @@
+name: Edge ML Images
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to build (tag, branch, or SHA)
+        required: true
+        default: main
+
+concurrency:
+  group: edge-ml-images-${{ github.event.release.tag_name || inputs.ref || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: Publish edge ML image refs
+    if: github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false
+    runs-on: ubuntu-latest
+    env:
+      DEPLOY_REF: ${{ github.event.release.tag_name || inputs.ref }}
+      IMAGE_NAMESPACE: ghcr.io/seniorailab/eldercare-fall-ml
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_REF }}
+          fetch-depth: 0
+
+      - name: Resolve deploy SHA
+        run: echo "DEPLOY_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push ml-api image
+        id: build-api
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.backend
+          push: true
+          build-args: |
+            VITE_ML_API_BASE_URL=/api/v1
+          tags: |
+            ${{ env.IMAGE_NAMESPACE }}/ml-api:${{ env.DEPLOY_SHA }}
+          cache-from: type=gha,scope=edge-ml-api
+          cache-to: type=gha,scope=edge-ml-api,mode=max
+
+      - name: Build and push ml-worker image
+        id: build-worker
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.edge
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAMESPACE }}/ml-worker:${{ env.DEPLOY_SHA }}
+          cache-from: type=gha,scope=edge-ml-worker
+          cache-to: type=gha,scope=edge-ml-worker,mode=max
+
+      - name: Write edge image env artifact
+        run: |
+          {
+            printf 'ML_API_IMAGE=%s/ml-api@%s\n' "$IMAGE_NAMESPACE" '${{ steps.build-api.outputs.digest }}'
+            printf 'ML_WORKER_IMAGE=%s/ml-worker@%s\n' "$IMAGE_NAMESPACE" '${{ steps.build-worker.outputs.digest }}'
+          } > edge-ml-image-refs.env
+          {
+            printf '### Edge ML image refs\n\n'
+            printf 'Use these digest-pinned refs in `.env.edge.prod` on the edge device:\n\n'
+            printf '```dotenv\n'
+            cat edge-ml-image-refs.env
+            printf '```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload edge image refs
+        uses: actions/upload-artifact@v4
+        with:
+          name: edge-ml-image-refs-${{ env.DEPLOY_SHA }}
+          path: edge-ml-image-refs.env
+          if-no-files-found: error

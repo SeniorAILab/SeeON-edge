@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Scan tracked tree for secrets
+        run: >-
+          docker run --rm
+          -v "$GITHUB_WORKSPACE:/repo:ro"
+          zricethezav/gitleaks@sha256:691af3c7c5a48b16f187ce3446d5f194838f91238f27270ed36eef6359a574d9
+          detect --source=/repo --no-git --redact --exit-code=1
+
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: "0.11.27"
+          enable-cache: false
+
+      - name: Install FFmpeg test dependency
+        run: sudo apt-get update && sudo apt-get install --yes ffmpeg
+
+      - run: uv sync --frozen --group lint
+      - run: uv run pytest -q
+      - run: uv run --group lint ruff check .
+      # Stage 0 guardrail: declarative architecture contracts (import-linter).
+      # Tightened per strangler stage; replaces test_import_dependency_ladder.py at Stage 5.
+      - run: uv run --group lint lint-imports

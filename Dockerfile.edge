@@ -1,0 +1,30 @@
+# syntax=docker/dockerfile:1.7
+
+FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
+
+ENV UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/app/.venv/bin:${PATH}"
+
+WORKDIR /app
+
+# ffmpeg is required by the clip recorder for H.264 encoding (h264_nvenc on the
+# edge GPU, libx264 fallback). --no-install-recommends keeps the image lean; the
+# version probe fails the build early if the binary is missing.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && ffmpeg -version
+
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-default-groups --group worker --no-install-project
+
+COPY contracts ./contracts
+COPY shared ./shared
+COPY edge ./edge
+RUN mkdir -p /app/models/fall/lstm-runtime /app/models/pose /app/models/bed
+
+CMD ["python", "-m", "edge.runtime.edge_worker"]

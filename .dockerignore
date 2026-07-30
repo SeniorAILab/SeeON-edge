@@ -1,0 +1,46 @@
+# Repository and installed/build output
+.git
+**/node_modules
+**/dist
+**/.next
+**/.venv
+**/__pycache__
+**/*.pyc
+**/coverage
+
+# Local runtime state, secrets, and logs
+.env
+.env.*
+!/.env.example
+!/.env.edge.prod.example
+.runtime
+.gjc
+.omo
+.omc
+.omx
+*.log
+.DS_Store
+
+# Large or private local artifacts
+models
+data
+experiments
+artifacts
+.scratch
+*.zip
+*.pt
+*.pth
+*.onnx
+*.safetensors
+*.ckpt
+*.h5
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# Non-serving source trees not needed by either image
+tests
+demo
+training
+README.md

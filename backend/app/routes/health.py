@@ -1,0 +1,40 @@
+"""Health routes for api."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import APIRouter, Request, Response, status
+
+probe_router = APIRouter(tags=["health"])
+router = APIRouter(tags=["health"])
+
+
+@probe_router.get("/health/live")
+def live() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@probe_router.get("/health/ready")
+def ready(request: Request, response: Response) -> dict[str, Any]:
+    readiness = getattr(request.app.state, "readiness", {"ready": False, "reason": "booting"})
+    if not readiness.get("ready", False):
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return readiness
+
+
+@router.get("/health")
+def legacy_health(request: Request) -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "gateway": (
+            "ready"
+            if getattr(request.app.state, "readiness", {}).get("ready")
+            else "booting"
+        ),
+        "relay": {
+            "token_configured": bool(getattr(request.app.state, "edge_relay_token", None)),
+            "backend_configured": hasattr(request.app.state, "backend_ingest_client"),
+            "camera_count": len(getattr(request.app.state, "camera_inventory", {}) or {}),
+        },
+    }

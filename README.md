@@ -1,0 +1,77 @@
+# eldercare-fall-ml
+
+Edge ML runtime for fall and bed-exit detection, organized as three deployable
+instances plus a shared library:
+
+- **`backend/`** — FastAPI control/status/relay gateway (`ml-api` image).
+- **`edge/`** — RTSP inference worker that relays facts to the backend (`ml-worker` image).
+- **`front/`** — React/Vite dashboard SPA served by the backend.
+- **`shared/`** — `shared.events` (the backend↔edge wire code); `contracts` is a
+  top-level vendored leaf (ADR-0004).
+
+Training is maintained separately in `SeniorAILab/eldercare-dataset-ops`.
+
+## License notice
+
+This project is licensed under the GNU Affero General Public License v3.0
+(`AGPL-3.0-only`); see [`LICENSE`](LICENSE) for the complete terms.
+
+The `ultralytics` worker dependency is also licensed under AGPL-3.0. This
+project accepts the obligations of that dependency's AGPL-3.0 license,
+including the applicable source-disclosure requirements.
+
+## Setup
+
+Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+
+```bash
+uv sync
+uv run pytest -q
+uvx ruff check .
+uv run --group lint lint-imports   # architecture-boundary enforcement
+```
+
+Local model artifacts are intentionally ignored. Place them under `models/` and
+copy `edge/ml-worker.example.yaml` to `edge/ml-worker.local.yaml` before
+configuring a real worker-reachable RTSP URL. Never commit RTSP credentials or
+relay tokens.
+
+## Run
+
+Run the backend:
+
+```bash
+uv run uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+```
+
+Validate and run the edge worker with a local configuration:
+
+```bash
+uv run python -m edge.runtime.edge_worker --config edge/ml-worker.local.yaml --check-config
+uv run python -m edge.runtime.edge_worker --config edge/ml-worker.local.yaml
+```
+
+Run the front dev server:
+
+```bash
+pnpm --dir front install --frozen-lockfile
+ML_API_PROXY_TARGET=http://127.0.0.1:8000 pnpm --dir front dev
+```
+
+## Edge deployment
+
+Copy `.env.edge.prod.example` to `.env.edge.prod`, set the backend URLs,
+facility credentials, relay token, `ML_WORKER_PROFILE` (production uses `cuda`),
+host clip-store directory, and digest-pinned GHCR image references. Event clip export is off by default; set both
+`ML_API_EVENT_CLIP_EXPORT_ENABLED=1` and
+`ML_WORKER_EVENT_CLIP_EXPORT_ENABLED=1` only after backend capabilities are
+verified. Start the edge-only stack from this repository root:
+
+```bash
+docker compose --env-file .env.edge.prod -f compose.edge.yaml up -d
+```
+
+The images are published as
+`ghcr.io/seniorailab/eldercare-fall-ml/{ml-api,ml-worker}` (deployment identity;
+these map to `Dockerfile.backend` / `Dockerfile.edge`). `compose.edge.yaml`
+uses `models/` as the default host model-artifact path.

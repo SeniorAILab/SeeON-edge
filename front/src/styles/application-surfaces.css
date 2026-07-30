@@ -1,0 +1,40 @@
+.event-filter-control {
+  min-height: 44px;
+}
+
+.event-media-frame {
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--c-media);
+  color: var(--c-media-ink);
+}
+
+.event-media-unavailable {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  color: var(--c-media-text);
+}
+
+.brand-action {
+  background: var(--c-brand);
+  color: var(--c-action-foreground);
+}
+
+.media-status-overlay {
+  background: var(--c-media-overlay);
+  color: var(--c-media-overlay-foreground);
+}
+
+.tabular-nums,
+time,
+[role="meter"] {
+  font-variant-numeric: tabular-nums;
+}
+
+:focus-visible {
+  outline: 2px solid var(--c-brand);
+  outline-offset: 2px;
+}
