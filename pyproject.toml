@@ -108,7 +108,7 @@ ban-relative-imports = "all"
 # each, are enforced here via `uv run --group lint lint-imports` (also a
 # pre-commit hook and CI step).
 [tool.importlinter]
-root_packages = ["backend", "edge", "contracts", "shared"]
+root_packages = ["backend", "edge", "contracts", "shared", "worker"]
 
 [[tool.importlinter.contracts]]
 name = "backend and edge are independent (edge→backend relay boundary only)"
