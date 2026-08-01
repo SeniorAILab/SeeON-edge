@@ -173,6 +173,54 @@ def test_cpu_av_reports_unsupported_capture_signature_instead_of_dropping_params
     assert "rtsp://" not in str(captured.value)
 
 
+def test_cpu_av_open_failure_never_echoes_rtsp_credentials() -> None:
+    """The `cv2.error` path is the one that actually leaks, and it was untested.
+
+    OpenCV's error text routinely repeats the URL it was handed, and for RTSP
+    that URL carries `user:password`. The adapter therefore reports the failure
+    class and the camera id only, keeping the original exception on `__cause__`.
+
+    The redaction assertion above covers the `TypeError` branch. This one covers
+    `cv2.error`, which is the branch OpenCV actually raises on a bad RTSP open
+    and the branch that was fixed for leaking. Mutating the message there to
+    interpolate `config.url` left the decode suite and the privacy gate entirely
+    green, so nothing was holding it.
+
+    Asserting on the password specifically, not just on `rtsp://`, because a
+    message could drop the scheme and still carry the secret.
+    """
+
+    class _RaisingFactory:
+        def __call__(
+            self,
+            url: str,
+            backend: int | None = None,
+            params: list[int] | None = None,
+        ) -> _FakeCapture:
+            del backend, params
+            # Mirror OpenCV: the URL it was given comes back in the text.
+            raise cv2.error(f"OpenCV(4.10.0) failed to open stream {url}")
+
+    adapter = CpuAvAdapter(capture_factory=_RaisingFactory(), clock=_Clock([]))
+    config = CpuAvConfig(
+        camera_id="camera-a",
+        url="rtsp://admin:hunter2@10.0.0.5:554/Streaming/Channels/101",
+    )
+
+    with pytest.raises(CpuAvOpenError) as captured:
+        _ = adapter.open(config)
+
+    message = str(captured.value)
+    assert "hunter2" not in message
+    assert "admin" not in message
+    assert "rtsp://" not in message
+    assert "10.0.0.5" not in message
+    # The camera is still identifiable, or the message is useless to an operator.
+    assert "camera-a" in message
+    # And the detail survives for local debugging, just not in the message.
+    assert isinstance(captured.value.__cause__, cv2.error)
+    assert "hunter2" in str(captured.value.__cause__)
+
 def test_cpu_av_open_characterizes_buffer_and_timeout_independently() -> None:
     """A/B characterization: which knob does the adapter actually apply?
 
