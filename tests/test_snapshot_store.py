@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from edge.evidence.snapshot_store import SnapshotConflictError, SnapshotStore
+from worker.pipeline.output.evidence.snapshot_store import SnapshotConflictError, SnapshotStore
 
 
 def _store(store: SnapshotStore, **overrides: object) -> object:
@@ -50,8 +50,10 @@ def test_snapshot_store_fsyncs_each_file_before_replace_and_directory_after(
         calls.append(("replace", str(directory / source), str(directory / destination)))
         replace(source, destination, **kwargs)
 
-    monkeypatch.setattr("edge.evidence.snapshot_store.os.fsync", record_fsync)
-    monkeypatch.setattr("edge.evidence.snapshot_store.os.replace", record_replace)
+    monkeypatch.setattr("worker.pipeline.output.evidence.snapshot_files.os.fsync", record_fsync)
+    monkeypatch.setattr(
+        "worker.pipeline.output.evidence.snapshot_files.os.replace", record_replace
+    )
 
     _store(store)
 
@@ -194,7 +196,7 @@ def test_snapshot_store_tolerates_concurrent_shared_directory_creation(
             barrier.wait(timeout=5)
         original_mkdir(path, *args, **kwargs)
 
-    monkeypatch.setattr("edge.evidence.snapshot_store.os.mkdir", racing_mkdir)
+    monkeypatch.setattr("worker.pipeline.output.evidence.snapshot_files.os.mkdir", racing_mkdir)
     stores = [SnapshotStore(shared_root), SnapshotStore(shared_root)]
 
     def write(index: int) -> object:
@@ -322,8 +324,12 @@ def test_snapshot_store_preserves_primary_error_when_cleanup_fails(
         del name, dir_fd
         raise OSError("cleanup interrupted")
 
-    monkeypatch.setattr("edge.evidence.snapshot_store.os.replace", interrupted)
-    monkeypatch.setattr("edge.evidence.snapshot_store.os.unlink", cleanup_failed)
+    monkeypatch.setattr(
+        "worker.pipeline.output.evidence.snapshot_files.os.replace", interrupted
+    )
+    monkeypatch.setattr(
+        "worker.pipeline.output.evidence.snapshot_files.os.unlink", cleanup_failed
+    )
 
     with pytest.raises(OSError, match="replace interrupted") as raised:
         _store(store)
@@ -400,7 +406,9 @@ def test_snapshot_store_rejects_symlinked_temporary_file_without_outside_writes(
     class KnownUuid:
         hex = "known"
 
-    monkeypatch.setattr("edge.evidence.snapshot_store.uuid4", lambda: KnownUuid())
+    monkeypatch.setattr(
+        "worker.pipeline.output.evidence.snapshot_files.uuid4", lambda: KnownUuid()
+    )
     (destination_directory / f".{relative.name}.known.tmp").symlink_to(target)
 
     with pytest.raises(FileExistsError):

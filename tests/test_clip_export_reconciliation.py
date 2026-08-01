@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from edge.evidence.evidence_manifest import (
+from worker.pipeline.output.evidence.evidence_manifest import (
     ClipEvidenceError,
     EvidenceReasonCode,
     ReadyClipManifest,
@@ -17,14 +17,14 @@ from edge.evidence.evidence_manifest import (
     unavailable_manifest,
     verify_ready_manifest,
 )
-from edge.evidence.evidence_outbox import (
+from worker.pipeline.output.evidence.evidence_outbox import (
     ClipId,
     ClipLocalState,
     EdgeEventId,
     EvidenceOutbox,
     StagedEvent,
 )
-from edge.evidence.evidence_reconciliation import reconcile_event_evidence
+from worker.pipeline.output.evidence.evidence_reconciliation import reconcile_event_evidence
 
 EVENT_ONE = EdgeEventId("00000000-0000-4000-8000-000000000001")
 EVENT_TWO = EdgeEventId("00000000-0000-4000-8000-000000000002")

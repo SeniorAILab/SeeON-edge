@@ -10,13 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from edge.evidence.evidence_manifest import (
+from worker.pipeline.output.evidence.evidence_manifest import (
     MAX_MANIFEST_BYTES,
     ClipEvidenceError,
     parse_manifest,
 )
-from edge.evidence.evidence_media import inspect_finalized_media
-from edge.evidence.evidence_outbox import (
+from worker.pipeline.output.evidence.evidence_media import inspect_finalized_media
+from worker.pipeline.output.evidence.evidence_outbox import (
     ClipId,
     ClipLocalState,
     EdgeEventId,
@@ -24,7 +24,7 @@ from edge.evidence.evidence_outbox import (
     EvidenceReasonCode,
     StagedEvent,
 )
-from edge.evidence.evidence_reconciliation import reconcile_event_evidence
+from worker.pipeline.output.evidence.evidence_reconciliation import reconcile_event_evidence
 
 EVENT_ONE = EdgeEventId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 EVENT_TWO = EdgeEventId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
@@ -98,7 +98,9 @@ def test_media_probe_uses_same_open_inode_when_path_is_swapped(
         )
         return subprocess.CompletedProcess(command, 0, stdout, "")
 
-    monkeypatch.setattr("edge.evidence.evidence_media.subprocess.run", _swap_during_probe)
+    monkeypatch.setattr(
+        "worker.pipeline.output.evidence.evidence_media.subprocess.run", _swap_during_probe
+    )
 
     # When: immutable facts are collected across hash and codec validation.
     facts = inspect_finalized_media(media)

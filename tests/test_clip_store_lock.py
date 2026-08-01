@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from edge.evidence.clip_recorder import ClipRecorder, ClipRecorderConfig
-from edge.evidence.clip_store_lock import ClipStoreLock, ClipStoreLockedError
+from worker.pipeline.output.evidence.clip_recorder import ClipRecorder, ClipRecorderConfig
+from worker.pipeline.output.evidence.clip_store_lock import ClipStoreLock, ClipStoreLockedError
 
 
 def test_second_process_is_refused_while_first_holds_store_lock(tmp_path: Path) -> None:
@@ -15,7 +15,7 @@ def test_second_process_is_refused_while_first_holds_store_lock(tmp_path: Path) 
     script = """
 import sys
 from pathlib import Path
-from edge.evidence.clip_store_lock import ClipStoreLock
+from worker.pipeline.output.evidence.clip_store_lock import ClipStoreLock
 
 lock = ClipStoreLock.acquire(Path(sys.argv[1]))
 print("locked", flush=True)
@@ -66,7 +66,9 @@ def test_second_recorder_refuses_before_stale_evidence_sweep(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Given: a first recorder owns the store, then stale-looking staging appears.
-    monkeypatch.setattr("edge.evidence.clip_recorder._resolve_encoder", lambda: "libx264")
+    monkeypatch.setattr(
+        "worker.pipeline.output.evidence.clip_recorder._resolve_encoder", lambda: "libx264"
+    )
     config = ClipRecorderConfig(store_dir=tmp_path, stale_staging_seconds=0.0)
     first = ClipRecorder(config)
     first.start()
