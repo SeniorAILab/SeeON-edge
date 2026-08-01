@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import urllib.error
+import urllib.request
 
 from contracts.worker_config import PulledCameraConfig, PulledWorkerConfig
-from edge.runtime.config_pull import pull_worker_config
-from edge.runtime.config_resolver import resolve_effective_config
-from edge.runtime.edge_worker_config import (
+from worker.runtime.config import (
+    ML_WORKER_STATE_DIR_ENV,
     CameraRuntimeConfig,
     CameraStreamsConfig,
-    EdgeWorkerConfig,
     RelayConfig,
+    WorkerConfig,
+    load_lkg,
+    pull_worker_config,
+    resolve_effective_config,
+    save_lkg,
 )
-from edge.runtime.lkg_store import ML_WORKER_STATE_DIR_ENV, load_lkg, save_lkg
 
 
 def test_lkg_save_load_round_trip(tmp_path, monkeypatch) -> None:
@@ -23,13 +26,17 @@ def test_lkg_save_load_round_trip(tmp_path, monkeypatch) -> None:
     assert load_lkg() == cfg
 
 
-def test_pull_worker_config_returns_none_on_urllib_error(monkeypatch) -> None:
-    def _raise(*args, **kwargs):
+def test_pull_worker_config_returns_none_on_urllib_error() -> None:
+    # The worker transport (http_transport.stdlib_urlopen) is http.client-based,
+    # not urllib.request.urlopen, so the fake transport is injected via the
+    # `urlopen` parameter rather than monkeypatched globally.
+    def _raise(request: urllib.request.Request, timeout: float) -> object:
         raise urllib.error.URLError("offline")
 
-    monkeypatch.setattr("urllib.request.urlopen", _raise)
-
-    assert pull_worker_config("http://ml-api:8000", "token", timeout_sec=0.01) is None
+    assert (
+        pull_worker_config("http://ml-api:8000", "token", timeout_sec=0.01, urlopen=_raise)
+        is None
+    )
 
 
 def test_resolve_effective_config_pull_ok_overrides_rtsp_and_versions() -> None:
@@ -79,8 +86,8 @@ def test_resolve_effective_config_pull_fail_no_lkg_uses_yaml_unchanged() -> None
     assert source == "yaml"
 
 
-def _yaml_config() -> EdgeWorkerConfig:
-    return EdgeWorkerConfig(
+def _yaml_config() -> WorkerConfig:
+    return WorkerConfig(
         relay=RelayConfig(url="http://ml-api:8000", token="token"),
         cameras=(
             CameraRuntimeConfig(
@@ -120,18 +127,20 @@ def test_unavailable_pull_returns_none_and_preserves_existing_lkg(
 ) -> None:
     # Regression: when ml-api has no backend config it returns 503, so the pull
     # MUST return None and the worker MUST keep its existing LKG (not overwrite
-    # it with an empty placeholder). Guarded in edge_worker.main by `if pulled`.
+    # it with an empty placeholder). config_pull.load_worker_config_from_relay /
+    # pull_worker_config only persist the LKG on a successful, validated pull.
     monkeypatch.setenv(ML_WORKER_STATE_DIR_ENV, str(tmp_path))
     good = _pulled(config_version=5, restart_epoch=1, rtsp_url="rtsp://lkg/good")
     save_lkg(good)
 
-    def _raise_503(*args, **kwargs):
+    def _raise_503(request: urllib.request.Request, timeout: float) -> object:
         raise urllib.error.HTTPError(
-            "http://ml-api:8000/api/v1/relay/config", 503, "unavailable", {}, None
+            "http://ml-api:8000/api/v1/cameras/worker-config", 503, "unavailable", {}, None
         )
 
-    monkeypatch.setattr("urllib.request.urlopen", _raise_503)
-
-    assert pull_worker_config("http://ml-api:8000", "token", timeout_sec=0.01) is None
+    assert (
+        pull_worker_config("http://ml-api:8000", "token", timeout_sec=0.01, urlopen=_raise_503)
+        is None
+    )
     # Existing LKG is intact: an unavailable pull never clobbers last-known-good.
     assert load_lkg() == good
