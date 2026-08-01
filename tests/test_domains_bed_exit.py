@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -11,52 +12,92 @@ from contracts.observation import (
     BoundingBox,
     FrameObservation,
 )
-from edge.domains.bed_exit.detector import BedExitMonitor, NightWindow
-from edge.domains.bed_exit.schema import BedExitEvent, BedExitFrame, BedStatus
-from edge.perception.domain_input import DomainInput
+from worker.domains.bed_exit.detector import BedExitMonitor
+from worker.domains.bed_exit.night_window import NightWindow
+from worker.domains.bed_exit.schema import BedExitConfig, BedExitEvent, BedExitFrame, BedStatus
+from worker.types import DecisionInput
+
+# Supersession notes (edge assertions not ported here, behavior verified
+# elsewhere against the current BedExitMonitor(config=..., clock=...) API):
+# - test_own_bed_exit_after_grace_emits_once_and_unassigns ->
+#   tests/test_worker_domains_bed_exit.py:77-133
+#   (test_own_bed_exit_emits_once_after_grace_period)
+# - test_cross_bed_movement_does_not_false_positive_own_bed_exit ->
+#   tests/test_worker_domains_bed_exit.py:136-167
+#   (test_cross_bed_movement_never_emits_or_reassigns)
+# - test_overlapping_beds_choose_best_containment_with_lowest_id_tiebreak ->
+#   tests/test_worker_domains_bed_exit_assignment.py:59-74
+#   (test_hold_and_containment_tie_assign_the_lowest_bed_id); both fixtures
+#   construct a full-containment tie (ratio 1.0 on both beds) and assert the
+#   same lowest-bed-id tiebreak.
+# - test_runtime_observation_update_returns_domain_event_tuple -> the dict
+#   payload shape is retired; the equivalent BusinessEvent-tuple return is
+#   covered by tests/test_worker_domains_bed_exit.py:77-133.
 
 
 def box(x1: int, y1: int, x2: int, y2: int, confidence: float = 0.9) -> BoundingBox:
     return BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2, confidence=confidence)
 
 
-def update(
-    monitor: BedExitMonitor,
-    beds: tuple[BoundingBox, ...],
-    persons: tuple[BoundingBox, ...],
-) -> BedExitFrame:
-    return monitor.update_boxes(bed_boxes=beds, person_boxes=persons)
+_DEFAULT_NIGHT_WINDOW = NightWindow(start="21:00", end="05:00", tz="Asia/Seoul")
 
 
-def observation_for(person: BoundingBox, bed: BoundingBox) -> FrameObservation:
-    return FrameObservation(detections=((person,), ()), regions=((bed,), ()))
-
-
-def domain_input(observation: FrameObservation, time_sec: float) -> DomainInput:
-    return DomainInput(
-        observation=observation,
-        frame_width=1,
-        frame_height=1,
+def _input(
+    *,
+    person_boxes: tuple[BoundingBox, ...],
+    bed_boxes: tuple[BoundingBox, ...],
+    frame_index: int,
+    time_sec: float | None = None,
+) -> DecisionInput:
+    return DecisionInput(
+        observation=FrameObservation(detections=(person_boxes, ()), regions=(bed_boxes, ())),
+        frame_width=200,
+        frame_height=200,
         live_track_ids=(),
-        time_sec=time_sec,
-        frame_index=0,
-        bed_region=BedRegionDebugSnapshot(BedRegionCacheState.FRESH, 0),
+        time_sec=float(frame_index) if time_sec is None else time_sec,
+        frame_index=frame_index,
+        bed_region=BedRegionDebugSnapshot(source=BedRegionCacheState.FRESH, age_frames=0),
     )
 
 
-def fixed_clock(hour: int, minute: int, second: int = 0):
-    seoul = ZoneInfo("Asia/Seoul")
-    return lambda: datetime(2026, 1, 1, hour, minute, second, tzinfo=seoul)
-
-
-def runtime_exit_events(
-    monitor: BedExitMonitor,
+def _monitor(
     *,
+    clock: Callable[[], datetime],
+    night_window: NightWindow | None = _DEFAULT_NIGHT_WINDOW,
+    hold_frames: int = 1,
+    grace_frames: int = 0,
+    min_containment: float = 0.5,
+    camera_id: str = "camera-bed-exit-schema",
+    facility_id: str = "facility-bed-exit-schema",
+) -> BedExitMonitor:
+    return BedExitMonitor(
+        config=BedExitConfig(
+            camera_id=camera_id,
+            facility_id=facility_id,
+            min_containment=min_containment,
+            hold_frames=hold_frames,
+            grace_frames=grace_frames,
+            night_window=night_window,
+        ),
+        clock=clock,
+    )
+
+
+def _own_bed_exit_events(
+    monitor: BedExitMonitor,
     bed: BoundingBox,
-    time_sec: float = 1.0,
-) -> tuple[dict[str, object], ...]:
-    monitor.update(domain_input(observation_for(box(20, 0, 120, 100), bed), 0.0))
-    return monitor.update(domain_input(observation_for(box(60, 0, 160, 100), bed), time_sec))
+    *,
+    exit_time_sec: float | None = None,
+) -> tuple[object, ...]:
+    monitor.update(_input(person_boxes=(box(10, 10, 70, 90),), bed_boxes=(bed,), frame_index=0))
+    return monitor.update(
+        _input(
+            person_boxes=(box(90, 10, 150, 90),),
+            bed_boxes=(bed,),
+            frame_index=1,
+            time_sec=exit_time_sec,
+        )
+    )
 
 
 def test_schema_exports_bed_exit_frame_statuses_and_events() -> None:
@@ -67,184 +108,119 @@ def test_schema_exports_bed_exit_frame_statuses_and_events() -> None:
 
 
 def test_hold_frames_prevent_jitter_assignment_until_stable() -> None:
+    # Candidate-bed switching between frames must reset the hold-frame
+    # counter (worker/domains/bed_exit/detector.py:_Assignment.update_candidate);
+    # only a stable, repeated candidate reaches hold_frames and gets assigned.
     beds = (box(0, 0, 100, 100), box(120, 0, 220, 100))
-    monitor = BedExitMonitor(min_containment=0.5, hold_frames=2, grace_frames=1)
+    monitor = _monitor(
+        clock=lambda: datetime(2026, 1, 1, tzinfo=ZoneInfo("UTC")),
+        night_window=None,
+        hold_frames=2,
+        grace_frames=1,
+    )
 
-    first = update(monitor, beds, (box(10, 10, 60, 60),))
+    monitor.update(_input(person_boxes=(box(10, 10, 60, 60),), bed_boxes=beds, frame_index=0))
+    first = monitor.last_debug_snapshot
+    assert first is not None
     assert [s.occupancy for s in first.statuses] == ["empty", "empty"]
 
-    jitter = update(monitor, beds, (box(130, 10, 180, 60),))
+    monitor.update(_input(person_boxes=(box(130, 10, 180, 60),), bed_boxes=beds, frame_index=1))
+    jitter = monitor.last_debug_snapshot
+    assert jitter is not None
     assert [s.occupancy for s in jitter.statuses] == ["empty", "empty"]
 
-    held_once = update(monitor, beds, (box(130, 10, 180, 60),))
+    monitor.update(_input(person_boxes=(box(130, 10, 180, 60),), bed_boxes=beds, frame_index=2))
+    held_once = monitor.last_debug_snapshot
+    assert held_once is not None
     assert [s.occupancy for s in held_once.statuses] == ["empty", "occupied"]
 
 
-def test_own_bed_exit_after_grace_emits_once_and_unassigns() -> None:
-    beds = (box(0, 0, 100, 100),)
-    monitor = BedExitMonitor(min_containment=0.5, hold_frames=1, grace_frames=1)
-
-    assigned = update(monitor, beds, (box(50, 10, 110, 50),))
-    assert assigned.statuses[0].occupancy == "occupied"
-
-    grace = update(monitor, beds, (box(75, 10, 135, 50),))
-    assert grace.statuses[0].occupancy == "empty"
-    assert grace.events == ()
-
-    exited = update(monitor, beds, (box(90, 10, 150, 50),))
-    assert [(e.person_id, e.bed_id) for e in exited.events] == [(0, 0)]
-    assert exited.statuses[0].occupancy == "exit"
-
-    after = update(monitor, beds, (box(90, 10, 150, 50),))
-    assert after.events == ()
-
-
-def test_cross_bed_movement_does_not_false_positive_own_bed_exit() -> None:
-    beds = (box(0, 0, 100, 100), box(80, 0, 180, 100))
-    monitor = BedExitMonitor(min_containment=0.5, hold_frames=1, grace_frames=0)
-
-    update(monitor, beds, (box(50, 10, 110, 70),))
-    moved_to_other_bed = update(monitor, beds, (box(75, 10, 135, 70),))
-
-    assert moved_to_other_bed.events == ()
-    assert [s.occupancy for s in moved_to_other_bed.statuses] == ["empty", "empty"]
-
-
-def test_overlapping_beds_choose_best_containment_with_lowest_id_tiebreak() -> None:
-    beds = (box(0, 0, 100, 100), box(20, 0, 120, 100))
-    monitor = BedExitMonitor(min_containment=0.5, hold_frames=1)
-
-    tied = update(monitor, beds, (box(20, 10, 100, 90),))
-
-    assert [(s.bed_id, s.occupancy) for s in tied.statuses] == [
-        (0, "occupied"),
-        (1, "empty"),
-    ]
-
-
-def test_invalid_parameters_fail_explicitly() -> None:
+def test_bed_exit_config_rejects_out_of_range_min_containment() -> None:
     with pytest.raises(ValueError, match="min_containment"):
-        BedExitMonitor(min_containment=0.0)
+        BedExitConfig(camera_id="c", facility_id="f", min_containment=0.0)
+    with pytest.raises(ValueError, match="min_containment"):
+        BedExitConfig(camera_id="c", facility_id="f", min_containment=1.5)
+
+
+def test_bed_exit_config_accepts_min_containment_upper_bound() -> None:
+    BedExitConfig(camera_id="c", facility_id="f", min_containment=1.0)
+
+
+def test_bed_exit_config_rejects_non_positive_hold_frames() -> None:
     with pytest.raises(ValueError, match="hold_frames"):
-        BedExitMonitor(hold_frames=0)
+        BedExitConfig(camera_id="c", facility_id="f", hold_frames=0)
+
+
+def test_bed_exit_config_accepts_hold_frames_lower_bound() -> None:
+    BedExitConfig(camera_id="c", facility_id="f", hold_frames=1)
+
+
+def test_bed_exit_config_rejects_negative_grace_frames() -> None:
     with pytest.raises(ValueError, match="grace_frames"):
-        BedExitMonitor(grace_frames=-1)
+        BedExitConfig(camera_id="c", facility_id="f", grace_frames=-1)
 
 
-def test_runtime_observation_update_returns_domain_event_tuple() -> None:
-    monitor = BedExitMonitor(min_containment=0.5, hold_frames=1, grace_frames=0)
-    bed = box(0, 0, 100, 100)
-
-    assert (
-        monitor.update(
-            domain_input(
-                FrameObservation(detections=((box(20, 0, 120, 100),), ()), regions=((bed,), ())),
-                0.0,
-            )
-        )
-        == ()
-    )
-
-    assert monitor.update(
-        domain_input(
-            FrameObservation(detections=((box(60, 0, 160, 100),), ()), regions=((bed,), ())),
-            1.0,
-        )
-    ) == (
-        {
-            "domain": "bed_exit",
-            "event_type": "bed-exit",
-            "identity": "0:0",
-            "person_id": 0,
-            "bed_id": 0,
-            "probability": 1.0,
-            "time_sec": 1.0,
-        },
-    )
+def test_bed_exit_config_accepts_grace_frames_lower_bound() -> None:
+    BedExitConfig(camera_id="c", facility_id="f", grace_frames=0)
 
 
 @pytest.mark.parametrize(
-    ("hour", "minute", "second"),
-    [
-        (21, 0, 0),
-        (4, 59, 59),
-    ],
+    ("hour", "minute", "second", "expected_count"),
+    (
+        (21, 0, 0, 1),  # exactly at the inclusive start boundary -> inside
+        (4, 59, 59, 1),  # one second before the exclusive end -> inside
+        (20, 59, 59, 0),  # one second before the start -> outside
+        (5, 0, 0, 0),  # exactly at the exclusive end boundary -> outside
+    ),
 )
-def test_night_window_cross_midnight_emits_inside_window(
+def test_night_window_exact_boundary_seconds_gate_the_runtime_path(
     hour: int,
     minute: int,
     second: int,
+    expected_count: int,
 ) -> None:
-    bed = box(0, 0, 100, 100)
-    monitor = BedExitMonitor(
-        min_containment=0.5,
-        hold_frames=1,
-        grace_frames=0,
-        night_window=NightWindow(start="21:00", end="05:00", tz="Asia/Seoul"),
-        clock=fixed_clock(hour, minute, second),
-    )
+    fixed = datetime(2026, 1, 1, hour, minute, second, tzinfo=ZoneInfo("Asia/Seoul"))
+    monitor = _monitor(clock=lambda: fixed)
+    bed = box(0, 0, 80, 100)
 
-    events = runtime_exit_events(monitor, bed=bed)
+    events = _own_bed_exit_events(monitor, bed)
 
-    assert len(events) == 1
-    assert events[0]["event_type"] == "bed-exit"
-
-
-@pytest.mark.parametrize(
-    ("hour", "minute", "second"),
-    [
-        (20, 59, 59),
-        (5, 0, 0),
-    ],
-)
-def test_night_window_cross_midnight_suppresses_outside_window(
-    hour: int,
-    minute: int,
-    second: int,
-) -> None:
-    bed = box(0, 0, 100, 100)
-    monitor = BedExitMonitor(
-        min_containment=0.5,
-        hold_frames=1,
-        grace_frames=0,
-        night_window=NightWindow(start="21:00", end="05:00", tz="Asia/Seoul"),
-        clock=fixed_clock(hour, minute, second),
-    )
-
-    assert runtime_exit_events(monitor, bed=bed) == ()
+    assert len(events) == expected_count
 
 
 def test_night_window_uses_injected_clock_not_monotonic_time_sec() -> None:
-    bed = box(0, 0, 100, 100)
-    monitor = BedExitMonitor(
-        min_containment=0.5,
-        hold_frames=1,
-        grace_frames=0,
-        night_window=NightWindow(start="21:00", end="05:00", tz="Asia/Seoul"),
-        clock=fixed_clock(13, 0, 0),
-    )
+    # Clock says daytime (13:00, outside the window); time_sec is a large
+    # monotonic value (23*3600s) that would look like 23:00 "time of day" if
+    # ever mistaken for a wall-clock reading. Only the injected clock may
+    # gate the window.
+    fixed = datetime(2026, 1, 1, 13, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+    monitor = _monitor(clock=lambda: fixed)
+    bed = box(0, 0, 80, 100)
 
-    assert runtime_exit_events(monitor, bed=bed, time_sec=23 * 3600) == ()
+    events = _own_bed_exit_events(monitor, bed, exit_time_sec=23 * 3600)
+
+    assert events == ()
 
 
-def test_night_window_rejects_naive_clock_datetime() -> None:
-    bed = box(0, 0, 100, 100)
-    monitor = BedExitMonitor(
-        min_containment=0.5,
-        hold_frames=1,
-        grace_frames=0,
-        night_window=NightWindow(start="21:00", end="05:00", tz="Asia/Seoul"),
-        clock=lambda: datetime(2026, 1, 1, 22, 0, 0),
-    )
+def test_night_window_rejects_naive_clock_datetime_through_the_runtime_path() -> None:
+    # Unit-level rejection is covered by
+    # tests/test_worker_domains_bed_exit_time.py:76-82
+    # (test_night_window_rejects_naive_wall_clock), which calls
+    # NightWindow.contains() directly. This ports the production call path
+    # (BedExitMonitor.update() -> self._clock()) as cheap insurance that the
+    # same guarantee holds end to end.
+    monitor = _monitor(clock=lambda: datetime(2026, 1, 1, 22, 0, 0))
+    bed = box(0, 0, 80, 100)
 
     with pytest.raises(ValueError, match="timezone-aware"):
-        runtime_exit_events(monitor, bed=bed)
+        _own_bed_exit_events(monitor, bed)
 
 
-def test_without_night_window_emits_regardless_of_clock_time() -> None:
-    bed = box(0, 0, 100, 100)
-    monitor = BedExitMonitor(min_containment=0.5, hold_frames=1, grace_frames=0)
+def test_without_night_window_emits_regardless_of_clock() -> None:
+    fixed = datetime(2026, 1, 1, 13, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+    monitor = _monitor(clock=lambda: fixed, night_window=None)
+    bed = box(0, 0, 80, 100)
 
-    events = runtime_exit_events(monitor, bed=bed)
+    events = _own_bed_exit_events(monitor, bed)
 
     assert len(events) == 1
