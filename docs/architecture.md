@@ -346,7 +346,7 @@ to one row:
 
 | Cited test | Row it is evidence for | Why it cannot run |
 | --- | --- | --- |
-| `tests/test_clip_recorder.py::test_clip_recorder_finalizes_atomic_manifest_with_pre_and_post_window` | Evidence clip recording and finalisation | needs `ffprobe` on `PATH` |
+| `tests/test_clip_recorder.py::test_clip_recorder_finalizes_atomic_manifest_with_pre_and_post_window` | Evidence clip recording and finalisation | resolving `/proc/self/fd/N` fails, so no manifest is published |
 | `tests/test_clip_recorder.py::test_clip_recorder_fsyncs_media_and_manifest_before_staging_cleanup` | Evidence clip recording and finalisation | reads `/proc/self/fd`, which macOS does not have |
 
 This row is genuinely Linux-only, and not by accident:
@@ -362,6 +362,16 @@ The row stays `ported`: the evidence exists and CI runs on Ubuntu. What is
 missing is *local* proof, which matters because this branch was developed and
 gated on macOS. Treat it as CI-verified rather than dev-verified, and do not
 read its local failures as a parity gap.
+
+All eight local failures outside the vendor-drift one trace to this single
+design decision, not to a missing tool: five in
+`tests/test_clip_export_reconciliation.py`, two in `tests/test_clip_recorder.py`,
+one in `tests/test_evidence_trust_boundaries.py`. `ffprobe` **is** installed on
+this machine, so "install ffprobe" does not clear any of them. Note that the
+production error text says otherwise — it reports `ffprobe unavailable` for an
+unresolvable `/proc/self/fd/N` too, which is
+[#11](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/11) and is a
+misreported reason rather than a second cause.
 
 **Snapshot store used to be listed here too, and no longer is.** Three of its
 cited tests also failed on macOS, but for an entirely different reason: they
