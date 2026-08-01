@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 
 from contracts.event import MutableEventPayload
 from shared.events.edge_ingest_client import EdgeIngestClient
+from shared.events.evidence_export_contract import EventReceipt
 
 
 class _RecordingHandler(BaseHTTPRequestHandler):
@@ -206,6 +208,66 @@ def test_edge_ingest_client_does_not_emit_detection_lost() -> None:
 
         assert _RecordingHandler.received == []
         assert client.failure_count == 0
+    finally:
+        server.shutdown()
+        thread.join(timeout=1.0)
+
+
+def test_edge_ingest_client_send_alert_receipt_calls_on_accepted_with_wall_clock_time() -> None:
+    # Given: a real worker sends an idempotent alert with edge_event_id set,
+    # which is the send_alert_receipt -> BackendEvidenceClient.send_event_payload
+    # code path (distinct from the edge_event_id-less send_alert path exercised
+    # by the tests above).
+    class _ReceiptHandler(_RecordingHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length)
+            payload = json.loads(body.decode("utf-8"))
+            self.__class__.received.append((self.path, {}, payload))
+            response = json.dumps(
+                {
+                    "status": "accepted",
+                    "edge_event_id": payload["edge_event_id"],
+                    "event_id": "event-1",
+                }
+            ).encode("utf-8")
+            self.send_response(202)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+    _ReceiptHandler.received = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _ReceiptHandler)
+    thread = _run_server(server)
+    client = EdgeIngestClient(
+        events_url=f"http://127.0.0.1:{server.server_port}/events",
+        camera_id="camera-1",
+        timeout_sec=0.5,
+    )
+    accepted_values: list[float] = []
+    try:
+        # When: real bounded_request runs end to end against a live HTTP
+        # response (a stub that never calls on_response would hide the
+        # `time` module/`time.time` callable bug this test guards against).
+        before = time.time()
+        result = client.send_alert_receipt(
+            edge_event_id="00000000-0000-4000-8000-000000000099",
+            event_type="fall",
+            detected_at="2026-06-23T12:00:00.000Z",
+            probability=0.91,
+            on_accepted=accepted_values.append,
+        )
+        after = time.time()
+
+        # Then: it completes without TypeError, and on_accepted receives a
+        # single wall-clock timestamp bounded by the surrounding calls.
+        assert result == EventReceipt(
+            "accepted", "00000000-0000-4000-8000-000000000099", "event-1"
+        )
+        assert len(accepted_values) == 1
+        assert isinstance(accepted_values[0], float)
+        assert before <= accepted_values[0] <= after
     finally:
         server.shutdown()
         thread.join(timeout=1.0)

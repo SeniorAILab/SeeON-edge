@@ -210,7 +210,7 @@ class BackendEvidenceClient:
 
         def capture_accepted(_status: int) -> None:
             nonlocal accepted_at
-            accepted_at = time()
+            accepted_at = time.time()
 
         result = bounded_request(
             self.events_url,

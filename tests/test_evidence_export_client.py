@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -319,3 +320,70 @@ def test_relay_client_rejects_invalid_local_event_identity_without_http(
         "INVALID_EVENT_PAYLOAD",
     )
     assert ScriptedHandler.requests == []
+
+
+def test_backend_client_send_event_payload_calls_on_accepted_with_wall_clock_time(
+    server_url: str,
+) -> None:
+    # Given: the backend accepts the event on the first attempt.
+    ScriptedHandler.responses = [
+        (202, {}, _json({"status": "accepted", "edge_event_id": EVENT_ID, "event_id": "evt-1"}))
+    ]
+    client = BackendEvidenceClient(f"{server_url}/events", "backend-secret", timeout_sec=1.0)
+    accepted_values: list[float] = []
+
+    # When: send_event_payload runs the real bounded_request/on_response path
+    # (a fake transport that never calls on_response would hide the regression
+    # this test guards: `time` shadowed by the `time.time` module-vs-callable bug).
+    before = time.time()
+    result = client.send_event_payload(
+        {"edge_event_id": EVENT_ID},
+        EVENT_ID,
+        on_accepted=accepted_values.append,
+    )
+    after = time.time()
+
+    # Then: it completes without TypeError and on_accepted gets one wall-clock
+    # timestamp (matching what record_latency's `stamped - detected` expects),
+    # not a monotonic clock reading.
+    assert result == EventReceipt("accepted", EVENT_ID, "evt-1")
+    assert len(accepted_values) == 1
+    assert isinstance(accepted_values[0], float)
+    assert before <= accepted_values[0] <= after
+
+
+def test_backend_client_send_event_payload_without_on_accepted_still_succeeds(
+    server_url: str,
+) -> None:
+    # Given/When: on_accepted is omitted (the caller doesn't need a timestamp).
+    ScriptedHandler.responses = [
+        (202, {}, _json({"status": "accepted", "edge_event_id": EVENT_ID, "event_id": "evt-1"}))
+    ]
+    client = BackendEvidenceClient(f"{server_url}/events", "backend-secret", timeout_sec=1.0)
+
+    result = client.send_event_payload({"edge_event_id": EVENT_ID}, EVENT_ID)
+
+    # Then: the transport-level on_response callback still fires internally
+    # without crashing the call, even though no one observes accepted_at.
+    assert result == EventReceipt("accepted", EVENT_ID, "evt-1")
+
+
+def test_backend_client_send_event_payload_skips_on_accepted_on_failure(
+    server_url: str,
+) -> None:
+    # Given: the backend rejects the event.
+    ScriptedHandler.responses = [(500, {}, b"")]
+    client = BackendEvidenceClient(f"{server_url}/events", "backend-secret", timeout_sec=1.0)
+    accepted_values: list[float] = []
+
+    # When
+    result = client.send_event_payload(
+        {"edge_event_id": EVENT_ID},
+        EVENT_ID,
+        on_accepted=accepted_values.append,
+    )
+
+    # Then: a non-2xx response never triggers on_response, so on_accepted
+    # must not be invoked either.
+    assert isinstance(result, DeliveryFailure)
+    assert accepted_values == []
