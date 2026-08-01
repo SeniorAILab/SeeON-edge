@@ -5,7 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from edge.evidence.evidence_outbox import (
+from shared.events.evidence_export_contract import (
+    BackendCapabilities,
+    ClipReceipt,
+    DeliveryDisposition,
+    DeliveryFailure,
+    EventReceipt,
+)
+from worker.pipeline.output.evidence.evidence_outbox import (
     ClaimLease,
     ClipId,
     ClipLocalState,
@@ -15,14 +22,7 @@ from edge.evidence.evidence_outbox import (
     EvidenceReasonCode,
     StagedEvent,
 )
-from edge.evidence.evidence_sender import EvidenceSender, SenderConfig, SenderStep
-from shared.events.evidence_export_contract import (
-    BackendCapabilities,
-    ClipReceipt,
-    DeliveryDisposition,
-    DeliveryFailure,
-    EventReceipt,
-)
+from worker.pipeline.output.evidence.evidence_sender import EvidenceSender, SenderConfig, SenderStep
 
 EVENT_A = EdgeEventId("00000000-0000-4000-8000-000000000001")
 EVENT_B = EdgeEventId("00000000-0000-4000-8000-000000000002")

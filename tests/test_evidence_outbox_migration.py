@@ -5,8 +5,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from edge.evidence.evidence_outbox import EvidenceOutbox
-from edge.evidence.evidence_outbox_schema import MIGRATIONS, SCHEMA_VERSION
+from worker.pipeline.output.evidence.evidence_outbox import EvidenceOutbox
+from worker.pipeline.output.evidence.evidence_outbox_schema import MIGRATIONS, SCHEMA_VERSION
 
 
 def test_open_migrates_v1_database_to_clip_manifest_schema(tmp_path: Path) -> None:

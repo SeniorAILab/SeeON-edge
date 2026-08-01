@@ -4,8 +4,13 @@ import base64
 import json
 from pathlib import Path
 
-from edge.evidence.evidence_outbox import ClaimLease, ClipId, EdgeEventId, EvidenceOutbox
-from edge.evidence.evidence_stager import DurableEvidenceStager
+from worker.pipeline.output.evidence.evidence_outbox import (
+    ClaimLease,
+    ClipId,
+    EdgeEventId,
+    EvidenceOutbox,
+)
+from worker.pipeline.output.evidence.evidence_stager import DurableEvidenceStager
 
 EVENT_ID = EdgeEventId("00000000-0000-4000-8000-000000000001")
 

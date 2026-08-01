@@ -10,7 +10,7 @@ from threading import Barrier
 
 import pytest
 
-from edge.evidence.evidence_outbox import (
+from worker.pipeline.output.evidence.evidence_outbox import (
     ClaimedEvent,
     ClaimLease,
     ClipId,
@@ -159,7 +159,12 @@ def test_committed_event_survives_process_kill_and_reopen(tmp_path: Path) -> Non
 import os
 import sys
 from pathlib import Path
-from edge.evidence.evidence_outbox import ClipId, EdgeEventId, EvidenceOutbox, StagedEvent
+from worker.pipeline.output.evidence.evidence_outbox import (
+    ClipId,
+    EdgeEventId,
+    EvidenceOutbox,
+    StagedEvent,
+)
 
 outbox = EvidenceOutbox.open(Path(sys.argv[1]))
 event = StagedEvent(

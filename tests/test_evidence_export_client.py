@@ -9,7 +9,6 @@ from typing import ClassVar, cast
 
 import pytest
 
-from edge.evidence.evidence_outbox import ClaimedClip, ClipId, ClipLocalState, EdgeEventId
 from shared.events.evidence_export_client import (
     MAX_LOCAL_EVENT_PAYLOAD_BYTES,
     BackendEvidenceClient,
@@ -23,6 +22,12 @@ from shared.events.evidence_export_contract import (
     EventReceipt,
 )
 from shared.events.evidence_http_transport import MAX_RESPONSE_BYTES
+from worker.pipeline.output.evidence.evidence_outbox import (
+    ClaimedClip,
+    ClipId,
+    ClipLocalState,
+    EdgeEventId,
+)
 
 EVENT_ID = EdgeEventId("00000000-0000-4000-8000-000000000001")
 
