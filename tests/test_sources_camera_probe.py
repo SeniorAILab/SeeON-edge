@@ -5,7 +5,7 @@ from dataclasses import FrozenInstanceError
 import numpy as np
 import pytest
 
-from edge.sources.camera_probe import CameraInfo, probe_cameras
+from worker.pipeline.ingest.camera_probe import CameraInfo, probe_cameras
 
 # ---------------------------------------------------------------------------
 # Fake cv2.VideoCapture for probe tests
@@ -46,7 +46,9 @@ def _make_factory(open_indices: set[int]):
 
 
 def test_probe_cameras_returns_only_open_indices(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("edge.sources.camera_probe.cv2.VideoCapture", _make_factory({0, 2}))
+    monkeypatch.setattr(
+        "worker.pipeline.ingest.camera_probe.cv2.VideoCapture", _make_factory({0, 2})
+    )
 
     cameras = probe_cameras(max_index=4)
 
@@ -54,7 +56,7 @@ def test_probe_cameras_returns_only_open_indices(monkeypatch: pytest.MonkeyPatch
 
 
 def test_probe_cameras_returns_camera_info_instances(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("edge.sources.camera_probe.cv2.VideoCapture", _make_factory({1}))
+    monkeypatch.setattr("worker.pipeline.ingest.camera_probe.cv2.VideoCapture", _make_factory({1}))
 
     cameras = probe_cameras(max_index=3)
 
@@ -63,7 +65,7 @@ def test_probe_cameras_returns_camera_info_instances(monkeypatch: pytest.MonkeyP
 
 
 def test_probe_cameras_thumbnail_is_rgb_hwc_uint8(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("edge.sources.camera_probe.cv2.VideoCapture", _make_factory({0}))
+    monkeypatch.setattr("worker.pipeline.ingest.camera_probe.cv2.VideoCapture", _make_factory({0}))
 
     cameras = probe_cameras(max_index=1)
 
@@ -95,7 +97,7 @@ def test_probe_cameras_thumbnail_bgr_converted_to_rgb(monkeypatch: pytest.Monkey
         def release(self):
             pass
 
-    monkeypatch.setattr("edge.sources.camera_probe.cv2.VideoCapture", _SingleCapture)
+    monkeypatch.setattr("worker.pipeline.ingest.camera_probe.cv2.VideoCapture", _SingleCapture)
 
     cameras = probe_cameras(max_index=1)
 
@@ -106,7 +108,9 @@ def test_probe_cameras_thumbnail_bgr_converted_to_rgb(monkeypatch: pytest.Monkey
 
 
 def test_probe_cameras_empty_when_none_open(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("edge.sources.camera_probe.cv2.VideoCapture", _make_factory(set()))
+    monkeypatch.setattr(
+        "worker.pipeline.ingest.camera_probe.cv2.VideoCapture", _make_factory(set())
+    )
 
     cameras = probe_cameras(max_index=5)
 
@@ -128,7 +132,7 @@ def test_probe_cameras_respects_max_index(monkeypatch: pytest.MonkeyPatch) -> No
         def release(self):
             pass
 
-    monkeypatch.setattr("edge.sources.camera_probe.cv2.VideoCapture", _LogCapture)
+    monkeypatch.setattr("worker.pipeline.ingest.camera_probe.cv2.VideoCapture", _LogCapture)
 
     probe_cameras(max_index=3)
 
@@ -136,7 +140,7 @@ def test_probe_cameras_respects_max_index(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_probe_cameras_camera_info_is_frozen(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("edge.sources.camera_probe.cv2.VideoCapture", _make_factory({0}))
+    monkeypatch.setattr("worker.pipeline.ingest.camera_probe.cv2.VideoCapture", _make_factory({0}))
 
     cameras = probe_cameras(max_index=1)
 

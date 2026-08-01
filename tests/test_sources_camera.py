@@ -3,7 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from edge.sources import CameraSource, Frame, FrameSource
+from contracts.frame import Frame, FrameSource
+from worker.pipeline.ingest.webcam import CameraSource
 
 # ---------------------------------------------------------------------------
 # Fake cv2.VideoCapture
@@ -51,7 +52,7 @@ def _bgr_frame(h: int = 4, w: int = 6, fill: int = 128) -> np.ndarray:
 def test_camera_source_yields_frame_objects(monkeypatch: pytest.MonkeyPatch) -> None:
     frames = [_bgr_frame(fill=i * 30) for i in range(3)]
     cap = _FakeCapture(frames)
-    monkeypatch.setattr("edge.sources.frame_source.cv2.VideoCapture", lambda _idx: cap)
+    monkeypatch.setattr("worker.pipeline.ingest.webcam.cv2.VideoCapture", lambda _idx: cap)
 
     result = list(CameraSource(0))
 
@@ -61,7 +62,7 @@ def test_camera_source_yields_frame_objects(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_camera_source_satisfies_frame_source_protocol(monkeypatch: pytest.MonkeyPatch) -> None:
     cap = _FakeCapture([_bgr_frame()])
-    monkeypatch.setattr("edge.sources.frame_source.cv2.VideoCapture", lambda _idx: cap)
+    monkeypatch.setattr("worker.pipeline.ingest.webcam.cv2.VideoCapture", lambda _idx: cap)
 
     source = CameraSource(0)
 
@@ -75,7 +76,7 @@ def test_camera_source_converts_bgr_to_rgb(monkeypatch: pytest.MonkeyPatch) -> N
     bgr[:, :, 1] = 20  # G
     bgr[:, :, 2] = 30  # R
     cap = _FakeCapture([bgr])
-    monkeypatch.setattr("edge.sources.frame_source.cv2.VideoCapture", lambda _idx: cap)
+    monkeypatch.setattr("worker.pipeline.ingest.webcam.cv2.VideoCapture", lambda _idx: cap)
 
     frames = list(CameraSource(0))
 
@@ -87,7 +88,7 @@ def test_camera_source_converts_bgr_to_rgb(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_camera_source_image_is_rgb_hwc_uint8(monkeypatch: pytest.MonkeyPatch) -> None:
     cap = _FakeCapture([_bgr_frame(h=8, w=12)])
-    monkeypatch.setattr("edge.sources.frame_source.cv2.VideoCapture", lambda _idx: cap)
+    monkeypatch.setattr("worker.pipeline.ingest.webcam.cv2.VideoCapture", lambda _idx: cap)
 
     frames = list(CameraSource(0))
 
@@ -99,7 +100,7 @@ def test_camera_source_image_is_rgb_hwc_uint8(monkeypatch: pytest.MonkeyPatch) -
 
 def test_camera_source_frame_indices_are_sequential(monkeypatch: pytest.MonkeyPatch) -> None:
     cap = _FakeCapture([_bgr_frame() for _ in range(5)])
-    monkeypatch.setattr("edge.sources.frame_source.cv2.VideoCapture", lambda _idx: cap)
+    monkeypatch.setattr("worker.pipeline.ingest.webcam.cv2.VideoCapture", lambda _idx: cap)
 
     frames = list(CameraSource(0))
 
@@ -110,7 +111,7 @@ def test_camera_source_time_sec_is_monotonically_non_decreasing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cap = _FakeCapture([_bgr_frame() for _ in range(4)])
-    monkeypatch.setattr("edge.sources.frame_source.cv2.VideoCapture", lambda _idx: cap)
+    monkeypatch.setattr("worker.pipeline.ingest.webcam.cv2.VideoCapture", lambda _idx: cap)
 
     frames = list(CameraSource(0))
 
@@ -121,7 +122,7 @@ def test_camera_source_time_sec_is_monotonically_non_decreasing(
 
 def test_camera_source_time_sec_first_frame_is_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     cap = _FakeCapture([_bgr_frame()])
-    monkeypatch.setattr("edge.sources.frame_source.cv2.VideoCapture", lambda _idx: cap)
+    monkeypatch.setattr("worker.pipeline.ingest.webcam.cv2.VideoCapture", lambda _idx: cap)
 
     frames = list(CameraSource(0))
 
@@ -131,7 +132,7 @@ def test_camera_source_time_sec_first_frame_is_zero(monkeypatch: pytest.MonkeyPa
 def test_camera_source_terminates_after_max_failures(monkeypatch: pytest.MonkeyPatch) -> None:
     # Two good frames, then fail_after=2 → always fail → hits max_failures=3 and stops.
     cap = _FakeCapture([_bgr_frame(), _bgr_frame()], fail_after=2)
-    monkeypatch.setattr("edge.sources.frame_source.cv2.VideoCapture", lambda _idx: cap)
+    monkeypatch.setattr("worker.pipeline.ingest.webcam.cv2.VideoCapture", lambda _idx: cap)
 
     frames = list(CameraSource(0, max_failures=3))
 
@@ -150,7 +151,7 @@ def test_camera_source_resets_failure_counter_on_success(monkeypatch: pytest.Mon
         _bgr_frame(),
     ]
     cap = _FakeCapture(sequence)
-    monkeypatch.setattr("edge.sources.frame_source.cv2.VideoCapture", lambda _idx: cap)
+    monkeypatch.setattr("worker.pipeline.ingest.webcam.cv2.VideoCapture", lambda _idx: cap)
 
     frames = list(CameraSource(0, max_failures=3))
 
@@ -160,7 +161,7 @@ def test_camera_source_resets_failure_counter_on_success(monkeypatch: pytest.Mon
 
 def test_camera_source_releases_capture_on_exhaustion(monkeypatch: pytest.MonkeyPatch) -> None:
     cap = _FakeCapture([_bgr_frame()])
-    monkeypatch.setattr("edge.sources.frame_source.cv2.VideoCapture", lambda _idx: cap)
+    monkeypatch.setattr("worker.pipeline.ingest.webcam.cv2.VideoCapture", lambda _idx: cap)
 
     list(CameraSource(0, max_failures=1))
 
@@ -169,7 +170,7 @@ def test_camera_source_releases_capture_on_exhaustion(monkeypatch: pytest.Monkey
 
 def test_camera_source_can_be_iterated_with_zero_frames(monkeypatch: pytest.MonkeyPatch) -> None:
     cap = _FakeCapture([])
-    monkeypatch.setattr("edge.sources.frame_source.cv2.VideoCapture", lambda _idx: cap)
+    monkeypatch.setattr("worker.pipeline.ingest.webcam.cv2.VideoCapture", lambda _idx: cap)
 
     frames = list(CameraSource(0, max_failures=1))
 

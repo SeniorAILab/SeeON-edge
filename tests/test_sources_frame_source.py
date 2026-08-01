@@ -5,7 +5,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from edge.sources import Frame, FrameSource, VideoFileSource
+from contracts.frame import Frame, FrameSource
+from worker.pipeline.ingest.video_file import VideoFileSource
 
 # ---------------------------------------------------------------------------
 # Helpers
