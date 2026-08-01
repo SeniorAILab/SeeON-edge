@@ -11,6 +11,25 @@ from worker.domains import DOMAIN_REGISTRY
 from worker.runtime.config import load_worker_config
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[1]
+
+
+def _supported_bash() -> str:
+    """Pick a bash that can actually run the operator scripts.
+
+    Homebrew bash 5.3.15 hangs setting up the `python3 - <<'PY'` heredoc in
+    `scripts/ml-worker-real-rtsp-bedexit-e2e.sh` (`compute_windows`) -- it never
+    execs python3, so the script never returns. The system bash runs the same
+    script to completion. Issue #9 carries the reproduction.
+
+    Prefer `/bin/bash` when it exists, else fall back to whatever `bash`
+    resolves to, so this stays correct on Linux CI where there is no
+    `/opt/homebrew` and `/bin/bash` is a modern build.
+    """
+    system_bash = Path("/bin/bash")
+    return str(system_bash) if system_bash.is_file() else "bash"
+
+
+_SUPPORTED_BASH: Final = _supported_bash()
 EDGE_COMPOSE_FILE: Final = "compose.edge.yaml"
 EDGE_IMAGES_WORKFLOW: Final = ".github/workflows/edge-images.yml"
 EDGE_PREFLIGHT_SCRIPT: Final = "scripts/edge-preflight/check-nvidia-runtime.sh"
@@ -247,9 +266,22 @@ def test_real_rtsp_bedexit_script_generates_supported_production_config(tmp_path
         "BED_EXIT_RTSP_URL": "rtsp://camera-1.local/trackID=2",
     }
 
+    # Interpreter is pinned, and the call is bounded.
+    #
+    # The script's own `#!/usr/bin/env bash` can resolve to Homebrew bash
+    # 5.3.15, which blocks setting up the `python3 - <<'PY'` heredoc in
+    # `compute_windows` and never execs python3 -- the process hangs forever
+    # and, with no `timeout=`, took the whole suite with it. bash 3.2.57 runs
+    # the identical script to completion. See issue #9 for the reproduction
+    # and the five hypotheses ruled out on the way to it.
+    #
+    # Pinning the interpreter here keeps this contract test runnable; it does
+    # not fix the script for operators, which is tracked separately on #9.
+    # `timeout` and `stdin` are belt-and-braces: a future regression must fail
+    # this test rather than hang the run.
     subprocess.run(
         [
-            "bash",
+            _SUPPORTED_BASH,
             str(REPO_ROOT / "scripts/ml-worker-real-rtsp-bedexit-e2e.sh"),
             "--render-config",
             str(config_path),
@@ -259,6 +291,8 @@ def test_real_rtsp_bedexit_script_generates_supported_production_config(tmp_path
         env=environment,
         capture_output=True,
         text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=120,
     )
 
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
