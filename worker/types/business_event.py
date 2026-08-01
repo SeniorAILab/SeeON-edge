@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 
@@ -14,6 +15,8 @@ class BusinessEvent:
     probability: float
     person_id: int | None = None
     bed_id: int | None = None
+    audit: Mapping[str, object] | None = None
+    snapshot_jpeg: bytes | None = None
 
 
 __all__ = ["BusinessEvent"]

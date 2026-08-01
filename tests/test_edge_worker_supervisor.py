@@ -17,18 +17,34 @@ only the one guarantee that has no existing worker-side test:
   cannot recur.
 - heartbeat gating (only a READY transition can reach the relay) is ported
   below directly against `HeartbeatReporter`, which now owns that guarantee.
+- `test_supervisor_processing_updates_measured_fps` is ported below against
+  `CameraPipelinePump._record_measured_fps` (worker/pipeline/camera_pipeline.py):
+  a production gap closed under todo 20 -- nothing called
+  `WorkerDiagnostics.update_measured_fps` per frame until the pump was wired
+  to do so, mirroring edge's `_record_measured_fps` 10s sliding-window
+  algorithm verbatim.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import final
 
+import numpy as np
 import pytest
 
 import worker.runtime.worker as worker_module
+from contracts.frame import Frame
 from shared.events.evidence_http_transport import HttpResult
+from worker.pipeline.analytics import CompositeExtractor
+from worker.pipeline.bus import BoundedFrameBus, Scheduler
+from worker.pipeline.camera_pipeline import CameraPipelinePump
+from worker.pipeline.decision import EventAggregator, IncidentManager
+from worker.pipeline.perception import GreedyIouTracker, SceneState
 from worker.runtime.config import CameraRuntimeConfig, WorkerConfig
+from worker.runtime.telemetry.runtime_diagnostics import WorkerDiagnostics
 from worker.runtime.worker import HeartbeatReporter
+from worker.types import BusinessEvent, FramePacket
 
 
 def _config() -> tuple[WorkerConfig, CameraRuntimeConfig]:
@@ -81,3 +97,43 @@ def test_heartbeat_reporter_sends_only_on_the_ready_transition(
 
     reporter.mark_ready("camera-1")
     assert requests == ["http://relay.test/api/v1/relay/heartbeat"]
+
+
+@final
+class _NoOpSink:
+    def emit(self, event: BusinessEvent) -> None:
+        del event
+
+
+def _packet(camera_id: str, seq: int) -> FramePacket:
+    image = np.zeros((1, 1, 3), dtype=np.uint8)
+    frame = Frame(index=seq, time_sec=float(seq), image=image)
+    return FramePacket(camera_id, frame, float(seq), seq, 1, 1, 0.0)
+
+
+def test_camera_pipeline_pump_updates_measured_fps_after_two_processed_frames() -> None:
+    """Mirrors edge's `test_supervisor_processing_updates_measured_fps`
+    (edge/runtime/edge_worker_supervisor.py sliding-fps window): worker moved
+    the same guarantee onto `CameraPipelinePump._record_measured_fps`, called
+    once per pumped frame ahead of the decision stage.
+    """
+    diagnostics = WorkerDiagnostics()
+    diagnostics.register_decode("camera-1", "auto")
+    bus = BoundedFrameBus()
+    analytics = CompositeExtractor(
+        extractors=(),
+        scheduler=Scheduler(task_intervals={}),
+        tracker=GreedyIouTracker(),
+        scene_state=SceneState(camera_id="camera-1"),
+    )
+    decision = EventAggregator(deciders=(), incidents=IncidentManager())
+    pump = CameraPipelinePump(
+        "camera-1", bus.inference, analytics, decision, _NoOpSink(),
+        diagnostics=diagnostics,
+    )
+
+    pump._pump_one(_packet("camera-1", 0))
+    pump._pump_one(_packet("camera-1", 1))
+
+    camera = diagnostics.to_payload("facility-1", None, 1)["cameras"][0]
+    assert camera["measured_fps"] is not None

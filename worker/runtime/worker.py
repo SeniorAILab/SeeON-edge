@@ -8,17 +8,19 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
-from typing import Final, Protocol, TypeAlias, final, runtime_checkable
+from typing import Any, Final, Protocol, TypeAlias, final, runtime_checkable
 
 import worker.pipeline.ingest.lifecycle as ingest
 import worker.runtime.bootstrap as bootstrap
 from contracts.runner import RunnerProtocol
 from shared.events.evidence_export_contract import DeliveryFailure
 from shared.events.evidence_http_transport import bounded_request, encode_json
+from shared.events.schemas import build_audit_envelope
 from worker.adapters.model import LstmFallRunner, warmup_to_ready
 from worker.adapters.model.errors import FatalAcceleratorError
 from worker.domains import (
     DOMAIN_REGISTRY,
+    AuditContext,
     BedExitDomainDependencies,
     FallDomainDependencies,
     enabled_domains,
@@ -43,6 +45,9 @@ from worker.pipeline.output.evidence.evidence_runtime import (
     EvidenceExportRuntime,
 )
 from worker.pipeline.output.evidence.evidence_stager import DurableEvidenceStager
+from worker.pipeline.output.evidence.snapshot_store import SnapshotStore
+from worker.pipeline.output.evidence_attacher import AlertEvidenceAttacher
+from worker.pipeline.output.overlay import OverlayRenderer
 from worker.pipeline.perception import GreedyIouTracker, SceneState
 from worker.runtime.config import CameraRuntimeConfig, WorkerConfig
 from worker.runtime.faults.handler import FaultHandler
@@ -55,10 +60,14 @@ from worker.runtime.lease import GpuLease, resolve_state_dir
 from worker.runtime.model_composition import SharedYoloExtractors, compose_yolo_extractors
 from worker.runtime.profile.boot import BootContext
 from worker.runtime.profile.registry import DecodeProbe
+from worker.runtime.telemetry.runtime_diagnostics import WorkerDiagnostics
 from worker.runtime.watchdog import InferenceWatchdog
 
 LOGGER: Final = logging.getLogger(__name__)
 HEARTBEAT_TIMEOUT_SEC: Final = 0.5
+# Matches edge/runtime/edge_worker.py's DETECTOR_VERSION -- same domain-detector
+# generation, ported wholesale rather than re-derived per worker/AGENTS.md.
+DETECTOR_VERSION: Final = "worker-domain-detectors-v1"
 
 
 class _RunnableIngest(Protocol):
@@ -87,6 +96,30 @@ ClipRecorderFactory: TypeAlias = Callable[[CameraRuntimeConfig], EventClipRecord
 @runtime_checkable
 class _Warmable(Protocol):
     def warmup(self) -> None: ...
+
+
+def _debug_snapshots_provider(
+    domain_deciders: Mapping[str, Decider],
+) -> Callable[[int], tuple[Any, ...]]:
+    """Build one camera's cross-domain debug-snapshot collector.
+
+    Mirrors edge's per-frame `debug_snapshots` list (camera_worker.py:223-228):
+    every domain that registered a `debug_snapshot_adapter` contributes its
+    current snapshot, read from the live detector this closure captures.
+    """
+
+    def provider(frame_index: int) -> tuple[Any, ...]:
+        snapshots: list[Any] = []
+        for name, detector in domain_deciders.items():
+            adapter = DOMAIN_REGISTRY[name].debug_snapshot_adapter
+            if adapter is None:
+                continue
+            snapshot = adapter(detector, frame_index)
+            if snapshot is not None:
+                snapshots.append(snapshot)
+        return tuple(snapshots)
+
+    return provider
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,16 +274,6 @@ def _evidence_outbox_path() -> Path:
     return resolve_state_dir() / "evidence-outbox.sqlite3"
 
 
-def _default_pump_factory(
-    camera: CameraRuntimeConfig,
-    bus: BoundedFrameBus,
-    analytics: CompositeExtractor,
-    decision: EventAggregator,
-    sink: EventSink,
-) -> CameraPipelinePump:
-    return CameraPipelinePump(camera.camera_id, bus.inference, analytics, decision, sink)
-
-
 @final
 class WorkerRuntime:
     """Own process-wide models and camera-local mutable pipeline state."""
@@ -267,7 +290,7 @@ class WorkerRuntime:
         boot_dependencies: bootstrap.BootDependencies | None = None,
         hard_exit: Callable[[int], None] = os._exit,  # noqa: SLF001
         restart_check: Callable[[], bool] | None = None,
-        pump_factory: PumpFactory = _default_pump_factory,
+        pump_factory: PumpFactory | None = None,
         event_sink_factory: EventSinkFactory | None = None,
         clip_recorder_factory: ClipRecorderFactory | None = None,
     ) -> None:
@@ -275,7 +298,7 @@ class WorkerRuntime:
         self._env = os.environ if env is None else env
         self._serving = serving_client
         self._loop_factory = loop_factory or self._default_loop_factory
-        self._pump_factory = pump_factory
+        self._pump_factory = pump_factory or self._default_pump_factory
         self._sink_factory = event_sink_factory or self._default_event_sink
         self._clip_recorder_factory = clip_recorder_factory or self._default_clip_recorder
         self._acquire = acquire_lease or GpuLease.acquire
@@ -293,6 +316,14 @@ class WorkerRuntime:
         self._clip_recorder: ClipRecorder | None = None
         self._evidence_export_runtime: EvidenceExportRuntime | None = None
         self._camera_source_registry: SourceRegistry | None = None
+        # GAP #1/#2 wiring (todo 20): one shared diagnostics sink, overlay
+        # renderer, and snapshot store per process -- same "one shared actor"
+        # pattern as `_clip_recorder`/`_compose_evidence_export` -- plus the
+        # per-camera evidence attacher `_default_pump_factory` reads.
+        self.diagnostics = WorkerDiagnostics()
+        self._overlay_renderer = OverlayRenderer()
+        self._snapshot_store = SnapshotStore()
+        self._camera_evidence_attachers: dict[str, AlertEvidenceAttacher] = {}
 
     def run(self) -> None:
         stages = bootstrap.named_stages(
@@ -411,13 +442,38 @@ class WorkerRuntime:
         analytics = CompositeExtractor(
             extractors=yolo.extractors, scheduler=scheduler, tracker=tracker, scene_state=scene
         )
-        decision = self._build_decision_stage(camera, self.fall_model)
+        decision, domain_audit, domain_deciders = self._build_decision_stage(
+            camera, self.fall_model
+        )
+        self._camera_evidence_attachers[camera.camera_id] = AlertEvidenceAttacher(
+            domain_audit=domain_audit,
+            overlay_renderer=self._overlay_renderer,
+            debug_snapshots_provider=_debug_snapshots_provider(domain_deciders),
+        )
         heartbeat = HeartbeatReporter(self.config, camera)
         loop = self._loop_factory(camera, bus, heartbeat)
         sink = self._sink_factory(camera)
         pump = self._pump_factory(camera, bus, analytics, decision, sink)
         return CameraRuntimeContext(
             bus, tracker, scene, scheduler, analytics, decision, heartbeat, loop, pump
+        )
+
+    def _default_pump_factory(
+        self,
+        camera: CameraRuntimeConfig,
+        bus: BoundedFrameBus,
+        analytics: CompositeExtractor,
+        decision: EventAggregator,
+        sink: EventSink,
+    ) -> CameraPipelinePump:
+        return CameraPipelinePump(
+            camera.camera_id,
+            bus.inference,
+            analytics,
+            decision,
+            sink,
+            evidence_attacher=self._camera_evidence_attachers.get(camera.camera_id),
+            diagnostics=self.diagnostics,
         )
 
     def _default_event_sink(self, camera: CameraRuntimeConfig) -> EventSink:
@@ -429,7 +485,11 @@ class WorkerRuntime:
             config_version=self.config.version,
             clock=time.time,
         )
-        return EvidenceEventSink(stager=stager, recorder=self._clip_recorder_factory(camera))
+        return EvidenceEventSink(
+            stager=stager,
+            recorder=self._clip_recorder_factory(camera),
+            snapshot_store=self._snapshot_store,
+        )
 
     def _compose_evidence_export(self, boot: BootContext) -> None:
         """Compose the real clip recorder and (optional) relay export sender.
@@ -507,15 +567,65 @@ class WorkerRuntime:
 
     def _build_decision_stage(
         self, camera: CameraRuntimeConfig, fall_model: FallModelProtocol
-    ) -> EventAggregator:
+    ) -> tuple[EventAggregator, Mapping[str, Mapping[str, object]], Mapping[str, Decider]]:
         domain_names = self.config.enabled_domains
         if domain_names is None:
             domain_names = enabled_domains()
         deciders = tuple(
             self._build_decider(name, camera, fall_model) for name in domain_names
         )
+        domain_deciders = dict(zip(domain_names, deciders, strict=True))
+        domain_audit = {
+            name: self._build_domain_audit(name, fall_model) for name in domain_names
+        }
         incidents = IncidentManager(identity_path=event_identity_path(camera.camera_id))
-        return EventAggregator(deciders=deciders, incidents=incidents)
+        aggregator = EventAggregator(deciders=deciders, incidents=incidents)
+        return aggregator, domain_audit, domain_deciders
+
+    def _build_domain_audit(
+        self, name: str, fall_model: FallModelProtocol
+    ) -> Mapping[str, object]:
+        """Precompute one domain's static audit envelope (GAP #1, todo 20).
+
+        `DomainRegistration.audit_metadata_provider` only takes an
+        `AuditContext` (worker/domains/registry.py's `_audit_snapshot` is a
+        pure passthrough), so this is safe to resolve once per camera build
+        rather than per event -- mirrors edge's `_attach_alert_metadata`
+        (edge/runtime/camera_worker.py:289-336) using `build_audit_envelope`.
+        """
+        registration = DOMAIN_REGISTRY[name]
+        if registration.audit_metadata_provider is None:
+            return {}
+        snapshot = registration.audit_metadata_provider(
+            self._domain_audit_context(name, fall_model)
+        )
+        return build_audit_envelope(
+            model_version=snapshot.model_version,
+            detector_version=DETECTOR_VERSION,
+            operating_threshold=snapshot.operating_threshold,
+        )
+
+    def _domain_audit_context(
+        self, name: str, fall_model: FallModelProtocol
+    ) -> AuditContext:
+        """Resolve model identity for the audit trail.
+
+        Only "fall" has an ML model; `FallModelProtocol` has no `model_version`
+        field, so `LstmFallRunner.manifest.artifact_digest` is the closest
+        existing identity concept (read defensively -- a serving-client model
+        may not expose `.manifest` at all). "bed_exit" is a geometric monitor
+        with no model and no probability-threshold analog worth misrepresenting
+        as one, so it gets an empty context (still yields a `clock_source`
+        envelope from `build_audit_envelope`).
+        """
+        if name != "fall":
+            return AuditContext(model_version=None, operating_threshold=None)
+        manifest = getattr(fall_model, "manifest", None)
+        model_version = None if manifest is None else getattr(manifest, "artifact_digest", None)
+        return AuditContext(
+            model_version=model_version,
+            operating_threshold=fall_model.operating_threshold,
+        )
 
     def _build_decider(
         self, name: str, camera: CameraRuntimeConfig, fall_model: FallModelProtocol

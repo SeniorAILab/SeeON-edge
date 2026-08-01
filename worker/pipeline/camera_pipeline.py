@@ -3,25 +3,53 @@
 Pure wiring stage. Business math stays where it already lives -- extraction
 and tracking in ``analytics`` (:class:`CompositeExtractor`, itself gated by
 the camera's :class:`~worker.pipeline.bus.Scheduler`), domain interpretation
-in ``decision`` (:class:`EventAggregator`). This module only pumps taken
-packets through those two calls and forwards admitted events to the sink.
+in ``decision`` (:class:`EventAggregator`), audit/snapshot attachment in
+``worker.pipeline.output.evidence_attacher`` (:class:`AlertEvidenceAttacher`).
+This module only pumps taken packets through those calls, forwards each
+admitted event through the attacher (if configured) to the sink, and records
+the per-frame measured-fps sample when a diagnostics collaborator is wired.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from typing import Final, final
+import time
+from collections import deque
+from typing import Final, Protocol, final
 
+from contracts.observation import FrameObservation
 from worker.adapters.model.errors import FatalAcceleratorError
 from worker.interfaces.bus import FrameSubscription
 from worker.interfaces.output import EventSink
 from worker.pipeline.analytics import CompositeExtractor
 from worker.pipeline.decision import EventAggregator
-from worker.types import FramePacket
+from worker.types import BusinessEvent, FramePacket
 
 LOGGER: Final = logging.getLogger(__name__)
 DEFAULT_POLL_TIMEOUT_SEC: Final = 0.5
+MEASURED_FPS_WINDOW_SEC: Final = 10.0
+
+
+class MeasuredFpsSink(Protocol):
+    """Structural seam so this module never imports `worker.runtime` back.
+
+    `worker.runtime.telemetry.runtime_diagnostics.WorkerDiagnostics` already
+    satisfies this; any other object with the same method works too.
+    """
+
+    def update_measured_fps(self, camera_id: str, measured_fps: float | None) -> None: ...
+
+
+class EvidenceAttacher(Protocol):
+    """Structural seam matched by `AlertEvidenceAttacher` (worker.pipeline.output)."""
+
+    def attach(
+        self,
+        event: BusinessEvent,
+        packet: FramePacket,
+        observation: FrameObservation,
+    ) -> BusinessEvent: ...
 
 
 @final
@@ -44,6 +72,8 @@ class CameraPipelinePump:
         sink: EventSink,
         *,
         poll_timeout_sec: float = DEFAULT_POLL_TIMEOUT_SEC,
+        evidence_attacher: EvidenceAttacher | None = None,
+        diagnostics: MeasuredFpsSink | None = None,
     ) -> None:
         self._camera_id = camera_id
         self._subscription = subscription
@@ -51,6 +81,9 @@ class CameraPipelinePump:
         self._decision = decision
         self._sink = sink
         self._poll_timeout_sec = poll_timeout_sec
+        self._evidence_attacher = evidence_attacher
+        self._diagnostics = diagnostics
+        self._fps_timestamps: deque[float] = deque()
         self._stop_event = threading.Event()
         self.failure_count = 0
 
@@ -74,9 +107,35 @@ class CameraPipelinePump:
         self._stop_event.set()
 
     def _pump_one(self, packet: FramePacket) -> None:
+        self._record_measured_fps()
         result = self._analytics.process(packet)
         for event in self._decision.update(result.decision_input):
-            self._sink.emit(event)
+            self._sink.emit(self._attach_evidence(event, packet, result.observation))
+
+    def _attach_evidence(
+        self,
+        event: BusinessEvent,
+        packet: FramePacket,
+        observation: FrameObservation,
+    ) -> BusinessEvent:
+        if self._evidence_attacher is None:
+            return event
+        return self._evidence_attacher.attach(event, packet, observation)
+
+    def _record_measured_fps(self) -> None:
+        """Mirror edge's `_record_measured_fps`: 10s sliding-window rate."""
+        if self._diagnostics is None:
+            return
+        now = time.monotonic()
+        timestamps = self._fps_timestamps
+        timestamps.append(now)
+        while timestamps and now - timestamps[0] > MEASURED_FPS_WINDOW_SEC:
+            timestamps.popleft()
+        if len(timestamps) >= 2:
+            elapsed = timestamps[-1] - timestamps[0]
+            self._diagnostics.update_measured_fps(
+                self._camera_id, None if elapsed <= 0 else (len(timestamps) - 1) / elapsed
+            )
 
     def _record_failure(self, error: Exception) -> None:
         self.failure_count += 1

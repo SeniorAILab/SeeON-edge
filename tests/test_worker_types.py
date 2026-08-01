@@ -52,6 +52,8 @@ _EXPECTED_FIELDS = {
         "probability",
         "person_id",
         "bed_id",
+        "audit",
+        "snapshot_jpeg",
     ),
 }
 
