@@ -149,9 +149,34 @@ _SYNTHETIC_RTSP_FIXTURES = {
     Path("tests/test_clips_catalog.py"): {
         "rtsp://operator:fixture-password@example.test/live",
     },
+    Path("tests/test_worker_config_lifecycle.py"): {
+        "rtsp://user:camera-pass@camera/live",
+        "rtsp://user:leaked-camera-password@camera/live",
+    },
+    Path("tests/test_worker_ingest_lifecycle.py"): {
+        "rtsp://operator:s3cr3t@example.test/live?token=plain",
+    },
+    Path("tests/test_worker_ingest_rtsp.py"): {
+        "rtsp://user:secret@camera.local/live?token=abc",
+        "rtsp://***:***@camera.local/live?token=%2A%2A%2A",
+        "rtsp://operator:s3cr3t@camera.local/live?token=plain",
+        "rtsp://user:password@host/stream"
+        "?profile=main&username=admin&secret=abc#fragment-secret",
+        "rtsp://user:password@host/stream"
+        "?profile=main&username=admin&secret=abc",
+        "rtsp://***:***@host/stream"
+        "?profile=%2A%2A%2A&username=%2A%2A%2A&secret=%2A%2A%2A",
+    },
     Path("tests/test_worker_mjpeg_server.py"): {
         "rtsp://user:secret@camera.local/trackID=2",
         "rtsp://***:***@camera/track",
+    },
+    Path("tests/test_worker_nvdec_adapter.py"): {
+        "rtsp://operator:s3cr3t@camera.local/live?token=plain",
+        "rtsp://***:***@camera.local/live?token=%2A%2A%2A",
+    },
+    Path("tests/test_worker_nvdec_probe.py"): {
+        "rtsp://operator:s3cr3t@camera.local/live?token=plain",
     },
     Path("tests/test_public_repository_privacy.py"): {
         "rtsps" "://operator:not-a-fixture@camera.example/stream",
