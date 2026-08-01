@@ -874,10 +874,12 @@ class WorkerRuntime:
                 "clip store is locked by another process; refusing to start "
                 "evidence delivery against a store this worker does not own"
             ) from exc
-        except OSError as exc:
+        except Exception as exc:  # noqa: BLE001 - any init failure is fatal
+            # Matches the startup-hook path: every failure initializing delivery
+            # is fatal and typed. Narrowing this to OSError let other exception
+            # types escape as raw, unsanitized errors instead.
             raise EvidenceDeliveryError(
-                "evidence delivery could not initialize its outbox under the "
-                "clip-store lock"
+                "evidence delivery failed to initialize under the clip-store lock"
             ) from exc
 
     def _compose_clip_recording(
