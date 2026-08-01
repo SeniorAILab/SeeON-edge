@@ -10,7 +10,8 @@ Canonical entrypoint, and the only supported one:
 python -m worker
 ```
 
-`worker/__main__.py` delegates to `worker.runtime.worker.main`. Do not add a
+`worker/__main__.py` owns the CLI (argparse, exit codes) and constructs
+`WorkerRuntime` from `worker.runtime.worker` directly. Do not add a
 second entrypoint, a `worker.runtime.edge_worker` module, or an `edge` alias.
 
 Deployment identity is frozen: image `ml-worker`, `Dockerfile.edge`,

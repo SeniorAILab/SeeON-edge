@@ -58,7 +58,8 @@ Feature math belongs in `worker.pipeline.perception`, interpretation in
 ## CLI
 
 `python -m worker` is the only supported entrypoint; `worker/__main__.py`
-delegates to `worker.runtime.worker.main`. Preserve `--config`,
+owns argparse and exit codes and constructs `WorkerRuntime` from
+`worker.runtime.worker` directly. Preserve `--config`,
 `--check-config`, `--heartbeat-on-start`, signal shutdown, and the documented
 exit codes. Do not add `worker.runtime.edge_worker` or an `edge` alias.
 `--check-config` performs no model, camera, or relay side effect.
