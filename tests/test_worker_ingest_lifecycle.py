@@ -296,3 +296,99 @@ def test_publish_processing_failure_is_not_classified_as_camera_offline() -> Non
     assert [event.event_type for event in reporter.events] == ["frame.processing_error"]
     assert "camera.offline" not in {event.event_type for event in reporter.events}
     assert session.close_count == 1
+
+
+@final
+class _BlockingLoop:
+    """A fake ingest loop that only returns once `stop()` is called."""
+
+    def __init__(self, camera_id: str) -> None:
+        self.camera_id = camera_id
+        self._stop_event = threading.Event()
+        self.stop_count = 0
+
+    def run(self) -> None:
+        self._stop_event.wait()
+
+    def stop(self) -> None:
+        self.stop_count += 1
+        self._stop_event.set()
+
+
+def test_restart_check_returning_true_stops_the_supervisor_cleanly() -> None:
+    # Given: a camera loop that would otherwise block ingesting forever.
+    loop = _BlockingLoop("camera-a")
+    calls: list[None] = []
+
+    def restart_check() -> bool:
+        calls.append(None)
+        return True
+
+    supervisor = IngestSupervisor(
+        (loop,), restart_check=restart_check, restart_poll_interval_sec=0.01
+    )
+
+    # When: the supervisor starts and the restart watcher observes a True directive.
+    supervisor.start()
+    supervisor.join(timeout_sec=2.0)
+
+    # Then: the stop event breaks both the ingest loop and the restart watch loop.
+    assert loop.stop_count >= 1
+    assert len(calls) >= 1
+
+
+def test_omitting_restart_check_preserves_default_clean_completion() -> None:
+    # Given: a camera that reports two packets then stops itself, matching pre-restart-check
+    # supervisor behavior exactly.
+    packets = [_packet("camera-a", 1), _packet("camera-a", 2)]
+    session = _Session([*packets])
+    adapter = _Adapter([session])
+    bus = _FakeBus()
+    reporter = _Reporter()
+    loop = _loop("camera-a", adapter, bus, reporter, _registry("camera-a"))
+    bus.on_publish = lambda _packet: loop.stop() if len(bus.packets) == 2 else None
+
+    # When: restart_check is omitted entirely (the default).
+    supervisor = IngestSupervisor((loop,))
+    supervisor.run()
+
+    # Then: ingestion completes exactly as it did before restart_check existed.
+    assert bus.packets == packets
+    assert reporter.states == {"camera-a": "ready"}
+    assert session.close_count == 1
+
+
+def test_restart_check_always_false_is_consulted_but_never_stops_early() -> None:
+    # Given: a camera that reports two packets, waiting briefly before stopping itself so the
+    # restart watcher has time to poll at least once beforehand.
+    packets = [_packet("camera-a", 1), _packet("camera-a", 2)]
+    session = _Session([*packets])
+    adapter = _Adapter([session])
+    bus = _FakeBus()
+    reporter = _Reporter()
+    loop = _loop("camera-a", adapter, bus, reporter, _registry("camera-a"))
+    calls: list[None] = []
+
+    def never_restart() -> bool:
+        calls.append(None)
+        return False
+
+    def on_publish(_packet: FramePacket) -> None:
+        if len(bus.packets) == 2:
+            threading.Event().wait(timeout=0.05)
+            loop.stop()
+
+    bus.on_publish = on_publish
+    supervisor = IngestSupervisor(
+        (loop,), restart_check=never_restart, restart_poll_interval_sec=0.01
+    )
+
+    # When
+    supervisor.run()
+    supervisor.stop()
+
+    # Then: the always-false directive is consulted at least once, and ingestion still
+    # completes in full instead of terminating early.
+    assert bus.packets == packets
+    assert reporter.states == {"camera-a": "ready"}
+    assert len(calls) >= 1

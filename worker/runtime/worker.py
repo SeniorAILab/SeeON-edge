@@ -4,6 +4,7 @@ import logging
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from time import monotonic
 from typing import Final, Protocol, TypeAlias, final, runtime_checkable
 
@@ -14,10 +15,20 @@ from shared.events.evidence_export_contract import DeliveryFailure
 from shared.events.evidence_http_transport import bounded_request, encode_json
 from worker.adapters.model import LstmFallRunner, warmup_to_ready
 from worker.adapters.model.errors import FatalAcceleratorError
+from worker.domains import (
+    DOMAIN_REGISTRY,
+    BedExitDomainDependencies,
+    FallDomainDependencies,
+    enabled_domains,
+)
+from worker.domains.bed_exit import BedExitConfig, NightWindow
 from worker.domains.fall import FallModelProtocol
+from worker.interfaces.decision import Decider
 from worker.interfaces.serving import ServingClient
 from worker.pipeline.analytics import CompositeExtractor
 from worker.pipeline.bus import BoundedFrameBus, Scheduler
+from worker.pipeline.decision import EventAggregator, IncidentManager
+from worker.pipeline.decision.event_identity import event_identity_path
 from worker.pipeline.perception import GreedyIouTracker, SceneState
 from worker.runtime.config import CameraRuntimeConfig, WorkerConfig
 from worker.runtime.faults.handler import FaultHandler
@@ -58,6 +69,7 @@ class CameraRuntimeContext:
     scene_state: SceneState
     scheduler: Scheduler
     analytics: CompositeExtractor
+    decision: EventAggregator
     heartbeat: HeartbeatReporter
     ingest_loop: _RunnableIngest
 
@@ -151,6 +163,7 @@ class WorkerRuntime:
         decode_probe: DecodeProbe | None = None,
         boot_dependencies: bootstrap.BootDependencies | None = None,
         hard_exit: Callable[[int], None] = os._exit,  # noqa: SLF001
+        restart_check: Callable[[], bool] | None = None,
     ) -> None:
         self.config = config
         self._env = os.environ if env is None else env
@@ -159,6 +172,7 @@ class WorkerRuntime:
         self._acquire = acquire_lease or GpuLease.acquire
         self._decode_probe, self._boot_dependencies = decode_probe, boot_dependencies
         self._hard_exit = hard_exit
+        self._restart_check = restart_check
         self._context = bootstrap.BootstrapContext()
         self._boot: BootContext | None = None
         self._supervisor: ingest.IngestSupervisor | None = None
@@ -246,7 +260,7 @@ class WorkerRuntime:
         )
         for loop in loops:
             handler.register_loop(loop)
-        self._supervisor = ingest.IngestSupervisor(loops)
+        self._supervisor = ingest.IngestSupervisor(loops, restart_check=self._restart_check)
         watchdog.start()
         self._supervisor.start()
         return tuple(outcomes)
@@ -254,16 +268,64 @@ class WorkerRuntime:
     def _build_camera(
         self, camera: CameraRuntimeConfig, yolo: SharedYoloExtractors
     ) -> CameraRuntimeContext:
+        if self.fall_model is None:
+            raise RuntimeError("camera activation requires an initialized fall model")
         bus, tracker = BoundedFrameBus(), GreedyIouTracker()
         intervals = {"pose": camera.frame_stride, "person": camera.frame_stride, "bed": 30}
         scene, scheduler = SceneState(camera.camera_id), Scheduler(intervals)
         analytics = CompositeExtractor(
             extractors=yolo.extractors, scheduler=scheduler, tracker=tracker, scene_state=scene
         )
+        decision = self._build_decision_stage(camera, self.fall_model)
         heartbeat = HeartbeatReporter(self.config, camera)
         loop = self._loop_factory(camera, bus, heartbeat)
         return CameraRuntimeContext(
-            bus, tracker, scene, scheduler, analytics, heartbeat, loop
+            bus, tracker, scene, scheduler, analytics, decision, heartbeat, loop
+        )
+
+    def _build_decision_stage(
+        self, camera: CameraRuntimeConfig, fall_model: FallModelProtocol
+    ) -> EventAggregator:
+        domain_names = self.config.enabled_domains
+        if domain_names is None:
+            domain_names = enabled_domains()
+        deciders = tuple(
+            self._build_decider(name, camera, fall_model) for name in domain_names
+        )
+        incidents = IncidentManager(identity_path=event_identity_path(camera.camera_id))
+        return EventAggregator(deciders=deciders, incidents=incidents)
+
+    def _build_decider(
+        self, name: str, camera: CameraRuntimeConfig, fall_model: FallModelProtocol
+    ) -> Decider:
+        registration = DOMAIN_REGISTRY[name]
+        if name == "fall":
+            dependencies: object = FallDomainDependencies(
+                model=fall_model,
+                camera_id=camera.camera_id,
+                facility_id=camera.facility_id,
+            )
+        elif name == "bed_exit":
+            dependencies = BedExitDomainDependencies(
+                config=self._bed_exit_config(camera),
+                clock=lambda: datetime.now(UTC),
+            )
+        else:
+            raise RuntimeError(f"unsupported domain in registry: {name}")
+        return registration.factory(dependencies)
+
+    def _bed_exit_config(self, camera: CameraRuntimeConfig) -> BedExitConfig:
+        domain_config = self.config.domains.bed_exit
+        night_window = None
+        if domain_config is not None and domain_config.night_window is not None:
+            configured = domain_config.night_window
+            night_window = NightWindow(
+                start=configured.start, end=configured.end, tz=configured.tz
+            )
+        return BedExitConfig(
+            camera_id=camera.camera_id,
+            facility_id=camera.facility_id,
+            night_window=night_window,
         )
 
 __all__ = ["CameraRuntimeContext", "HeartbeatReporter", "WorkerRuntime"]

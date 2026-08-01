@@ -13,6 +13,8 @@ import worker.runtime.worker as worker_module
 from contracts.runner import Image, RunnerResult
 from shared.events.evidence_http_transport import HttpResult
 from worker.adapters.model.errors import FatalAcceleratorError
+from worker.domains.bed_exit import BedExitMonitor
+from worker.domains.fall import FallEventLatch
 from worker.pipeline.bus import BoundedFrameBus
 from worker.pipeline.ingest.lifecycle import IngestReporter
 from worker.runtime.config import CameraRuntimeConfig, WorkerConfig
@@ -163,6 +165,39 @@ def test_two_cameras_isolate_mutable_state_and_share_yolo_extractors(
     )
     assert [task for task, _runner in serving.created] == ["pose", "person", "bed", "fall"]
     assert all(loop.started_after_warmup for loop in loops.loops)
+
+
+def test_four_cameras_isolate_decision_state_and_share_the_fall_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _stub_heartbeat_transport(monkeypatch)
+    serving = _FakeServingClient()
+    loops = _LoopFactory(serving)
+    camera_ids = ("camera-a", "camera-b", "camera-c", "camera-d")
+    runtime = _runtime(_config(*camera_ids), serving, loops, tmp_path)
+
+    runtime.run()
+
+    assert len(runtime.cameras) == len(camera_ids)
+    fall_deciders: list[FallEventLatch] = []
+    bed_exit_deciders: list[BedExitMonitor] = []
+    for camera_id, camera in zip(camera_ids, runtime.cameras, strict=True):
+        fall, bed_exit = camera.decision.deciders
+        assert isinstance(fall, FallEventLatch)
+        assert isinstance(bed_exit, BedExitMonitor)
+        assert fall.camera_id == camera_id
+        # The fall model itself stays the one shared bundle built once per task per process.
+        assert fall.classifier.model is runtime.fall_model
+        fall_deciders.append(fall)
+        bed_exit_deciders.append(bed_exit)
+
+    # Per-camera decision state (deciders, aggregators, cooldown/idempotency tracking) is
+    # never shared across cameras, even as the camera count grows.
+    assert len(set(map(id, fall_deciders))) == len(camera_ids)
+    assert len(set(map(id, bed_exit_deciders))) == len(camera_ids)
+    assert len({id(camera.decision) for camera in runtime.cameras}) == len(camera_ids)
+    assert len({id(camera.decision.incidents) for camera in runtime.cameras}) == len(camera_ids)
 
 
 def test_ready_camera_posts_heartbeat_with_canonical_payload(
