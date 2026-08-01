@@ -1,490 +1,448 @@
+"""Tests for the canonical `python -m worker` CLI (`worker/__main__.py`).
+
+Covers the argparse surface, the documented exit-code table
+(docs/architecture.md "Entrypoint"), `--check-config`'s no-side-effect
+contract, `--heartbeat-on-start` passthrough, `restart_check` wiring via
+`make_restart_check`, and SIGINT/SIGTERM clean shutdown. `WorkerRuntime.run`
+is monkeypatched throughout (it would otherwise require real cameras/models);
+one test constructs the real `WorkerRuntime` end to end with fake
+collaborators to prove the historical `WorkerRuntime(config)` positional-call
+TypeError cannot recur.
+"""
+
 from __future__ import annotations
 
-import importlib
 import json
-import sys
-import time
+import signal
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
 from edge_worker_fixtures import edge_config_payload
 
-from edge.runtime.profile.registry import PROFILE_REGISTRY
+import worker.__main__ as worker_main
+from worker.runtime.config import RestartDirective
+from worker.runtime.worker import WorkerRuntime
 
 
-def test_worker_entrypoint_check_config_uses_worker_package(tmp_path: Path) -> None:
+def _write_config(tmp_path: Path, *, camera_count: int = 1, version: int = 1) -> Path:
+    payload: dict[str, Any] = dict(
+        edge_config_payload(
+            camera_count=camera_count,
+            include_optional_fields=False,
+            resident_ids=False,
+        )
+    )
+    payload["version"] = version
     config_path = tmp_path / "ml-worker.yaml"
-    payload = edge_config_payload(
-        camera_count=1,
-        include_optional_fields=False,
-        resident_ids=False,
-    )
     config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
-
-    module = importlib.import_module("edge.runtime.edge_worker")
-
-    assert module.main(["--config", str(config_path), "--check-config"]) == 0
+    return config_path
 
 
-def test_gpu_diagnostics_reports_nvml_success_and_binding_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = importlib.import_module("edge.runtime.edge_worker")
-
-    class FakeNvml:
-        @staticmethod
-        def nvmlInit() -> None:
-            pass
-
-        @staticmethod
-        def nvmlShutdown() -> None:
-            pass
-
-        @staticmethod
-        def nvmlDeviceGetHandleByIndex(index: int) -> object:
-            assert index == 0
-            return object()
-
-        @staticmethod
-        def nvmlSystemGetDriverVersion() -> str:
-            return "555.42"
-
-        @staticmethod
-        def nvmlDeviceGetName(handle: object) -> bytes:
-            return b"NVIDIA Test"
-
-    class FakeCuda:
-        @staticmethod
-        def init() -> None:
-            pass
-
-        @staticmethod
-        def is_available() -> bool:
-            return True
-
-    monkeypatch.setitem(sys.modules, "pynvml", FakeNvml)
-    monkeypatch.setitem(sys.modules, "torch", type("Torch", (), {"cuda": FakeCuda})())
-    success = module._gpu_diagnostics()
-    assert success["nvml_available"] is True
-    assert success["driver_version"] == "555.42"
-    assert success["device_name"] == "NVIDIA Test"
-
-    monkeypatch.setitem(sys.modules, "pynvml", None)
-    failure = module._gpu_diagnostics()
-    assert failure["nvml_available"] is False
-    assert failure["nvml_error"] == "binding_unavailable"
+def _fake_loop_factory(camera: object, bus: object, reporter: object) -> None:
+    raise AssertionError("loop factory must not be invoked by CLI tests")
 
 
-def test_worker_entrypoint_fails_fast_when_profile_is_unavailable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """ADR-0002: an unavailable requested profile exits non-zero without fallback."""
-    config_path = tmp_path / "ml-worker.yaml"
-    payload = edge_config_payload(camera_count=1, include_optional_fields=False, resident_ids=False)
-    config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
-
-    module = importlib.import_module("edge.runtime.edge_worker")
-
-    def _fail(_stages: object) -> object:
-        raise module.GlobalBootstrapError("profile_verify: no usable CUDA device")
-
-    monkeypatch.setenv("ML_WORKER_PROFILE", "cuda")
-    monkeypatch.setattr(module, "run_global_bootstrap", _fail)
-
-    assert module.main(["--config", str(config_path)]) == 3
+class _FakeServingClient:
+    def create(self, task: str, **_options: object) -> None:
+        raise AssertionError("serving client must not be used by CLI tests")
 
 
-def test_profile_failure_publishes_gpu_diagnostics_before_fail_fast(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = importlib.import_module("edge.runtime.edge_worker")
-    published: list[dict[str, object]] = []
+@pytest.fixture(autouse=True)
+def _isolate_from_default_ingest_composition(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep this file's tests independent of `WorkerRuntime`'s default
+    `loop_factory` composition.
 
-    class FakeSender:
-        def __init__(
-            self,
-            relay_url: str,
-            relay_token: str,
-            diagnostics: object,
-            facility_id: str,
-            *,
-            timeout_sec: float,
-        ) -> None:
-            assert relay_url == "http://relay.test"
-            assert relay_token == "relay-token"
-            assert facility_id == "facility-1"
-            assert timeout_sec == 2.0
-            self._diagnostics = diagnostics
+    `worker/__main__.py` intentionally omits `loop_factory` when constructing
+    `WorkerRuntime`: composing the real per-camera ingest loop (decode
+    adapter selection, source wiring) is composition-root territory
+    (`worker/runtime/worker.py`), not the CLI's. That default composition has
+    its own dedicated coverage in `tests/test_worker_ingest_composition.py`,
+    including a bare-construction, no-`loop_factory` test proving the CLI's
+    omitted-kwarg call is safe end to end. This file's job is the CLI
+    contract (argparse, exit codes, config resolution, restart_check wiring,
+    signal handling), not ingest composition, so every test here injects a
+    fake `loop_factory` instead of exercising the real default -- CLI tests
+    must never construct real decode adapters. Applied globally here rather
+    than per test to keep that isolation guaranteed rather than opt-in.
+    """
+    real_init = WorkerRuntime.__init__
 
-        def publish_once(self) -> bool:
-            published.append(self._diagnostics.to_payload("facility-1", None, 0))
-            return True
+    def _init_with_fake_loop_factory(
+        self: WorkerRuntime, *args: object, **kwargs: object
+    ) -> None:
+        kwargs.setdefault("loop_factory", _fake_loop_factory)
+        real_init(self, *args, **kwargs)
 
-    def _fail(_stages: object) -> object:
-        raise module.GlobalBootstrapError("profile_verify: no usable CUDA device")
-
-    monkeypatch.setenv("RELAY_URL", "http://relay.test")
-    monkeypatch.setenv("RELAY_TOKEN", "relay-token")
-    monkeypatch.setenv("API_FACILITY_ID", "facility-1")
-    monkeypatch.setattr(module, "RuntimeStatusSender", FakeSender)
-    monkeypatch.setattr(module, "run_global_bootstrap", _fail)
-    monkeypatch.setattr(
-        module,
-        "_gpu_diagnostics",
-        lambda: {
-            "nvml_available": False,
-            "cuda_context_ok": False,
-            "driver_version": None,
-            "device_name": None,
-            "nvml_error": "query_failed:RuntimeError",
-            "captured_at_sec": 1.0,
-        },
-    )
-    monkeypatch.setattr(
-        module,
-        "_load_startup_config",
-        lambda _options: pytest.fail("profile failure must not load startup config"),
-    )
-
-    assert module.main([]) == 3
-    assert len(published) == 1
-    payload = published[0]
-    assert payload["cameras"] == []
-    assert payload["gpu"] == {
-        "nvml_available": False,
-        "cuda_context_ok": False,
-        "driver_version": None,
-        "device_name": None,
-        "nvml_error": "query_failed:RuntimeError",
-        "captured_at_sec": 1.0,
-    }
-    assert payload["worker"]["alive"] is False
-    assert payload["worker"]["profile_boot_error"] == "profile_verify: no usable CUDA device"
+    monkeypatch.setattr(WorkerRuntime, "__init__", _init_with_fake_loop_factory)
 
 
-def test_profile_failure_relay_unavailable_exits_without_retry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = importlib.import_module("edge.runtime.edge_worker")
-    attempts: list[float] = []
-
-    def _fail(_stages: object) -> object:
-        raise module.GlobalBootstrapError("profile_verify: no usable CUDA device")
-
-    def _unavailable(_request: object, *, timeout: float) -> object:
-        attempts.append(timeout)
-        raise module.urllib.error.URLError("unavailable")
-
-    monkeypatch.setenv("RELAY_URL", "http://relay.test")
-    monkeypatch.setenv("RELAY_TOKEN", "relay-token")
-    monkeypatch.setenv("API_FACILITY_ID", "facility-1")
-    monkeypatch.setattr(module, "run_global_bootstrap", _fail)
-    monkeypatch.setattr(module.urllib.request, "urlopen", _unavailable)
-    monkeypatch.setattr(
-        module,
-        "_gpu_diagnostics",
-        lambda: {
-            "nvml_available": False,
-            "cuda_context_ok": False,
-            "driver_version": None,
-            "device_name": None,
-            "nvml_error": "binding_unavailable",
-            "captured_at_sec": 1.0,
-        },
-    )
-
-    started = time.monotonic()
-    assert module.main([]) == 3
-    assert time.monotonic() - started < 0.5
-    assert attempts == [2.0]
+# --- argparse surface -------------------------------------------------
 
 
-def test_profile_failure_sender_exception_preserves_fail_fast_exit(
-    monkeypatch: pytest.MonkeyPatch,
+def test_help_flag_exits_zero_and_documents_all_flags(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    module = importlib.import_module("edge.runtime.edge_worker")
+    with pytest.raises(SystemExit) as exc_info:
+        worker_main.main(["--help"])
 
-    class FailingSender:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            pass
+    assert exc_info.value.code == 0
+    output = capsys.readouterr().out
+    assert "--config" in output
+    assert "--check-config" in output
+    assert "--heartbeat-on-start" in output
 
-        def publish_once(self) -> bool:
-            raise RuntimeError("relay failed")
 
-    def _fail(_stages: object) -> object:
-        raise module.GlobalBootstrapError("profile_verify: no usable CUDA device")
+# --- config resolution / exit code 2 -----------------------------------
 
+
+def test_missing_config_path_exits_with_config_error_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("EDGE_CAMERA_CONFIG", raising=False)
+
+    assert worker_main.main([]) == 2
+
+
+def test_invalid_yaml_exits_with_config_error_code(tmp_path: Path) -> None:
+    bad_path = tmp_path / "broken.yaml"
+    bad_path.write_text("relay: [unterminated", encoding="utf-8")
+
+    assert worker_main.main(["--config", str(bad_path)]) == 2
+
+
+def test_config_missing_required_field_exits_with_config_error_code(
+    tmp_path: Path,
+) -> None:
+    incomplete_path = tmp_path / "incomplete.yaml"
+    incomplete_path.write_text(
+        yaml.safe_dump({"relay": {"url": "http://127.0.0.1:8000", "token": "relay-token-1"}}),
+        encoding="utf-8",
+    )
+
+    assert worker_main.main(["--config", str(incomplete_path)]) == 2
+
+
+def test_config_path_falls_back_to_edge_camera_config_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = _write_config(tmp_path)
+    monkeypatch.setenv("EDGE_CAMERA_CONFIG", str(config_path))
+
+    assert worker_main.main(["--check-config"]) == 0
+
+
+# --- --check-config has zero model/camera/relay side effects -----------
+
+
+def test_check_config_validates_without_side_effects(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = _write_config(tmp_path)
+
+    def _fail(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("check-config must not touch relay or construct WorkerRuntime")
+
+    monkeypatch.setattr(worker_main, "bounded_request", _fail)
+    monkeypatch.setattr(worker_main, "make_restart_check", _fail)
+    monkeypatch.setattr(WorkerRuntime, "__init__", _fail)
+
+    assert worker_main.main(["--config", str(config_path), "--check-config"]) == 0
+
+
+def test_check_config_ignores_heartbeat_on_start_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = _write_config(tmp_path)
+
+    def _fail(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("check-config must have zero relay side effects")
+
+    monkeypatch.setattr(worker_main, "bounded_request", _fail)
+    monkeypatch.setattr(WorkerRuntime, "__init__", _fail)
+
+    exit_code = worker_main.main(
+        ["--config", str(config_path), "--check-config", "--heartbeat-on-start"]
+    )
+
+    assert exit_code == 0
+
+
+# --- real WorkerRuntime construction: proves no TypeError ---------------
+
+
+def test_real_workerruntime_constructs_with_fake_collaborators_without_typeerror(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Guards the historical bug: `WorkerRuntime(config)` positionally, with
+    no `loop_factory`/`serving_client`, raised TypeError at runtime.
+
+    `worker/__main__.py` no longer passes `loop_factory` itself (composing
+    the real per-camera ingest loop is `WorkerRuntime`'s own responsibility);
+    this test supplies one explicitly as a fake seam, alongside the other
+    collaborators, so it keeps proving "real WorkerRuntime + fake
+    collaborators construct without TypeError" independent of whether
+    `loop_factory` is mandatory or has a real default at construction time.
+    """
+    config_path = _write_config(tmp_path)
+    constructed: list[WorkerRuntime] = []
+    real_init = WorkerRuntime.__init__
+    fake_serving = _FakeServingClient()
+
+    def _spy_init(self: WorkerRuntime, *args: object, **kwargs: object) -> None:
+        kwargs.setdefault("loop_factory", _fake_loop_factory)
+        real_init(self, *args, **kwargs)
+        constructed.append(self)
+
+    monkeypatch.setattr(WorkerRuntime, "__init__", _spy_init)
+    monkeypatch.setattr(WorkerRuntime, "run", lambda self: None)
+    monkeypatch.setattr(worker_main, "InProcessServingClient", lambda: fake_serving)
+
+    exit_code = worker_main.main(["--config", str(config_path)])
+
+    assert exit_code == 0
+    assert len(constructed) == 1
+    runtime = constructed[0]
+    assert runtime._loop_factory is _fake_loop_factory  # noqa: SLF001
+    assert runtime._serving is fake_serving  # noqa: SLF001
+
+
+# --- restart_check wiring ------------------------------------------------
+
+
+def test_restart_check_wired_from_config_relay_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = _write_config(tmp_path)
+    monkeypatch.delenv("RELAY_URL", raising=False)
+    monkeypatch.delenv("RELAY_TOKEN", raising=False)
+    calls: list[tuple[str, str, RestartDirective, object]] = []
+    sentinel_check = lambda: False  # noqa: E731
+
+    def _fake_make_restart_check(
+        relay_url: str,
+        relay_token: str,
+        boot_directive: RestartDirective,
+        *,
+        pull_config: object,
+        **_kwargs: object,
+    ) -> object:
+        calls.append((relay_url, relay_token, boot_directive, pull_config))
+        return sentinel_check
+
+    constructed: list[WorkerRuntime] = []
+    real_init = WorkerRuntime.__init__
+
+    def _spy_init(self: WorkerRuntime, *args: object, **kwargs: object) -> None:
+        real_init(self, *args, **kwargs)
+        constructed.append(self)
+
+    monkeypatch.setattr(worker_main, "make_restart_check", _fake_make_restart_check)
+    monkeypatch.setattr(WorkerRuntime, "__init__", _spy_init)
+    monkeypatch.setattr(WorkerRuntime, "run", lambda self: None)
+
+    exit_code = worker_main.main(["--config", str(config_path)])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    relay_url, relay_token, boot_directive, pull_config = calls[0]
+    assert relay_url == "http://127.0.0.1:8000"
+    assert relay_token == "relay-token-1"
+    assert boot_directive == RestartDirective(generation=0, version=0)
+    assert pull_config is worker_main.pull_worker_config
+    assert constructed[0]._restart_check is sentinel_check  # noqa: SLF001
+
+
+def test_restart_check_relay_env_vars_override_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = _write_config(tmp_path)
     monkeypatch.setenv("RELAY_URL", "http://relay.test")
     monkeypatch.setenv("RELAY_TOKEN", "relay-token")
-    monkeypatch.setenv("API_FACILITY_ID", "facility-1")
-    monkeypatch.setattr(module, "RuntimeStatusSender", FailingSender)
-    monkeypatch.setattr(module, "run_global_bootstrap", _fail)
+    calls: list[tuple[str, str]] = []
 
-    assert module.main([]) == 3
-    assert "Profile boot diagnostics publish failed: RuntimeError" in capsys.readouterr().err
+    def _fake_make_restart_check(
+        relay_url: str, relay_token: str, _boot_directive: object, *, pull_config: object
+    ) -> object:
+        calls.append((relay_url, relay_token))
+        return lambda: False
+
+    monkeypatch.setattr(worker_main, "make_restart_check", _fake_make_restart_check)
+    monkeypatch.setattr(WorkerRuntime, "run", lambda self: None)
+
+    assert worker_main.main(["--config", str(config_path)]) == 0
+    assert calls == [("http://relay.test", "relay-token")]
 
 
-def test_profile_failure_malformed_relay_response_preserves_fail_fast_exit(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+# --- heartbeat-on-start passthrough ---------------------------------------
+
+
+def test_heartbeat_on_start_sends_canonical_heartbeat_per_camera(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    module = importlib.import_module("edge.runtime.edge_worker")
+    config_path = _write_config(tmp_path, camera_count=2, version=3)
+    requests: list[tuple[str, str, dict[str, str], bytes | None, float]] = []
 
-    class MalformedResponse:
-        def __enter__(self) -> MalformedResponse:
-            return self
+    def _fake_bounded_request(
+        url: str,
+        method: str,
+        headers: dict[str, str],
+        data: bytes | None,
+        timeout_sec: float,
+        on_response: object = None,
+    ) -> tuple[int, dict[str, str], bytes]:
+        del on_response
+        requests.append((url, method, headers, data, timeout_sec))
+        return 204, {}, b""
 
-        def __exit__(self, *_args: object) -> None:
-            return None
+    monkeypatch.setattr(worker_main, "bounded_request", _fake_bounded_request)
+    monkeypatch.setattr(WorkerRuntime, "run", lambda self: None)
 
-        def read(self) -> bytes:
-            return b"[]"
+    exit_code = worker_main.main(["--config", str(config_path), "--heartbeat-on-start"])
 
-    def _fail(_stages: object) -> object:
-        raise module.GlobalBootstrapError("profile_verify: no usable CUDA device")
-
-    def _malformed_response(_request: object, *, timeout: float) -> MalformedResponse:
-        assert timeout == 2.0
-        return MalformedResponse()
-
-    monkeypatch.setenv("RELAY_URL", "http://relay.test")
-    monkeypatch.setenv("RELAY_TOKEN", "relay-token")
-    monkeypatch.setenv("API_FACILITY_ID", "facility-1")
-    monkeypatch.setattr(module, "run_global_bootstrap", _fail)
-    monkeypatch.setattr(module.urllib.request, "urlopen", _malformed_response)
-
-    assert module.main([]) == 3
-    assert "Profile boot diagnostics publish failed: AttributeError" in capsys.readouterr().err
-
-
-def test_successful_profile_boot_keeps_existing_config_error_exit_code(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = importlib.import_module("edge.runtime.edge_worker")
-
-    class SuccessfulBoot:
-        outputs = {
-            "profile_verify": module.BootContext(
-                profile=PROFILE_REGISTRY["cpu"], device="cpu", decode="opencv"
-            )
+    assert exit_code == 0
+    assert len(requests) == 2
+    for (url, method, headers, data, _timeout), index in zip(requests, (1, 2), strict=True):
+        assert url == "http://127.0.0.1:8000/api/v1/relay/heartbeat"
+        assert method == "POST"
+        assert headers["X-Edge-Relay-Token"] == "relay-token-1"
+        assert data is not None
+        assert json.loads(data) == {
+            "camera_id": f"camera-{index}",
+            "facility_id": "facility-1",
+            "config_version": 3,
         }
 
-    monkeypatch.setattr(module, "run_global_bootstrap", lambda _stages: SuccessfulBoot())
-    monkeypatch.setattr(
-        module,
-        "_load_startup_config",
-        lambda _options: (_ for _ in ()).throw(module.EdgeWorkerConfigError("config failed")),
-    )
 
-    def _unexpected_sender(*_args: object, **_kwargs: object) -> None:
-        pytest.fail("normal profile boot must not publish failure status")
-
-    monkeypatch.setattr(module, "RuntimeStatusSender", _unexpected_sender)
-
-    assert module.main([]) == 2
-
-
-def test_default_relay_promotes_valid_snapshot_metadata(
-    monkeypatch: pytest.MonkeyPatch,
+def test_heartbeat_on_start_flag_off_sends_no_heartbeat(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    module = importlib.import_module("edge.runtime.edge_worker")
-    sent: list[dict[str, object]] = []
+    config_path = _write_config(tmp_path)
 
-    class Response:
-        def __enter__(self) -> Response:
-            return self
+    def _fail(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("heartbeat must not be sent without --heartbeat-on-start")
 
-        def __exit__(self, *_args: object) -> None:
-            return None
+    monkeypatch.setattr(worker_main, "bounded_request", _fail)
+    monkeypatch.setattr(WorkerRuntime, "run", lambda self: None)
 
-        def read(self) -> bytes:
-            return b""
-
-    def capture(request: object, *, timeout: float) -> Response:
-        assert timeout == 0.5
-        sent.append(json.loads(request.data.decode("utf-8")))
-        return Response()
-
-    monkeypatch.setattr(module.urllib.request, "urlopen", capture)
-    edge_event_id = "123e4567-e89b-42d3-a456-426614174000"
-    snapshot = {
-        "snapshot_id": edge_event_id,
-        "path": module._snapshot_relative_path(
-            "camera-1", "2026-07-28T12:00:00.000Z", edge_event_id
-        ),
-        "sha256": "a" * 64,
-        "size_bytes": 42,
-        "mime_type": "image/jpeg",
-        "captured_at": "2026-07-28T12:00:00.000Z",
-        "camera_id": "camera-1",
-        "edge_event_id": edge_event_id,
-    }
-
-    module._RelayClient(
-        alert_url="http://relay.test/alerts",
-        heartbeat_url="http://relay.test/heartbeats",
-        camera_id="camera-1",
-        facility_id="facility-1",
-        resident_id=None,
-        relay_token="relay-token",
-    ).emit(
-        {
-            "event_type": "fall",
-            "probability": 0.9,
-            "detected_at": "2026-07-28T12:00:00Z",
-            "edge_event_id": edge_event_id,
-            "snapshot": snapshot,
-            "snapshot_jpeg": b"jpeg",
-        }
-    )
-
-    assert sent[0]["snapshot"] == snapshot
-    assert sent[0]["edge_event_id"] == edge_event_id
-    assert sent[0]["snapshot_jpeg_base64"] == "anBlZw=="
-
-    assert "snapshot" not in sent[0]["evidence"]
-    assert "edge_event_id" not in sent[0]["evidence"]
+    assert worker_main.main(["--config", str(config_path)]) == 0
 
 
-def test_default_relay_allows_event_without_snapshot(
-    monkeypatch: pytest.MonkeyPatch,
+def test_heartbeat_on_start_failure_is_nonfatal_and_run_continues(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    module = importlib.import_module("edge.runtime.edge_worker")
-    sent: list[dict[str, object]] = []
+    config_path = _write_config(tmp_path)
 
-    class Response:
-        def __enter__(self) -> Response:
-            return self
+    def _failing_bounded_request(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("relay unreachable")
 
-        def __exit__(self, *_args: object) -> None:
-            return None
+    ran: list[bool] = []
+    monkeypatch.setattr(worker_main, "bounded_request", _failing_bounded_request)
+    monkeypatch.setattr(WorkerRuntime, "run", lambda self: ran.append(True))
 
-        def read(self) -> bytes:
-            return b""
+    exit_code = worker_main.main(["--config", str(config_path), "--heartbeat-on-start"])
 
-    def capture(request: object, *, timeout: float) -> Response:
-        del timeout
-        sent.append(json.loads(request.data.decode("utf-8")))
-        return Response()
-
-    monkeypatch.setattr(module.urllib.request, "urlopen", capture)
-    edge_event_id = "123e4567-e89b-42d3-a456-426614174000"
-    module._RelayClient(
-        alert_url="http://relay.test/alerts",
-        heartbeat_url="http://relay.test/heartbeats",
-        camera_id="camera-1",
-        facility_id="facility-1",
-        resident_id=None,
-        relay_token="relay-token",
-    ).emit({"event_type": "fall", "probability": 0.9, "edge_event_id": edge_event_id})
-
-    assert sent[0]["edge_event_id"] == edge_event_id
-    assert "snapshot" not in sent[0]
-    assert "snapshot" not in sent[0]["evidence"]
+    assert exit_code == 0
+    assert ran == [True]
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("path", "snapshots/../escape.jpg"),
-        ("sha256", "A" * 64),
-        ("size_bytes", 0),
-        ("mime_type", "image/png"),
-        ("captured_at", "2026-07-28T12:00:00Z"),
-        ("camera_id", "camera-2"),
-        ("edge_event_id", "not-a-uuid"),
-        ("snapshot_id", "123e4567-e89b-42d3-a456-426614174001"),
-    ],
-)
-def test_default_relay_rejects_malformed_present_snapshot(field: str, value: object) -> None:
-    module = importlib.import_module("edge.runtime.edge_worker")
-    edge_event_id = "123e4567-e89b-42d3-a456-426614174000"
-    snapshot: dict[str, object] = {
-        "snapshot_id": edge_event_id,
-        "path": module._snapshot_relative_path(
-            "camera-1", "2026-07-28T12:00:00.000Z", edge_event_id
-        ),
-        "sha256": "a" * 64,
-        "size_bytes": 42,
-        "mime_type": "image/jpeg",
-        "captured_at": "2026-07-28T12:00:00.000Z",
-        "camera_id": "camera-1",
-        "edge_event_id": edge_event_id,
-    }
-    snapshot[field] = value
-    client = module._RelayClient(
-        alert_url="http://relay.test/alerts",
-        heartbeat_url="http://relay.test/heartbeats",
-        camera_id="camera-1",
-        facility_id="facility-1",
-        resident_id=None,
-        relay_token="relay-token",
-    )
-
-    with pytest.raises(ValueError):
-        client.emit(
-            {
-                "event_type": "fall",
-                "probability": 0.9,
-                "edge_event_id": edge_event_id,
-                "snapshot": snapshot,
-            }
-        )
+# --- exit codes 0 / 1 / 3 from runtime.run() ------------------------------
 
 
-@pytest.mark.parametrize("snapshot", [None, []])
-def test_default_relay_rejects_non_object_snapshot(snapshot: object) -> None:
-
-    module = importlib.import_module("edge.runtime.edge_worker")
-    client = module._RelayClient(
-        alert_url="http://relay.test/alerts",
-        heartbeat_url="http://relay.test/heartbeats",
-        camera_id="camera-1",
-        facility_id="facility-1",
-        resident_id=None,
-        relay_token="relay-token",
-    )
-
-    with pytest.raises(TypeError, match="must be an object"):
-        client.emit(
-            {
-                "event_type": "fall",
-                "probability": 0.9,
-                "edge_event_id": "123e4567-e89b-42d3-a456-426614174000",
-                "snapshot": snapshot,
-            }
-        )
-
-
-@pytest.mark.parametrize(
-    ("snapshot_jpeg", "error"),
-    [
-        (None, TypeError),
-        ("jpeg", TypeError),
-        (b"", ValueError),
-        (b"x" * (200 * 1024 + 1), ValueError),
-    ],
-)
-def test_default_relay_rejects_invalid_inline_snapshot(
-    snapshot_jpeg: object, error: type[Exception]
+def test_clean_run_returns_zero_exit_code(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    module = importlib.import_module("edge.runtime.edge_worker")
-    client = module._RelayClient(
-        alert_url="http://relay.test/alerts",
-        heartbeat_url="http://relay.test/heartbeats",
-        camera_id="camera-1",
-        facility_id="facility-1",
-        resident_id=None,
-        relay_token="relay-token",
-    )
+    config_path = _write_config(tmp_path)
+    monkeypatch.setattr(WorkerRuntime, "run", lambda self: None)
 
-    with pytest.raises(error):
-        client.emit(
-            {
-                "event_type": "fall",
-                "probability": 0.9,
-                "snapshot_jpeg": snapshot_jpeg,
-            }
-        )
+    assert worker_main.main(["--config", str(config_path)]) == 0
+
+
+def test_bootstrap_systemexit_translates_to_its_exit_code(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`bootstrap.bootstrap_or_exit` calls `sys.exit(stage.exit_code)` directly
+    on a global stage failure; `WorkerRuntime.run` never intercepts it, so it
+    reaches `main()` as `SystemExit`, not `BootstrapStageError`."""
+    config_path = _write_config(tmp_path)
+
+    def _fake_run(self: WorkerRuntime) -> None:
+        raise SystemExit(3)
+
+    monkeypatch.setattr(WorkerRuntime, "run", _fake_run)
+
+    assert worker_main.main(["--config", str(config_path)]) == 3
+
+
+def test_systemexit_with_non_int_code_falls_back_to_generic_error_code(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = _write_config(tmp_path)
+
+    def _fake_run(self: WorkerRuntime) -> None:
+        raise SystemExit("boom")
+
+    monkeypatch.setattr(WorkerRuntime, "run", _fake_run)
+
+    assert worker_main.main(["--config", str(config_path)]) == 1
+
+
+def test_generic_runtime_error_returns_generic_error_code(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = _write_config(tmp_path)
+
+    def _fake_run(self: WorkerRuntime) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(WorkerRuntime, "run", _fake_run)
+
+    assert worker_main.main(["--config", str(config_path)]) == 1
+
+
+# --- signal shutdown -------------------------------------------------------
+
+
+def test_sigint_triggers_clean_shutdown_and_restores_previous_handler(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = _write_config(tmp_path)
+    stop_calls: list[WorkerRuntime] = []
+
+    def _fake_run(self: WorkerRuntime) -> None:
+        handler = signal.getsignal(signal.SIGINT)
+        assert callable(handler)
+        handler(signal.SIGINT, None)
+
+    monkeypatch.setattr(WorkerRuntime, "run", _fake_run)
+    monkeypatch.setattr(WorkerRuntime, "stop", lambda self: stop_calls.append(self))
+    previous_handler = signal.getsignal(signal.SIGINT)
+
+    exit_code = worker_main.main(["--config", str(config_path)])
+
+    assert exit_code == 0
+    assert len(stop_calls) == 1
+    assert signal.getsignal(signal.SIGINT) is previous_handler
+
+
+def test_sigterm_triggers_clean_shutdown_and_restores_previous_handler(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = _write_config(tmp_path)
+    stop_calls: list[WorkerRuntime] = []
+
+    def _fake_run(self: WorkerRuntime) -> None:
+        handler = signal.getsignal(signal.SIGTERM)
+        assert callable(handler)
+        handler(signal.SIGTERM, None)
+
+    monkeypatch.setattr(WorkerRuntime, "run", _fake_run)
+    monkeypatch.setattr(WorkerRuntime, "stop", lambda self: stop_calls.append(self))
+    previous_handler = signal.getsignal(signal.SIGTERM)
+
+    exit_code = worker_main.main(["--config", str(config_path)])
+
+    assert exit_code == 0
+    assert len(stop_calls) == 1
+    assert signal.getsignal(signal.SIGTERM) is previous_handler

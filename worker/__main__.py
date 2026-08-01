@@ -1,77 +1,186 @@
-"""Worker entrypoint: canonical `python -m worker` CLI."""
+"""Worker entrypoint: canonical `python -m worker` CLI.
+
+Owns argparse and exit codes and constructs `WorkerRuntime` from
+`worker.runtime.worker` directly. See docs/architecture.md ("Entrypoint")
+for the exit-code table and worker/runtime/AGENTS.md ("CLI") for the
+supported contract.
+"""
 
 from __future__ import annotations
 
 import argparse
 import logging
+import os
+import signal
 import sys
-from pathlib import Path
+from types import FrameType
 
-from worker.runtime.bootstrap import BootstrapStageError
-from worker.runtime.config import load_worker_config
+from shared.events.evidence_export_contract import DeliveryFailure
+from shared.events.evidence_http_transport import bounded_request, encode_json
+from worker.adapters.model.in_process import InProcessServingClient
+from worker.runtime.config import (
+    RELAY_TOKEN_ENV,
+    RELAY_URL_ENV,
+    RestartDirective,
+    WorkerConfig,
+    WorkerConfigError,
+    load_worker_config,
+    make_restart_check,
+    pull_worker_config,
+    resolve_config_path,
+)
 from worker.runtime.worker import WorkerRuntime
 
 LOGGER = logging.getLogger(__name__)
 
+# Mirrors docs/architecture.md "Entrypoint" and worker/runtime/bootstrap.py's
+# GENERIC_RUNTIME_EXIT_CODE / REFUSE_TO_START_EXIT_CODE / FATAL_ACCELERATOR_EXIT_CODE.
+CLEAN_SHUTDOWN_EXIT_CODE = 0
+GENERIC_RUNTIME_ERROR_EXIT_CODE = 1
+CONFIG_ERROR_EXIT_CODE = 2
 
-def main(argv: list[str] | None = None) -> int:
-    """Parse CLI args, load config, and run the worker.
+_HEARTBEAT_ON_START_TIMEOUT_SEC = 0.5
 
-    Exit codes:
-      0 — clean shutdown
-      1 — generic runtime error
-      2 — config/resolution error
-      3 — refuse-to-start (bootstrap failure)
-      4 — fatal accelerator (handled by WorkerRuntime, exits via os._exit)
-    """
+
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m worker",
         description="Eldercare fall/bed-exit worker inference pipeline",
     )
     parser.add_argument(
         "--config",
-        type=Path,
-        required=False,
-        help="YAML config file path (default: looks for ML_WORKER_CONFIG env or standard locations)",
+        type=str,
+        default=None,
+        help="YAML config file path (default: EDGE_CAMERA_CONFIG env var)",
     )
     parser.add_argument(
         "--check-config",
         action="store_true",
-        help="Validate config and exit without starting cameras",
+        help="Validate config and exit without starting cameras (no side effects)",
     )
     parser.add_argument(
         "--heartbeat-on-start",
         action="store_true",
-        help="Send heartbeat POST on READY (used by deployment)",
+        help="Send one relay heartbeat per camera immediately at start",
     )
+    return parser
 
-    args = parser.parse_args(argv)
+
+def _send_heartbeat_on_start(config: WorkerConfig) -> None:
+    """Best-effort heartbeat POST per camera, mirroring the legacy
+    ``heartbeat_on_start`` supervisor option: fire once at process start
+    using the same canonical payload/headers ``HeartbeatReporter.mark_ready``
+    uses on a camera's first READY transition, rather than waiting for it.
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "X-Edge-Relay-Token": config.relay.token.get_secret_value(),
+    }
+    for camera in config.cameras:
+        payload = {
+            "camera_id": camera.camera_id,
+            "facility_id": camera.facility_id,
+            "config_version": config.version,
+        }
+        try:
+            result = bounded_request(
+                config.relay_heartbeat_url,
+                "POST",
+                headers,
+                encode_json(payload),
+                _HEARTBEAT_ON_START_TIMEOUT_SEC,
+            )
+        except Exception as exc:  # noqa: BLE001 - startup heartbeat is best-effort
+            LOGGER.warning("heartbeat-on-start failed for %s: %s", camera.camera_id, exc)
+            continue
+        if isinstance(result, DeliveryFailure) or not 200 <= result[0] < 300:
+            LOGGER.warning("heartbeat-on-start rejected for %s", camera.camera_id)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Parse CLI args, load config, and run the worker.
+
+    Exit codes (docs/architecture.md "Entrypoint"):
+      0 - clean shutdown
+      1 - generic runtime error
+      2 - config or resolution error
+      3 - refuse-to-start (a bootstrap gate failed)
+      4 - fatal accelerator fault (worker/runtime/faults/handler.py, hard exit)
+    """
+    args = _build_parser().parse_args(argv)
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
+    # Ordering note: legacy edge/runtime/edge_worker.py:141-149 runs
+    # run_global_bootstrap([profile_verify_stage(...)]) BEFORE loading config
+    # (edge_worker.py:155-159) on the real-run path, refusing to start
+    # without ever touching config on a bad profile. This entrypoint does
+    # not replicate that: worker.runtime.bootstrap.profile_device_stage's
+    # device verifiers fail closed unless given a real cuda/mps probe
+    # source, and that wiring is owned by the WorkerRuntime composition
+    # root (worker/runtime/worker.py), not exposed standalone to this CLI.
+    # Calling it here with no injected probe would make every real cuda/mps
+    # deployment refuse-to-start unconditionally regardless of actual
+    # hardware, which is worse than today's ordering. Config load stays
+    # first until that probe wiring is exposed to __main__.py too (same
+    # composition-root constraint as loop_factory, below).
     try:
-        config = load_worker_config(args.config)
-    except Exception as exc:
-        LOGGER.error("config resolution failed: %s", exc)
-        return 2
+        config = load_worker_config(resolve_config_path(args.config))
+    except WorkerConfigError:
+        LOGGER.exception("config resolution failed")
+        return CONFIG_ERROR_EXIT_CODE
 
     if args.check_config:
-        LOGGER.info("config validation passed")
-        return 0
+        LOGGER.info("config validation passed (%d camera(s))", len(config.cameras))
+        return CLEAN_SHUTDOWN_EXIT_CODE
 
+    if args.heartbeat_on_start:
+        _send_heartbeat_on_start(config)
+
+    relay_url = os.environ.get(RELAY_URL_ENV, config.relay.url)
+    relay_token = (
+        os.environ.get(RELAY_TOKEN_ENV, "").strip() or config.relay.token.get_secret_value()
+    )
+    restart_check = make_restart_check(
+        relay_url,
+        relay_token,
+        RestartDirective(generation=0, version=0),
+        pull_config=pull_worker_config,
+    )
+
+    # `loop_factory` is intentionally omitted here: composing the real
+    # per-camera ingest loop (opencv->CpuAvAdapter, nvdec->NvdecCuvidAdapter,
+    # fail-fast on unknown) is composition-root territory owned by
+    # `WorkerRuntime` itself (`worker/runtime/worker.py`), not the CLI entry.
+    # `WorkerRuntime.__init__` supplies the real profile-driven default.
+    runtime = WorkerRuntime(
+        config,
+        serving_client=InProcessServingClient(),
+        restart_check=restart_check,
+    )
+
+    def _handle_signal(signum: int, frame: FrameType | None) -> None:
+        del frame
+        LOGGER.info("received signal %s; shutting down", signum)
+        runtime.stop()
+
+    previous_sigint = signal.signal(signal.SIGINT, _handle_signal)
+    previous_sigterm = signal.signal(signal.SIGTERM, _handle_signal)
     try:
-        runtime = WorkerRuntime(config)
         runtime.run()
-        return 0
-    except BootstrapStageError as exc:
-        LOGGER.error("bootstrap failure: %s", exc)
-        return 3
-    except Exception as exc:
-        LOGGER.error("worker runtime error: %s", exc, exc_info=True)
-        return 1
+    except SystemExit as exc:
+        return exc.code if isinstance(exc.code, int) else GENERIC_RUNTIME_ERROR_EXIT_CODE
+    except Exception:  # noqa: BLE001 - top-level CLI boundary must not crash uncaught
+        LOGGER.exception("worker runtime error")
+        return GENERIC_RUNTIME_ERROR_EXIT_CODE
+    else:
+        return CLEAN_SHUTDOWN_EXIT_CODE
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint)
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 if __name__ == "__main__":
