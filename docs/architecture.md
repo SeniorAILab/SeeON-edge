@@ -350,11 +350,14 @@ belongs to `eldercare-dataset-ops`. Pinned by a passing negative test in
 
 **`uv run pytest -q` does not complete without a `--deselect`.**
 `tests/test_edge_topology_contract.py::test_real_rtsp_bedexit_script_generates_supported_production_config`
-calls an unmodified shell script through `subprocess.run` with no timeout and
-hangs. The cause is not established — two hypotheses (mDNS, inherited stdin)
-were checked and rejected — and it reproduces from other worktrees, so it
-predates the `edge/` retirement. Tracked in
-[#9](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/9).
+calls `scripts/ml-worker-real-rtsp-bedexit-e2e.sh` through `subprocess.run` with
+no timeout, and the script hangs. Root cause: the script's `#!/usr/bin/env bash`
+resolves to Homebrew bash 5.3.15, which blocks setting up the `python3 - <<'PY'`
+heredoc in `compute_windows` — it never execs `python3` at all. The identical
+script under `/bin/bash` (3.2.57) exits 0 and renders its config. Deterministic,
+5/5. Tracked in
+[#9](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/9), which also
+records the five hypotheses checked and rejected on the way there.
 
 **No `worker/pipeline/camera_pipeline.py`.** The migration plan names that file
 as the owner of `edge/runtime/camera_worker.py`, and it does not exist. The
