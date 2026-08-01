@@ -348,16 +348,18 @@ belongs to `eldercare-dataset-ops`. Pinned by a passing negative test in
 `tests/test_worker_real_warmup_no_stub.py`. Tracked in
 [#8](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/8).
 
-**`uv run pytest -q` does not complete without a `--deselect`.**
-`tests/test_edge_topology_contract.py::test_real_rtsp_bedexit_script_generates_supported_production_config`
-calls `scripts/ml-worker-real-rtsp-bedexit-e2e.sh` through `subprocess.run` with
-no timeout, and the script hangs. Root cause: the script's `#!/usr/bin/env bash`
-resolves to Homebrew bash 5.3.15, which blocks setting up the `python3 - <<'PY'`
-heredoc in `compute_windows` — it never execs `python3` at all. The identical
-script under `/bin/bash` (3.2.57) exits 0 and renders its config. Deterministic,
-5/5. Tracked in
-[#9](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/9), which also
-records the five hypotheses checked and rejected on the way there.
+**Operator scripts hang on any heredoc larger than 512 bytes.**
+Homebrew bash 5.3.15 delivers heredoc bodies through a pipe and writes them
+before exec'ing the reader, so a body over `PIPE_BUF` (512 bytes on macOS)
+blocks forever against a pipe nobody is draining yet — bash never execs the
+command. The boundary is exact: 512 bytes passes, 513 hangs; bash 3.2.57 is
+unaffected at any size. Seven heredocs under `scripts/` exceed it, including
+`ml-worker-real-rtsp-bedexit-e2e.sh`'s `compute_windows` (527 B) and
+`write_config` (797 B). `tests/test_edge_topology_contract.py` pins a working
+interpreter so the suite is not affected, but the scripts themselves are.
+Tracked in [#9](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/9),
+which carries the reproduction, the size table, and the recommended one-line
+shebang fix.
 
 **No `worker/pipeline/camera_pipeline.py`.** The migration plan names that file
 as the owner of `edge/runtime/camera_worker.py`, and it does not exist. The
