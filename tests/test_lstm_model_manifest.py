@@ -5,7 +5,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from edge.runners.torch_lstm_fall import LstmFallManifest, ModelLoadError
+from worker.adapters.model.errors import ModelLoadError
+from worker.adapters.model.lstm_manifest import LstmFallManifest
 
 
 def _write_manifest(path: Path) -> Path:

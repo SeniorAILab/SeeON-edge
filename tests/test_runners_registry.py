@@ -1,14 +1,24 @@
+"""Residue of the legacy edge registry contract not already covered worker-side.
+
+register/create/get_factory happy-path and unknown-task rejection are covered
+by test_worker_model_serving.py (test_model_registry_registers_and_creates_with_
+factory_options, test_model_registry_unknown_task_error_names_the_task). This
+file keeps the remaining, still-uncovered pieces of the ModelRegistry contract:
+empty-task rejection, per-task factory identity against worker's own runner
+classes, and the models-directory resolution default.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
 
-from edge.runners.registry import ModelRegistry, default_registry
-from edge.runners.sklearn_fall import MODELS_DIR, FallDetector
-from edge.runners.yolo_bed_seg import YoloBedSegRunner
-from edge.runners.yolo_person import YoloPersonRunner
-from edge.runners.yolo_pose import YoloPoseRunner
+from worker.adapters.model.registry import EmptyModelTaskError, ModelRegistry, default_registry
+from worker.adapters.model.sklearn_fall import MODELS_DIR, FallDetector
+from worker.adapters.model.yolo_bed_seg import YoloBedSegRunner
+from worker.adapters.model.yolo_person import YoloPersonRunner
+from worker.adapters.model.yolo_pose import YoloPoseRunner
 
 
 class FakeRunner:
@@ -16,33 +26,11 @@ class FakeRunner:
         self.value = value
 
 
-def test_model_registry_register_create_get_factory_and_tasks() -> None:
-    registry = ModelRegistry()
-    registry.register("fake", FakeRunner)
-
-    assert registry.tasks() == ("fake",)
-    assert registry.get_factory("fake") is FakeRunner
-    runner = registry.create("fake", value=7)
-
-    assert isinstance(runner, FakeRunner)
-    assert runner.value == 7
-
-
 def test_model_registry_rejects_empty_task() -> None:
     registry = ModelRegistry()
 
-    with pytest.raises(ValueError, match="task must be non-empty"):
+    with pytest.raises(EmptyModelTaskError, match="task must be non-empty"):
         registry.register("", FakeRunner)
-
-
-def test_model_registry_unknown_task_raises() -> None:
-    registry = ModelRegistry()
-
-    with pytest.raises(KeyError, match="unknown model task"):
-        registry.get_factory("missing")
-
-    with pytest.raises(KeyError, match="unknown model task"):
-        registry.create("missing")
 
 
 def test_default_registry_has_pose_bed_person_fall_factories_without_loading_models() -> None:
@@ -53,6 +41,7 @@ def test_default_registry_has_pose_bed_person_fall_factories_without_loading_mod
     assert registry.get_factory("bed") is YoloBedSegRunner
     assert registry.get_factory("person") is YoloPersonRunner
     assert registry.get_factory("fall") is FallDetector
+
 
 def test_sklearn_fall_default_models_dir_points_to_ml_models_root() -> None:
     assert MODELS_DIR == Path(__file__).resolve().parents[1] / "models"

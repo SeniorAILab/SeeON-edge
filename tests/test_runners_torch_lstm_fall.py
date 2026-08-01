@@ -9,8 +9,10 @@ import pytest
 import torch
 import yaml
 
-import edge.runners.torch_lstm_fall as torch_lstm_fall
-from edge.runners.torch_lstm_fall import (
+import worker.adapters.model.torch_lstm_fall as torch_lstm_fall
+from worker.adapters.model.torch_lstm_fall import (
+    CURRENT_PREPROCESSING_IDENTITY,
+    LstmFallManifest,
     LstmFallRunner,
     ModelLoadError,
     build_lstm_module,
@@ -58,6 +60,7 @@ def _manifest() -> SimpleNamespace:
         input_shape=(4, 51),
         schema_version=2,
         preprocessing_identity="coco17-xyc-frame-normalized-zero-fill-v1",
+        artifact_digest=None,
     )
 
 
@@ -120,9 +123,26 @@ def test_lstm_runner_moves_module_and_input_to_requested_device(
 def test_from_artifact_dir_threads_device(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    manifest = _manifest()
-    manifest.architecture_path = tmp_path / "arch.json"
-    manifest.weights_path = tmp_path / "model.pt"
+    # Worker's from_artifact_dir (unlike edge's) verifies an artifact digest and
+    # rebuilds the manifest via dataclasses.replace(), so the isolation double
+    # must be a real LstmFallManifest instance and the digest step is stubbed
+    # out too -- device threading is what this test isolates, not artifact I/O.
+    manifest = LstmFallManifest(
+        type="lstm",
+        framework="pytorch",
+        mode="sequence",
+        artifact_dir=tmp_path,
+        weights="model.pt",
+        architecture="arch.json",
+        metadata="metadata.yaml",
+        window=4,
+        stride=1,
+        input_shape=(4, 51),
+        operating_threshold=0.5,
+        schema_version=2,
+        preprocessing_identity=CURRENT_PREPROCESSING_IDENTITY,
+        artifact_digest=None,
+    )
     module = build_lstm_module(hidden=8, layers=1, dropout=0.0)
     monkeypatch.setattr(
         torch_lstm_fall.LstmFallManifest,
@@ -133,6 +153,9 @@ def test_from_artifact_dir_threads_device(
         torch_lstm_fall, "build_lstm_module_from_arch", lambda path: module
     )
     monkeypatch.setattr(torch_lstm_fall, "_load_state_dict", lambda path: module.state_dict())
+    monkeypatch.setattr(
+        torch_lstm_fall, "verify_artifact_digest", lambda path, expected: "0" * 64
+    )
 
     runner = LstmFallRunner.from_artifact_dir(tmp_path, device="cpu")
 

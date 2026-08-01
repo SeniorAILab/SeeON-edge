@@ -6,16 +6,16 @@ from pathlib import Path
 import pytest
 import yaml
 
-import edge.runners.torch_lstm_fall as torch_lstm_fall
-from edge.runners.torch_lstm_fall import (
+import worker.adapters.model.torch_lstm_fall as torch_lstm_fall
+from worker.adapters.model.errors import ModelLoadError
+from worker.adapters.model.torch_lstm_fall import (
     CURRENT_PREPROCESSING_IDENTITY,
     LEGACY_PREPROCESSING_IDENTITY,
     LstmFallManifest,
     LstmFallRunner,
-    ModelLoadError,
     build_lstm_module,
 )
-from edge.runtime.edge_worker_config import FallModelConfig
+from worker.runtime.config.worker_models import FallModelConfig
 
 
 def _write_bundle(
@@ -84,7 +84,6 @@ def test_worker_config_accepts_bundle_identity_fields(tmp_path: Path) -> None:
     assert config.preprocessing_identity == CURRENT_PREPROCESSING_IDENTITY
 
 
-
 def test_configured_identity_mismatch_rejects_before_weight_load(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -110,6 +109,8 @@ def test_configured_identity_mismatch_rejects_before_weight_load(
         )
 
     assert not weight_load_attempted
+
+
 def test_preprocessing_identity_mismatch_rejects_before_weight_load(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
