@@ -6,69 +6,49 @@ import time
 import urllib.error
 import urllib.request
 
-from edge.runtime import mjpeg_server
-from edge.runtime.mjpeg_server import (
+from worker.pipeline.output.live_view import LatestFrameStore
+from worker.pipeline.output.mjpeg_server import (
+    MjpegProbeError,
     MjpegServer,
-    OverlayFrameBuffer,
+    MjpegServerConfig,
     dev_mjpeg_enabled,
     dev_mjpeg_host,
 )
-from edge.sources.probe import RTSPProbeError, RTSPProbeResult
 
-
-def test_mjpeg_buffer_is_camera_keyed_non_consuming() -> None:
-    buffer = OverlayFrameBuffer()
-    buffer.register_camera("camera-b")
-    buffer.publish_jpeg("camera-a", b"jpeg-1", frame_index=1)
-    first = buffer.get_latest("camera-a")
-    second = buffer.get_latest("camera-a")
-    assert first is not None
-    assert second is not None
-    assert first.jpeg == b"jpeg-1"
-    assert second.jpeg == b"jpeg-1"
-    assert buffer.get_latest("camera-b") is None
-
-    buffer.publish_jpeg("camera-a", b"jpeg-2", frame_index=2)
-    assert buffer.get_latest("camera-a") is not None
-    assert buffer.get_latest("camera-a").jpeg == b"jpeg-2"
-    assert buffer.get_latest("camera-b") is None
+# worker's MjpegServer takes an injected `probe` callable (worker/pipeline/
+# output/mjpeg_server.py:36-52) instead of owning an internal RTSP-probing
+# helper wired to the legacy sources/probe module's probe_first_frame. The legacy
+# test_mjpeg_probe_response_keeps_selected_backend monkeypatched that internal
+# helper (edge/runtime/mjpeg_server.py:268-275); there is no worker-side
+# equivalent to monkeypatch because backend-selection is now the injected
+# probe's responsibility, decoupled from this module entirely (see
+# start_optional_mjpeg_server's `probe` parameter). That assertion is
+# impossible-with-reason here; RTSP-backend-selection coverage belongs to the
+# camera-probe/ingest layer, not this HTTP-server module.
+#
+# The buffer-level "camera-keyed, non-consuming" assertion
+# (test_mjpeg_buffer_is_camera_keyed_non_consuming) is superseded by
+# tests/test_runtime_latest_frame.py::test_latest_frame_store_is_camera_keyed_and_non_consuming
+# since worker unified OverlayFrameBuffer and LatestFrameBuffer into the same
+# LatestFrameStore class — it is not re-asserted here.
 
 
 def test_mjpeg_server_defaults_loopback_and_disabled() -> None:
     assert dev_mjpeg_enabled({}) is False
     assert dev_mjpeg_host({}) == "127.0.0.1"
-    buffer = OverlayFrameBuffer()
-    server = MjpegServer(buffer, port=0)
+    store = LatestFrameStore()
+    server = MjpegServer(store, MjpegServerConfig(host="127.0.0.1", port=0))
     try:
         assert server.host == "127.0.0.1"
     finally:
         server.stop()
 
 
-def test_mjpeg_probe_response_keeps_selected_backend(monkeypatch) -> None:
-    expected = RTSPProbeResult(
-        masked_url="rtsp://camera.local/live",
-        requested_backend="auto",
-        backend="opencv",
-        width=640,
-        height=360,
-        channels=3,
-    )
-    monkeypatch.setattr(mjpeg_server, "probe_first_frame", lambda _url: expected)
-
-    assert mjpeg_server._probe_rtsp_first_frame("rtsp://camera.local/live") == {
-        "ok": True,
-        "backend": "opencv",
-        "width": 640,
-        "height": 360,
-    }
-
-
 def test_mjpeg_server_unknown_empty_and_stream_response() -> None:
-    buffer = OverlayFrameBuffer()
-    buffer.register_camera("empty")
-    buffer.publish_jpeg("camera-a", b"\xff\xd8jpeg\xff\xd9", frame_index=1)
-    server = MjpegServer(buffer, port=0)
+    store = LatestFrameStore()
+    store.register_camera("empty")
+    store.publish_jpeg("camera-a", b"\xff\xd8jpeg\xff\xd9", frame_index=1)
+    server = MjpegServer(store, MjpegServerConfig(port=0))
     server.start()
     base = f"http://127.0.0.1:{server.port}"
     try:
@@ -94,10 +74,10 @@ def test_mjpeg_server_unknown_empty_and_stream_response() -> None:
 
 
 def test_snapshot_unknown_empty_and_happy_path() -> None:
-    buffer = OverlayFrameBuffer()
-    buffer.register_camera("empty")
-    buffer.publish_jpeg("camera-a", b"\xff\xd8jpeg\xff\xd9", frame_index=1)
-    server = MjpegServer(buffer, port=0)
+    store = LatestFrameStore()
+    store.register_camera("empty")
+    store.publish_jpeg("camera-a", b"\xff\xd8jpeg\xff\xd9", frame_index=1)
+    server = MjpegServer(store, MjpegServerConfig(port=0))
     server.start()
     base = f"http://127.0.0.1:{server.port}"
     try:
@@ -123,14 +103,18 @@ def test_snapshot_unknown_empty_and_happy_path() -> None:
 
 
 def test_mjpeg_server_probe_requires_token_and_returns_sanitized_result() -> None:
-    buffer = OverlayFrameBuffer()
+    store = LatestFrameStore()
     seen_urls: list[str] = []
 
     def probe(url: str) -> dict[str, object]:
         seen_urls.append(url)
         return {"ok": True, "backend": "opencv", "width": 640, "height": 360}
 
-    server = MjpegServer(buffer, port=0, probe_token="relay-token", probe=probe)
+    server = MjpegServer(
+        store,
+        MjpegServerConfig(port=0, probe_token="relay-token"),
+        probe=probe,
+    )
     server.start()
     base = f"http://127.0.0.1:{server.port}"
     body = json.dumps({"rtsp_url": "rtsp://user:secret@camera.local/trackID=2"}).encode()
@@ -161,12 +145,17 @@ def test_mjpeg_server_probe_requires_token_and_returns_sanitized_result() -> Non
 
 
 def test_mjpeg_server_probe_normalizes_auth_failure_without_leaking_url() -> None:
-    buffer = OverlayFrameBuffer()
+    store = LatestFrameStore()
 
     def probe(url: str) -> dict[str, object]:
-        raise RTSPProbeError("auth", f"auth failed for {url}", "rtsp://***:***@camera/track")
+        del url
+        raise MjpegProbeError("auth")
 
-    server = MjpegServer(buffer, port=0, probe_token="relay-token", probe=probe)
+    server = MjpegServer(
+        store,
+        MjpegServerConfig(port=0, probe_token="relay-token"),
+        probe=probe,
+    )
     server.start()
     base = f"http://127.0.0.1:{server.port}"
     body = json.dumps({"rtsp_url": "rtsp://user:secret@camera.local/trackID=2"}).encode()
@@ -188,19 +177,19 @@ def test_mjpeg_server_probe_normalizes_auth_failure_without_leaking_url() -> Non
 
 
 def test_mjpeg_stream_emits_multiple_camera_keyed_non_consuming_parts() -> None:
-    buffer = OverlayFrameBuffer()
-    buffer.publish_jpeg("camera-a", b"\xff\xd8camera-a-1\xff\xd9", frame_index=1)
-    buffer.publish_jpeg("camera-b", b"\xff\xd8camera-b-1\xff\xd9", frame_index=1)
-    server = MjpegServer(buffer, port=0)
+    store = LatestFrameStore()
+    store.publish_jpeg("camera-a", b"\xff\xd8camera-a-1\xff\xd9", frame_index=1)
+    store.publish_jpeg("camera-b", b"\xff\xd8camera-b-1\xff\xd9", frame_index=1)
+    server = MjpegServer(store, MjpegServerConfig(port=0))
     server.start()
     base = f"http://127.0.0.1:{server.port}"
 
     def publish_updates() -> None:
         time.sleep(0.05)
-        buffer.publish_jpeg("camera-b", b"\xff\xd8camera-b-2\xff\xd9", frame_index=2)
-        buffer.publish_jpeg("camera-a", b"\xff\xd8camera-a-2\xff\xd9", frame_index=2)
+        store.publish_jpeg("camera-b", b"\xff\xd8camera-b-2\xff\xd9", frame_index=2)
+        store.publish_jpeg("camera-a", b"\xff\xd8camera-a-2\xff\xd9", frame_index=2)
         time.sleep(0.05)
-        buffer.publish_jpeg("camera-a", b"\xff\xd8camera-a-3\xff\xd9", frame_index=3)
+        store.publish_jpeg("camera-a", b"\xff\xd8camera-a-3\xff\xd9", frame_index=3)
 
     publisher = threading.Thread(target=publish_updates)
     try:
@@ -221,6 +210,6 @@ def test_mjpeg_stream_emits_multiple_camera_keyed_non_consuming_parts() -> None:
         publisher.join(timeout=1)
         server.stop()
 
-    latest = buffer.get_latest("camera-a")
+    latest = store.get_latest("camera-a")
     assert latest is not None
     assert latest.jpeg == b"\xff\xd8camera-a-3\xff\xd9"
