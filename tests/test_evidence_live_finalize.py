@@ -7,9 +7,16 @@ from pathlib import Path
 
 import pytest
 
-import edge.evidence.evidence_runtime as runtime_module
-from edge.evidence.evidence_manifest import unavailable_manifest
-from edge.evidence.evidence_outbox import (
+import worker.pipeline.output.evidence.evidence_runtime as runtime_module
+from shared.events.evidence_export_contract import (
+    BackendCapabilities,
+    ClipReceipt,
+    DeliveryDisposition,
+    DeliveryFailure,
+    EventReceipt,
+)
+from worker.pipeline.output.evidence.evidence_manifest import unavailable_manifest
+from worker.pipeline.output.evidence.evidence_outbox import (
     ClaimedClip,
     ClipId,
     ClipLocalState,
@@ -18,15 +25,8 @@ from edge.evidence.evidence_outbox import (
     EvidenceReasonCode,
     StagedEvent,
 )
-from edge.evidence.evidence_runtime import EvidenceExportRuntime
-from edge.evidence.evidence_sender import EvidenceSender, SenderConfig, SenderStep
-from shared.events.evidence_export_contract import (
-    BackendCapabilities,
-    ClipReceipt,
-    DeliveryDisposition,
-    DeliveryFailure,
-    EventReceipt,
-)
+from worker.pipeline.output.evidence.evidence_runtime import EvidenceExportRuntime
+from worker.pipeline.output.evidence.evidence_sender import EvidenceSender, SenderConfig, SenderStep
 
 EVENT_ID = EdgeEventId("00000000-0000-4000-8000-000000000099")
 CLIP_ID = ClipId("clip-live-finalize")

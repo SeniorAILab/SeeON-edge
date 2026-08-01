@@ -9,8 +9,8 @@ from typing import NamedTuple
 
 import pytest
 
-from edge.evidence.clip_recorder import ClipRecorder, ClipRecorderConfig
-from edge.evidence.evidence_retention import (
+from worker.pipeline.output.evidence.clip_recorder import ClipRecorder, ClipRecorderConfig
+from worker.pipeline.output.evidence.evidence_retention import (
     EvidenceRetention,
     PurgeCandidate,
     PurgeResult,
@@ -263,7 +263,9 @@ def test_stale_staged_evidence_is_held_until_reconciliation_releases_it(
     old_time = datetime.now().timestamp() - 3600
     staging.chmod(0o700)
     os.utime(staging, (old_time, old_time))
-    monkeypatch.setattr("edge.evidence.clip_recorder._resolve_encoder", lambda: "libx264")
+    monkeypatch.setattr(
+        "worker.pipeline.output.evidence.clip_recorder._resolve_encoder", lambda: "libx264"
+    )
     recorder = ClipRecorder(
         ClipRecorderConfig(store_dir=tmp_path, stale_staging_seconds=1.0),
         disk_usage_provider=lambda _path: DiskUsage(100, 10, 90),

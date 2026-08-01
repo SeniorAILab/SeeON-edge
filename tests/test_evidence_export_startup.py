@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-import edge.evidence.clip_recorder as recorder_module
-from edge.evidence.clip_recorder import ClipRecorder, ClipRecorderConfig
-from edge.evidence.evidence_runtime import EvidenceExportRuntime
+import worker.pipeline.output.evidence.clip_recorder as recorder_module
+from worker.pipeline.output.evidence.clip_recorder import ClipRecorder, ClipRecorderConfig
+from worker.pipeline.output.evidence.evidence_runtime import EvidenceExportRuntime
 
 
 class FakeLock:
