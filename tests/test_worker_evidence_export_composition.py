@@ -873,3 +873,74 @@ def test_clip_only_env_cannot_brick_a_worker_with_clip_and_export_both_off(
 
     assert runtime._evidence_export_runtime is None  # noqa: SLF001
     assert runtime._clip_recorder is None  # noqa: SLF001
+
+def test_recorder_off_init_failure_is_typed_whatever_the_exception_class(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-OSError init failure must still surface as EvidenceDeliveryError.
+
+    The recorder-off path used to catch only ``OSError``. The startup-hook path
+    catches everything, so the same underlying failure was typed and sanitized
+    on one path and escaped raw on the other -- and outbox initialization can
+    fail with more than ``OSError`` (a locked sqlite outbox raises
+    ``sqlite3.OperationalError``, which is not an ``OSError`` subclass).
+
+    ``CLIP_STORE_DIR`` is redirected at a writable path on purpose. Left at its
+    ``/var/lib/clip-store`` default, ``ClipStoreLock.acquire`` raises
+    ``PermissionError`` before ``initialize_under_lock`` is ever called -- and
+    ``PermissionError`` *is* an ``OSError``, so the test would have passed
+    against the old narrow handler without exercising anything.
+
+    Asserting on ``RuntimeError`` is likewise deliberate: it is not an
+    ``OSError``, so this fails if the narrow handler ever comes back.
+    """
+    monkeypatch.setenv("CLIP_STORE_DIR", str(tmp_path / "clip-store"))
+    serving = _FakeServingClient()
+    loops = _InstantLoopFactory()
+    runtime = _runtime(_config("camera-a", clip_enabled=False), serving, loops, tmp_path)
+
+    class _InitRefuses(_RecordingEvidenceRuntime):
+        def initialize_under_lock(self) -> None:
+            raise RuntimeError("outbox schema is from a newer worker")
+
+    with pytest.raises(worker_module.EvidenceDeliveryError) as captured:
+        runtime._initialize_delivery_without_recorder(  # noqa: SLF001
+            _InitRefuses()  # type: ignore[arg-type]
+        )
+
+    assert "failed to initialize under the clip-store lock" in str(captured.value)
+    # The original failure must remain reachable for diagnosis, not be replaced.
+    assert isinstance(captured.value.__cause__, RuntimeError)
+    assert "newer worker" in str(captured.value.__cause__)
+
+
+def test_recorder_off_init_failure_does_not_leak_the_store_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The typed error must not carry filesystem detail into operator logs.
+
+    Same reasoning as the RTSP credential redaction: the message is what lands
+    in logs and alerts, so it names the failure, not the environment. The cause
+    chain still carries the detail for anyone debugging.
+    """
+    store_dir = tmp_path / "clip-store"
+    monkeypatch.setenv("CLIP_STORE_DIR", str(store_dir))
+    serving = _FakeServingClient()
+    loops = _InstantLoopFactory()
+    runtime = _runtime(_config("camera-a", clip_enabled=False), serving, loops, tmp_path)
+
+    class _InitRefuses(_RecordingEvidenceRuntime):
+        def initialize_under_lock(self) -> None:
+            raise RuntimeError(f"cannot open {store_dir}/outbox.sqlite3")
+
+    with pytest.raises(worker_module.EvidenceDeliveryError) as captured:
+        runtime._initialize_delivery_without_recorder(  # noqa: SLF001
+            _InitRefuses()  # type: ignore[arg-type]
+        )
+
+    assert str(store_dir) not in str(captured.value)
+    # The detail is preserved on the cause, just kept out of the operator-facing
+    # message -- otherwise this would be redaction by accident, not by design.
+    assert str(store_dir) in str(captured.value.__cause__)
