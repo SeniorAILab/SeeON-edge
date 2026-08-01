@@ -1,23 +1,11 @@
 from __future__ import annotations
 
-from edge.runtime.status_store import CameraStatus, StatusStore
+from worker.runtime.telemetry.status_store import StatusStore
 
-
-def test_status_store_records_transitions_and_snapshot() -> None:
-    store = StatusStore()
-
-    store.set_status("cam-a", "facility-1", CameraStatus.STARTING, timestamp=1.0)
-    ready = store.set_status("cam-a", "facility-1", CameraStatus.READY, timestamp=2.0)
-
-    assert ready.status == CameraStatus.READY
-    assert store.get_status("cam-a") == ready
-    assert store.snapshot()["cameras"]["cam-a"] == {
-        "camera_id": "cam-a",
-        "facility_id": "facility-1",
-        "status": "READY",
-        "updated_at": 2.0,
-        "error_category": None,
-    }
+# test_status_store_records_transitions_and_snapshot (edge): set_status/get_status/snapshot
+# round-trip is superseded by
+# tests/test_worker_telemetry_status_store.py::test_status_updates_are_thread_safe_and_camera_scoped
+# and ::test_snapshot_preserves_camera_failure_category_and_recovery.
 
 
 def test_status_store_records_non_secret_ops_event_fields() -> None:
@@ -36,13 +24,6 @@ def test_status_store_records_non_secret_ops_event_fields() -> None:
     assert event.camera_id == "cam-a"
     assert event.facility_id == "facility-1"
     assert event.category == "ModelLoadError"
-    assert store.snapshot()["ops_events"] == [
-        {
-            "event_type": "model.load_failed",
-            "camera_id": "cam-a",
-            "facility_id": "facility-1",
-            "category": "ModelLoadError",
-            "timestamp": 3.0,
-            "detail": "weights missing",
-        }
-    ]
+    assert event.timestamp == 3.0
+    assert event.detail == "weights missing"
+    assert store.snapshot().ops_events == (event,)

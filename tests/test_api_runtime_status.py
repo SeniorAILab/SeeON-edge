@@ -11,7 +11,7 @@ from backend.app.features.relay.router import RelayRuntimeStatusRequest
 from backend.app.features.status.runtime_status_store import RuntimeStatusStore
 from backend.app.main import create_app, no_lifespan
 from contracts.decode_diagnostics import DecodeSelection
-from edge.runtime.runtime_diagnostics import WorkerDiagnostics
+from worker.runtime.telemetry.runtime_diagnostics import WorkerDiagnostics
 
 
 def _payload(**overrides: object) -> dict[str, object]:
@@ -250,16 +250,19 @@ def test_worker_runtime_payload_round_trips_through_runtime_status_route() -> No
         "encoder": None,
     }
 def test_profile_boot_failure_status_with_no_cameras_is_accepted() -> None:
-    diagnostics = WorkerDiagnostics(
-        gpu={
+    diagnostics = WorkerDiagnostics()
+    diagnostics.set_gpu_status(
+        {
             "nvml_available": False,
             "cuda_context_ok": False,
             "driver_version": None,
             "device_name": None,
             "nvml_error": "binding_unavailable",
             "captured_at_sec": 1.0,
-        },
-        worker={"alive": False, "profile_boot_error": "no usable CUDA device"},
+        }
+    )
+    diagnostics.set_worker_status(
+        {"alive": False, "profile_boot_error": "no usable CUDA device"}
     )
     client = _client()
 

@@ -15,8 +15,7 @@ from backend.app.lifespan import refresh_backend_config
 from backend.app.main import create_app, no_lifespan
 from backend.app.shared.backend_mapping import MappingResult
 from contracts.worker_config import PulledCameraConfig, PulledNightWindow, PulledWorkerConfig
-from edge.runtime.config_pull import load_edge_worker_config_from_relay
-from edge.runtime.edge_worker import _restart_check
+from worker.runtime.config import JsonObject, WorkerConfigLkgStore, load_worker_config_from_relay
 
 AUTH = {"Authorization": "Bearer relay-token"}
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -413,10 +412,24 @@ def test_system_reports_backend_state_and_version(monkeypatch: pytest.MonkeyPatc
     assert body["updated_at"].endswith("Z")
 
 
-def test_config_pull_persists_lkg_and_falls_back(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ML_WORKER_STATE_DIR", str(tmp_path))
-    payload: dict[str, object] = {
+# test_config_pull_persists_lkg_and_falls_back (edge): LKG persist/fallback round-trip is
+# superseded by tests/test_worker_config_pull_lkg.py (whole-file, worker-side pull/LKG/YAML
+# coverage) and tests/test_worker_config_lifecycle.py
+# ::test_fresh_pull_uses_auth_and_replaces_lkg_atomically /
+# ::test_unreachable_backend_uses_stale_lkg_without_zeroing_cameras. The one assertion
+# neither file makes is the fps/enabled_domains pull-mapping, ported below.
+# test_restart_check_detects_registry_version_change (edge): superseded by
+# tests/test_worker_restart_directive.py::test_restart_check_polls_immediately_on_first_call,
+# ::test_restart_check_polls_again_once_interval_elapses, and
+# ::test_tracker_observe_advances_current_on_strictly_greater_candidate.
+def test_worker_config_pull_maps_fps_and_enabled_domains_from_relay_payload(
+    tmp_path: Path,
+) -> None:
+    store = WorkerConfigLkgStore(tmp_path / "worker-config.json")
+    payload: JsonObject = {
         "registry_version": 9,
+        "config_version": 9,
+        "restart_epoch": 1,
         "cameras": [
             {
                 "camera_id": "camera-1",
@@ -427,64 +440,17 @@ def test_config_pull_persists_lkg_and_falls_back(tmp_path, monkeypatch: pytest.M
             }
         ],
     }
-    calls = {"count": 0}
 
-    def fake_urlopen(request, timeout: float) -> FakeHTTPResponse:
-        calls["count"] += 1
-        assert request.full_url == "http://ml-api:8000/api/v1/cameras/worker-config"
-        assert request.headers["X-edge-relay-token"] == "relay-token"
-        return FakeHTTPResponse(payload)
-
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-
-    pulled = load_edge_worker_config_from_relay("http://ml-api:8000", "relay-token")
-
-    assert pulled is not None
-    config, registry_version, source = pulled
-    assert registry_version == 9
-    assert source == "pulled"
-    assert config.cameras[0].camera_id == "camera-1"
-    assert config.cameras[0].fps == 4
-    assert config.enabled_domains == ("fall",)
-
-    def offline(request, timeout: float) -> FakeHTTPResponse:
-        raise urllib.error.URLError("offline")
-
-    monkeypatch.setattr("urllib.request.urlopen", offline)
-
-    fallback = load_edge_worker_config_from_relay("http://ml-api:8000", "relay-token")
-
-    assert fallback is not None
-    _config, fallback_version, fallback_source = fallback
-    assert fallback_version == 9
-    assert fallback_source == "lkg"
-
-
-def test_restart_check_detects_registry_version_change(monkeypatch: pytest.MonkeyPatch) -> None:
-    versions = [1, 2]
-
-    def fake_pull(relay_url: str, relay_token: str | None) -> PulledWorkerConfig:
-        version = versions.pop(0)
-        return PulledWorkerConfig(
-            config_version=version,
-            restart_epoch=version,
-            night_window=None,
-            cameras=(),
-        )
-
-    now = {"value": 0.0}
-    monkeypatch.setattr("edge.runtime.edge_worker.pull_worker_config", fake_pull)
-    check = _restart_check(
+    snapshot = load_worker_config_from_relay(
         "http://ml-api:8000",
         "relay-token",
-        1,
-        poll_interval_sec=60.0,
-        monotonic=lambda: now["value"],
+        store=store,
+        urlopen=lambda _request, _timeout: FakeHTTPResponse(payload),
     )
 
-    assert check() is False
-    now["value"] = 61.0
-    assert check() is True
+    assert snapshot is not None
+    assert snapshot.config.cameras[0].fps == 4
+    assert snapshot.config.domains.enabled_domains == ("fall",)
 
 
 
