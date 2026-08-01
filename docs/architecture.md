@@ -339,12 +339,18 @@ cell is a backticked `edge/` path is reserved for the ownership map above.
 These are known divergences between the plan and the tree. They are recorded
 here so nobody documents an intention as a fact.
 
-**The shipped example config cannot load the fall artifact that ships with it.**
-`worker/ml-worker.example.yaml` pins `models.fall.schema_version: 2` and a
-coco17 `preprocessing_identity`, while `models/fall/lstm/metadata.yaml` declares
-neither, so its manifest defaults to schema version 1 and the loader refuses the
-pair. That refusal is correct (ADR-0003 fail-closed); which side is canonical
-belongs to `eldercare-dataset-ops`. Pinned by a passing negative test in
+**The shipped example config pins a newer fall contract than the shipped artifact.**
+`worker/ml-worker.example.yaml` pins `models.fall.schema_version: 2` and the
+current coco17 `preprocessing_identity`, while `models/fall/lstm/metadata.yaml`
+declares neither — so it loads as `LEGACY_SCHEMA_VERSION` (1) with the legacy
+identity, and the pinned pair is refused. Neither side is malformed: the loader
+supports both generations as first-class cases
+(`worker/adapters/model/lstm_manifest.py`, `SUPPORTED_PREPROCESSING_IDENTITIES`),
+the artifact is a v1 export, and the config documents the v2 contract.
+`eldercare-dataset-ops` currently emits `schema_version: 1` for fall and no
+preprocessing identity, so nothing produces v2 yet. Resolving it means either
+re-exporting the artifact at v2 or relaxing the example's pins — a product call,
+not a defect. Pinned by a passing negative test in
 `tests/test_worker_real_warmup_no_stub.py`. Tracked in
 [#8](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/8).
 
