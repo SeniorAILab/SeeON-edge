@@ -1,10 +1,14 @@
-"""Tests for features.window_features.extract_window_features.
+"""Tests for worker.pipeline.perception.features.window_features.extract_window_features.
 
 Verifies shape, dtype, NaN/inf-freedom for degenerate inputs.
 All fixtures are synthetic; no real data is loaded.
 
 Ported from the deleted tests/test_training_features.py (training/config.py
-no longer lives here — training moved to eldercare-dataset-ops, ADR-0004).
+no longer lives here — training moved to eldercare-dataset-ops, ADR-0004),
+then re-ported off the legacy edge features module onto the worker replacement
+(todo 30c gap #10: worker/pipeline/perception/features/window_features.py was
+algorithmically identical to the legacy module but had zero direct worker-side
+coverage before this port).
 """
 
 from __future__ import annotations
@@ -12,7 +16,7 @@ from __future__ import annotations
 import numpy as np
 
 from contracts.model import DEFAULT_FALL_CONFIDENCE_THRESHOLD
-from edge.features.window_features import extract_window_features
+from worker.pipeline.perception.features.window_features import extract_window_features
 
 # Source of truth for the feature dimension: features.window_features._D
 # (module docstring: "do not derive D from anywhere else"). T_WINDOW=30 is a

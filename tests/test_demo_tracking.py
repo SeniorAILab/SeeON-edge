@@ -1,4 +1,4 @@
-"""Unit tests for the greedy-IoU tracker (demo/tracking.py).
+"""Unit tests for the greedy-IoU tracker (worker/pipeline/perception/tracker.py).
 
 Tests are pure — no YOLO, no numpy, no heavy deps.  Covers:
 - iou() math correctness (identical, non-overlapping, half-overlap, contained, touching)
@@ -17,7 +17,7 @@ from __future__ import annotations
 import pytest
 
 from contracts import BoundingBox
-from edge.perception.tracker import GreedyIouTracker, iou
+from worker.pipeline.perception.tracker import GreedyIouTracker, iou
 
 
 def _box(x1: int, y1: int, x2: int, y2: int, conf: float = 0.9) -> BoundingBox:
