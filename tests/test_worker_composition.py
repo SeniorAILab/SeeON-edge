@@ -102,6 +102,33 @@ class _FakeLoop:
 
 
 @final
+class _NoOpPump:
+    """Fake pump loop: composition tests assert on ingest wiring, not pump
+    throughput, so this returns immediately instead of polling an empty bus
+    forever (the real ``CameraPipelinePump`` blocks until ``stop()``)."""
+
+    def __init__(self, camera_id: str) -> None:
+        self.camera_id = camera_id
+        self.stop_count = 0
+
+    def run(self) -> None:
+        return None
+
+    def stop(self) -> None:
+        self.stop_count += 1
+
+
+def _pump_factory(
+    camera: CameraRuntimeConfig,
+    _bus: BoundedFrameBus,
+    _analytics: object,
+    _decision: object,
+    _sink: object,
+) -> _NoOpPump:
+    return _NoOpPump(camera.camera_id)
+
+
+@final
 class _LoopFactory:
     def __init__(self, serving: _FakeServingClient, *, fatal_camera_id: str | None = None) -> None:
         self._serving = serving
@@ -308,6 +335,7 @@ def _runtime(
         env={"ML_WORKER_PROFILE": "cpu"},
         serving_client=serving,
         loop_factory=loops,
+        pump_factory=_pump_factory,
         acquire_lease=lambda: GpuLease.acquire(state_dir),
         decode_probe=lambda _decode: VerifyResult(True, "cpu", "decode", "available"),
         hard_exit=hard_exit,

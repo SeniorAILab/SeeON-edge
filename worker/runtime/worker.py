@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from time import monotonic
 from typing import Final, Protocol, TypeAlias, final, runtime_checkable
 
@@ -24,16 +26,21 @@ from worker.domains import (
 from worker.domains.bed_exit import BedExitConfig, NightWindow
 from worker.domains.fall import FallModelProtocol
 from worker.interfaces.decision import Decider
+from worker.interfaces.output import EventSink
 from worker.interfaces.serving import ServingClient
 from worker.pipeline.analytics import CompositeExtractor
 from worker.pipeline.bus import BoundedFrameBus, Scheduler
+from worker.pipeline.camera_pipeline import CameraPipelinePump
 from worker.pipeline.decision import EventAggregator, IncidentManager
 from worker.pipeline.decision.event_identity import event_identity_path
+from worker.pipeline.output.event_sink import EvidenceEventSink
+from worker.pipeline.output.evidence.evidence_runtime import OUTBOX_PATH_ENV
+from worker.pipeline.output.evidence.evidence_stager import DurableEvidenceStager
 from worker.pipeline.perception import GreedyIouTracker, SceneState
 from worker.runtime.config import CameraRuntimeConfig, WorkerConfig
 from worker.runtime.faults.handler import FaultHandler
 from worker.runtime.faults.record import make_fault_record
-from worker.runtime.lease import GpuLease
+from worker.runtime.lease import GpuLease, resolve_state_dir
 from worker.runtime.model_composition import SharedYoloExtractors, compose_yolo_extractors
 from worker.runtime.profile.boot import BootContext
 from worker.runtime.profile.registry import DecodeProbe
@@ -56,6 +63,13 @@ CameraLoopFactory: TypeAlias = Callable[
     [CameraRuntimeConfig, BoundedFrameBus, ingest.IngestReporter], _RunnableIngest
 ]
 
+PumpFactory: TypeAlias = Callable[
+    [CameraRuntimeConfig, BoundedFrameBus, CompositeExtractor, EventAggregator, EventSink],
+    _RunnableIngest,
+]
+
+EventSinkFactory: TypeAlias = Callable[[CameraRuntimeConfig], EventSink]
+
 
 @runtime_checkable
 class _Warmable(Protocol):
@@ -72,6 +86,7 @@ class CameraRuntimeContext:
     decision: EventAggregator
     heartbeat: HeartbeatReporter
     ingest_loop: _RunnableIngest
+    pump: _RunnableIngest
 
 
 @final
@@ -126,9 +141,17 @@ class HeartbeatReporter:
 
 @final
 class _FaultAwareLoop:
-    def __init__(self, loop: _RunnableIngest, handler: FaultHandler, profile: str) -> None:
+    def __init__(
+        self,
+        loop: _RunnableIngest,
+        handler: FaultHandler,
+        profile: str,
+        *,
+        stage: str = "camera_ingest",
+    ) -> None:
         self._loop, self._handler = loop, handler
         self._profile = profile
+        self._stage = stage
 
     @property
     def camera_id(self) -> str:
@@ -140,12 +163,49 @@ class _FaultAwareLoop:
         except FatalAcceleratorError as exc:
             record = make_fault_record(
                 exc, profile=self._profile, task=exc.task or "inference",
-                stage="camera_ingest", camera_id=exc.camera_id or self.camera_id,
+                stage=self._stage, camera_id=exc.camera_id or self.camera_id,
             )
             self._handler.handle(exc, record)
 
     def stop(self) -> None:
         self._loop.stop()
+
+
+@final
+class _NullClipRecorder:
+    """Interim ``EventClipRecorder``: real clip binding lands with the clip-encoder
+    composition; until then, events still stage durably without a bound clip
+    (the same branch :class:`EvidenceEventSink` already exercises when
+    recording is unavailable).
+    """
+
+    def on_event(
+        self,
+        camera_id: str,
+        event_ref: str,
+        event_type: str | None = None,
+        *,
+        allow_new_clip: bool = True,
+    ) -> str | None:
+        del camera_id, event_ref, event_type, allow_new_clip
+        return None
+
+
+def _evidence_outbox_path() -> Path:
+    configured = os.environ.get(OUTBOX_PATH_ENV, "").strip()
+    if configured:
+        return Path(configured)
+    return resolve_state_dir() / "evidence-outbox.sqlite3"
+
+
+def _default_pump_factory(
+    camera: CameraRuntimeConfig,
+    bus: BoundedFrameBus,
+    analytics: CompositeExtractor,
+    decision: EventAggregator,
+    sink: EventSink,
+) -> CameraPipelinePump:
+    return CameraPipelinePump(camera.camera_id, bus.inference, analytics, decision, sink)
 
 
 @final
@@ -164,11 +224,15 @@ class WorkerRuntime:
         boot_dependencies: bootstrap.BootDependencies | None = None,
         hard_exit: Callable[[int], None] = os._exit,  # noqa: SLF001
         restart_check: Callable[[], bool] | None = None,
+        pump_factory: PumpFactory = _default_pump_factory,
+        event_sink_factory: EventSinkFactory | None = None,
     ) -> None:
         self.config = config
         self._env = os.environ if env is None else env
         self._serving = serving_client
         self._loop_factory = loop_factory
+        self._pump_factory = pump_factory
+        self._sink_factory = event_sink_factory or self._default_event_sink
         self._acquire = acquire_lease or GpuLease.acquire
         self._decode_probe, self._boot_dependencies = decode_probe, boot_dependencies
         self._hard_exit = hard_exit
@@ -257,6 +321,9 @@ class WorkerRuntime:
         self.cameras = tuple(contexts)
         loops = tuple(
             _FaultAwareLoop(item.ingest_loop, handler, boot.profile.name) for item in contexts
+        ) + tuple(
+            _FaultAwareLoop(item.pump, handler, boot.profile.name, stage="camera_pipeline_pump")
+            for item in contexts
         )
         for loop in loops:
             handler.register_loop(loop)
@@ -279,9 +346,22 @@ class WorkerRuntime:
         decision = self._build_decision_stage(camera, self.fall_model)
         heartbeat = HeartbeatReporter(self.config, camera)
         loop = self._loop_factory(camera, bus, heartbeat)
+        sink = self._sink_factory(camera)
+        pump = self._pump_factory(camera, bus, analytics, decision, sink)
         return CameraRuntimeContext(
-            bus, tracker, scene, scheduler, analytics, decision, heartbeat, loop
+            bus, tracker, scene, scheduler, analytics, decision, heartbeat, loop, pump
         )
+
+    def _default_event_sink(self, camera: CameraRuntimeConfig) -> EventSink:
+        stager = DurableEvidenceStager(
+            database_path=_evidence_outbox_path(),
+            camera_id=camera.camera_id,
+            facility_id=camera.facility_id,
+            resident_id=camera.resident_id,
+            config_version=self.config.version,
+            clock=time.time,
+        )
+        return EvidenceEventSink(stager=stager, recorder=_NullClipRecorder())
 
     def _build_decision_stage(
         self, camera: CameraRuntimeConfig, fall_model: FallModelProtocol
