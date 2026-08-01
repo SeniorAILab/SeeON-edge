@@ -54,16 +54,18 @@ class EvidenceExportRuntime:
         relay_url: str,
         relay_token: str | None,
         probe_camera_id: str,
+        database_path: Path | None = None,
     ) -> EvidenceExportRuntime | None:
         if not _enabled(os.environ.get(EXPORT_ENABLED_ENV)):
             return None
         token = "" if relay_token is None else relay_token.strip()
         if not relay_url.strip() or not token or not probe_camera_id.strip():
             raise ValueError("evidence export requires relay URL, token, and camera")
-        configured_path = os.environ.get(OUTBOX_PATH_ENV, "").strip()
-        database_path = (
-            Path(configured_path) if configured_path else store_dir / "evidence-outbox.sqlite3"
-        )
+        if database_path is None:
+            configured_path = os.environ.get(OUTBOX_PATH_ENV, "").strip()
+            database_path = (
+                Path(configured_path) if configured_path else store_dir / "evidence-outbox.sqlite3"
+            )
         config = SenderConfig(
             relay_url=relay_url,
             relay_token=token,

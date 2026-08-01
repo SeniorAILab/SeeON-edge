@@ -33,8 +33,14 @@ from worker.pipeline.bus import BoundedFrameBus, Scheduler
 from worker.pipeline.camera_pipeline import CameraPipelinePump
 from worker.pipeline.decision import EventAggregator, IncidentManager
 from worker.pipeline.decision.event_identity import event_identity_path
-from worker.pipeline.output.event_sink import EvidenceEventSink
-from worker.pipeline.output.evidence.evidence_runtime import OUTBOX_PATH_ENV
+from worker.pipeline.output.event_sink import EventClipRecorder, EvidenceEventSink
+from worker.pipeline.output.evidence.clip_recorder import ClipRecorder
+from worker.pipeline.output.evidence.clip_recorder_models import ClipRecorderConfig
+from worker.pipeline.output.evidence.clip_recorder_services import default_services
+from worker.pipeline.output.evidence.evidence_runtime import (
+    OUTBOX_PATH_ENV,
+    EvidenceExportRuntime,
+)
 from worker.pipeline.output.evidence.evidence_stager import DurableEvidenceStager
 from worker.pipeline.perception import GreedyIouTracker, SceneState
 from worker.runtime.config import CameraRuntimeConfig, WorkerConfig
@@ -69,6 +75,8 @@ PumpFactory: TypeAlias = Callable[
 ]
 
 EventSinkFactory: TypeAlias = Callable[[CameraRuntimeConfig], EventSink]
+
+ClipRecorderFactory: TypeAlias = Callable[[CameraRuntimeConfig], EventClipRecorder]
 
 
 @runtime_checkable
@@ -191,6 +199,36 @@ class _NullClipRecorder:
         return None
 
 
+@final
+@dataclass(frozen=True, slots=True)
+class _CameraClipRecorderView:
+    """Per-camera ``EventClipRecorder`` view over one shared :class:`ClipRecorder`.
+
+    ``ClipRecorder`` is a single actor (one encoder, one queue, one thread) that
+    already keys all mutable per-clip state by ``camera_id`` internally, so
+    clip state is never cross-contaminated between cameras even though the
+    underlying encoder resource is shared -- that sharing is the existing
+    design, not something introduced here. This view exists so composition
+    hands each camera a distinct ``EventClipRecorder`` object (never the same
+    reference), matching the DI seam style used elsewhere in this module.
+    """
+
+    recorder: ClipRecorder
+    camera_id: str
+
+    def on_event(
+        self,
+        camera_id: str,
+        event_ref: str,
+        event_type: str | None = None,
+        *,
+        allow_new_clip: bool = True,
+    ) -> str | None:
+        return self.recorder.on_event(
+            camera_id, event_ref, event_type, allow_new_clip=allow_new_clip
+        )
+
+
 def _evidence_outbox_path() -> Path:
     configured = os.environ.get(OUTBOX_PATH_ENV, "").strip()
     if configured:
@@ -226,6 +264,7 @@ class WorkerRuntime:
         restart_check: Callable[[], bool] | None = None,
         pump_factory: PumpFactory = _default_pump_factory,
         event_sink_factory: EventSinkFactory | None = None,
+        clip_recorder_factory: ClipRecorderFactory | None = None,
     ) -> None:
         self.config = config
         self._env = os.environ if env is None else env
@@ -233,6 +272,7 @@ class WorkerRuntime:
         self._loop_factory = loop_factory
         self._pump_factory = pump_factory
         self._sink_factory = event_sink_factory or self._default_event_sink
+        self._clip_recorder_factory = clip_recorder_factory or self._default_clip_recorder
         self._acquire = acquire_lease or GpuLease.acquire
         self._decode_probe, self._boot_dependencies = decode_probe, boot_dependencies
         self._hard_exit = hard_exit
@@ -245,6 +285,8 @@ class WorkerRuntime:
         self.fault_handler: FaultHandler | None = None
         self.watchdog: InferenceWatchdog | None = None
         self.cameras: tuple[CameraRuntimeContext, ...] = ()
+        self._clip_recorder: ClipRecorder | None = None
+        self._evidence_export_runtime: EvidenceExportRuntime | None = None
 
     def run(self) -> None:
         stages = bootstrap.named_stages(
@@ -257,6 +299,7 @@ class WorkerRuntime:
         )
         try:
             _ = bootstrap.bootstrap_or_exit(stages, context=self._context)
+            self._start_export_sender()
             if self._supervisor is not None:
                 self._supervisor.join()
         finally:
@@ -267,7 +310,25 @@ class WorkerRuntime:
             self._supervisor.stop()
         if self.watchdog is not None:
             self.watchdog.stop()
+        if self._evidence_export_runtime is not None:
+            self._evidence_export_runtime.stop_sender()
+        if self._clip_recorder is not None:
+            self._clip_recorder.stop()
         self._context.release_lease()
+
+    def _start_export_sender(self) -> None:
+        """Start delivering staged evidence to the relay, never fatal to cameras.
+
+        Camera activation (and the clip recorder it composes) has already run
+        by the time ``bootstrap_or_exit`` returns, so this only needs to flip
+        the sender's background thread on.
+        """
+        if self._evidence_export_runtime is None:
+            return
+        try:
+            self._evidence_export_runtime.start_sender()
+        except Exception:  # noqa: BLE001 - export delivery is a non-fatal camera boundary
+            LOGGER.warning("evidence export sender failed to start", exc_info=True)
 
     def _initialize_models(
         self, boot: BootContext
@@ -309,6 +370,7 @@ class WorkerRuntime:
         yolo, handler, watchdog = self.shared_yolo, self.fault_handler, self.watchdog
         if yolo is None or handler is None or watchdog is None:
             raise RuntimeError("camera activation requires initialized shared state")
+        self._compose_evidence_export(boot)
         contexts: list[CameraRuntimeContext] = []
         outcomes: list[bootstrap.CameraStageOutcome] = []
         for camera in self.config.cameras:
@@ -361,7 +423,57 @@ class WorkerRuntime:
             config_version=self.config.version,
             clock=time.time,
         )
-        return EvidenceEventSink(stager=stager, recorder=_NullClipRecorder())
+        return EvidenceEventSink(stager=stager, recorder=self._clip_recorder_factory(camera))
+
+    def _compose_evidence_export(self, boot: BootContext) -> None:
+        """Compose the real clip recorder and (optional) relay export sender.
+
+        ``ClipRecorder`` is one shared actor/encoder for the whole process (the
+        existing design; see ``_CameraClipRecorderView``), so it is built once
+        here, before any per-camera sink needs it. Every profile in
+        ``PROFILE_REGISTRY`` resolves a real encoder (h264_nvenc or libx264) --
+        there is no "no encode support" profile in this codebase -- so this
+        always attempts real clip recording rather than inventing a disabled
+        branch. Composition never fails camera activation: clip-store or relay
+        misconfiguration/unavailability degrades to ``_NullClipRecorder`` (events
+        still stage durably, just without a bound clip), matching the branch
+        ``EvidenceEventSink`` already exercises when recording is unavailable.
+        """
+        clip_config = ClipRecorderConfig()
+        evidence_runtime: EvidenceExportRuntime | None = None
+        try:
+            evidence_runtime = EvidenceExportRuntime.from_environment(
+                store_dir=clip_config.store_dir,
+                relay_url=self.config.relay.url,
+                relay_token=self.config.relay.token.get_secret_value(),
+                probe_camera_id=self.config.cameras[0].camera_id,
+                database_path=_evidence_outbox_path(),
+            )
+        except ValueError:
+            LOGGER.warning("evidence export misconfigured; export disabled", exc_info=True)
+        recorder = ClipRecorder(
+            clip_config,
+            services=default_services(clip_config, boot.encode),
+            is_clip_held=None if evidence_runtime is None else evidence_runtime.is_clip_held,
+            startup_hook=(
+                None if evidence_runtime is None else evidence_runtime.initialize_under_lock
+            ),
+            on_clip_finalized=(
+                None if evidence_runtime is None else evidence_runtime.notify_clip_finalized
+            ),
+        )
+        try:
+            recorder.start()
+        except Exception:  # noqa: BLE001 - clip recording is a non-fatal camera boundary
+            LOGGER.warning("clip recorder failed to start; clips disabled", exc_info=True)
+            return
+        self._clip_recorder = recorder
+        self._evidence_export_runtime = evidence_runtime
+
+    def _default_clip_recorder(self, camera: CameraRuntimeConfig) -> EventClipRecorder:
+        if self._clip_recorder is None:
+            return _NullClipRecorder()
+        return _CameraClipRecorderView(self._clip_recorder, camera.camera_id)
 
     def _build_decision_stage(
         self, camera: CameraRuntimeConfig, fall_model: FallModelProtocol
