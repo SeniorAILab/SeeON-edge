@@ -5,7 +5,7 @@
 **Branch:** main
 
 Python/uv + React monorepo for fall and bed-exit detection, organized as three
-deployable instances (`front`, `backend`, `edge`) plus a `shared` library, each
+deployable instances (`front`, `backend`, `worker`) plus a `shared` library, each
 owning its subtree to 2 levels. Boundaries are enforced by import-linter
 (`[tool.importlinter]` in `pyproject.toml`) — not a hand-rolled walker.
 
@@ -15,26 +15,34 @@ owning its subtree to 2 levels. Boundaries are enforced by import-linter
 | --- | --- |
 | `front` | React/Vite SPA, feature-sliced: `src/features/*`, `src/shared/{ui,api}`, `src/app` |
 | `backend` | FastAPI gateway, vertical-slice: `app/features/{cameras,clips,evidence,relay,status}` (router+store), `app/core`, `app/shared` |
-| `edge` | RTSP inference worker, 2-depth: `sources/perception/domains/runners/evidence/runtime/serving_client/features` |
-| `shared` | `shared.events` (backend↔edge wire code); the cross-instance library |
+| `worker` | RTSP inference worker, layered: `types/interfaces/adapters/pipeline/domains/runtime` (see `docs/architecture.md` "Layers") |
+| `shared` | `shared.events` (backend↔worker wire code); the cross-instance library |
 | `contracts` | ADR-0004 vendored from `eldercare-dataset-ops` (top-level shared leaf; `test_vendor_drift` firewall) |
 | `tests` | pytest contracts and boundary coverage |
 
-`backend` and `edge` are import-independent (they talk only over relay HTTP);
+`edge/` is the pre-migration legacy tree that `worker/` replaced; it is being
+retired (todo 34 "atomic edge deletion") and is no longer an import-linter
+root package. See `docs/architecture.md` "Source-to-target ownership" for the
+historical file-by-file mapping — those rows are migration citations, not
+operator instructions.
+
+`backend` and `worker` are import-independent (they talk only over relay HTTP);
 both may import `contracts` and `shared`. Training belongs to
 `eldercare-dataset-ops`; local runtime artifacts belong under `models/` and are
-never committed. GPU serving is in-process behind `edge/serving_client`; the seam
-exposes a **batch-input contract** so a future networked batched serving service
-(50-camera scale) can swap in without a rewrite (deferred; see ADR-0002). Required
-GPU/NVDEC infra fails fast (no silent CPU/OpenCV fallback) per ADR-0002.
+never committed. GPU serving is in-process behind `worker/interfaces/serving.py`
+(`worker/adapters/model/in_process.py`); the seam exposes a **batch-input
+contract** so a future networked batched serving service (50-camera scale) can
+swap in without a rewrite (deferred; see ADR-0002). Required GPU/NVDEC infra
+fails fast (no silent CPU/OpenCV fallback) per ADR-0002.
 
 ## Runtime Topology
 
 - `backend` is the FastAPI control/status/relay gateway (`ml-api` image). Product
   routes live under `/api/v1`; health probes stay at `/health/live` / `/health/ready`.
-- `edge` consumes configured RTSP streams, runs model/domain logic in-process via
-  `edge/serving_client`, and relays facts to `backend` at `/api/v1/relay/*`.
-- `edge` is not an RTSP server. Do not add a stream publisher, MediaMTX,
+- `worker` consumes configured RTSP streams, runs model/domain logic in-process
+  via `worker/interfaces/serving.py`, and relays facts to `backend` at
+  `/api/v1/relay/*`.
+- `worker` is not an RTSP server. Do not add a stream publisher, MediaMTX,
   FFmpeg publisher, or synthetic RTSP runtime surface.
 
 ## Deployment identity (dir ↔ image)
@@ -56,11 +64,11 @@ image names, and the vendored `contracts/worker_config.py` (ADR-0004):
 | --- | --- | --- |
 | Backend bootstrap | `backend/app/main.py`, `backend/app/lifespan.py` | FastAPI control/status/relay gateway. |
 | Backend slices | `backend/app/features/*` | Per-capability router + service + store. |
-| Edge bootstrap | `edge/runtime/edge_worker.py` | CLI, runner bundle, supervisors, relay client. |
-| Per-frame path | `edge/runtime/camera_worker.py`, `edge/perception/` | Frame → observation → domain signal. |
-| Domains | `edge/domains/` | Fall and bed-exit interpretation/latching. |
-| Serving seam | `edge/serving_client/` | ServingClient interface + in-process runner provisioning. |
-| Model adapters | `edge/runners/` | Registry, device selection, warmup, inference adapters. |
+| Worker bootstrap | `worker/__main__.py`, `worker/runtime/worker.py` | CLI (`python -m worker`), `WorkerRuntime` composition root, bootstrap stages. |
+| Per-frame path | `worker/pipeline/camera_pipeline.py`, `worker/pipeline/perception/` | Frame → observation → domain signal. |
+| Domains | `worker/domains/` | Fall and bed-exit interpretation/latching. |
+| Serving seam | `worker/interfaces/serving.py`, `worker/adapters/model/in_process.py` | ServingClient interface + in-process runner provisioning. |
+| Model adapters | `worker/adapters/model/` | Registry, device selection, warmup, inference adapters. |
 | Event egress | `shared/events/edge_ingest_client.py` | Backend Event API facts and heartbeats. |
 | Frontend | `front/src/` | Feature-sliced React SPA. |
 
@@ -69,11 +77,12 @@ image names, and the vendored `contracts/worker_config.py` (ADR-0004):
 ```text
 front/            front instance (React/Vite SPA)
 backend/          backend instance (FastAPI)
-edge/             edge instance (RTSP inference worker)
+worker/           worker instance (RTSP inference worker)
+edge/             legacy pre-migration tree, being retired (todo 34)
 shared/           shared library (shared.events)
 contracts/        L0 interfaces (vendored)
 models/           local, ignored model artifacts
-scripts/          operator and edge tooling
+scripts/          operator and worker tooling
 tests/            pytest suite
 ```
 
@@ -100,14 +109,14 @@ also a pre-commit hook and CI step); contract-symbol exports by `tests/test_cont
 
 ## CONVENTIONS
 
-- Keep `contracts` dependency-light and in sync with `eldercare-dataset-ops` (ADR-0004 vendoring); `edge/features` is edge-internal pure math.
-- Keep the edge→backend boundary one-way over relay HTTP; do not share runtime state.
+- Keep `contracts` dependency-light and in sync with `eldercare-dataset-ops` (ADR-0004 vendoring); `worker/pipeline/perception/features` is worker-internal pure math.
+- Keep the worker→backend boundary one-way over relay HTTP; do not share runtime state.
 - Use `uv` and run `lint-imports` after any import-boundary change.
 
 ## ANTI-PATTERNS (THIS PROJECT)
 
-- No `backend` import from `edge`, no `edge` import from `backend`; instances communicate only over relay HTTP.
-- No RTSP publishing/runtime server surface; `edge` is an RTSP client only.
+- No `backend` import from `worker`, no `worker` import from `backend`; instances communicate only over relay HTTP.
+- No RTSP publishing/runtime server surface; `worker` is an RTSP client only.
 - No committed local model artifacts or training code.
 
 ## NOTES

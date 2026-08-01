@@ -7,8 +7,8 @@ from typing import Final, TypeAlias
 
 import yaml
 
-from edge.domains import DOMAIN_REGISTRY
-from edge.runtime.edge_worker_config import load_edge_worker_config
+from worker.domains import DOMAIN_REGISTRY
+from worker.runtime.config import load_worker_config
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[1]
 EDGE_COMPOSE_FILE: Final = "compose.edge.yaml"
@@ -219,7 +219,7 @@ def test_rtsp_script_surface_uses_reusable_worker_names() -> None:
 
     smoke_source = smoke_script.read_text(encoding="utf-8")
     e2e_source = (scripts_dir / "ml-worker-nursing-home-backend-e2e.sh").read_text(encoding="utf-8")
-    assert "load_edge_worker_config" in smoke_source
+    assert "load_worker_config" in smoke_source
     assert "expected exactly 4 cameras" not in smoke_source
     assert "ml-edge-four" not in smoke_source
     assert "NURSING_HOME_RTSP_URL" in e2e_source
@@ -265,7 +265,7 @@ def test_real_rtsp_bedexit_script_generates_supported_production_config(tmp_path
     assert isinstance(payload, dict)
     assert set(payload["domains"]) <= set(DOMAIN_REGISTRY)
 
-    config = load_edge_worker_config(config_path)
+    config = load_worker_config(config_path)
 
     assert config.enabled_domains == ("bed_exit",)
 

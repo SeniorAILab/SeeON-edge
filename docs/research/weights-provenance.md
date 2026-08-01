@@ -7,19 +7,24 @@ a runtime `ultralytics` import would not alter the scope described here.
 
 ## Method and artifact inventory
 
-The inventory comes from loader call sites, not filenames:
+The inventory comes from loader call sites, not filenames. These citations
+point at the current `worker/` package (the `edge/` tree they were ported
+from is being retired; see `docs/architecture.md` "Source-to-target
+ownership" for the historical mapping):
 
-- `edge/runtime/edge_worker.py:495-509` constructs the normal worker's `pose`
+- `worker/runtime/worker.py:340-360` constructs the normal worker's `pose`
   and `bed` runners and uses LSTM when `models.fall` is configured; otherwise it
   selects the registry fall fallback.
-- `contracts/artifacts.py:7-24`, `edge/runners/yolo_pose.py:17-30`,
-  `edge/runners/yolo_bed_seg.py:39-50`, and `edge/runners/yolo_person.py:12-46`
-  resolve and load the three YOLO checkpoints with `YOLO(str(weight_path))`.
-- `edge/runners/torch_lstm_fall.py:66-183,203-225` loads the LSTM manifest,
-  architecture, and PyTorch state dict; `edge/ml-worker.example.yaml:9-21`
-  pins the normal configuration to `models/fall/lstm`.
-- `edge/runners/sklearn_fall.py:93-146` loads the registry fallback's joblib
-  model and metadata.
+- `contracts/artifacts.py:7-24`, `worker/adapters/model/yolo_pose.py:33-69`,
+  `worker/adapters/model/yolo_bed_seg.py:41-90`, and
+  `worker/adapters/model/yolo_person.py:23-71` resolve and load the three
+  YOLO checkpoints with `load_yolo_model(...)`.
+- `worker/adapters/model/torch_lstm_fall.py:66-178,204-225` loads the LSTM
+  manifest, architecture, and PyTorch state dict;
+  `worker/ml-worker.example.yaml:9-22` pins the normal configuration to
+  `models/fall/lstm`.
+- `worker/adapters/model/sklearn_fall.py:86-150` loads the registry
+  fallback's joblib model and metadata.
 
 `person` is a supported registry loader but is not included by the normal
 `_build_runner_bundle`; it is retained below so the disclosure inventory covers
@@ -34,7 +39,7 @@ metadata file is a worker-read artifact associated with the checkpoint/model.
 | `models/bed/yolo26m-seg.pt` | Normal `bed` runner (bed-exit) | **unknown** | **unknown** | `docs/adr/0006-model-handoff-contract.md` documents the bed artifact contract, but the sibling repository has no bed training script, dataset YAML, run log, or populated model provenance manifest. `manifests/models/README.md` is contract-only. |
 | `models/person/yolo26n.pt` | Supported `person` registry runner; not created by normal bundle | **unknown** | **unknown** | No person-training pipeline or populated model-run manifest was found. The sibling repository's pose files only prove inference use, not this checkpoint's production. `manifests/models/README.md` remains contract-only. |
 | `models/fall/lstm/model.pt`, `models/fall/lstm/arch.json`, `models/fall/lstm/metadata.yaml` | Normal fall configuration | **no** | **no** | `ml/training/models/lstm.py` defines the custom PyTorch `nn.LSTM`; `ml/training/models/base.py:182-195` trains with `module.train()`, Adam, and CrossEntropyLoss and saves a PyTorch state dict. No Ultralytics training/fine-tuning path or pretrained-Ultralytics initialization is present for this model family. |
-| `models/fall/random-forest/model.pkl`, `models/fall/random-forest/metadata.json` | Fall registry fallback when `models.fall` is absent | **no** | **no** (not applicable to this sklearn model) | `ml/training/models/rf.py:16,36-54` defines and fits `RandomForestClassifier`; `ml/training/models/catalog.py` lists the supported non-YOLO fall families. The worker additionally requires `framework == "sklearn"` in `edge/runners/sklearn_fall.py:42-50`. |
+| `models/fall/random-forest/model.pkl`, `models/fall/random-forest/metadata.json` | Fall registry fallback when `models.fall` is absent | **no** | **no** (not applicable to this sklearn model) | `ml/training/models/rf.py:16,36-54` defines and fits `RandomForestClassifier`; `ml/training/models/catalog.py` lists the supported non-YOLO fall families. The worker additionally requires `framework == "sklearn"` in `worker/adapters/model/sklearn_metadata.py:34-41`. |
 
 The release trees cannot fill the YOLO gaps: `ml/data/releases/v1/DATA_CARD.md`
 describes test-only diagnostic data with empty train/validation splits, and

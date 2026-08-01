@@ -4,9 +4,9 @@ Edge ML runtime for fall and bed-exit detection, organized as three deployable
 instances plus a shared library:
 
 - **`backend/`** — FastAPI control/status/relay gateway (`ml-api` image).
-- **`edge/`** — RTSP inference worker that relays facts to the backend (`ml-worker` image).
+- **`worker/`** — RTSP inference worker that relays facts to the backend (`ml-worker` image).
 - **`front/`** — React/Vite dashboard SPA served by the backend.
-- **`shared/`** — `shared.events` (the backend↔edge wire code); `contracts` is a
+- **`shared/`** — `shared.events` (the backend↔worker wire code); `contracts` is a
   top-level vendored leaf (ADR-0004).
 
 Training is maintained separately in `SeniorAILab/eldercare-dataset-ops`.
@@ -44,7 +44,7 @@ Run the backend:
 uv run uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Validate and run the edge worker with a local configuration:
+Validate and run the worker with a local configuration:
 
 ```bash
 uv run python -m worker --config worker/ml-worker.local.yaml --check-config
