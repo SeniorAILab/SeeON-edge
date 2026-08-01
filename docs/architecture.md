@@ -339,25 +339,40 @@ cell is a backticked `edge/` path is reserved for the ownership map above.
 These are known divergences between the plan and the tree. They are recorded
 here so nobody documents an intention as a fact.
 
-**Two parity rows cannot be fully proven on macOS.** The ledger calls a row
-`ported` when a behaviour test covers it, but five of those cited cases only
-run on Linux, so a macOS developer sees them fail and has nothing tying the
-failure back to the row it is evidence for:
+**One parity row cannot be fully proven on macOS.** The ledger calls a row
+`ported` when a behaviour test covers it. Running the cited tests for every
+`ported` row on this host gives 214 passed, 2 failed, and both failures belong
+to one row:
 
 | Cited test | Row it is evidence for | Why it cannot run |
 | --- | --- | --- |
 | `tests/test_clip_recorder.py::test_clip_recorder_finalizes_atomic_manifest_with_pre_and_post_window` | Evidence clip recording and finalisation | needs `ffprobe` on `PATH` |
 | `tests/test_clip_recorder.py::test_clip_recorder_fsyncs_media_and_manifest_before_staging_cleanup` | Evidence clip recording and finalisation | reads `/proc/self/fd`, which macOS does not have |
-| `tests/test_snapshot_store.py::test_snapshot_store_fsyncs_each_file_before_replace_and_directory_after` | Snapshot store | reads `/proc/self/fd` |
-| `tests/test_snapshot_store.py::test_snapshot_store_retries_post_replace_directory_fsync` | Snapshot store | reads `/proc/self/fd` |
-| `tests/test_snapshot_store.py::test_snapshot_store_does_not_leak_descriptors_when_directory_fsync_fails` | Snapshot store | reads `/proc/self/fd` |
 
-Both rows stay `ported`: the evidence exists and CI runs on Ubuntu, where these
-pass. What is missing is *local* proof, which matters because this branch was
-developed and gated on macOS. Treat those two rows as CI-verified rather than
-dev-verified, and do not read their local failures as parity gaps. Running the
-cited tests for every `ported` row on this host gives 211 passed, 5 failed, and
-those five are exactly the rows above.
+This row is genuinely Linux-only, and not by accident:
+`worker/pipeline/output/evidence/evidence_media.py` hands `ffprobe` a
+`/proc/self/fd/{descriptor}` reference to an already-open inode so the probe
+cannot be TOCTOU-swapped for a different file. That is production code, so the
+capability itself requires `/proc` — the deploy target is a Linux container, so
+this is a deliberate floor rather than a portability bug. `tests/test_clip_recorder.py`
+documents it in its module docstring and keeps these two cases specifically to
+pin that floor.
+
+The row stays `ported`: the evidence exists and CI runs on Ubuntu. What is
+missing is *local* proof, which matters because this branch was developed and
+gated on macOS. Treat it as CI-verified rather than dev-verified, and do not
+read its local failures as a parity gap.
+
+**Snapshot store used to be listed here too, and no longer is.** Three of its
+cited tests also failed on macOS, but for an entirely different reason: they
+read `/proc/self/fd` purely as *test instrumentation* to resolve a descriptor
+back to a path and to count open descriptors. `snapshot_store.py` itself never
+touches `/proc`, so nothing about the capability was Linux-only. Those tests now
+use `fcntl(F_GETPATH)` and `/dev/fd` on macOS and the same `/proc` reads on
+Linux, so the row is dev-verified on both. The distinction worth keeping: a
+cited test failing on your machine may be pinning a real runtime floor, or may
+just be instrumentation that was never written to be portable, and the two look
+identical from the test report.
 
 **The shipped example config pins a newer fall contract than the shipped artifact.**
 `worker/ml-worker.example.yaml` pins `models.fall.schema_version: 2` and the

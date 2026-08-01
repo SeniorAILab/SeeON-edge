@@ -202,12 +202,12 @@ def test_parity_ledger_states_the_missing_capability_rule() -> None:
 
 
 def test_platform_limited_parity_evidence_names_the_exact_cases() -> None:
-    """The rows whose evidence cannot run locally must be listed, not implied.
+    """The row whose evidence cannot run locally must be listed, not implied.
 
-    Two ``ported`` rows are proven by tests that only run on Linux. A developer
-    on macOS sees those fail and, without this list, has no way to tell a
-    platform limitation from a parity gap -- which is the precise confusion
-    ``Open gaps`` exists to prevent.
+    One ``ported`` row is proven by tests that only run on Linux, because the
+    capability itself reads ``/proc``. A developer on macOS sees those fail and,
+    without this list, has no way to tell a genuine runtime floor from a parity
+    gap -- which is the precise confusion ``Open gaps`` exists to prevent.
 
     Pinning the individual test IDs rather than a summary sentence is
     deliberate: if one of these is fixed, renamed, or deleted, this fails and
@@ -219,12 +219,6 @@ def test_platform_limited_parity_evidence_names_the_exact_cases() -> None:
         "test_clip_recorder_finalizes_atomic_manifest_with_pre_and_post_window",
         "tests/test_clip_recorder.py::"
         "test_clip_recorder_fsyncs_media_and_manifest_before_staging_cleanup",
-        "tests/test_snapshot_store.py::"
-        "test_snapshot_store_fsyncs_each_file_before_replace_and_directory_after",
-        "tests/test_snapshot_store.py::"
-        "test_snapshot_store_retries_post_replace_directory_fsync",
-        "tests/test_snapshot_store.py::"
-        "test_snapshot_store_does_not_leak_descriptors_when_directory_fsync_fails",
     )
     for case in platform_limited:
         assert case in text, f"Open gaps omits the platform-limited case {case}"
@@ -235,6 +229,44 @@ def test_platform_limited_parity_evidence_names_the_exact_cases() -> None:
         )
     assert "/proc/self/fd" in text, "the note omits why these cannot run"
     assert "ffprobe" in text, "the note omits the ffprobe dependency"
+
+
+def test_the_linux_only_parity_row_names_the_production_code_that_makes_it_so() -> None:
+    """The floor must be justified by production code, not asserted.
+
+    A row is only legitimately Linux-only if something in the shipped worker
+    actually requires Linux. If that citation stops being true, the row should
+    become portable rather than stay excused, so this checks the cited file
+    still contains the dependency the note blames.
+    """
+    text = _read(ARCHITECTURE)
+    cited = "worker/pipeline/output/evidence/evidence_media.py"
+    assert cited in text, "the note does not say which production code needs /proc"
+    assert "/proc/self/fd" in _read(ROOT / cited), (
+        f"{cited} no longer reads /proc/self/fd; the Linux-only excuse is stale"
+    )
+
+
+def test_snapshot_store_evidence_is_not_claimed_to_be_platform_limited() -> None:
+    """Snapshot store was on that list and must not silently return to it.
+
+    Its tests read ``/proc`` only as instrumentation; the capability never did.
+    They now work on macOS too, so listing the row as platform-limited would be
+    wrong -- and re-breaking their portability should be caught here rather than
+    by someone rediscovering it on a Mac.
+    """
+    instrumentation = _read(ROOT / "tests" / "test_snapshot_store.py")
+    assert "F_GETPATH" in instrumentation, (
+        "snapshot-store tests no longer have a macOS descriptor-resolution path"
+    )
+    assert "/dev/fd" in instrumentation, (
+        "snapshot-store tests no longer have a macOS descriptor-enumeration path"
+    )
+    production = _read(ROOT / "worker" / "pipeline" / "output" / "evidence" / "snapshot_store.py")
+    assert "/proc" not in production, (
+        "snapshot_store.py now reads /proc, so its row really is Linux-only "
+        "and the Open gaps note needs updating"
+    )
 
 def test_explicit_fallback_adr_exists_and_is_indexed() -> None:
     adr = ROOT / "docs" / "decisions" / "0003-explicit-fallback-only.md"
