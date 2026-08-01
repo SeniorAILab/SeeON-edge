@@ -271,7 +271,7 @@ run_worker() {
     EDGE_CAMERA_CONFIG="$config" \
     PYTHONUNBUFFERED=1 \
     uv run \
-    python -m edge.runtime.edge_worker \
+    python -m worker \
     --config "$config" \
     --max-frames-per-camera "$frames" \
     --heartbeat-on-start >"$log" 2>&1
@@ -324,7 +324,7 @@ write_summary() {
 # Real RTSP worker bed-exit E2E
 
 - Captured at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-- Worker: real \`python -m edge.runtime.edge_worker\`
+- Worker: real \`python -m worker\`
 - RTSP source: \`${redacted_rtsp_url}\`
 - Facility/camera/resident: \`${facility_id}\` / \`${camera_id}\` / \`${resident_id}\`
 - Backend: \`${backend_base_url}\`
@@ -408,8 +408,8 @@ redact_config "$include_config" "$evidence_dir/include-config.redacted.yaml"
 redact_config "$exclude_config" "$evidence_dir/exclude-config.redacted.yaml"
 write_command_file
 
-uv run python -m edge.runtime.edge_worker --config "$include_config" --check-config >/dev/null
-uv run python -m edge.runtime.edge_worker --config "$exclude_config" --check-config >/dev/null
+uv run python -m worker --config "$include_config" --check-config >/dev/null
+uv run python -m worker --config "$exclude_config" --check-config >/dev/null
 
 wait_for_policy_cooldown
 

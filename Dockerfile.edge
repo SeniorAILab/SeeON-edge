@@ -24,7 +24,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 COPY contracts ./contracts
 COPY shared ./shared
-COPY edge ./edge
+COPY worker ./worker
 RUN mkdir -p /app/models/fall/lstm-runtime /app/models/pose /app/models/bed
 
-CMD ["python", "-m", "edge.runtime.edge_worker"]
+CMD ["python", "-m", "worker"]

@@ -32,7 +32,7 @@ uv run --group lint lint-imports   # architecture-boundary enforcement
 ```
 
 Local model artifacts are intentionally ignored. Place them under `models/` and
-copy `edge/ml-worker.example.yaml` to `edge/ml-worker.local.yaml` before
+copy `worker/ml-worker.example.yaml` to `worker/ml-worker.local.yaml` before
 configuring a real worker-reachable RTSP URL. Never commit RTSP credentials or
 relay tokens.
 
@@ -47,8 +47,8 @@ uv run uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
 Validate and run the edge worker with a local configuration:
 
 ```bash
-uv run python -m edge.runtime.edge_worker --config edge/ml-worker.local.yaml --check-config
-uv run python -m edge.runtime.edge_worker --config edge/ml-worker.local.yaml
+uv run python -m worker --config worker/ml-worker.local.yaml --check-config
+uv run python -m worker --config worker/ml-worker.local.yaml
 ```
 
 Run the front dev server:

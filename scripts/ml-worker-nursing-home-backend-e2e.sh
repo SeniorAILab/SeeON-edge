@@ -168,7 +168,7 @@ run_worker() {
     -f compose.edge.yaml \
     run -T --rm \
     ml-worker \
-    python -m edge.runtime.edge_worker \
+    python -m worker \
     --config /run/secrets/ml-worker.yaml \
     --max-frames-per-camera "$frames" \
     --heartbeat-on-start

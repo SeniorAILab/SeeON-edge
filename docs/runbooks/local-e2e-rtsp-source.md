@@ -123,8 +123,8 @@ containing a `codec_type` of `video`, dimensions, and frame-rate metadata. The
 ```
 
 Do not start the worker on an empty array, an error, or metadata for a non-video
-stream. Copy `edge/ml-worker.example.yaml` to the ignored
-`edge/ml-worker.local.yaml`, set its `rtsp_url` locally to the exact URL above,
+stream. Copy `worker/ml-worker.example.yaml` to the ignored
+`worker/ml-worker.local.yaml`, set its `rtsp_url` locally to the exact URL above,
 and never commit that local file or any credential-bearing URL.
 
 ## Expected negative case

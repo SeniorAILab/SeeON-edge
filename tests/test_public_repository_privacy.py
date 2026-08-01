@@ -356,8 +356,16 @@ def _contains_forbidden_control_bytes(blob: bytes) -> bool:
     return any(byte < 9 or 13 < byte < 32 for byte in blob)
 
 
+PUBLIC_SAFE_STRUCTURED_FIXTURES = frozenset(
+    {
+        Path("edge/ml-worker.example.yaml"),
+        Path("worker/ml-worker.example.yaml"),
+    }
+)
+
+
 def _is_public_safe_structured_fixture(relative: Path, blob: bytes) -> bool:
-    if relative != Path("edge/ml-worker.example.yaml"):
+    if relative not in PUBLIC_SAFE_STRUCTURED_FIXTURES:
         return False
     document = yaml.load(blob, Loader=yaml.BaseLoader)
     if not isinstance(document, dict):
@@ -573,7 +581,7 @@ def test_classifier_allows_public_safe_source_text(blob: bytes) -> None:
 
 
 def test_public_worker_example_allowlist_is_closed_world() -> None:
-    relative = Path("edge/ml-worker.example.yaml")
+    relative = Path("worker/ml-worker.example.yaml")
     blob = next(blob for path, blob in _index_blobs() if path == relative)
     assert _is_public_safe_structured_fixture(relative, blob)
 

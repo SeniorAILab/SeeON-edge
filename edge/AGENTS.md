@@ -22,7 +22,7 @@ the backend over one-way HTTP.
   scheduler, config pull/resolve, status/latest-frame/incident flow state, mjpeg.
 - `features/` — edge-owned pure feature-math (geometry, pose norm, window features).
 
-Entry point: `python -m edge.runtime.edge_worker` (or `python -m edge`).
+Entry point: `python -m worker` (canonical worker CLI).
 
 ## Imports
 

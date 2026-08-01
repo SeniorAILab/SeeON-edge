@@ -1,0 +1,298 @@
+from __future__ import annotations
+
+import threading
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import final
+
+import numpy as np
+
+from contracts.frame import Frame
+from worker.interfaces.bus import FrameBus, FrameSubscription
+from worker.pipeline.ingest.lifecycle import (
+    CameraIngestLoop,
+    CameraIngestPorts,
+    CameraIngestSpec,
+    CapturePolicy,
+    IngestEvent,
+    IngestSupervisor,
+)
+from worker.pipeline.ingest.registry import ResolvedSource, SourceRecord, SourceRegistry
+from worker.types import FramePacket
+
+
+@dataclass(frozen=True, slots=True)
+class _DecodeConfig:
+    camera_id: str
+    url: str
+
+
+@final
+class _Session:
+    def __init__(self, outcomes: list[FramePacket | Exception | None]) -> None:
+        self._outcomes = outcomes
+        self.close_count = 0
+
+    def read(self) -> FramePacket | None:
+        outcome = self._outcomes.pop(0) if self._outcomes else None
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    def close(self) -> None:
+        self.close_count += 1
+
+
+@final
+class _Adapter:
+    def __init__(self, outcomes: list[_Session | Exception]) -> None:
+        self._outcomes = outcomes
+        self.configs: list[_DecodeConfig] = []
+
+    def open(self, config: _DecodeConfig) -> _Session:
+        self.configs.append(config)
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+@final
+class _Subscription:
+    def take(self, *, timeout_sec: float | None = None) -> FramePacket | None:
+        del timeout_sec
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+@final
+class _PublishError(RuntimeError):
+    pass
+
+
+@final
+class _FakeBus:
+    def __init__(self, *, fail_camera_id: str | None = None) -> None:
+        self.fail_camera_id = fail_camera_id
+        self.packets: list[FramePacket] = []
+        self.thread_names: list[str] = []
+        self.on_publish: Callable[[FramePacket], None] | None = None
+        self._lock = threading.Lock()
+
+    def subscribe(
+        self,
+        name: str,
+        *,
+        capacity: int,
+        latest_only: bool = False,
+    ) -> FrameSubscription:
+        assert name and capacity > 0
+        assert isinstance(latest_only, bool)
+        return _Subscription()
+
+    def publish(self, packet: FramePacket) -> None:
+        with self._lock:
+            self.thread_names.append(threading.current_thread().name)
+            should_fail = packet.camera_id == self.fail_camera_id
+            if not should_fail:
+                self.packets.append(packet)
+        if self.on_publish is not None:
+            self.on_publish(packet)
+        if should_fail:
+            raise _PublishError("downstream processing failed")
+
+
+@final
+class _Reporter:
+    def __init__(self) -> None:
+        self.states: dict[str, str] = {}
+        self.categories: dict[str, str] = {}
+        self.events: list[IngestEvent] = []
+        self._lock = threading.Lock()
+
+    def mark_starting(self, camera_id: str) -> None:
+        with self._lock:
+            self.states[camera_id] = "starting"
+
+    def mark_ready(self, camera_id: str) -> None:
+        with self._lock:
+            self.states[camera_id] = "ready"
+
+    def mark_degraded(self, camera_id: str, *, category: str) -> None:
+        with self._lock:
+            self.states[camera_id] = "degraded"
+            self.categories[camera_id] = category
+
+    def emit(self, event: IngestEvent) -> None:
+        with self._lock:
+            self.events.append(event)
+
+
+def _packet(camera_id: str, seq: int) -> FramePacket:
+    image = np.full((2, 3, 3), seq, dtype=np.uint8)
+    frame = Frame(index=seq, time_sec=seq / 5.0, image=image)
+    return FramePacket(camera_id, frame, seq / 5.0, seq, 3, 2, 0.25)
+
+
+def _registry(*camera_ids: str) -> SourceRegistry:
+    records = {
+        camera_id: SourceRecord(
+            camera_id,
+            Path(f"rtsp:/{camera_id}"),
+            0.0,
+            "",
+            kind="live",
+            trusted_live=True,
+        )
+        for camera_id in camera_ids
+    }
+    return SourceRegistry(records=records)
+
+
+def _decode_config(camera_id: str, source: ResolvedSource) -> _DecodeConfig:
+    return _DecodeConfig(camera_id, f"rtsp://example.test/{source.record.source_id}")
+
+
+def _spec(camera_id: str, *, source_id: str | None = None) -> CameraIngestSpec[_DecodeConfig]:
+    return CameraIngestSpec(
+        camera_id=camera_id,
+        source_id=camera_id if source_id is None else source_id,
+        make_decode_config=_decode_config,
+        policy=CapturePolicy(max_failures=1, max_total_reconnects=0, target_fps=1000.0),
+    )
+
+
+def _loop(
+    camera_id: str,
+    adapter: _Adapter,
+    bus: _FakeBus,
+    reporter: _Reporter,
+    registry: SourceRegistry,
+    *,
+    source_id: str | None = None,
+) -> CameraIngestLoop[_DecodeConfig]:
+    ports = CameraIngestPorts(registry=registry, decoder=adapter, bus=bus, reporter=reporter)
+    return CameraIngestLoop(_spec(camera_id, source_id=source_id), ports)
+
+
+def test_registered_loop_publishes_the_exact_packet_and_closes_its_session() -> None:
+    # Given
+    packets = [_packet("camera-a", 7), _packet("camera-a", 8)]
+    session = _Session([*packets])
+    adapter = _Adapter([session])
+    bus = _FakeBus()
+    reporter = _Reporter()
+    loop = _loop("camera-a", adapter, bus, reporter, _registry("camera-a"))
+    bus.on_publish = lambda _packet: loop.stop() if len(bus.packets) == 2 else None
+
+    # When
+    loop.run()
+
+    # Then
+    assert isinstance(bus, FrameBus)
+    assert adapter.configs == [_DecodeConfig("camera-a", "rtsp://example.test/camera-a")]
+    assert bus.packets[0] is packets[0]
+    assert bus.packets[1] is packets[1]
+    assert [(packet.seq, packet.pts) for packet in bus.packets] == [(7, 1.4), (8, 1.6)]
+    assert reporter.states == {"camera-a": "ready"}
+    assert session.close_count == 1
+
+
+def test_registered_loop_reports_reconnect_and_recovery_without_replacing_packets() -> None:
+    # Given
+    first = _Session([None])
+    recovered_packet = _packet("camera-a", 9)
+    second = _Session([recovered_packet])
+    adapter = _Adapter([first, second])
+    bus = _FakeBus()
+    reporter = _Reporter()
+    spec = _spec("camera-a")
+    spec = CameraIngestSpec(
+        spec.camera_id,
+        spec.source_id,
+        spec.make_decode_config,
+        CapturePolicy(max_failures=1, max_total_reconnects=1, target_fps=1000.0),
+    )
+    loop = CameraIngestLoop(
+        spec,
+        CameraIngestPorts(_registry("camera-a"), adapter, bus, reporter),
+    )
+    bus.on_publish = lambda _packet: loop.stop()
+
+    # When
+    loop.run()
+
+    # Then
+    assert bus.packets == [recovered_packet]
+    assert [event.event_type for event in reporter.events] == [
+        "camera.offline",
+        "camera.recovered",
+    ]
+    assert reporter.states == {"camera-a": "ready"}
+    assert first.close_count == second.close_count == 1
+
+
+def test_source_construction_failure_marks_only_that_camera_offline() -> None:
+    # Given
+    adapter = _Adapter([])
+    reporter = _Reporter()
+    loop = _loop("camera-a", adapter, _FakeBus(), reporter, _registry(), source_id="missing")
+
+    # When
+    loop.run()
+
+    # Then
+    assert adapter.configs == []
+    assert reporter.states == {"camera-a": "degraded"}
+    assert reporter.categories == {"camera-a": "SourceRegistryError"}
+    assert [event.event_type for event in reporter.events] == ["camera.offline"]
+
+
+def test_two_camera_supervisor_isolates_read_failure_and_masks_credentials() -> None:
+    # Given
+    raw_url = "rtsp://operator:s3cr3t@example.test/live?token=plain"
+    bad_session = _Session([RuntimeError(f"read failed for {raw_url}")])
+    good_packets = [_packet("camera-good", 1), _packet("camera-good", 2)]
+    good_session = _Session([*good_packets])
+    bus = _FakeBus()
+    reporter = _Reporter()
+    registry = _registry("camera-bad", "camera-good")
+    bad_loop = _loop("camera-bad", _Adapter([bad_session]), bus, reporter, registry)
+    good_loop = _loop("camera-good", _Adapter([good_session]), bus, reporter, registry)
+    bus.on_publish = lambda packet: good_loop.stop() if packet.seq == 2 else None
+
+    # When
+    IngestSupervisor((bad_loop, good_loop)).run()
+
+    # Then
+    assert bus.packets == good_packets
+    assert set(bus.thread_names) == {"worker-ingest-camera-good"}
+    assert reporter.states == {"camera-bad": "degraded", "camera-good": "ready"}
+    offline_cameras = [
+        event.camera_id for event in reporter.events if event.event_type == "camera.offline"
+    ]
+    assert offline_cameras == ["camera-bad"]
+    rendered_events = " ".join(f"{event.category} {event.detail}" for event in reporter.events)
+    assert all(secret not in rendered_events for secret in (raw_url, "operator", "s3cr3t", "plain"))
+    assert bad_session.close_count == good_session.close_count == 1
+
+
+def test_publish_processing_failure_is_not_classified_as_camera_offline() -> None:
+    # Given
+    session = _Session([_packet("camera-a", 1)])
+    bus = _FakeBus(fail_camera_id="camera-a")
+    reporter = _Reporter()
+    loop = _loop("camera-a", _Adapter([session]), bus, reporter, _registry("camera-a"))
+    bus.on_publish = lambda _packet: loop.stop()
+
+    # When
+    loop.run()
+
+    # Then
+    assert reporter.states == {"camera-a": "ready"}
+    assert [event.event_type for event in reporter.events] == ["frame.processing_error"]
+    assert "camera.offline" not in {event.event_type for event in reporter.events}
+    assert session.close_count == 1

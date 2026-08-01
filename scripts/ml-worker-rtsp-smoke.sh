@@ -37,11 +37,11 @@ config_path="$(cd "$(dirname "$config")" && pwd)/$(basename "$config")"
 urls_output="$(
   uv run python - "$config_path" <<'PY'
 import sys
-from edge.runtime.edge_worker_config import EdgeWorkerConfigError, load_edge_worker_config
+from worker.runtime.config import WorkerConfigError, load_worker_config
 
 try:
-    config = load_edge_worker_config(sys.argv[1])
-except EdgeWorkerConfigError as exc:
+    config = load_worker_config(sys.argv[1])
+except WorkerConfigError as exc:
     print(str(exc), file=sys.stderr)
     raise SystemExit(2) from exc
 
@@ -66,7 +66,7 @@ for url in "${urls[@]}"; do
     "$url" >/dev/null
 done
 
-uv run python -m edge.runtime.edge_worker \
+uv run python -m worker \
   --config "$config_path" \
   --max-frames-per-camera "$frames" \
   --heartbeat-on-start

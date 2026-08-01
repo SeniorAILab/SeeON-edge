@@ -111,7 +111,7 @@ services:
     command:
       - python
       - -m
-      - edge.runtime.edge_worker
+      - worker
       - --heartbeat-on-start
 
 # Optional offline-dev YAML bootstrap:
