@@ -25,8 +25,10 @@ from numpy.typing import NDArray
 
 import shared.events.evidence_export_client as evidence_export_client_module
 import worker.runtime.worker as worker_module
+from contracts.frame import Frame
 from contracts.runner import Image, RunnerResult
 from shared.events.evidence_http_transport import HttpResult
+from worker.pipeline.bus import BoundedFrameBus
 from worker.pipeline.ingest.lifecycle import IngestReporter
 from worker.pipeline.output.evidence.evidence_outbox import EvidenceOutbox
 from worker.pipeline.output.evidence.evidence_outbox_types import EdgeEventId, StagedEvent
@@ -74,6 +76,16 @@ class _FakeServingClient:
         runner = _FakeRunner(task)
         self.created.append((task, runner))
         return runner
+
+
+@final
+class _FakeClipRecorder:
+    """Stands in for the real ``ClipRecorder``: ``_build_clip_frame_feeder``
+    composition wiring only needs an object identity to bind, not real
+    encode behavior."""
+
+    def on_frame(self, camera_id: str, frame: Frame) -> bool:
+        return True
 
 
 @final
@@ -401,3 +413,45 @@ def test_per_camera_clip_recorder_views_are_distinct_objects_over_one_shared_rec
     assert first.recorder is second.recorder is runtime._clip_recorder  # noqa: SLF001
     assert first.camera_id == "camera-a"
     assert second.camera_id == "camera-b"
+
+
+def test_build_clip_frame_feeder_binds_the_evidence_tap_and_the_shared_clip_recorder(
+    tmp_path: Path,
+) -> None:
+    """Production gap A: ``_build_clip_frame_feeder`` must drain
+    ``bus.evidence`` -- the subscription that exists for exactly one purpose,
+    feeding clip recording, and that nothing else reads -- not
+    ``bus.inference``, and must share the one process-wide ``ClipRecorder``
+    ``_compose_evidence_export`` resolves once, not build a fresh recorder
+    per camera."""
+    serving = _FakeServingClient()
+    loops = _InstantLoopFactory()
+    runtime = _runtime(_config("camera-a"), serving, loops, tmp_path)
+    recorder = _FakeClipRecorder()
+    runtime._clip_recorder = recorder  # type: ignore[assignment]  # noqa: SLF001
+    bus = BoundedFrameBus()
+
+    feeder = runtime._build_clip_frame_feeder("camera-a", bus)  # noqa: SLF001
+
+    assert feeder is not None
+    assert feeder.camera_id == "camera-a"
+    assert feeder._subscription is bus.evidence  # noqa: SLF001
+    assert feeder._subscription is not bus.inference  # noqa: SLF001
+    assert feeder._recorder is recorder  # noqa: SLF001
+
+
+def test_build_clip_frame_feeder_returns_none_when_clip_recording_never_started(
+    tmp_path: Path,
+) -> None:
+    """Mirrors ``_compose_evidence_export``'s non-fatal degrade path: when the
+    real ``ClipRecorder`` never started (``self._clip_recorder`` stays
+    ``None``), there is no point draining a subscription nobody reads."""
+    serving = _FakeServingClient()
+    loops = _InstantLoopFactory()
+    runtime = _runtime(_config("camera-a"), serving, loops, tmp_path)
+    assert runtime._clip_recorder is None  # noqa: SLF001  # sanity: unset before composition runs
+    bus = BoundedFrameBus()
+
+    feeder = runtime._build_clip_frame_feeder("camera-a", bus)  # noqa: SLF001
+
+    assert feeder is None

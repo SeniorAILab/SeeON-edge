@@ -42,6 +42,23 @@ CONFIG_ERROR_EXIT_CODE = 2
 _HEARTBEAT_ON_START_TIMEOUT_SEC = 0.5
 
 
+def _positive_int(raw: str) -> int:
+    """argparse `type=` for `--max-frames-per-camera`: reject non-integer,
+    zero, and negative values, mirroring edge's `_positive_int`
+    (edge/runtime/edge_worker.py). Raising `ArgumentTypeError` makes argparse
+    call `parser.error(...)`, which exits with CONFIG_ERROR_EXIT_CODE (2) --
+    the same contract already covered for unknown flags in
+    tests/test_worker_cli_residue.py.
+    """
+    try:
+        value = int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be a positive integer, got {raw!r}") from None
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive integer, got {raw!r}")
+    return value
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m worker",
@@ -62,6 +79,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--heartbeat-on-start",
         action="store_true",
         help="Send one relay heartbeat per camera immediately at start",
+    )
+    parser.add_argument(
+        "--max-frames-per-camera",
+        type=_positive_int,
+        default=None,
+        help=(
+            "Bounded-run cap: exit cleanly once every camera has processed "
+            "this many frames (default: run indefinitely)"
+        ),
     )
     return parser
 
@@ -160,6 +186,7 @@ def main(argv: list[str] | None = None) -> int:
         config,
         serving_client=InProcessServingClient(),
         restart_check=restart_check,
+        max_frames_per_camera=args.max_frames_per_camera,
     )
 
     def _handle_signal(signum: int, frame: FrameType | None) -> None:

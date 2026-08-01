@@ -242,6 +242,65 @@ def test_fatal_accelerator_error_propagates_out_of_run_instead_of_being_swallowe
         pump.run()
 
 
+def test_pump_self_terminates_once_max_frames_processed() -> None:
+    """Without ``max_frames``, ``run()`` only returns via ``stop()``; with it,
+    ``run()`` must return on its own once every scheduled frame has been
+    processed -- the per-pump half of the ``--max-frames-per-camera``
+    bounded-run contract (the other half is the supervisor's completion
+    watcher waiting for every camera's pump to reach this point)."""
+    bus = BoundedFrameBus()
+    decision = EventAggregator(deciders=(), incidents=IncidentManager())
+    sink = _RecordingSink()
+    pump = CameraPipelinePump(
+        "camera-a", bus.inference, _blank_analytics("camera-a"), decision, sink,
+        poll_timeout_sec=0.02, max_frames=2,
+    )
+
+    # `bus.inference` is capacity-1/latest-only (drop-oldest): publishing both
+    # packets up front before anything drains the first would silently lose
+    # it, so the second publish is gated on the pump having already taken the
+    # first one off the queue.
+    thread = threading.Thread(target=pump.run, daemon=True)
+    thread.start()
+    bus.publish(_packet("camera-a", 1))
+    assert _wait_for(lambda: pump.processed_count >= 1)
+    bus.publish(_packet("camera-a", 2))
+    thread.join(timeout=2.0)
+
+    assert not thread.is_alive()  # must return on its own; still alive means the cap was ignored
+    assert pump.processed_count == 2
+
+
+def test_pump_without_max_frames_keeps_polling_past_what_a_cap_would_have_stopped() -> None:
+    """Omitting ``max_frames`` (the default) preserves today's run-until-``stop()``
+    behavior: processing continues past any frame count until told to stop."""
+    bus = BoundedFrameBus()
+    decision = EventAggregator(deciders=(), incidents=IncidentManager())
+    sink = _RecordingSink()
+    pump = CameraPipelinePump(
+        "camera-a", bus.inference, _blank_analytics("camera-a"), decision, sink,
+        poll_timeout_sec=0.02,
+    )
+    # run() would otherwise block forever with no cap and no external stop(),
+    # so drive it from a background thread; each publish is gated on the
+    # previous one having already been taken, since `bus.inference` is
+    # capacity-1/latest-only (drop-oldest) and would silently lose packets
+    # published before the prior one is drained.
+    thread = threading.Thread(target=pump.run, daemon=True)
+    thread.start()
+    bus.publish(_packet("camera-a", 1))
+    assert _wait_for(lambda: pump.processed_count >= 1)
+    bus.publish(_packet("camera-a", 2))
+    assert _wait_for(lambda: pump.processed_count >= 2)
+    bus.publish(_packet("camera-a", 3))
+    assert _wait_for(lambda: pump.processed_count >= 3)
+    pump.stop()
+    thread.join(timeout=2.0)
+
+    assert not thread.is_alive()
+    assert pump.processed_count >= 3
+
+
 def test_supervisor_stop_joins_real_pump_threads() -> None:
     bus = BoundedFrameBus()
     decision = EventAggregator(deciders=(), incidents=IncidentManager())

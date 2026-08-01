@@ -16,13 +16,16 @@ from worker.adapters.decode.nvdec_cuvid.errors import (
 )
 from worker.adapters.decode.nvdec_cuvid.models import NvdecCuvidConfig, StreamMetadata
 from worker.adapters.decode.nvdec_cuvid.probe import (
+    NvdecCapability,
     cuvid_decoder_for,
     ffprobe_args,
     ffprobe_binary,
+    probe_nvdec_cuvid_capability,
     probe_stream_metadata,
 )
 
 __all__ = [
+    "NvdecCapability",
     "NvdecConfigError",
     "NvdecCuvidAdapter",
     "NvdecCuvidConfig",
@@ -35,6 +38,7 @@ __all__ = [
     "ffmpeg_decode_args",
     "ffprobe_args",
     "ffprobe_binary",
+    "probe_nvdec_cuvid_capability",
     "probe_stream_metadata",
     "sanitized_nvdec_error",
 ]

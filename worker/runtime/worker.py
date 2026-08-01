@@ -2,20 +2,26 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
+from types import MappingProxyType
 from typing import Any, Final, Protocol, TypeAlias, final, runtime_checkable
 
 import worker.pipeline.ingest.lifecycle as ingest
 import worker.runtime.bootstrap as bootstrap
+import worker.runtime.telemetry.runtime_status_sender as runtime_status_sender_module
 from contracts.runner import RunnerProtocol
 from shared.events.evidence_export_contract import DeliveryFailure
 from shared.events.evidence_http_transport import bounded_request, encode_json
 from shared.events.schemas import build_audit_envelope
+from worker.adapters.decode.cpu_av.probe import probe_opencv_ffmpeg_capability
+from worker.adapters.decode.nvdec_cuvid.probe import probe_nvdec_cuvid_capability
+from worker.adapters.device.cuda.probe import probe_cuda_capability
 from worker.adapters.model import LstmFallRunner, warmup_to_ready
 from worker.adapters.model.errors import FatalAcceleratorError
 from worker.domains import (
@@ -37,6 +43,7 @@ from worker.pipeline.decision import EventAggregator, IncidentManager
 from worker.pipeline.decision.event_identity import event_identity_path
 from worker.pipeline.ingest.registry import SourceRegistry
 from worker.pipeline.output.event_sink import EventClipRecorder, EvidenceEventSink
+from worker.pipeline.output.evidence.clip_frame_feeder import ClipFrameFeeder
 from worker.pipeline.output.evidence.clip_recorder import ClipRecorder
 from worker.pipeline.output.evidence.clip_recorder_models import ClipRecorderConfig
 from worker.pipeline.output.evidence.clip_recorder_services import default_services
@@ -59,8 +66,18 @@ from worker.runtime.ingest_composition import (
 from worker.runtime.lease import GpuLease, resolve_state_dir
 from worker.runtime.model_composition import SharedYoloExtractors, compose_yolo_extractors
 from worker.runtime.profile.boot import BootContext
-from worker.runtime.profile.registry import DecodeProbe
+from worker.runtime.profile.device import CudaProbe
+from worker.runtime.profile.registry import (
+    DecodeProbe,
+    VerifyResult,
+    default_decode_probe,
+    default_verifiers,
+)
 from worker.runtime.telemetry.runtime_diagnostics import WorkerDiagnostics
+from worker.runtime.telemetry.runtime_status_sender import (
+    RelayRuntimeStatusTransport,
+    RuntimeStatusSender,
+)
 from worker.runtime.watchdog import InferenceWatchdog
 
 LOGGER: Final = logging.getLogger(__name__)
@@ -91,6 +108,15 @@ PumpFactory: TypeAlias = Callable[
 EventSinkFactory: TypeAlias = Callable[[CameraRuntimeConfig], EventSink]
 
 ClipRecorderFactory: TypeAlias = Callable[[CameraRuntimeConfig], EventClipRecorder]
+
+
+def _processed_count(pump: _RunnableIngest) -> int:
+    """Read a pump's frame-cap progress without widening `_RunnableIngest`.
+
+    Defensive: test-injected pump fakes (e.g. `_NoOpPump`) need not expose
+    `processed_count`; a missing attribute reads as 0 (never-complete).
+    """
+    return getattr(pump, "processed_count", 0)
 
 
 @runtime_checkable
@@ -133,6 +159,7 @@ class CameraRuntimeContext:
     heartbeat: HeartbeatReporter
     ingest_loop: _RunnableIngest
     pump: _RunnableIngest
+    clip_frame_feeder: _RunnableIngest | None = None
 
 
 @final
@@ -155,16 +182,22 @@ class HeartbeatReporter:
         ):
             return
         self._last_attempt = now
-        payload = {"camera_id": camera_id, "facility_id": camera.facility_id,
-                   "config_version": worker.version}
+        payload = {
+            "camera_id": camera_id,
+            "facility_id": camera.facility_id,
+            "config_version": worker.version,
+        }
         headers = {
             "Content-Type": "application/json",
             "X-Edge-Relay-Token": worker.relay.token.get_secret_value(),
         }
         try:
             result = bounded_request(
-                worker.relay_heartbeat_url, "POST", headers,
-                encode_json(payload), HEARTBEAT_TIMEOUT_SEC,
+                worker.relay_heartbeat_url,
+                "POST",
+                headers,
+                encode_json(payload),
+                HEARTBEAT_TIMEOUT_SEC,
             )
         except FatalAcceleratorError:
             raise
@@ -208,8 +241,11 @@ class _FaultAwareLoop:
             self._loop.run()
         except FatalAcceleratorError as exc:
             record = make_fault_record(
-                exc, profile=self._profile, task=exc.task or "inference",
-                stage=self._stage, camera_id=exc.camera_id or self.camera_id,
+                exc,
+                profile=self._profile,
+                task=exc.task or "inference",
+                stage=self._stage,
+                camera_id=exc.camera_id or self.camera_id,
             )
             self._handler.handle(exc, record)
 
@@ -274,6 +310,96 @@ def _evidence_outbox_path() -> Path:
     return resolve_state_dir() / "evidence-outbox.sqlite3"
 
 
+def _verify_opencv_decode() -> VerifyResult:
+    capability = probe_opencv_ffmpeg_capability()
+    return VerifyResult(capability.available, "cpu", "decode", capability.reason)
+
+
+def _verify_nvdec_decode() -> VerifyResult:
+    capability = probe_nvdec_cuvid_capability()
+    return VerifyResult(capability.available, "cuda", "decode", capability.reason)
+
+
+_PRODUCTION_DECODE_PROBES: Final[Mapping[str, Callable[[], VerifyResult]]] = MappingProxyType(
+    {
+        "opencv": _verify_opencv_decode,
+        "nvdec": _verify_nvdec_decode,
+    }
+)
+
+
+def production_decode_probe(decode: str) -> VerifyResult:
+    """The real ``DecodeProbe`` :class:`WorkerRuntime` injects by default.
+
+    Wraps the adapter-level, hardware-touching capability checks --
+    ``probe_opencv_ffmpeg_capability`` (``worker.adapters.decode.cpu_av.probe``,
+    checks ``cv2`` imports in this process) and ``probe_nvdec_cuvid_capability``
+    (``worker.adapters.decode.nvdec_cuvid.probe``, checks the resolvable
+    ``ffmpeg`` build supports ``cuda``/``cuvid``/``nvdec`` hwaccel or a
+    ``*_cuvid`` decoder) -- into the ``VerifyResult`` shape
+    :func:`~worker.runtime.profile.registry.default_decode_probe` expects for
+    the ``decode_capability`` bootstrap stage. Both adapter probes are ports
+    of ``default_decode_probe`` in ``edge/runtime/profile/registry.py:151-163``
+    (pre-migration reference, read-only) -- this function is the equivalent of
+    that reference function's dispatch-by-``decode``-name role, adapted to the
+    injected-probes-map pattern already established by
+    :func:`~worker.runtime.profile.registry.default_decode_probe`.
+
+    This composition lives here, in the composition root, rather than in
+    ``worker.runtime.profile`` (policy only, no hardware access per
+    ``worker/runtime/AGENTS.md``) or in ``worker.adapters`` (forbidden from
+    importing ``worker.runtime``'s ``VerifyResult`` per
+    ``worker/adapters/AGENTS.md``) -- it is the one place allowed to depend on
+    both.  Both probes fail closed (``available=False``) on any error,
+    missing binary, or unsupported build, so an environment without real
+    OpenCV/FFMPEG decode support never gets a false positive.
+    """
+    return default_decode_probe(decode, _PRODUCTION_DECODE_PROBES)
+
+
+def _production_cuda_source() -> CudaProbe:
+    capability = probe_cuda_capability()
+    return CudaProbe(
+        available=capability.available,
+        reason=capability.reason,
+        device_count=capability.device_count,
+        arch_list=capability.arch_list,
+    )
+
+
+def production_boot_dependencies() -> bootstrap.BootDependencies:
+    """The real ``BootDependencies`` :class:`WorkerRuntime` injects by default.
+
+    Wraps the adapter-level, hardware-touching ``probe_cuda_capability``
+    (``worker.adapters.device.cuda.probe``, checks ``torch`` imports and
+    ``torch.cuda.is_available()``) into the ``CudaProbeSource`` shape
+    ``worker.runtime.profile.registry.default_verifiers`` expects for the
+    ``profile_device`` bootstrap stage's ``cuda`` verifier.
+
+    Unlike ``decode_probe`` (a bare callable field, defaulted with
+    ``decode_probe or production_decode_probe``), ``boot_dependencies`` is a
+    ``BootDependencies`` *value* -- so the production default has to be
+    constructed here, not merely referenced, and ``WorkerRuntime.__init__``
+    calls this function rather than assigning it. Before this wiring existed,
+    ``WorkerRuntime`` threaded ``boot_dependencies=None`` straight through to
+    ``bootstrap.profile_device_stage``, which falls back to
+    ``BootDependencies(default_verifiers())`` -- fail-closed with "CUDA
+    capability probe is not configured" on every profile that needs a real
+    ``cuda`` verify. This is the real default that fixes that.
+
+    ``mps_source`` is intentionally left unconfigured: unlike ``cuda``, this
+    repo's edge implementation being ported (``edge/runners/device.py``) never
+    had a portable MPS probe to port -- edge's MPS check called
+    ``torch.backends.mps.is_available()`` inline from the policy layer, which
+    ``worker/runtime/AGENTS.md`` forbids here (policy, no hardware access).
+    The ``mps`` profile therefore keeps failing closed exactly as it did
+    before this change; only ``cuda`` gains a real verifier. The ``cpu``
+    profile is unaffected either way -- ``_verify_cpu`` never consults a
+    source.
+    """
+    return bootstrap.BootDependencies(default_verifiers(cuda_source=_production_cuda_source))
+
+
 @final
 class WorkerRuntime:
     """Own process-wide models and camera-local mutable pipeline state."""
@@ -293,6 +419,7 @@ class WorkerRuntime:
         pump_factory: PumpFactory | None = None,
         event_sink_factory: EventSinkFactory | None = None,
         clip_recorder_factory: ClipRecorderFactory | None = None,
+        max_frames_per_camera: int | None = None,
     ) -> None:
         self.config = config
         self._env = os.environ if env is None else env
@@ -302,9 +429,11 @@ class WorkerRuntime:
         self._sink_factory = event_sink_factory or self._default_event_sink
         self._clip_recorder_factory = clip_recorder_factory or self._default_clip_recorder
         self._acquire = acquire_lease or GpuLease.acquire
-        self._decode_probe, self._boot_dependencies = decode_probe, boot_dependencies
+        self._decode_probe = decode_probe or production_decode_probe
+        self._boot_dependencies = boot_dependencies or production_boot_dependencies()
         self._hard_exit = hard_exit
         self._restart_check = restart_check
+        self._max_frames_per_camera = max_frames_per_camera
         self._context = bootstrap.BootstrapContext()
         self._boot: BootContext | None = None
         self._supervisor: ingest.IngestSupervisor | None = None
@@ -315,6 +444,9 @@ class WorkerRuntime:
         self.cameras: tuple[CameraRuntimeContext, ...] = ()
         self._clip_recorder: ClipRecorder | None = None
         self._evidence_export_runtime: EvidenceExportRuntime | None = None
+        self._runtime_status_sender: RuntimeStatusSender | None = None
+        self._clip_frame_feeders: tuple[ClipFrameFeeder, ...] = ()
+        self._clip_frame_feeder_threads: tuple[threading.Thread, ...] = ()
         self._camera_source_registry: SourceRegistry | None = None
         # GAP #1/#2 wiring (todo 20): one shared diagnostics sink, overlay
         # renderer, and snapshot store per process -- same "one shared actor"
@@ -327,16 +459,20 @@ class WorkerRuntime:
 
     def run(self) -> None:
         stages = bootstrap.named_stages(
-            self._context, self._env,
+            self._context,
+            self._env,
             initializers={"models": self._initialize_models},
             warmups={"models": lambda _models: self._warm_models()},
             activate=self._activate,
-            decode_probe=self._decode_probe, deps=self._boot_dependencies,
+            decode_probe=self._decode_probe,
+            deps=self._boot_dependencies,
             acquire=self._acquire,
         )
         try:
             _ = bootstrap.bootstrap_or_exit(stages, context=self._context)
             self._start_export_sender()
+            self._start_runtime_status_sender()
+            self._start_clip_frame_feeders()
             if self._supervisor is not None:
                 self._supervisor.join()
         finally:
@@ -349,6 +485,12 @@ class WorkerRuntime:
             self.watchdog.stop()
         if self._evidence_export_runtime is not None:
             self._evidence_export_runtime.stop_sender()
+        if self._runtime_status_sender is not None:
+            self._runtime_status_sender.stop()
+        for feeder in self._clip_frame_feeders:
+            feeder.stop()
+        for thread in self._clip_frame_feeder_threads:
+            thread.join(timeout=5.0)
         if self._clip_recorder is not None:
             self._clip_recorder.stop()
         self._context.release_lease()
@@ -367,6 +509,72 @@ class WorkerRuntime:
         except Exception:  # noqa: BLE001 - export delivery is a non-fatal camera boundary
             LOGGER.warning("evidence export sender failed to start", exc_info=True)
 
+    def _start_runtime_status_sender(self) -> None:
+        """Start periodic runtime-status relay delivery (default 5s cadence).
+
+        A separate channel from :class:`HeartbeatReporter` -- that is a
+        READY-gated liveness ping on ``camera.heartbeat_interval_sec`` (default
+        30s) to ``POST /api/v1/relay/heartbeat``; this publishes the process's
+        ``WorkerDiagnostics`` telemetry (decode selection, measured fps,
+        clip-recorder/gpu/worker status) to ``POST /api/v1/relay/runtime-status``
+        on its own timer, independent of any camera's readiness. Never fatal to
+        camera activation.
+
+        ``facility_by_camera`` is built from every configured camera (never a
+        filtered subset), so no camera's telemetry silently drops out of the
+        payload for lacking a mapping entry.
+
+        ``request`` is looked up from ``runtime_status_sender_module`` here
+        (rather than relying on ``RelayRuntimeStatusTransport``'s default
+        parameter, which binds ``bounded_request`` once at class-definition
+        time) so tests can substitute the HTTP transport by monkeypatching
+        ``runtime_status_sender_module.bounded_request``.
+        """
+        facility_by_camera: Mapping[str, str] = MappingProxyType(
+            {camera.camera_id: camera.facility_id for camera in self.config.cameras}
+        )
+        transport = RelayRuntimeStatusTransport(
+            self.config.relay.url,
+            self.config.relay.token.get_secret_value(),
+            request=runtime_status_sender_module.bounded_request,
+        )
+        sender = RuntimeStatusSender(self.diagnostics, facility_by_camera, transport)
+        try:
+            sender.start()
+        except Exception:  # noqa: BLE001 - runtime-status delivery is a non-fatal camera boundary
+            LOGGER.warning("runtime status sender failed to start", exc_info=True)
+            return
+        self._runtime_status_sender = sender
+
+    def _start_clip_frame_feeders(self) -> None:
+        """Start each camera's clip-frame-feeder thread (production gap A).
+
+        Deliberately independent of ``IngestSupervisor`` rather than folded
+        into its managed loop set: a feeder drains ``bus.evidence`` for as
+        long as the process runs, the same "background concern, not the
+        work" shape as the export sender and runtime-status sender above.
+        Folding it into the supervisor's loops would make
+        ``self._supervisor.join()`` -- and therefore ``run()`` -- block
+        forever whenever clip recording is active, including in bounded
+        ``--max-frames-per-camera`` runs and any test composing a real
+        ``ClipRecorder`` without that cap: the completion/restart watchers
+        only observe ingest and pump loops, and a feeder never raises
+        ``FatalAcceleratorError`` to unblock itself either. Started here
+        (after camera activation, so ``self._clip_frame_feeders`` is already
+        settled) and reaped by name in ``stop()``, exactly like the export
+        sender's own background thread.
+        """
+        threads = []
+        for feeder in self._clip_frame_feeders:
+            thread = threading.Thread(
+                target=feeder.run,
+                name=f"clip-frame-feeder-{feeder.camera_id}",
+                daemon=True,
+            )
+            thread.start()
+            threads.append(thread)
+        self._clip_frame_feeder_threads = tuple(threads)
+
     def _initialize_models(
         self, boot: BootContext
     ) -> tuple[SharedYoloExtractors, FallModelProtocol]:
@@ -381,7 +589,8 @@ class WorkerRuntime:
         configured = self.config.models.fall
         if configured is not None:
             return LstmFallRunner.from_artifact_dir(
-                configured.artifact_dir, device=device,
+                configured.artifact_dir,
+                device=device,
                 expected_schema_version=configured.schema_version,
                 expected_preprocessing_identity=configured.preprocessing_identity,
             )
@@ -412,10 +621,14 @@ class WorkerRuntime:
         outcomes: list[bootstrap.CameraStageOutcome] = []
         for camera in self.config.cameras:
             built: list[CameraRuntimeContext] = []
-            outcomes.append(bootstrap.run_camera_stage(
-                camera.camera_id,
-                lambda camera=camera, built=built: built.append(self._build_camera(camera, yolo)),
-            ))
+            outcomes.append(
+                bootstrap.run_camera_stage(
+                    camera.camera_id,
+                    lambda camera=camera, built=built: built.append(
+                        self._build_camera(camera, yolo)
+                    ),
+                )
+            )
             contexts.extend(built)
         self.cameras = tuple(contexts)
         loops = tuple(
@@ -426,7 +639,21 @@ class WorkerRuntime:
         )
         for loop in loops:
             handler.register_loop(loop)
-        self._supervisor = ingest.IngestSupervisor(loops, restart_check=self._restart_check)
+        # Feeders run independently of the supervisor (see
+        # `_start_clip_frame_feeders`'s docstring) but still register with the
+        # fault handler so a fatal error elsewhere stops them too, instead of
+        # leaving a feeder thread draining a bus nobody's producing to anymore.
+        self._clip_frame_feeders = tuple(
+            item.clip_frame_feeder for item in contexts if item.clip_frame_feeder is not None
+        )
+        for feeder in self._clip_frame_feeders:
+            handler.register_loop(feeder)
+        completion_check = (
+            None if self._max_frames_per_camera is None else self._max_frames_completion_check
+        )
+        self._supervisor = ingest.IngestSupervisor(
+            loops, restart_check=self._restart_check, completion_check=completion_check
+        )
         watchdog.start()
         self._supervisor.start()
         return tuple(outcomes)
@@ -454,9 +681,25 @@ class WorkerRuntime:
         loop = self._loop_factory(camera, bus, heartbeat)
         sink = self._sink_factory(camera)
         pump = self._pump_factory(camera, bus, analytics, decision, sink)
+        clip_frame_feeder = self._build_clip_frame_feeder(camera.camera_id, bus)
         return CameraRuntimeContext(
-            bus, tracker, scene, scheduler, analytics, decision, heartbeat, loop, pump
+            bus, tracker, scene, scheduler, analytics, decision, heartbeat, loop, pump,
+            clip_frame_feeder,
         )
+
+    def _build_clip_frame_feeder(
+        self, camera_id: str, bus: BoundedFrameBus
+    ) -> ClipFrameFeeder | None:
+        """Feed ``bus.evidence`` into the shared clip recorder (production gap A).
+
+        ``self._clip_recorder`` is resolved once by ``_compose_evidence_export``
+        before any camera is built (see ``_activate``), so it is already
+        settled by the time this runs. ``None`` when clip recording never
+        started -- no point draining a subscription nobody reads.
+        """
+        if self._clip_recorder is None:
+            return None
+        return ClipFrameFeeder(camera_id, bus.evidence, self._clip_recorder)
 
     def _default_pump_factory(
         self,
@@ -474,7 +717,22 @@ class WorkerRuntime:
             sink,
             evidence_attacher=self._camera_evidence_attachers.get(camera.camera_id),
             diagnostics=self.diagnostics,
+            max_frames=self._max_frames_per_camera,
         )
+
+    def _max_frames_completion_check(self) -> bool:
+        """True once every camera's pump has processed its frame cap.
+
+        Mirrors edge's `_done` (edge/runtime/edge_worker_supervisor.py): "all
+        cameras reached the cap", not "any". Read defensively via
+        `_processed_count` so test-injected pump fakes without a
+        `processed_count` attribute (e.g. `_NoOpPump`) are simply treated as
+        never-complete rather than breaking unrelated tests.
+        """
+        cap = self._max_frames_per_camera
+        if cap is None or not self.cameras:
+            return False
+        return all(_processed_count(context.pump) >= cap for context in self.cameras)
 
     def _default_event_sink(self, camera: CameraRuntimeConfig) -> EventSink:
         stager = DurableEvidenceStager(
@@ -556,8 +814,11 @@ class WorkerRuntime:
         if self._boot is None:
             raise RuntimeError("camera ingest composition requires a resolved boot profile")
         return compose_camera_ingest_loop(
-            camera, bus, reporter,
-            decode=self._boot.decode, registry=self._ingest_source_registry(),
+            camera,
+            bus,
+            reporter,
+            decode=self._boot.decode,
+            registry=self._ingest_source_registry(),
         )
 
     def _ingest_source_registry(self) -> SourceRegistry:
@@ -571,20 +832,14 @@ class WorkerRuntime:
         domain_names = self.config.enabled_domains
         if domain_names is None:
             domain_names = enabled_domains()
-        deciders = tuple(
-            self._build_decider(name, camera, fall_model) for name in domain_names
-        )
+        deciders = tuple(self._build_decider(name, camera, fall_model) for name in domain_names)
         domain_deciders = dict(zip(domain_names, deciders, strict=True))
-        domain_audit = {
-            name: self._build_domain_audit(name, fall_model) for name in domain_names
-        }
+        domain_audit = {name: self._build_domain_audit(name, fall_model) for name in domain_names}
         incidents = IncidentManager(identity_path=event_identity_path(camera.camera_id))
         aggregator = EventAggregator(deciders=deciders, incidents=incidents)
         return aggregator, domain_audit, domain_deciders
 
-    def _build_domain_audit(
-        self, name: str, fall_model: FallModelProtocol
-    ) -> Mapping[str, object]:
+    def _build_domain_audit(self, name: str, fall_model: FallModelProtocol) -> Mapping[str, object]:
         """Precompute one domain's static audit envelope (GAP #1, todo 20).
 
         `DomainRegistration.audit_metadata_provider` only takes an
@@ -605,9 +860,7 @@ class WorkerRuntime:
             operating_threshold=snapshot.operating_threshold,
         )
 
-    def _domain_audit_context(
-        self, name: str, fall_model: FallModelProtocol
-    ) -> AuditContext:
+    def _domain_audit_context(self, name: str, fall_model: FallModelProtocol) -> AuditContext:
         """Resolve model identity for the audit trail.
 
         Only "fall" has an ML model; `FallModelProtocol` has no `model_version`
@@ -651,13 +904,18 @@ class WorkerRuntime:
         night_window = None
         if domain_config is not None and domain_config.night_window is not None:
             configured = domain_config.night_window
-            night_window = NightWindow(
-                start=configured.start, end=configured.end, tz=configured.tz
-            )
+            night_window = NightWindow(start=configured.start, end=configured.end, tz=configured.tz)
         return BedExitConfig(
             camera_id=camera.camera_id,
             facility_id=camera.facility_id,
             night_window=night_window,
         )
 
-__all__ = ["CameraRuntimeContext", "HeartbeatReporter", "WorkerRuntime"]
+
+__all__ = [
+    "CameraRuntimeContext",
+    "HeartbeatReporter",
+    "WorkerRuntime",
+    "production_boot_dependencies",
+    "production_decode_probe",
+]

@@ -92,6 +92,7 @@ def test_help_flag_exits_zero_and_documents_all_flags(
     assert "--config" in output
     assert "--check-config" in output
     assert "--heartbeat-on-start" in output
+    assert "--max-frames-per-camera" in output
 
 
 # --- config resolution / exit code 2 -----------------------------------
@@ -273,6 +274,61 @@ def test_restart_check_relay_env_vars_override_config(
 
     assert worker_main.main(["--config", str(config_path)]) == 0
     assert calls == [("http://relay.test", "relay-token")]
+
+
+# --- --max-frames-per-camera passthrough ----------------------------------
+
+
+def test_max_frames_per_camera_wired_to_workerruntime_constructor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = _write_config(tmp_path)
+    constructed: list[WorkerRuntime] = []
+    real_init = WorkerRuntime.__init__
+
+    def _spy_init(self: WorkerRuntime, *args: object, **kwargs: object) -> None:
+        real_init(self, *args, **kwargs)
+        constructed.append(self)
+
+    monkeypatch.setattr(WorkerRuntime, "__init__", _spy_init)
+    monkeypatch.setattr(WorkerRuntime, "run", lambda self: None)
+
+    exit_code = worker_main.main(
+        ["--config", str(config_path), "--max-frames-per-camera", "3200"]
+    )
+
+    assert exit_code == 0
+    assert len(constructed) == 1
+    assert constructed[0]._max_frames_per_camera == 3200  # noqa: SLF001
+
+
+def test_max_frames_per_camera_defaults_to_none_when_flag_omitted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = _write_config(tmp_path)
+    constructed: list[WorkerRuntime] = []
+    real_init = WorkerRuntime.__init__
+
+    def _spy_init(self: WorkerRuntime, *args: object, **kwargs: object) -> None:
+        real_init(self, *args, **kwargs)
+        constructed.append(self)
+
+    monkeypatch.setattr(WorkerRuntime, "__init__", _spy_init)
+    monkeypatch.setattr(WorkerRuntime, "run", lambda self: None)
+
+    exit_code = worker_main.main(["--config", str(config_path)])
+
+    assert exit_code == 0
+    assert len(constructed) == 1
+    assert constructed[0]._max_frames_per_camera is None  # noqa: SLF001
+
+
+@pytest.mark.parametrize("raw", ["0", "-1", "abc", "3.5"])
+def test_max_frames_per_camera_rejects_non_positive_or_non_integer_values(raw: str) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        worker_main.main(["--max-frames-per-camera", raw])
+
+    assert exc_info.value.code == 2
 
 
 # --- heartbeat-on-start passthrough ---------------------------------------

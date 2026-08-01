@@ -27,6 +27,18 @@ api_log="$tmpdir/ml-api.log"
 worker_log="$tmpdir/ml-worker.log"
 api_pid=""
 
+# Sandbox worker runtime state (GPU lease file, durable evidence outbox) under
+# this run's disposable tmpdir instead of the real /var/lib/ml-worker, and
+# turn on relay export -- EvidenceExportRuntime.from_environment() (worker/
+# pipeline/output/evidence/evidence_runtime.py) is disabled unless
+# ML_WORKER_EVENT_CLIP_EXPORT_ENABLED=1, in which case admitted events stage
+# to the durable outbox but are never sent to the relay, and this harness's
+# whole point is proving relay delivery.
+export ML_WORKER_STATE_DIR="$tmpdir/worker-state"
+export ML_WORKER_EVIDENCE_OUTBOX_PATH="$tmpdir/worker-state/evidence-outbox.sqlite3"
+export ML_WORKER_EVENT_CLIP_EXPORT_ENABLED=1
+mkdir -p "$ML_WORKER_STATE_DIR"
+
 cleanup() {
   if [[ -n "$api_pid" ]]; then
     kill "$api_pid" >/dev/null 2>&1 || true
@@ -95,6 +107,26 @@ alert_count_since() {
     "select count(*) from alerts where facility_id = '${facility_id}' and type = 'bed-exit' and detected_at >= '${started_at}'::timestamptz;" | tr -d '[:space:]'
 }
 
+# Event admission (worker/domains/bed_exit) and relay export (worker/pipeline/
+# output/evidence/evidence_runtime.py's EvidenceExportRuntime sender) run on
+# separate background threads inside the worker process, so the alert can
+# land in the backend a short interval after run_worker_with_clock returns.
+# Retry the exact same readback query instead of a single point-in-time
+# check.
+wait_for_alert_count_at_least() {
+  local started_at="$1" minimum="$2" count=0
+  for _ in $(seq 1 20); do
+    count="$(alert_count_since "$started_at")"
+    if [[ "$count" -ge "$minimum" ]]; then
+      printf '%s\n' "$count"
+      return 0
+    fi
+    sleep 1
+  done
+  printf '%s\n' "$count"
+  return 1
+}
+
 run_worker_with_clock() {
   local now="$1"
   if ! OPENCV_FFMPEG_CAPTURE_OPTIONS="rtsp_transport;tcp" BED_EXIT_NOW="$now" EDGE_CAMERA_CONFIG="$config" uv run python - "$frames" >>"$worker_log" 2>&1 <<'PY'
@@ -102,76 +134,211 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+import time
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Final, Literal, final
 
-from worker.domains import DOMAIN_REGISTRY, DomainRegistration
-from worker.domains.bed_exit.detector import BedExitMonitor, NightWindow
-from worker import edge_worker
-
-
-class ScriptedPoseRunner:
-    def predict(self, _frame):
-        return ((), ())
+import worker.runtime.worker as worker_module
+from contracts.runner import Image, RunnerResult, bed_result, person_result, pose_result
+from worker.runtime.config import load_worker_config
+from worker.runtime.worker import WorkerRuntime
 
 
-class ScriptedPersonRunner:
-    def predict(self, _frame):
-        if not hasattr(self, "calls"):
-            self.calls = 0
-        self.calls += 1
-        if self.calls <= 2:
-            return ((10, 10, 90, 80, 0.98),)
-        return ((52, 10, 132, 80, 0.98),)
+@final
+class _EmptyPoseRunner:
+    """No pose data: bed-exit tracking runs on person geometry alone."""
+
+    def __call__(self, _image: Image) -> RunnerResult:
+        return pose_result(poses=(), boxes=())
+
+    def warmup(self) -> None:
+        return None
 
 
-class ScriptedBedRunner:
-    def predict(self, _frame):
-        return ((0, 0, 90, 100, 0.99),)
+# Same calibrated geometry as tests/e2e_worker_relay_fixtures.py's
+# ScriptedBedExitPersonRunner, against the REAL (unconfigurable-via-YAML)
+# BedExitConfig defaults worker/runtime/worker.py._bed_exit_config always
+# applies: min_containment=0.35, hold_frames=2, grace_frames=3. Steps 1-2
+# fully contain the person (assigns the bed by step 2); steps 3-4 partially
+# overlap (still >=0.35, resets grace); step 5 onward is fully outside (grace
+# increments each frame, firing once grace_frames > 3, i.e. on the 4th
+# consecutive frame outside -- step 8). Matches this script's default
+# MAX_FRAMES_PER_CAMERA=8; raising the frame count only holds the final
+# outside position longer and does not change when the event fires.
+_BED_EXIT_XS: Final = (15.0, 15.0, 40.0, 65.0, 90.0, 90.0, 90.0, 90.0)
+_BED_BOX: Final = (10.0, 10.0, 90.0, 80.0, 0.9)
 
 
-class ScriptedFallRunner:
-    operating_threshold = 0.5
+@final
+class _WalkingPersonRunner:
+    def __init__(self) -> None:
+        self._index = 0
+        self._lock = threading.Lock()
 
-    class metadata:
-        window = 3
-        stride = 1
+    def __call__(self, _image: Image) -> RunnerResult:
+        with self._lock:
+            index = min(self._index, len(_BED_EXIT_XS) - 1)
+            self._index += 1
+        x1 = _BED_EXIT_XS[index]
+        return person_result(boxes=((x1, 15.0, x1 + 70.0, 75.0, 0.95),))
 
-    def predict(self, _features):
+    def warmup(self) -> None:
+        return None
+
+
+@final
+class _FixedBedRunner:
+    def __call__(self, _image: Image) -> RunnerResult:
+        return bed_result(boxes=(_BED_BOX,))
+
+    def warmup(self) -> None:
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class _FallMetadata:
+    window: int = 2
+    stride: int = 1
+    mode: Literal["sequence"] = "sequence"
+
+
+@final
+class _InertFallModel:
+    """Never consulted -- this run's config enables bed_exit only -- but
+    WorkerRuntime._initialize_models() always calls serving.create("fall")
+    at boot regardless of enabled domains, so a well-formed stand-in is
+    still required."""
+
+    def __init__(self) -> None:
+        self.metadata = _FallMetadata()
+        self.operating_threshold = 0.5
+        self.warmup_count = 0
+
+    def predict(self, _features: object) -> float:
         return 0.0
 
-
-class ScriptedRegistry:
-    def create(self, name: str, **kwargs):
-        if name == "pose":
-            return ScriptedPoseRunner()
-        if name == "person":
-            return ScriptedPersonRunner()
-        if name == "bed":
-            return ScriptedBedRunner()
-        if name == "fall":
-            return ScriptedFallRunner()
-        raise KeyError(name)
+    def warmup(self) -> None:
+        self.warmup_count += 1
 
 
-def bed_exit_factory(config):
-    raw = config["night_window"] if isinstance(config, dict) else {}
-    return BedExitMonitor(
-        min_containment=0.5,
-        hold_frames=1,
-        grace_frames=0,
-        night_window=NightWindow(
-            start=str(raw.get("start", "21:00")),
-            end=str(raw.get("end", "05:00")),
-            tz=str(raw.get("tz", "Asia/Seoul")),
-        ),
-        clock=lambda: datetime.fromisoformat(os.environ["BED_EXIT_NOW"]),
+@final
+class _CountingPersonRunner:
+    """Wraps the person runner to signal once MAX_FRAMES_PER_CAMERA decoded
+    frames have been pulled through the real per-frame pipeline (person is
+    scheduled every frame; bed is only rescanned every 30 frames, so person
+    is the correct per-frame proxy)."""
+
+    def __init__(self, inner: _WalkingPersonRunner, *, target: int, done: threading.Event) -> None:
+        self._inner = inner
+        self._target = target
+        self._done = done
+        self._count = 0
+        self._lock = threading.Lock()
+
+    def __call__(self, image: Image) -> RunnerResult:
+        result = self._inner(image)
+        with self._lock:
+            self._count += 1
+            if self._count >= self._target:
+                self._done.set()
+        return result
+
+    def warmup(self) -> None:
+        self._inner.warmup()
+
+
+@final
+class _ScriptedServingClient:
+    def __init__(self, *, target_frames: int, done: threading.Event) -> None:
+        self._runners: dict[str, object] = {
+            "pose": _EmptyPoseRunner(),
+            "person": _CountingPersonRunner(
+                _WalkingPersonRunner(), target=target_frames, done=done
+            ),
+            "bed": _FixedBedRunner(),
+            "fall": _InertFallModel(),
+        }
+
+    def create(self, task: str, **_options: object) -> object:
+        try:
+            return self._runners[task]
+        except KeyError as error:
+            raise AssertionError(f"unexpected serving task requested: {task!r}") from error
+
+
+class _FrozenDatetime(datetime):
+    """Freezes worker.runtime.worker's bed-exit night-window clock.
+
+    worker/runtime/worker.py:_build_decider hardcodes
+    `clock=lambda: datetime.now(UTC)` for the bed_exit decider with no
+    injection seam (it is the ONLY `datetime` use in that whole module), and
+    worker.domains.registry.DOMAIN_REGISTRY is an immutable
+    types.MappingProxyType, so the legacy edge_worker approach of swapping in
+    a replacement DomainRegistration no longer works. Instead, monkeypatch
+    the bare module-level `datetime` name worker.runtime.worker resolves at
+    call time -- the same idiom tests/e2e_worker_relay_fixtures.py already
+    uses for worker_module.ClipRecorderConfig. No production file is edited.
+    """
+
+    _frozen: datetime
+
+    @classmethod
+    def now(cls, tz: object = None) -> datetime:  # type: ignore[override]
+        return cls._frozen if tz is None else cls._frozen.astimezone(tz)
+
+
+def _wait_until(predicate, *, timeout: float, interval: float = 0.2) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return False
+
+
+def main() -> int:
+    frames = int(sys.argv[1])
+    frozen_now = datetime.fromisoformat(os.environ["BED_EXIT_NOW"])
+    if frozen_now.tzinfo is None:
+        print("BED_EXIT_NOW must carry a UTC offset", file=sys.stderr)
+        return 1
+    _FrozenDatetime._frozen = frozen_now
+    worker_module.datetime = _FrozenDatetime
+
+    config = load_worker_config(os.environ["EDGE_CAMERA_CONFIG"])
+    done = threading.Event()
+    serving = _ScriptedServingClient(target_frames=frames, done=done)
+    runtime = WorkerRuntime(
+        config,
+        env={"ML_WORKER_PROFILE": "cpu"},
+        serving_client=serving,
+        hard_exit=lambda _code: None,
     )
 
+    thread = threading.Thread(target=runtime.run, daemon=True, name="single-rtsp-bedexit-worker")
+    thread.start()
+    try:
+        if not _wait_until(lambda: len(runtime.cameras) > 0, timeout=30.0):
+            print("camera did not activate within 30s", file=sys.stderr)
+            return 1
+        if not done.wait(timeout=max(60.0, frames * 5.0)):
+            print(f"did not observe {frames} decoded frames within timeout", file=sys.stderr)
+            return 1
+        # Event admission -> durable staging -> the async export sender's
+        # relay POST (worker/pipeline/output/evidence/evidence_runtime.py)
+        # run on background threads, not synchronously with frame
+        # processing -- give them a settle window before tearing down.
+        time.sleep(5.0)
+    finally:
+        runtime.stop()
+        thread.join(timeout=15.0)
+    return 0
 
-DOMAIN_REGISTRY["bed_exit"] = DomainRegistration("bed_exit", bed_exit_factory, True)
-edge_worker.DOMAIN_REGISTRY["bed_exit"] = DOMAIN_REGISTRY["bed_exit"]
-edge_worker.DEFAULT_REGISTRY = ScriptedRegistry()
-raise SystemExit(edge_worker.main(["--config", os.environ["EDGE_CAMERA_CONFIG"], "--max-frames-per-camera", sys.argv[1]]))
+
+if __name__ == "__main__":
+    raise SystemExit(main())
 PY
   then
     printf 'worker run failed; log follows:\n' >&2
@@ -189,8 +356,7 @@ printf 'clock night=%s day=%s night_window=%s-%s %s relay=%s backend_events=%s r
   "$relay_base_url" "$backend_base_url" "$rtsp_url"
 night_started_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 run_worker_with_clock "$night_now"
-night_count="$(alert_count_since "$night_started_utc")"
-if [[ "$night_count" -lt 1 ]]; then
+if ! night_count="$(wait_for_alert_count_at_least "$night_started_utc" 1)"; then
   printf 'night bed-exit did not reach backend Event API; worker log follows:\n' >&2
   sed -n '1,160p' "$worker_log" >&2
   printf '%s\n' '--- ml-api log ---' >&2

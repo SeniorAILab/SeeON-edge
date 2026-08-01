@@ -358,6 +358,82 @@ def test_omitting_restart_check_preserves_default_clean_completion() -> None:
     assert session.close_count == 1
 
 
+def test_completion_check_returning_true_stops_the_supervisor_cleanly() -> None:
+    # Given: a camera loop that would otherwise block ingesting forever, and a
+    # completion directive (the --max-frames-per-camera analog of restart_check).
+    loop = _BlockingLoop("camera-a")
+    calls: list[None] = []
+
+    def completion_check() -> bool:
+        calls.append(None)
+        return True
+
+    supervisor = IngestSupervisor(
+        (loop,), completion_check=completion_check, completion_poll_interval_sec=0.01
+    )
+
+    # When: the supervisor starts and the completion watcher observes a True directive.
+    supervisor.start()
+    supervisor.join(timeout_sec=2.0)
+
+    # Then: the stop event breaks both the ingest loop and the completion watch loop.
+    assert loop.stop_count >= 1
+    assert len(calls) >= 1
+
+
+def test_completion_check_waits_until_every_camera_reports_done() -> None:
+    # Given: two cameras with independently-tracked completion state, mirroring
+    # --max-frames-per-camera's "every camera must reach its cap" contract --
+    # not just the first one to finish.
+    loop_a = _BlockingLoop("camera-a")
+    loop_b = _BlockingLoop("camera-b")
+    done = {"camera-a": False, "camera-b": False}
+
+    supervisor = IngestSupervisor(
+        (loop_a, loop_b),
+        completion_check=lambda: all(done.values()),
+        completion_poll_interval_sec=0.01,
+    )
+
+    # When: only camera-a finishes first, giving the watcher time to poll at least once.
+    supervisor.start()
+    done["camera-a"] = True
+    threading.Event().wait(timeout=0.05)
+
+    # Then: the supervisor must not stop while camera-b is still outstanding.
+    assert loop_a.stop_count == 0
+    assert loop_b.stop_count == 0
+
+    # When: camera-b finishes too.
+    done["camera-b"] = True
+    supervisor.join(timeout_sec=2.0)
+
+    # Then: both loops are stopped only once every camera is done.
+    assert loop_a.stop_count >= 1
+    assert loop_b.stop_count >= 1
+
+
+def test_omitting_completion_check_preserves_default_clean_completion() -> None:
+    # Given: a camera that reports two packets then stops itself, matching
+    # pre-completion-check supervisor behavior exactly (no watcher spawned).
+    packets = [_packet("camera-a", 1), _packet("camera-a", 2)]
+    session = _Session([*packets])
+    adapter = _Adapter([session])
+    bus = _FakeBus()
+    reporter = _Reporter()
+    loop = _loop("camera-a", adapter, bus, reporter, _registry("camera-a"))
+    bus.on_publish = lambda _packet: loop.stop() if len(bus.packets) == 2 else None
+
+    # When: completion_check is omitted entirely (the default).
+    supervisor = IngestSupervisor((loop,))
+    supervisor.run()
+
+    # Then: ingestion completes exactly as it did before completion_check existed.
+    assert bus.packets == packets
+    assert reporter.states == {"camera-a": "ready"}
+    assert session.close_count == 1
+
+
 def test_restart_check_always_false_is_consulted_but_never_stops_early() -> None:
     # Given: a camera that reports two packets, waiting briefly before stopping itself so the
     # restart watcher has time to poll at least once beforehand.

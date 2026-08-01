@@ -74,6 +74,7 @@ class CameraPipelinePump:
         poll_timeout_sec: float = DEFAULT_POLL_TIMEOUT_SEC,
         evidence_attacher: EvidenceAttacher | None = None,
         diagnostics: MeasuredFpsSink | None = None,
+        max_frames: int | None = None,
     ) -> None:
         self._camera_id = camera_id
         self._subscription = subscription
@@ -83,16 +84,18 @@ class CameraPipelinePump:
         self._poll_timeout_sec = poll_timeout_sec
         self._evidence_attacher = evidence_attacher
         self._diagnostics = diagnostics
+        self._max_frames = max_frames
         self._fps_timestamps: deque[float] = deque()
         self._stop_event = threading.Event()
         self.failure_count = 0
+        self.processed_count = 0
 
     @property
     def camera_id(self) -> str:
         return self._camera_id
 
     def run(self) -> None:
-        while not self._stop_event.is_set():
+        while not self._stop_event.is_set() and not self._frames_exhausted():
             packet = self._subscription.take(timeout_sec=self._poll_timeout_sec)
             if packet is None:
                 continue
@@ -102,9 +105,21 @@ class CameraPipelinePump:
                 raise
             except Exception as error:  # noqa: BLE001 - per-camera boundary
                 self._record_failure(error)
+            finally:
+                # `processed_count` (and therefore `--max-frames-per-camera`'s
+                # cap) counts frames *attempted*, not frames that succeeded --
+                # a failed `_pump_one` still advances it. This matches edge's
+                # reference semantics (edge/runtime/camera_worker.py:169,
+                # `processed += 1` after the try/except around
+                # `process_frame`) and guarantees termination even if every
+                # frame in the run fails.
+                self.processed_count += 1
 
     def stop(self) -> None:
         self._stop_event.set()
+
+    def _frames_exhausted(self) -> bool:
+        return self._max_frames is not None and self.processed_count >= self._max_frames
 
     def _pump_one(self, packet: FramePacket) -> None:
         self._record_measured_fps()

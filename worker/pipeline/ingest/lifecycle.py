@@ -196,12 +196,17 @@ class IngestSupervisor:
         *,
         restart_check: Callable[[], bool] | None = None,
         restart_poll_interval_sec: float = 1.0,
+        completion_check: Callable[[], bool] | None = None,
+        completion_poll_interval_sec: float = 0.1,
     ) -> None:
         self._loops = tuple(loops)
         self._threads: tuple[threading.Thread, ...] = ()
         self._restart_check = restart_check
         self._restart_poll_interval_sec = restart_poll_interval_sec
         self._restart_watcher: threading.Thread | None = None
+        self._completion_check = completion_check
+        self._completion_poll_interval_sec = completion_poll_interval_sec
+        self._completion_watcher: threading.Thread | None = None
         self._stop_event = threading.Event()
 
     def run(self) -> None:
@@ -228,6 +233,13 @@ class IngestSupervisor:
                 daemon=True,
             )
             self._restart_watcher.start()
+        if self._completion_check is not None:
+            self._completion_watcher = threading.Thread(
+                target=self._watch_completion,
+                name="worker-ingest-completion-watch",
+                daemon=True,
+            )
+            self._completion_watcher.start()
 
     def join(self, *, timeout_sec: float | None = None) -> None:
         for thread in self._threads:
@@ -238,9 +250,9 @@ class IngestSupervisor:
         for loop in self._loops:
             loop.stop()
         self.join(timeout_sec=join_timeout_sec)
-        watcher = self._restart_watcher
-        if watcher is not None and watcher is not threading.current_thread():
-            watcher.join(timeout=join_timeout_sec)
+        for watcher in (self._restart_watcher, self._completion_watcher):
+            if watcher is not None and watcher is not threading.current_thread():
+                watcher.join(timeout=join_timeout_sec)
 
     def _watch_restart(self) -> None:
         restart_check = self._restart_check
@@ -250,6 +262,17 @@ class IngestSupervisor:
             if self._stop_event.wait(self._restart_poll_interval_sec):
                 return
             if restart_check():
+                self.stop()
+                return
+
+    def _watch_completion(self) -> None:
+        completion_check = self._completion_check
+        if completion_check is None:
+            return
+        while not self._stop_event.is_set():
+            if self._stop_event.wait(self._completion_poll_interval_sec):
+                return
+            if completion_check():
                 self.stop()
                 return
 

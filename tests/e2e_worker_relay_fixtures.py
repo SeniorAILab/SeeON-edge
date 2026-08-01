@@ -56,17 +56,10 @@ from contracts.runner import (
     pose_result,
 )
 from shared.events.evidence_export_contract import EventReceipt
-from worker.pipeline.bus.frame_bus import BoundedFrameBus
 from worker.pipeline.output.evidence.clip_config import CLIP_STORE_DIR_ENV
 from worker.pipeline.output.evidence.clip_recorder_models import ClipRecorderConfig
 from worker.runtime.config import WorkerConfig
 from worker.runtime.lease import GpuLease
-from worker.runtime.profile.registry import VerifyResult
-from worker.runtime.telemetry.runtime_status_sender import (
-    RelayRuntimeStatusTransport,
-    RuntimeStatusSender,
-    RuntimeStatusSenderConfig,
-)
 from worker.runtime.worker import CameraRuntimeContext, WorkerRuntime
 
 # --------------------------------------------------------------------------
@@ -671,49 +664,10 @@ def fast_clip_recorder_config_factory(store_dir: Path) -> Callable[[], ClipRecor
     return factory
 
 
-@final
-class ClipFrameBridge:
-    """Feeds real decoded frames into the shared ``ClipRecorder``.
-
-    Production's ``CameraPipelinePump`` never calls ``ClipRecorder.on_frame``
-    -- the evidence bus tap (``bus.evidence``) exists but has zero
-    production callers wiring it to the recorder (see the E2E prep report,
-    Finding A). This bridge is the test-side stand-in for that missing
-    production wire, draining the same bus tap a real wiring would use.
-    """
-
-    def __init__(self, bus: BoundedFrameBus, runtime: WorkerRuntime, camera_id: str) -> None:
-        self._bus = bus
-        self._runtime = runtime
-        self._camera_id = camera_id
-        self._stop_event = threading.Event()
-        self._thread = threading.Thread(
-            target=self._run, daemon=True, name=f"e2e-clip-bridge-{camera_id}"
-        )
-
-    def start(self) -> None:
-        self._thread.start()
-
-    def _run(self) -> None:
-        while not self._stop_event.is_set():
-            packet = self._bus.evidence.take(timeout_sec=0.2)
-            if packet is None:
-                continue
-            recorder = self._runtime._clip_recorder  # noqa: SLF001 - test-side evidence bridge
-            if recorder is not None:
-                _ = recorder.on_frame(self._camera_id, packet.frame)
-
-    def stop(self) -> None:
-        self._stop_event.set()
-        self._thread.join(timeout=5.0)
-
-
 @dataclass(slots=True)
 class WorkerRunHandle:
     runtime: WorkerRuntime
     camera: CameraRuntimeContext
-    clip_bridge: ClipFrameBridge
-    status_sender: RuntimeStatusSender
     thread: threading.Thread
 
 
@@ -736,7 +690,6 @@ def start_worker_runtime(
             env={"ML_WORKER_PROFILE": "cpu"},
             serving_client=serving,
             acquire_lease=lambda: GpuLease.acquire(state_dir),
-            decode_probe=lambda _decode: VerifyResult(True, "cpu", "decode", "available"),
             hard_exit=lambda _code: None,
         )
     finally:
@@ -755,29 +708,15 @@ def start_worker_runtime(
         worker_module.ClipRecorderConfig = original_clip_recorder_config
 
     camera = runtime.cameras[0]
-    camera_id = config.cameras[0].camera_id
-    clip_bridge = ClipFrameBridge(camera.bus, runtime, camera_id)
-    clip_bridge.start()
-
-    status_sender = RuntimeStatusSender(
-        runtime.diagnostics,
-        config.cameras[0].facility_id,
-        RelayRuntimeStatusTransport(config.relay.url, config.relay.token.get_secret_value()),
-        RuntimeStatusSenderConfig(publish_interval_sec=0.5),
-    )
-    status_sender.start()
-    return WorkerRunHandle(runtime, camera, clip_bridge, status_sender, thread)
+    return WorkerRunHandle(runtime, camera, thread)
 
 
 def stop_worker_runtime(handle: WorkerRunHandle, *, timeout: float = 15.0) -> None:
-    handle.status_sender.stop(timeout=5.0)
-    handle.clip_bridge.stop()
     handle.runtime.stop()
     handle.thread.join(timeout=timeout)
 
 
 __all__ = [
-    "ClipFrameBridge",
     "FfmpegPublisher",
     "LiveBackend",
     "MediaMtxProcess",
