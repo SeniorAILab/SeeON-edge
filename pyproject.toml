@@ -75,7 +75,7 @@ torchvision = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
 # so `uv sync --package` build-isolation is intentionally not used); per-instance
 # slim images are produced by Dockerfile.backend/edge via dependency-groups.
 [tool.uv.workspace]
-members = ["backend", "edge", "shared"]
+members = ["backend", "worker", "shared"]
 
 [tool.ruff]
 line-length = 100
@@ -108,24 +108,18 @@ ban-relative-imports = "all"
 # each, are enforced here via `uv run --group lint lint-imports` (also a
 # pre-commit hook and CI step).
 [tool.importlinter]
-root_packages = ["backend", "edge", "contracts", "shared", "worker"]
+root_packages = ["backend", "contracts", "shared", "worker"]
 
 [[tool.importlinter.contracts]]
-name = "backend and edge are independent (edge→backend relay boundary only)"
+name = "backend and worker are independent (worker→backend relay boundary only)"
 type = "independence"
-modules = ["backend", "edge"]
+modules = ["backend", "worker"]
 
 [[tool.importlinter.contracts]]
 name = "contracts is a leaf (imports nothing internal)"
 type = "forbidden"
 source_modules = ["contracts"]
-forbidden_modules = ["backend", "edge", "shared.events"]
-
-[[tool.importlinter.contracts]]
-name = "edge.features is pure feature-math (depends only on contracts)"
-type = "forbidden"
-source_modules = ["edge.features"]
-forbidden_modules = ["backend", "shared.events", "edge.sources", "edge.perception", "edge.domains", "edge.runtime", "edge.evidence", "edge.serving_client", "edge.runners"]
+forbidden_modules = ["backend", "shared.events", "worker"]
 
 [[tool.importlinter.contracts]]
 # Stage 2b: 2-depth ownership inside backend — base (core/shared) must not import
@@ -136,25 +130,49 @@ source_modules = ["backend.app.core", "backend.app.shared"]
 forbidden_modules = ["backend.app.features", "backend.app.routes", "backend.app.main", "backend.app.lifespan"]
 
 [[tool.importlinter.contracts]]
-# Stage 3b: the serving seam is a low-level provisioning boundary — it must not
-# depend on the edge orchestration/perception/domain/evidence layers, so the GPU
-# serving plane can later be extracted behind this interface.
-name = "edge.serving_client is a low-level seam"
+# worker/types/AGENTS.md: the bottom of the ladder — imports only the standard
+# library and contracts.
+name = "worker.types imports only contracts from the internal graph"
 type = "forbidden"
-source_modules = ["edge.serving_client"]
-forbidden_modules = ["edge.domains", "edge.perception", "edge.sources", "edge.evidence", "edge.runtime"]
+source_modules = ["worker.types"]
+forbidden_modules = ["backend", "shared", "worker.interfaces", "worker.adapters", "worker.pipeline", "worker.domains", "worker.runtime"]
 
 [[tool.importlinter.contracts]]
-# Stage 3b: edge internal 2-depth ownership — a strict layer order so lower
-# I/O/perception layers never import the higher orchestration/interpretation ones.
-name = "edge internal 2-depth layers"
-type = "layers"
-layers = ["edge.runtime", "edge.evidence", "edge.domains", "edge.perception", "edge.sources"]
-[[tool.importlinter.contracts]]
-# Boot-time seam: profile resolution may use only the low-level bootstrap Stage
-# primitive (edge.runtime.pipeline_bootstrap), edge.runners device probing, and
-# contracts — never the orchestration/interpretation layers or sources.
-name = "edge.runtime.profile is a boot-time seam"
+# worker/interfaces/AGENTS.md: Protocol-only seam layer — imports only the
+# standard library, contracts, and worker.types.
+name = "worker.interfaces imports only contracts and worker.types from the internal graph"
 type = "forbidden"
-source_modules = ["edge.runtime.profile"]
-forbidden_modules = ["edge.domains", "edge.perception", "edge.evidence", "edge.serving_client", "edge.features", "edge.sources", "edge.runtime.edge_worker", "edge.runtime.camera_worker", "edge.runtime.edge_worker_supervisor", "edge.runtime.edge_worker_config", "backend", "shared.events"]
+source_modules = ["worker.interfaces"]
+forbidden_modules = ["backend", "shared", "worker.adapters", "worker.pipeline", "worker.domains", "worker.runtime"]
+
+[[tool.importlinter.contracts]]
+# worker/adapters/AGENTS.md: concrete decode/model/encode implementations never
+# reach back up to a stage, a domain, or the runtime that owns them.
+name = "worker adapters do not depend on pipeline, domains, or runtime"
+type = "forbidden"
+source_modules = ["worker.adapters"]
+forbidden_modules = ["worker.pipeline", "worker.domains", "worker.runtime"]
+
+[[tool.importlinter.contracts]]
+# worker/domains/AGENTS.md: a domain never opens a stream, sends a relay
+# request, writes a clip, or learns how it was scheduled.
+name = "worker domains do not depend on ingest, output, or runtime"
+type = "forbidden"
+source_modules = ["worker.domains"]
+forbidden_modules = ["worker.pipeline.ingest", "worker.pipeline.output", "worker.runtime"]
+
+[[tool.importlinter.contracts]]
+# worker/pipeline/AGENTS.md: perception stays pure numeric math, testable
+# without a camera, a model, or a filesystem.
+name = "worker perception features stay pure"
+type = "forbidden"
+source_modules = ["worker.pipeline.perception"]
+forbidden_modules = ["backend", "shared.events", "worker.adapters", "worker.pipeline.bus", "worker.pipeline.ingest", "worker.pipeline.decision", "worker.pipeline.output", "worker.domains", "worker.runtime"]
+
+[[tool.importlinter.contracts]]
+# worker/runtime/AGENTS.md: runtime is the only package that may import
+# everything else; nothing else may import runtime back.
+name = "worker runtime is the sole composition root"
+type = "forbidden"
+source_modules = ["worker.types", "worker.interfaces", "worker.adapters", "worker.pipeline", "worker.domains"]
+forbidden_modules = ["worker.runtime"]
