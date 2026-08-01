@@ -5,7 +5,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from edge.runtime.edge_worker_config import EdgeWorkerConfigError, load_edge_worker_config
+from worker.runtime.config.errors import WorkerConfigError
+from worker.runtime.config.loader import load_worker_config
 
 
 def _valid_yaml(path: Path) -> Path:
@@ -62,17 +63,20 @@ def _write_placeholder_artifact(path: Path) -> None:
 
 
 def test_ml_worker_yaml_config_loads_nested_contract(tmp_path: Path) -> None:
-    config = load_edge_worker_config(_valid_yaml(tmp_path / "ml-worker.yaml"))
+    config = load_worker_config(_valid_yaml(tmp_path / "ml-worker.yaml"))
 
     assert config.version == 1
     assert config.relay.url == "http://127.0.0.1:8000"
     assert config.relay_alert_url == "http://127.0.0.1:8000/api/v1/relay/alerts"
     assert config.relay_heartbeat_url == "http://127.0.0.1:8000/api/v1/relay/heartbeat"
     assert config.runtime.max_failures == 30
+    assert config.models.fall is not None
     assert config.models.fall.type == "lstm"
     assert config.models.fall.input_shape == (3, 51)
     assert config.enabled_domains == ("fall",)
-    assert config.domains.domain_config("fall").enabled is True
+    fall_domain = config.domains.domain_config("fall")
+    assert fall_domain is not None
+    assert fall_domain.enabled is True
     assert len(config.cameras) == 1
 
 
@@ -82,7 +86,7 @@ def test_ml_worker_yaml_config_preserves_absent_domain_defaults(tmp_path: Path) 
     del payload["domains"]
     path.write_text(yaml.safe_dump(payload), encoding="utf-8")
 
-    config = load_edge_worker_config(path)
+    config = load_worker_config(path)
 
     assert config.enabled_domains is None
     assert "domains" not in config.model_fields_set
@@ -94,7 +98,7 @@ def test_ml_worker_yaml_config_explicit_empty_domains_enable_none(tmp_path: Path
     payload["domains"] = {}
     path.write_text(yaml.safe_dump(payload), encoding="utf-8")
 
-    config = load_edge_worker_config(path)
+    config = load_worker_config(path)
 
     assert "domains" in config.model_fields_set
     assert config.enabled_domains == ()
@@ -109,7 +113,7 @@ def test_ml_worker_yaml_config_all_disabled_domains_enable_none(tmp_path: Path) 
     }
     path.write_text(yaml.safe_dump(payload), encoding="utf-8")
 
-    config = load_edge_worker_config(path)
+    config = load_worker_config(path)
 
     assert config.enabled_domains == ()
     assert "domains" in config.model_fields_set
@@ -119,16 +123,16 @@ def test_ml_worker_rejects_json_config(tmp_path: Path) -> None:
     path = tmp_path / "edge-cameras.json"
     path.write_text('{"cameras":[]}', encoding="utf-8")
 
-    with pytest.raises(EdgeWorkerConfigError, match="YAML"):
-        load_edge_worker_config(path)
+    with pytest.raises(WorkerConfigError, match="YAML"):
+        load_worker_config(path)
 
 
 def test_ml_worker_rejects_malformed_yaml(tmp_path: Path) -> None:
     path = tmp_path / "ml-worker.yaml"
     path.write_text("cameras: [", encoding="utf-8")
 
-    with pytest.raises(EdgeWorkerConfigError, match="not valid YAML"):
-        load_edge_worker_config(path)
+    with pytest.raises(WorkerConfigError, match="not valid YAML"):
+        load_worker_config(path)
 
 
 def test_ml_worker_yaml_config_loads_legacy_enabled_domains(tmp_path: Path) -> None:
@@ -137,7 +141,7 @@ def test_ml_worker_yaml_config_loads_legacy_enabled_domains(tmp_path: Path) -> N
     payload["domains"] = {"enabled": ["fall", "bed_exit"]}
     path.write_text(yaml.safe_dump(payload), encoding="utf-8")
 
-    config = load_edge_worker_config(path)
+    config = load_worker_config(path)
 
     assert config.enabled_domains == ("fall", "bed_exit")
     assert config.domains.domain_config("bed_exit") is None
@@ -155,7 +159,7 @@ def test_ml_worker_yaml_config_loads_per_domain_bed_exit_night_window(tmp_path: 
     }
     path.write_text(yaml.safe_dump(payload), encoding="utf-8")
 
-    config = load_edge_worker_config(path)
+    config = load_worker_config(path)
 
     assert config.enabled_domains == ("fall", "bed_exit")
     assert config.domains.bed_exit is not None
@@ -171,8 +175,8 @@ def test_ml_worker_yaml_rejects_mixed_legacy_and_per_domain_config(tmp_path: Pat
     payload["domains"] = {"enabled": ["fall"], "bed_exit": {"enabled": True}}
     path.write_text(yaml.safe_dump(payload), encoding="utf-8")
 
-    with pytest.raises(EdgeWorkerConfigError, match="domains"):
-        load_edge_worker_config(path)
+    with pytest.raises(WorkerConfigError, match="domains"):
+        load_worker_config(path)
 
 
 def test_ml_worker_yaml_rejects_unknown_domain(tmp_path: Path) -> None:
@@ -181,8 +185,8 @@ def test_ml_worker_yaml_rejects_unknown_domain(tmp_path: Path) -> None:
     payload["domains"] = {"enabled": ["fall", "unknown"]}
     path.write_text(yaml.safe_dump(payload), encoding="utf-8")
 
-    with pytest.raises(EdgeWorkerConfigError, match="domains.enabled"):
-        load_edge_worker_config(path)
+    with pytest.raises(WorkerConfigError, match="domains.enabled"):
+        load_worker_config(path)
 
 
 @pytest.mark.parametrize("obsolete_domain", ("wheelchair_standup", "long_lie", "risk"))
@@ -192,8 +196,8 @@ def test_ml_worker_yaml_rejects_removed_domains(tmp_path: Path, obsolete_domain:
     payload["domains"] = {"enabled": [obsolete_domain]}
     path.write_text(yaml.safe_dump(payload), encoding="utf-8")
 
-    with pytest.raises(EdgeWorkerConfigError, match="domains.enabled"):
-        load_edge_worker_config(path)
+    with pytest.raises(WorkerConfigError, match="domains.enabled"):
+        load_worker_config(path)
 
 
 def test_ml_worker_yaml_rejects_unknown_per_domain_key(tmp_path: Path) -> None:
@@ -202,8 +206,8 @@ def test_ml_worker_yaml_rejects_unknown_per_domain_key(tmp_path: Path) -> None:
     payload["domains"] = {"unknown": {"enabled": True}}
     path.write_text(yaml.safe_dump(payload), encoding="utf-8")
 
-    with pytest.raises(EdgeWorkerConfigError, match="domains.unknown"):
-        load_edge_worker_config(path)
+    with pytest.raises(WorkerConfigError, match="domains.unknown"):
+        load_worker_config(path)
 
 
 def test_ml_worker_yaml_rejects_invalid_night_window_time(tmp_path: Path) -> None:
@@ -217,8 +221,8 @@ def test_ml_worker_yaml_rejects_invalid_night_window_time(tmp_path: Path) -> Non
     }
     path.write_text(yaml.safe_dump(payload), encoding="utf-8")
 
-    with pytest.raises(EdgeWorkerConfigError, match="night_window.start"):
-        load_edge_worker_config(path)
+    with pytest.raises(WorkerConfigError, match="night_window.start"):
+        load_worker_config(path)
 
 
 def test_ml_worker_yaml_rejects_invalid_night_window_timezone(tmp_path: Path) -> None:
@@ -232,8 +236,8 @@ def test_ml_worker_yaml_rejects_invalid_night_window_timezone(tmp_path: Path) ->
     }
     path.write_text(yaml.safe_dump(payload), encoding="utf-8")
 
-    with pytest.raises(EdgeWorkerConfigError, match="night_window.tz"):
-        load_edge_worker_config(path)
+    with pytest.raises(WorkerConfigError, match="night_window.tz"):
+        load_worker_config(path)
 
 
 def test_ml_worker_yaml_rejects_non_lstm_fall_model(tmp_path: Path) -> None:
@@ -242,5 +246,5 @@ def test_ml_worker_yaml_rejects_non_lstm_fall_model(tmp_path: Path) -> None:
     payload["models"]["fall"]["type"] = "random-forest"
     path.write_text(yaml.safe_dump(payload), encoding="utf-8")
 
-    with pytest.raises(EdgeWorkerConfigError, match="models.fall.type"):
-        load_edge_worker_config(path)
+    with pytest.raises(WorkerConfigError, match="models.fall.type"):
+        load_worker_config(path)

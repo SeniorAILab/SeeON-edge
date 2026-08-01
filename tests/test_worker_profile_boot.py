@@ -1,88 +1,97 @@
 from __future__ import annotations
 
-import importlib
-from pathlib import Path
-
 import pytest
-import yaml
-from edge_worker_fixtures import edge_config_payload
 
-from edge.runtime.profile import BootDependencies, VerifyResult, profile_verify_stage
+from worker.runtime.profile.boot import BootContext, reject_legacy_conflicts
+from worker.runtime.profile.device import CudaProbe
+from worker.runtime.profile.registry import (
+    ML_WORKER_PROFILE_ENV,
+    PROFILE_REGISTRY,
+    ProfileVerifyError,
+    default_verifiers,
+)
+
+
+def test_ml_worker_profile_env_name() -> None:
+    assert ML_WORKER_PROFILE_ENV == "ML_WORKER_PROFILE"
+
+
+def test_default_verifiers_cpu_always_available() -> None:
+    result = default_verifiers()["cpu"]()
+
+    assert result.ok
+    assert result.profile == "cpu"
+    assert result.stage == "device"
+    assert result.reason == "CPU is available"
+
+
+def test_default_verifiers_cuda_without_source_fails_closed() -> None:
+    result = default_verifiers()["cuda"]()
+
+    assert not result.ok
+    assert result.profile == "cuda"
+    assert result.stage == "device"
+    assert result.reason == "CUDA capability probe is not configured"
+
+
+def test_default_verifiers_cuda_forwards_injected_probe_reason() -> None:
+    verifiers = default_verifiers(
+        cuda_source=lambda: CudaProbe(available=True, reason="2 devices detected")
+    )
+
+    result = verifiers["cuda"]()
+
+    assert result.ok
+    assert result.reason == "2 devices detected"
+
+
+def test_default_verifiers_mps_without_source_fails_closed() -> None:
+    result = default_verifiers()["mps"]()
+
+    assert not result.ok
+    assert result.profile == "mps"
+    assert result.reason == "MPS capability probe is not configured"
+
+
+def test_default_verifiers_mps_forwards_injected_source() -> None:
+    available = default_verifiers(mps_source=lambda: True)["mps"]()
+    assert available.ok
+    assert available.reason == "MPS is available"
+
+    unavailable = default_verifiers(mps_source=lambda: False)["mps"]()
+    assert not unavailable.ok
+    assert unavailable.reason == "MPS is unavailable"
 
 
 @pytest.mark.parametrize(
-    ("profile", "legacy_env", "device_ok", "decode_ok"),
+    "legacy_env",
     [
-        (None, {}, True, True),
-        ("unknown", {}, True, True),
-        ("cpu", {}, False, True),
-        ("cpu", {}, True, False),
-        ("cpu", {"ML_RTSP_BACKEND": "nvdec"}, True, True),
-        ("cpu", {"ML_DEFAULT_DECODE_BACKEND": "nvdec"}, True, True),
+        {"ML_RTSP_BACKEND": "nvdec"},
+        {"ML_DEFAULT_DECODE_BACKEND": "nvdec"},
     ],
-    ids=(
-        "missing-profile",
-        "unknown-profile",
-        "device-verify-failure",
-        "decode-preflight-failure",
-        "rtsp-backend-conflict",
-        "default-decode-backend-conflict",
-    ),
 )
-def test_main_refuses_invalid_profile_before_config_acquisition(
-    monkeypatch: pytest.MonkeyPatch,
-    profile: str | None,
+def test_reject_legacy_conflicts_raises_for_incompatible_backend(
     legacy_env: dict[str, str],
-    device_ok: bool,
-    decode_ok: bool,
 ) -> None:
-    worker = importlib.import_module("edge.runtime.edge_worker")
-    for name in ("ML_WORKER_PROFILE", "ML_RTSP_BACKEND", "ML_DEFAULT_DECODE_BACKEND"):
-        monkeypatch.delenv(name, raising=False)
-    if profile is not None:
-        monkeypatch.setenv("ML_WORKER_PROFILE", profile)
-    for name, value in legacy_env.items():
-        monkeypatch.setenv(name, value)
-
-    dependencies = BootDependencies(
-        {
-            "cpu": lambda: VerifyResult(
-                device_ok, "cpu", "device", "injected device result"
-            )
-        }
-    )
-
-    def decode_probe(_: str) -> VerifyResult:
-        return VerifyResult(decode_ok, "cpu", "decode", "injected decode result")
-
-    monkeypatch.setattr(
-        worker,
-        "profile_verify_stage",
-        lambda env: profile_verify_stage(env, dependencies, decode_probe),
-    )
-
-    def config_must_not_load(_: object) -> object:
-        raise AssertionError("config acquisition ran after failed profile verification")
-
-    monkeypatch.setattr(worker, "_load_startup_config", config_must_not_load)
-
-    assert worker.main([]) == 3
+    with pytest.raises(ProfileVerifyError):
+        reject_legacy_conflicts(PROFILE_REGISTRY["cpu"], legacy_env)
 
 
-def test_check_config_does_not_require_profile(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    config_path = tmp_path / "ml-worker.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            edge_config_payload(
-                camera_count=1, include_optional_fields=False, resident_ids=False
-            )
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.delenv("ML_WORKER_PROFILE", raising=False)
+def test_reject_legacy_conflicts_allows_auto() -> None:
+    assert reject_legacy_conflicts(PROFILE_REGISTRY["cpu"], {"ML_RTSP_BACKEND": "auto"}) is None
 
-    worker = importlib.import_module("edge.runtime.edge_worker")
 
-    assert worker.main(["--config", str(config_path), "--check-config"]) == 0
+def test_reject_legacy_conflicts_allows_matching_backend() -> None:
+    result = reject_legacy_conflicts(PROFILE_REGISTRY["cuda"], {"ML_RTSP_BACKEND": "nvdec"})
+    assert result is None
+
+
+def test_boot_context_carries_resolved_profile_fields() -> None:
+    spec = PROFILE_REGISTRY["cuda"]
+
+    context = BootContext(profile=spec, device=spec.device, decode=spec.decode, encode=spec.encode)
+
+    assert context.profile is spec
+    assert context.device == "cuda"
+    assert context.decode == "nvdec"
+    assert context.encode == "h264_nvenc"

@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-import edge.runtime.profile.registry as profile_registry
-from edge.runners.device import CudaProbe
-from edge.runtime.pipeline_bootstrap import BOOTSTRAP_EXIT_CODE, bootstrap_or_exit
-from edge.runtime.profile.boot import (
-    profile_verify_stage,
+from worker.runtime.profile.boot import (
     resolve_boot_context,
     resolve_profile,
 )
-from edge.runtime.profile.registry import (
+from worker.runtime.profile.device import CudaProbe
+from worker.runtime.profile.registry import (
     ML_WORKER_PROFILE_ENV,
     PROFILE_REGISTRY,
     BootDependencies,
@@ -18,6 +15,7 @@ from edge.runtime.profile.registry import (
     ProfileVerifyError,
     VerifyResult,
     default_decode_probe,
+    default_verifiers,
 )
 
 
@@ -125,78 +123,46 @@ def test_profile_registry_exact_keys() -> None:
     assert PROFILE_REGISTRY["cpu"].decode == "opencv"
 
 
-def test_profile_verify_stage_missing_profile_exits() -> None:
-    codes: list[int] = []
-
-    def exit_spy(code: int) -> None:
-        codes.append(code)
-        raise SystemExit(code)
-
-    stage = profile_verify_stage({})
-    with pytest.raises(SystemExit):
-        bootstrap_or_exit([stage], exit_fn=exit_spy)
-
-    assert codes == [BOOTSTRAP_EXIT_CODE]
-
-
 def _cuda_available() -> CudaProbe:
     return CudaProbe(available=True, reason="cuda available")
 
 
-def test_nvdec_decode_probe_accepts_cuda_hwaccel(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(profile_registry, "probe_cuda", _cuda_available)
-    monkeypatch.setattr(
-        profile_registry, "_run_ffmpeg", lambda args: "Hardware acceleration methods:\ncuda"
-    )
+def test_cuda_device_verify_uses_injected_probe_source() -> None:
+    deps = BootDependencies(default_verifiers(cuda_source=_cuda_available))
 
+    context = resolve_boot_context({ML_WORKER_PROFILE_ENV: "cuda"}, deps, _decode_ok)
+
+    assert context.device == "cuda"
+
+
+def test_default_decode_probe_fails_closed_without_injected_probes() -> None:
     result = default_decode_probe("nvdec")
+
+    assert not result.ok
+    assert result.stage == "decode"
+    assert result.profile == "cuda"
+    assert result.reason == "nvdec capability probe is not configured"
+
+
+def test_default_decode_probe_fails_closed_for_opencv_without_injected_probes() -> None:
+    result = default_decode_probe("opencv")
+
+    assert not result.ok
+    assert result.profile == ""
+    assert result.reason == "opencv capability probe is not configured"
+
+
+def test_default_decode_probe_uses_injected_probe_when_configured() -> None:
+    probes = {"nvdec": lambda: VerifyResult(True, "cuda", "decode", "nvdec available")}
+
+    result = default_decode_probe("nvdec", probes)
 
     assert result.ok
-    assert result.stage == "decode"
+    assert result.reason == "nvdec available"
 
 
-def test_nvdec_decode_probe_rejects_missing_cuvid_support(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(profile_registry, "probe_cuda", _cuda_available)
-    monkeypatch.setattr(
-        profile_registry,
-        "_run_ffmpeg",
-        lambda args: "Hardware acceleration methods:\nvaapi\nvideotoolbox",
-    )
+def test_cuda_profile_fails_closed_when_no_decode_probe_configured() -> None:
+    deps = BootDependencies(default_verifiers(cuda_source=_cuda_available))
 
-    result = default_decode_probe("nvdec")
-
-    assert not result.ok
-    assert result.stage == "decode"
-    assert "no CUDA/CUVID/NVDEC hwaccel" in result.reason
-
-
-def test_nvdec_decode_probe_rejects_missing_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(profile_registry, "probe_cuda", _cuda_available)
-
-    def missing_ffmpeg(args: tuple[str, ...]) -> str:
-        raise FileNotFoundError
-
-    monkeypatch.setattr(profile_registry, "_run_ffmpeg", missing_ffmpeg)
-
-    result = default_decode_probe("nvdec")
-
-    assert not result.ok
-    assert result.reason == "ffmpeg missing"
-
-
-def test_cuda_profile_fails_when_ffmpeg_has_no_nvdec_support(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(profile_registry, "probe_cuda", _cuda_available)
-    monkeypatch.setattr(
-        profile_registry, "_run_ffmpeg", lambda args: "Hardware acceleration methods:\nvaapi"
-    )
-
-    with pytest.raises(ProfileVerifyError, match="no CUDA/CUVID/NVDEC hwaccel"):
-        resolve_boot_context({ML_WORKER_PROFILE_ENV: "cuda"})
-
-
-def test_opencv_decode_probe_ok() -> None:
-    assert default_decode_probe("opencv").ok
+    with pytest.raises(ProfileVerifyError, match="nvdec capability probe is not configured"):
+        resolve_boot_context({ML_WORKER_PROFILE_ENV: "cuda"}, deps)
