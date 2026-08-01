@@ -86,6 +86,34 @@ def test_opencv_capability_false_when_cap_ffmpeg_constant_is_missing() -> None:
     assert "CAP_FFMPEG" in capability.reason
 
 
+def test_opencv_capability_false_when_registry_has_no_has_backend() -> None:
+    """A registry that cannot answer the question is not a yes.
+
+    This is the one guard branch in ``probe_opencv_ffmpeg_capability`` that had
+    no test. The others -- absent ``videoio_registry``, absent ``CAP_FFMPEG``,
+    failed import, raising query, backend reported absent -- were all covered.
+
+    It matters because it is the branch that most resembles a place to be
+    lenient: the attribute is simply not there, so "assume it works" is the
+    tempting reading. Under ADR-0003 that is the forbidden shape -- an implicit
+    fallback that turns an unverifiable claim into an affirmative one. Making
+    this branch default to available leaves the whole decode and probe suite
+    green, which is how it stayed untested.
+    """
+
+    class _RegistryWithoutHasBackend:
+        """Present, but cannot answer whether a backend exists."""
+
+    class _NoHasBackend:
+        def __init__(self) -> None:
+            self.videoio_registry = _RegistryWithoutHasBackend()
+            self.CAP_FFMPEG = 1900  # noqa: N815 - mirrors the cv2 constant name
+
+    capability = probe_opencv_ffmpeg_capability(importer=_NoHasBackend)
+
+    assert capability.available is False
+    assert "hasBackend" in capability.reason
+
 def test_opencv_capability_false_when_cv2_import_fails() -> None:
     def failing_importer() -> Any:
         raise ImportError("no module named cv2")
