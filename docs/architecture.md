@@ -314,8 +314,8 @@ feature it proves. Developer-convenience harnesses are deferred with the tools.
 | Worker config load and LKG fallback | `worker/runtime/config/loader.py` | `tests/test_ml_worker_yaml_config.py` | ported |
 | Runtime status and diagnostics | `worker/runtime/telemetry/status_store.py`, `worker/runtime/telemetry/runtime_status_sender.py` | `tests/test_worker_runtime_status_sender_composition.py` | ported |
 | CLI entrypoint and bounded-run cap | `worker/__main__.py` | `tests/test_worker_entrypoint.py`, `tests/test_worker_max_frames_per_camera_composition.py` | ported |
-| GPU stability preflight installer | — | — | tracked-deferred (`scripts/edge-preflight/gpu-stability-install.sh`, untracked at baseline; GitHub issue) |
-| GPU telemetry preflight | — | — | tracked-deferred (`scripts/edge-preflight/gpu-telemetry.sh`, untracked at baseline; GitHub issue) |
+| GPU stability preflight installer | — | — | tracked-deferred (`scripts/edge-preflight/gpu-stability-install.sh`, untracked at baseline; [#6](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/6)) |
+| GPU telemetry preflight | — | — | tracked-deferred (`scripts/edge-preflight/gpu-telemetry.sh`, untracked at baseline; [#7](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/7)) |
 
 ### Baseline uncommitted work
 
