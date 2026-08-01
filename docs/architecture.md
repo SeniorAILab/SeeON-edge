@@ -354,18 +354,25 @@ not a defect. Pinned by a passing negative test in
 `tests/test_worker_real_warmup_no_stub.py`. Tracked in
 [#8](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/8).
 
-**Operator scripts hang on any heredoc larger than 512 bytes.**
-Homebrew bash 5.3.15 delivers heredoc bodies through a pipe and writes them
-before exec'ing the reader, so a body over `PIPE_BUF` (512 bytes on macOS)
-blocks forever against a pipe nobody is draining yet — bash never execs the
-command. The boundary is exact: 512 bytes passes, 513 hangs; bash 3.2.57 is
-unaffected at any size. Seven heredocs under `scripts/` exceed it, including
-`ml-worker-real-rtsp-bedexit-e2e.sh`'s `compute_windows` (527 B) and
-`write_config` (797 B). `tests/test_edge_topology_contract.py` pins a working
-interpreter so the suite is not affected, but the scripts themselves are.
-Tracked in [#9](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/9),
-which carries the reproduction, the size table, and the recommended one-line
-shebang fix.
+**Operator scripts hang on heredocs larger than `PIPE_BUF`.**
+Bash 5.3.15 writes a heredoc body into a pipe before exec'ing the reader, so a
+body over `PIPE_BUF` blocks forever against a pipe nobody is draining — bash
+never execs the command. The boundary is exact: on macOS (`PIPE_BUF` 512) a
+512-byte body passes and 513 hangs; bash 3.2.57 stages heredocs in a temp file
+and is unaffected at any size. Four bash scripts under `scripts/` pin
+`#!/bin/bash` for this reason, which on macOS resolves to 3.2.57.
+
+**That pin does not help on Linux.** There `PIPE_BUF` is 4096 and `/bin/bash` is
+itself a modern bash, so only the threshold moves. Measured at 4096, one script
+is exposed on a Linux edge host: `ml-worker-single-rtsp-bedexit-e2e.sh:139`
+carries a 7162-byte heredoc. Moving that body into a file is the durable fix.
+
+`tests/test_shell_script_heredoc_contract.py` enforces the rule at the 512-byte
+threshold. CI is unaffected: the only script a test executes is
+`ml-worker-real-rtsp-bedexit-e2e.sh --render-config`, whose two heredocs on that
+path are 527 B and 797 B, both under the Linux threshold. Tracked in
+[#9](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/9), which
+carries the reproduction and the measured size census.
 
 **No `worker/pipeline/camera_pipeline.py`.** The migration plan names that file
 as the owner of `edge/runtime/camera_worker.py`, and it does not exist. The
