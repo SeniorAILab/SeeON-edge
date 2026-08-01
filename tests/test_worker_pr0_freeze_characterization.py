@@ -1,60 +1,70 @@
-"""PR-1 tagged runner-result guard tests for CameraWorker behavior.
+"""Worker-side successor of the PR-1 tagged runner-result freeze characterization.
 
-These tests document the post-refactor behavior:
+Original edge coverage (edge/runtime/camera_worker.py) and its worker-side disposition:
 
-- ``_run_runner`` invokes the unified runner seam and returns an explicit
-  tagged ``RunnerResult``; legacy method probe order is intentionally gone.
-- ``_build_observation`` dispatches on ``RunnerResult.kind`` instead of
-  sniffing raw result shapes.
-- Two distinct failure domains: SOURCE failure (construction/iteration) ->
-  ``_mark_source_failure`` -> ``DEGRADED`` status + ``camera.offline`` ops event;
-  per-frame PROCESSING failure -> ``_mark_processing_failure`` ->
-  ``frame.processing_error`` ops event and NOT marked offline (must be preserved
-  through the PR-4a RTSP reconnect/liveness work).
-- Event enrichment ``setdefault`` semantics and detector-result normalization.
-
-Frozen invariant (not under test here, documented for reviewers): the
-worker->ml-api relay paths in ``worker/edge_worker_config.py`` and the shared
-``_RunnerBundle`` runner identity are load-bearing and must remain green under
-``tests/test_worker_backend_ingest_contract.py`` and
-``tests/test_worker_runner_sharing.py``.
+- ``_run_runner`` unified invocation seam (callable-first, ``.run``-fallback, no
+  legacy ``.predict`` probing) -> ported below against
+  ``worker.pipeline.analytics.models._runner_call``, the direct successor. One
+  behavioral change is intentional and documented at the call site: edge
+  resolved the call target *per frame* and raised ``TypeError`` from the call
+  itself; worker resolves it once at extractor *provision* time
+  (``provision_extractors`` -> ``NamedExtractor``) and raises ``AttributeError``
+  eagerly if neither ``__call__`` nor ``.run`` exists, so an unsupported runner
+  fails fast at composition instead of on the first frame.
+- ``_build_observation`` tagged-``RunnerResult.kind`` dispatch (detection/pose/
+  person/bed routing, person-overrides-pose-raw-boxes, detection-clears-
+  raw-boxes) -> superseded 1:1 by
+  ``tests/test_worker_composite_extractor.py::test_composite_merges_named_results_once_and_preserves_pose_keypoints``,
+  which exercises the real ``singledispatch``-based
+  ``worker.pipeline.analytics.merge.merge_module_results`` on typed
+  ``PoseRunnerResult``/``PersonRunnerResult``/``BedRunnerResult``/
+  ``DetectionRunnerResult`` (contracts/runner.py) end to end through
+  ``CompositeExtractor.process()``. Not duplicated here.
+- ``_events_from_detector`` variant normalization (``None``/dict/list of dicts)
+  and ``_with_camera_identity``'s ``setdefault`` enrichment of an untyped event
+  dict -> obsolete by architecture change, not ported. Worker deciders never
+  return untyped dicts: ``Decider.update()`` returns fully-typed
+  ``BusinessEvent`` instances (worker/types/business_event.py) with
+  ``camera_id``/``facility_id`` as mandatory constructor fields on every
+  decider (e.g. ``worker/domains/fall/detector.py``'s ``FallEventLatch``
+  always stamps ``camera_id=self.camera_id, facility_id=self.facility_id`` when
+  it builds a ``BusinessEvent``; ``BedExitMonitor`` does the same). There is no
+  post-hoc dict-shape normalization or ambient identity enrichment step left to
+  characterize.
+- Source-construction and mid-iteration failure both mark the camera
+  offline/DEGRADED with a ``camera.offline`` ops-equivalent event; per-frame
+  processing failure does not -> superseded by
+  ``tests/test_worker_ingest_lifecycle.py::test_source_construction_failure_marks_only_that_camera_offline``
+  (construction-time), ``::test_two_camera_supervisor_isolates_read_failure_and_masks_credentials``
+  (mid-iteration read failure), and
+  ``::test_publish_processing_failure_is_not_classified_as_camera_offline``
+  (per-frame processing failure), all exercising the real
+  ``worker.pipeline.ingest.lifecycle.CameraIngestLoop``. Not duplicated here.
 """
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
-from contracts.frame import Frame
-from contracts.observation import BoundingBox, DetectionResult, FrameObservation
-from contracts.runner import bed_result, detection_result, person_result, pose_result
-from edge.runtime import camera_worker as cw
-from edge.runtime.camera_worker import CameraWorker
-from edge.runtime.status_store import CameraStatus, StatusStore
-
-
-def _frame(index: int = 0) -> Frame:
-    return Frame(index=index, time_sec=0.0, image=object())  # type: ignore[arg-type]
-
-
-# --------------------------------------------------------------------------- #
-# _run_runner unified seam
-# --------------------------------------------------------------------------- #
+from contracts.runner import RunnerResult, person_result
+from worker.pipeline.analytics.models import _runner_call
 
 
 class _RunRunner:
-    def run(self, image: object):
+    def run(self, image: object) -> RunnerResult:
         del image
         return person_result(((1, 2, 3, 4, 0.9),))
 
 
 class _CallableRunner:
-    def __call__(self, image: object):
+    def __call__(self, image: object) -> RunnerResult:
         del image
         return person_result(((5, 6, 7, 8, 0.8),))
 
 
 class _LegacyPredictOnly:
-    def predict(self, image: object):
+    def predict(self, image: object) -> RunnerResult:
         del image
         return person_result(((9, 10, 11, 12, 0.7),))
 
@@ -63,247 +73,31 @@ class _NoInvocation:
     pass
 
 
-def test_run_runner_invokes_unified_run_method() -> None:
-    result = cw._run_runner(_RunRunner(), _frame())
+def test_runner_call_resolves_a_bound_run_method() -> None:
+    call = _runner_call(_RunRunner())  # type: ignore[arg-type]
+
+    result = call(np.zeros((1, 1, 3), dtype=np.uint8))
+
     assert result.kind == "person"
     assert result.boxes == ((1, 2, 3, 4, 0.9),)
 
 
-def test_run_runner_falls_back_to_callable() -> None:
-    result = cw._run_runner(_CallableRunner(), _frame())
+def test_runner_call_prefers_a_plain_callable_over_run() -> None:
+    call = _runner_call(_CallableRunner())  # type: ignore[arg-type]
+
+    result = call(np.zeros((1, 1, 3), dtype=np.uint8))
+
     assert result.kind == "person"
     assert result.boxes == ((5, 6, 7, 8, 0.8),)
 
 
-def test_run_runner_does_not_probe_legacy_predict_methods() -> None:
-    with pytest.raises(TypeError):
-        cw._run_runner(_LegacyPredictOnly(), _frame())  # type: ignore[arg-type]
+def test_runner_call_does_not_probe_legacy_predict_methods() -> None:
+    # A predict-only object is neither callable nor has `.run`; worker resolves
+    # this eagerly at provision time rather than probing method names.
+    with pytest.raises(AttributeError):
+        _runner_call(_LegacyPredictOnly())  # type: ignore[arg-type]
 
 
-def test_run_runner_without_supported_invocation_raises() -> None:
-    with pytest.raises(TypeError):
-        cw._run_runner(_NoInvocation(), _frame())  # type: ignore[arg-type]
-
-
-# --------------------------------------------------------------------------- #
-# _build_observation tagged result dispatch
-# --------------------------------------------------------------------------- #
-
-
-class _EmptySource:
-    def __iter__(self):  # pragma: no cover - never iterated in these tests
-        return iter(())
-
-
-class _RecordingBuilder:
-    def __init__(self) -> None:
-        self.kwargs: dict[str, object] | None = None
-
-    def __call__(
-        self,
-        *,
-        detections: object = None,
-        raw_boxes: object = None,
-        poses: object = None,
-        bed_boxes: object = None,
-    ) -> FrameObservation:
-        self.kwargs = {
-            "detections": detections,
-            "raw_boxes": raw_boxes,
-            "poses": poses,
-            "bed_boxes": bed_boxes,
-        }
-        return FrameObservation()
-
-
-def _worker_with_builder(builder: _RecordingBuilder) -> CameraWorker:
-    return CameraWorker(
-        camera_id="cam-1",
-        facility_id="facility-1",
-        frame_source=_EmptySource(),
-        runners={},
-        observation_builder=builder,
-        scene_state=None,
-        status_store=StatusStore(),
-    )
-
-
-def test_build_observation_detection_result_routes_to_detections() -> None:
-    rec = _RecordingBuilder()
-    worker = _worker_with_builder(rec)
-    detection = DetectionResult(boxes=(BoundingBox(0, 0, 1, 1, 0.9),))
-
-    worker._build_observation({"pose": detection_result(detection)}, frame_index=None)
-
-    assert rec.kwargs is not None
-    assert rec.kwargs["detections"] is detection
-    assert rec.kwargs["poses"] is None
-    assert rec.kwargs["raw_boxes"] is None
-
-
-def test_build_observation_pose_result_routes_to_poses_and_boxes() -> None:
-    rec = _RecordingBuilder()
-    worker = _worker_with_builder(rec)
-    poses = [[(1, 2, 0.9)]]
-    boxes = [[1, 2, 3, 4]]
-
-    worker._build_observation({"pose": pose_result(poses, boxes)}, frame_index=None)
-
-    assert rec.kwargs is not None
-    assert rec.kwargs["poses"] is poses
-    assert rec.kwargs["raw_boxes"] is boxes
-    assert rec.kwargs["detections"] is None
-
-
-def test_build_observation_detection_result_overrides_and_clears_raw_boxes() -> None:
-    rec = _RecordingBuilder()
-    worker = _worker_with_builder(rec)
-    poses = [[(1, 2, 0.9)]]
-    boxes = [[1, 2, 3, 4]]
-    person = DetectionResult(boxes=(BoundingBox(5, 5, 6, 6, 0.8),))
-
-    worker._build_observation(
-        {"pose": pose_result(poses, boxes), "person": detection_result(person)}, frame_index=None
-    )
-
-    assert rec.kwargs is not None
-    assert rec.kwargs["detections"] is person
-    assert rec.kwargs["raw_boxes"] is None
-    # pose keypoints still flow through even when person overrides detections
-    assert rec.kwargs["poses"] is poses
-
-
-def test_build_observation_person_result_sets_raw_boxes() -> None:
-    rec = _RecordingBuilder()
-    worker = _worker_with_builder(rec)
-    boxes = [[1, 2, 3, 4]]
-
-    worker._build_observation({"person": person_result(boxes)}, frame_index=None)
-
-    assert rec.kwargs is not None
-    assert rec.kwargs["raw_boxes"] is boxes
-    assert rec.kwargs["detections"] is None
-
-
-def test_build_observation_bed_output_parsed_to_bounding_boxes() -> None:
-    rec = _RecordingBuilder()
-    worker = _worker_with_builder(rec)
-
-    worker._build_observation({"bed": bed_result([[1, 2, 3, 4, 0.9]])}, frame_index=None)
-
-    assert rec.kwargs is not None
-    bed_boxes = rec.kwargs["bed_boxes"]
-    assert bed_boxes == (BoundingBox(1, 2, 3, 4, 0.9),)
-
-
-
-
-# --------------------------------------------------------------------------- #
-# detector-result normalization + identity enrichment
-# --------------------------------------------------------------------------- #
-
-
-def test_events_from_detector_normalizes_variants() -> None:
-    mapping = {"event_type": "fall"}
-    assert list(cw._events_from_detector(None)) == []
-    assert list(cw._events_from_detector(mapping)) == [mapping]
-    assert list(cw._events_from_detector([mapping, mapping])) == [mapping, mapping]
-
-
-def test_with_camera_identity_uses_setdefault() -> None:
-    event = {"event_type": "fall", "camera_id": "keep-me"}
-    enriched = cw._with_camera_identity(event, "cam-1", "facility-1", 1.5)
-    assert enriched["camera_id"] == "keep-me"  # existing value preserved
-    assert enriched["facility_id"] == "facility-1"
-    assert enriched["time_sec"] == 1.5
-
-
-# --------------------------------------------------------------------------- #
-# failure domains: source vs per-frame processing
-# --------------------------------------------------------------------------- #
-
-
-class _RaisingIterSource:
-    def __iter__(self):
-        raise RuntimeError("open failed")
-
-
-class _RaiseOnceThenStop:
-    def __init__(self) -> None:
-        self._n = 0
-
-    def __iter__(self):
-        return self
-
-    def __next__(self) -> Frame:
-        self._n += 1
-        if self._n == 1:
-            raise RuntimeError("read failed")
-        raise StopIteration
-
-
-class _OneFrameSource:
-    def __iter__(self):
-        return iter([_frame(0)])
-
-
-def _raising_builder(**_kwargs: object) -> FrameObservation:
-    raise ValueError("processing boom")
-
-
-def test_source_construction_failure_marks_camera_offline() -> None:
-    store = StatusStore()
-    worker = CameraWorker(
-        camera_id="cam-1",
-        facility_id="facility-1",
-        frame_source=_RaisingIterSource(),
-        runners={},
-        status_store=store,
-    )
-
-    processed = worker.run(max_frames=5)
-
-    assert processed == 0
-    record = store.get_status("cam-1")
-    assert record is not None
-    assert record.status == CameraStatus.DEGRADED
-    assert record.error_category == "RuntimeError"
-    assert "camera.offline" in {event.event_type for event in store.ops_events()}
-
-
-def test_source_iteration_failure_marks_camera_offline() -> None:
-    store = StatusStore()
-    worker = CameraWorker(
-        camera_id="cam-1",
-        facility_id="facility-1",
-        frame_source=_RaiseOnceThenStop(),
-        runners={},
-        status_store=store,
-    )
-
-    processed = worker.run(max_frames=5)
-
-    assert processed == 0  # iteration failure does not count as a processed frame
-    assert "camera.offline" in {event.event_type for event in store.ops_events()}
-
-
-def test_processing_failure_is_not_marked_offline() -> None:
-    store = StatusStore()
-    worker = CameraWorker(
-        camera_id="cam-1",
-        facility_id="facility-1",
-        frame_source=_OneFrameSource(),
-        runners={},
-        observation_builder=_raising_builder,
-        status_store=store,
-    )
-
-    processed = worker.run(max_frames=1)
-
-    assert processed == 1  # processed increments even after a per-frame failure
-    event_types = {event.event_type for event in store.ops_events()}
-    assert "frame.processing_error" in event_types
-    assert "camera.offline" not in event_types
-    record = store.get_status("cam-1")
-    assert record is not None
-    assert record.status == CameraStatus.READY  # NOT DEGRADED/OFFLINE
+def test_runner_call_without_supported_invocation_raises() -> None:
+    with pytest.raises(AttributeError):
+        _runner_call(_NoInvocation())  # type: ignore[arg-type]

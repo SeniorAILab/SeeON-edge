@@ -1,183 +1,225 @@
+"""Worker-side successor of the per-camera fall/decision-state characterization.
+
+Original edge coverage (edge/runtime/edge_worker.py, edge/runtime/camera_worker.py)
+and its worker-side disposition:
+
+- ``test_fall_classifier_state_is_per_camera`` (distinct tracker/detector/
+  classifier instances per camera, one shared fall model across all cameras,
+  one shared pose/bed runner per process) -> superseded 1:1 by
+  ``tests/test_worker_composition.py::test_four_cameras_isolate_decision_state_and_share_the_fall_model``
+  (worker/runtime/worker.py:197-227), which asserts across four real cameras
+  that ``fall.classifier.model is runtime.fall_model`` while every
+  ``FallEventLatch``/``BedExitMonitor``/``EventAggregator``/``IncidentManager``
+  instance is distinct per camera, and by
+  ``test_two_cameras_isolate_mutable_state_and_share_yolo_extractors``
+  (worker/runtime/worker.py:168-195), which asserts the shared pose/person/bed
+  runner identity across cameras (``["pose", "person", "bed", "fall"]`` created
+  exactly once). Not duplicated here.
+
+Two guarantees from that same cluster had no worker-side home and are ported
+below at the composition-root level:
+
+- Each camera gets its own ``DurableEvidenceStager`` (worker's replacement for
+  edge's evidence-sink wiring) rather than a shared one -- worker's analog of
+  ``test_supervisor_wires_the_camera_specific_durable_stager``.
+- One tracker-assigned identity flows unchanged into every registered
+  decider from a single frame -- worker's analog of
+  ``test_camera_worker_stamps_one_shared_tracker_id_for_fall_and_bed_exit``.
+  This decomposes cleanly along worker's architecture into two already-proven
+  halves plus one still-missing link: (a) ``CompositeExtractor``+
+  ``GreedyIouTracker`` produce exactly one ``track_ids`` tuple that feeds one
+  ``DecisionInput`` per frame (already covered by
+  ``tests/test_worker_composite_extractor.py``'s
+  ``result.observation.track_ids`` assertions); (b) the missing link, ported
+  below, is that ``EventAggregator.update`` (worker/pipeline/decision/event_aggregator.py)
+  hands that *same* ``DecisionInput`` object to every registered decider in one
+  generator expression, so nothing downstream of the tracker can see a
+  different identity than any other decider does.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Literal, final
 
-import numpy as np
+import pytest
 
-from contracts.frame import Frame
-from contracts.runner import pose_result
-from contracts.tracker import TrackerProtocol
-from edge.perception.tracker import GreedyIouTracker
-from edge.runtime import edge_worker
-from edge.runtime.camera_worker import CameraWorker
-from edge.runtime.edge_worker_config import CameraRuntimeConfig, EdgeWorkerConfig
-from edge.runtime.scheduler import Scheduler
-from edge.runtime.status_store import StatusStore
+from contracts.observation import BedRegionCacheState, BedRegionDebugSnapshot, FrameObservation
+from worker.pipeline.bus import BoundedFrameBus
+from worker.pipeline.decision import EventAggregator, IncidentManager
+from worker.pipeline.ingest.lifecycle import IngestReporter
+from worker.pipeline.output.event_sink import EvidenceEventSink
+from worker.pipeline.output.evidence.evidence_runtime import OUTBOX_PATH_ENV
+from worker.runtime.config import CameraRuntimeConfig, WorkerConfig
+from worker.runtime.lease import GpuLease
+from worker.runtime.profile.registry import VerifyResult
+from worker.runtime.worker import WorkerRuntime
+from worker.types import BusinessEvent, DecisionInput
 
 
 @dataclass(frozen=True, slots=True)
 class _FallMetadata:
-    window: int = 3
+    window: int = 2
     stride: int = 1
-    mode: str = "sequence"
+    mode: Literal["sequence"] = "sequence"
 
 
-@dataclass(frozen=True, slots=True)
-class _FallModel:
-    metadata: _FallMetadata = field(default_factory=_FallMetadata)
-    operating_threshold: float = 0.5
+@final
+class _FakeRunner:
+    def __init__(self, task: str) -> None:
+        self.task = task
+        self.metadata = _FallMetadata()
+        self.operating_threshold = 0.5
+        self.warmup_count = 0
 
-    def predict(self, features: np.ndarray) -> float:
-        return 0.91 if features.shape == (3, 51) else 0.0
+    def __call__(self, _image: object) -> object:
+        raise AssertionError("composition tests must not run model inference")
+
+    def predict(self, _features: object) -> float:
+        return 0.0
+
+    def warmup(self) -> None:
+        self.warmup_count += 1
 
 
-class _Runner:
-    def run(self, image: np.ndarray):
-        del image
-        return pose_result((), ())
+@final
+class _FakeServingClient:
+    def __init__(self) -> None:
+        self.created: list[tuple[str, _FakeRunner]] = []
 
+    def create(self, task: str, **_options: object) -> _FakeRunner:
+        runner = _FakeRunner(task)
+        self.created.append((task, runner))
+        return runner
+
+
+@final
+class _NoOpLoop:
+    def __init__(self, camera_id: str, reporter: IngestReporter) -> None:
+        self.camera_id = camera_id
+        self.reporter = reporter
+
+    def run(self) -> None:
+        self.reporter.mark_starting(self.camera_id)
+        self.reporter.mark_ready(self.camera_id)
+
+    def stop(self) -> None:
+        return None
+
+
+@final
+class _NoOpPump:
+    def __init__(self, camera_id: str) -> None:
+        self.camera_id = camera_id
+
+    def run(self) -> None:
+        return None
+
+    def stop(self) -> None:
+        return None
+
+
+def _loop_factory(
+    camera: CameraRuntimeConfig, _bus: BoundedFrameBus, reporter: IngestReporter
+) -> _NoOpLoop:
+    return _NoOpLoop(camera.camera_id, reporter)
+
+
+def _config(*camera_ids: str) -> WorkerConfig:
+    return WorkerConfig.model_validate(
+        {
+            "version": 7,
+            "relay": {"url": "http://relay.test", "token": "relay-token"},
+            "cameras": [
+                {
+                    "camera_id": camera_id,
+                    "facility_id": f"facility-{camera_id.removeprefix('camera-')}",
+                    "rtsp_url": f"rtsp://example.test/{camera_id}",
+                }
+                for camera_id in camera_ids
+            ],
+        }
+    )
+
+
+def test_worker_wires_a_distinct_durable_stager_per_camera(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv(OUTBOX_PATH_ENV, str(tmp_path / "outbox.sqlite3"))
+    serving = _FakeServingClient()
+    captured: dict[str, object] = {}
+
+    def _pump_factory(
+        camera: CameraRuntimeConfig,
+        _bus: BoundedFrameBus,
+        _analytics: object,
+        _decision: object,
+        sink: object,
+    ) -> _NoOpPump:
+        captured[camera.camera_id] = sink
+        return _NoOpPump(camera.camera_id)
+
+    runtime = WorkerRuntime(
+        _config("camera-a", "camera-b"),
+        env={"ML_WORKER_PROFILE": "cpu"},
+        serving_client=serving,
+        loop_factory=_loop_factory,
+        pump_factory=_pump_factory,
+        acquire_lease=lambda: GpuLease.acquire(tmp_path),
+        decode_probe=lambda _decode: VerifyResult(True, "cpu", "decode", "available"),
+    )
+
+    runtime.run()
+
+    assert set(captured) == {"camera-a", "camera-b"}
+    sink_a, sink_b = captured["camera-a"], captured["camera-b"]
+    assert isinstance(sink_a, EvidenceEventSink)
+    assert isinstance(sink_b, EvidenceEventSink)
+    assert sink_a is not sink_b
+    assert sink_a.stager is not sink_b.stager
+    assert sink_a.stager.camera_id == "camera-a"  # type: ignore[attr-defined]
+    assert sink_b.stager.camera_id == "camera-b"  # type: ignore[attr-defined]
+    assert sink_a.stager.facility_id == "facility-a"  # type: ignore[attr-defined]
+    # Both cameras durably stage into the same process-wide outbox database.
+    assert sink_a.stager.database_path == sink_b.stager.database_path  # type: ignore[attr-defined]
 
 
 @dataclass(slots=True)
-class _Registry:
-    created: dict[str, int] = field(
-        default_factory=lambda: {"pose": 0, "person": 0, "bed": 0, "fall": 0}
+class _RecordingDecider:
+    seen: list[DecisionInput] = field(default_factory=list)
+
+    def update(self, input_value: DecisionInput) -> tuple[BusinessEvent, ...]:
+        self.seen.append(input_value)
+        return ()
+
+
+def test_event_aggregator_shares_one_decision_input_across_every_registered_decider(
+    tmp_path: Path,
+) -> None:
+    fall_recorder = _RecordingDecider()
+    bed_exit_recorder = _RecordingDecider()
+    aggregator = EventAggregator(
+        deciders=(fall_recorder, bed_exit_recorder),
+        incidents=IncidentManager(identity_path=tmp_path / "identities.jsonl"),
     )
-    fall_model: _FallModel = field(default_factory=_FallModel)
-    pose_runner: _Runner = field(default_factory=_Runner)
-    person_runner: _Runner = field(default_factory=_Runner)
-
-    bed_runner: _Runner = field(default_factory=_Runner)
-
-    def create(self, task: str, **kwargs: object) -> object:
-        del kwargs
-        self.created[task] += 1
-        if task == "pose":
-            return self.pose_runner
-        if task == "person":
-            return self.person_runner
-        if task == "bed":
-            return self.bed_runner
-        if task == "fall":
-            return self.fall_model
-        raise AssertionError(task)
-
-
-class _Stager:
-    def stage(self, event) -> None:
-        del event
-
-    def complete(self, edge_event_id: str, clip_id: str | None) -> None:
-        del edge_event_id, clip_id
-
-
-def test_fall_classifier_state_is_per_camera() -> None:
-    registry = _Registry()
-    supervisor = edge_worker._build_supervisor(
-        _two_camera_config(),
-        StatusStore(),
-        device="cpu",
-        decode="opencv",
-        registry=registry,
+    frame = DecisionInput(
+        observation=FrameObservation(track_ids=(42,)),
+        frame_width=10,
+        frame_height=10,
+        live_track_ids=(42,),
+        time_sec=1.0,
+        frame_index=0,
+        bed_region=BedRegionDebugSnapshot(BedRegionCacheState.EMPTY),
     )
 
-    workers = [loop.worker for loop in supervisor.loops]
-    detectors = [worker.domain_detectors[0] for worker in workers]
+    aggregator.update(frame)
 
-    assert registry.created == {"pose": 1, "person": 0, "bed": 1, "fall": 1}
-    assert isinstance(GreedyIouTracker(), TrackerProtocol)
-    assert len({id(worker.tracker) for worker in workers}) == 2
-    assert all(not hasattr(detector, "_tracker") for detector in detectors)
-    assert len({id(detector) for detector in detectors}) == 2
-    classifiers = [detector._prepare_input.__self__ for detector in detectors]
-    assert len({id(classifier) for classifier in classifiers}) == 2
-    assert all(classifier.model is registry.fall_model for classifier in classifiers)
-
-
-def test_supervisor_wires_the_camera_specific_durable_stager() -> None:
-    registry = _Registry()
-    stager = _Stager()
-
-    supervisor = edge_worker._build_supervisor(
-        _two_camera_config(),
-        StatusStore(),
-        device="cpu",
-        decode="opencv",
-        registry=registry,
-        evidence_stagers={"camera-1": stager},
-    )
-
-    assert supervisor.loops[0].worker.evidence_stager is stager
-    assert supervisor.loops[1].worker.evidence_stager is None
-
-def test_camera_worker_stamps_one_shared_tracker_id_for_fall_and_bed_exit() -> None:
-    box = (1, 2, 21, 42, 0.9)
-    observed: dict[str, tuple[int | None, ...]] = {}
-
-    class _Tracker:
-        @property
-        def live_ids(self) -> frozenset[int]:
-            return frozenset({42})
-
-        def update(self, boxes):
-            assert len(boxes) == 1
-            return (42,)
-
-    class _PoseRunner:
-        calls = 0
-
-        def run(self, image: np.ndarray):
-            del image
-            self.calls += 1
-            keypoints = tuple((1.0, 2.0, 0.9) for _ in range(17))
-            return pose_result((keypoints,), (box,))
-
-    class _FallConsumer:
-        def update(self, domain_input):
-            observed["fall"] = domain_input.observation.track_ids
-            assert domain_input.live_track_ids == (42,)
-            return ()
-
-    class _BedExitConsumer:
-        def update(self, domain_input):
-            observed["bed_exit"] = domain_input.observation.track_ids
-            return ()
-
-    pose_runner = _PoseRunner()
-
-    worker = CameraWorker(
-        camera_id="camera-1",
-        facility_id="facility-1",
-        frame_source=(),
-        runners={"pose": pose_runner},
-
-        scheduler=Scheduler({"pose": 1}),
-
-        domain_detectors=(_FallConsumer(), _BedExitConsumer()),
-        tracker=_Tracker(),
-    )
-
-    observation = worker.process_frame(
-        Frame(index=0, time_sec=1.0, image=np.zeros((10, 10, 3), dtype=np.uint8))
-    )
-
-    assert observation.track_ids == (42,)
-    assert observed == {"fall": (42,), "bed_exit": (42,)}
-    assert observation.poses == (tuple((1.0, 2.0, 0.9) for _ in range(17)),)
-    assert pose_runner.calls == 1
-
-
-def _two_camera_config() -> EdgeWorkerConfig:
-    return EdgeWorkerConfig(
-        version=1,
-        relay={"url": "http://127.0.0.1:8000", "token": "relay-token"},
-        cameras=tuple(
-            CameraRuntimeConfig(
-                camera_id=f"camera-{index}",
-                facility_id="facility-1",
-                resident_id=f"resident-{index}",
-                rtsp_url=f"rtsp://camera-{index}.local/trackID=2",
-            )
-            for index in range(1, 3)
-        ),
-    )
+    assert fall_recorder.seen == [frame]
+    assert bed_exit_recorder.seen == [frame]
+    # Not just equal -- the identical object, so no decider can observe a
+    # tracker identity the others do not.
+    assert fall_recorder.seen[0] is frame
+    assert bed_exit_recorder.seen[0] is frame
+    assert fall_recorder.seen[0].live_track_ids == (42,)
+    assert bed_exit_recorder.seen[0].observation.track_ids == (42,)
