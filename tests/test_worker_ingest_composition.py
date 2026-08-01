@@ -1,0 +1,234 @@
+from __future__ import annotations
+
+from typing import final
+
+import pytest
+
+import worker.runtime.ingest_composition as ingest_composition_module
+from worker.pipeline.bus import BoundedFrameBus
+from worker.pipeline.ingest.lifecycle import IngestEvent
+from worker.pipeline.ingest.registry import SourceRegistryError
+from worker.runtime.config import CameraRuntimeConfig, WorkerConfig
+from worker.runtime.ingest_composition import (
+    CpuAvConfig,
+    NvdecCuvidConfig,
+    build_camera_source_registry,
+    compose_camera_ingest_loop,
+    decoder_for,
+)
+from worker.runtime.profile.boot import BootContext
+from worker.runtime.profile.registry import PROFILE_REGISTRY
+from worker.runtime.worker import WorkerRuntime
+
+
+@final
+class _FakeServingClient:
+    def create(self, task: str, **_options: object) -> object:
+        raise AssertionError(f"ingest composition tests must not create a serving model: {task}")
+
+
+@final
+class _Reporter:
+    def mark_starting(self, camera_id: str) -> None:
+        del camera_id
+
+    def mark_ready(self, camera_id: str) -> None:
+        del camera_id
+
+    def mark_degraded(self, camera_id: str, *, category: str) -> None:
+        del camera_id, category
+
+    def emit(self, event: IngestEvent) -> None:
+        del event
+
+
+def _config(*camera_ids: str) -> WorkerConfig:
+    return WorkerConfig.model_validate(
+        {
+            "version": 7,
+            "relay": {"url": "http://relay.test", "token": "relay-token"},
+            "cameras": [
+                {
+                    "camera_id": camera_id,
+                    "facility_id": f"facility-{camera_id.removeprefix('camera-')}",
+                    "rtsp_url": f"rtsp://example.test/{camera_id}",
+                    "heartbeat_interval_sec": 30.0,
+                }
+                for camera_id in camera_ids
+            ],
+        }
+    )
+
+
+def _camera(camera_id: str = "camera-a") -> CameraRuntimeConfig:
+    return _config(camera_id).cameras[0]
+
+
+def _boot_context_for(profile_name: str) -> BootContext:
+    spec = PROFILE_REGISTRY[profile_name]
+    return BootContext(profile=spec, device=spec.device, decode=spec.decode, encode=spec.encode)
+
+
+def _forbid(name: str) -> object:
+    def raise_if_called(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError(f"{name} must not be constructed for this decode token")
+
+    return raise_if_called
+
+
+# -- decoder_for: the fail-fast selection seam --------------------------------
+
+
+def test_decoder_for_opencv_token_constructs_only_the_cpu_av_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinel = object()
+    calls: list[str] = []
+
+    def fake_cpu_av_adapter() -> object:
+        calls.append("cpu_av")
+        return sentinel
+
+    monkeypatch.setattr(ingest_composition_module, "CpuAvAdapter", fake_cpu_av_adapter)
+    monkeypatch.setattr(
+        ingest_composition_module, "NvdecCuvidAdapter", _forbid("NvdecCuvidAdapter")
+    )
+
+    result = decoder_for("opencv")
+
+    assert result is sentinel
+    assert calls == ["cpu_av"]
+
+
+def test_decoder_for_nvdec_token_constructs_only_the_nvdec_cuvid_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinel = object()
+    calls: list[str] = []
+
+    def fake_nvdec_adapter() -> object:
+        calls.append("nvdec")
+        return sentinel
+
+    monkeypatch.setattr(ingest_composition_module, "NvdecCuvidAdapter", fake_nvdec_adapter)
+    monkeypatch.setattr(ingest_composition_module, "CpuAvAdapter", _forbid("CpuAvAdapter"))
+
+    result = decoder_for("nvdec")
+
+    assert result is sentinel
+    assert calls == ["nvdec"]
+
+
+def test_decoder_for_unknown_token_raises_without_constructing_any_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ingest_composition_module, "CpuAvAdapter", _forbid("CpuAvAdapter"))
+    monkeypatch.setattr(
+        ingest_composition_module, "NvdecCuvidAdapter", _forbid("NvdecCuvidAdapter")
+    )
+
+    with pytest.raises(RuntimeError, match="unsupported decode policy"):
+        decoder_for("mystery")  # type: ignore[arg-type]
+
+
+# -- compose_camera_ingest_loop: end-to-end composition wiring ----------------
+
+
+def test_compose_camera_ingest_loop_wires_the_cpu_av_adapter_and_its_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinel = object()
+    monkeypatch.setattr(ingest_composition_module, "CpuAvAdapter", lambda: sentinel)
+    camera = _camera("camera-a")
+    registry = build_camera_source_registry((camera,))
+
+    loop = compose_camera_ingest_loop(
+        camera, BoundedFrameBus(), _Reporter(), decode="opencv", registry=registry
+    )
+
+    assert loop.camera_id == "camera-a"
+    assert loop._ports.decoder is sentinel  # noqa: SLF001 - composition wiring under test
+    assert loop._ports.registry is registry  # noqa: SLF001
+    resolved = registry.resolve(source_id="camera-a")
+    config = loop._spec.make_decode_config("camera-a", resolved)  # noqa: SLF001
+    assert config == CpuAvConfig(camera_id="camera-a", url=camera.inference_rtsp_url)
+
+
+def test_compose_camera_ingest_loop_wires_the_nvdec_cuvid_adapter_and_its_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinel = object()
+    monkeypatch.setattr(ingest_composition_module, "NvdecCuvidAdapter", lambda: sentinel)
+    camera = _camera("camera-b")
+    registry = build_camera_source_registry((camera,))
+
+    loop = compose_camera_ingest_loop(
+        camera, BoundedFrameBus(), _Reporter(), decode="nvdec", registry=registry
+    )
+
+    assert loop._ports.decoder is sentinel  # noqa: SLF001
+    resolved = registry.resolve(source_id="camera-b")
+    config = loop._spec.make_decode_config("camera-b", resolved)  # noqa: SLF001
+    assert config == NvdecCuvidConfig(camera_id="camera-b", url=camera.inference_rtsp_url)
+
+
+def test_build_camera_source_registry_allowlists_only_the_configured_cameras() -> None:
+    registry = build_camera_source_registry((_camera("camera-a"),))
+
+    resolved = registry.resolve(source_id="camera-a")
+
+    assert resolved.record.trusted_live is True
+    with pytest.raises(SourceRegistryError):
+        registry.resolve(source_id="camera-not-configured")
+
+
+# -- WorkerRuntime: the composition-root seam ----------------------------------
+
+
+def test_worker_runtime_constructs_without_a_loop_factory() -> None:
+    # This is the exact construction line worker/__main__.py uses: no loop_factory.
+    runtime = WorkerRuntime(_config("camera-a"), serving_client=_FakeServingClient())
+
+    assert isinstance(runtime, WorkerRuntime)
+
+
+def test_default_loop_factory_selects_the_cpu_av_adapter_for_the_opencv_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinel = object()
+    monkeypatch.setattr(ingest_composition_module, "CpuAvAdapter", lambda: sentinel)
+    monkeypatch.setattr(
+        ingest_composition_module, "NvdecCuvidAdapter", _forbid("NvdecCuvidAdapter")
+    )
+    config = _config("camera-a")
+    runtime = WorkerRuntime(config, serving_client=_FakeServingClient())
+    runtime._boot = _boot_context_for("cpu")  # noqa: SLF001 - simulate post-model-init state
+
+    loop = runtime._default_loop_factory(config.cameras[0], BoundedFrameBus(), _Reporter())
+
+    assert loop._ports.decoder is sentinel  # noqa: SLF001
+
+
+def test_default_loop_factory_selects_the_nvdec_cuvid_adapter_for_the_nvdec_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinel = object()
+    monkeypatch.setattr(ingest_composition_module, "NvdecCuvidAdapter", lambda: sentinel)
+    monkeypatch.setattr(ingest_composition_module, "CpuAvAdapter", _forbid("CpuAvAdapter"))
+    config = _config("camera-a")
+    runtime = WorkerRuntime(config, serving_client=_FakeServingClient())
+    runtime._boot = _boot_context_for("cuda")  # noqa: SLF001
+
+    loop = runtime._default_loop_factory(config.cameras[0], BoundedFrameBus(), _Reporter())
+
+    assert loop._ports.decoder is sentinel  # noqa: SLF001
+
+
+def test_default_loop_factory_without_a_resolved_boot_profile_raises() -> None:
+    config = _config("camera-a")
+    runtime = WorkerRuntime(config, serving_client=_FakeServingClient())
+
+    with pytest.raises(RuntimeError, match="resolved boot profile"):
+        runtime._default_loop_factory(  # noqa: SLF001
+            config.cameras[0], BoundedFrameBus(), _Reporter()
+        )

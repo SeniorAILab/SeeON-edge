@@ -33,6 +33,7 @@ from worker.pipeline.bus import BoundedFrameBus, Scheduler
 from worker.pipeline.camera_pipeline import CameraPipelinePump
 from worker.pipeline.decision import EventAggregator, IncidentManager
 from worker.pipeline.decision.event_identity import event_identity_path
+from worker.pipeline.ingest.registry import SourceRegistry
 from worker.pipeline.output.event_sink import EventClipRecorder, EvidenceEventSink
 from worker.pipeline.output.evidence.clip_recorder import ClipRecorder
 from worker.pipeline.output.evidence.clip_recorder_models import ClipRecorderConfig
@@ -46,6 +47,10 @@ from worker.pipeline.perception import GreedyIouTracker, SceneState
 from worker.runtime.config import CameraRuntimeConfig, WorkerConfig
 from worker.runtime.faults.handler import FaultHandler
 from worker.runtime.faults.record import make_fault_record
+from worker.runtime.ingest_composition import (
+    build_camera_source_registry,
+    compose_camera_ingest_loop,
+)
 from worker.runtime.lease import GpuLease, resolve_state_dir
 from worker.runtime.model_composition import SharedYoloExtractors, compose_yolo_extractors
 from worker.runtime.profile.boot import BootContext
@@ -254,7 +259,7 @@ class WorkerRuntime:
         self,
         config: WorkerConfig,
         *,
-        loop_factory: CameraLoopFactory,
+        loop_factory: CameraLoopFactory | None = None,
         serving_client: ServingClient,
         env: Mapping[str, str] | None = None,
         acquire_lease: bootstrap.LeaseAcquirer | None = None,
@@ -269,7 +274,7 @@ class WorkerRuntime:
         self.config = config
         self._env = os.environ if env is None else env
         self._serving = serving_client
-        self._loop_factory = loop_factory
+        self._loop_factory = loop_factory or self._default_loop_factory
         self._pump_factory = pump_factory
         self._sink_factory = event_sink_factory or self._default_event_sink
         self._clip_recorder_factory = clip_recorder_factory or self._default_clip_recorder
@@ -287,6 +292,7 @@ class WorkerRuntime:
         self.cameras: tuple[CameraRuntimeContext, ...] = ()
         self._clip_recorder: ClipRecorder | None = None
         self._evidence_export_runtime: EvidenceExportRuntime | None = None
+        self._camera_source_registry: SourceRegistry | None = None
 
     def run(self) -> None:
         stages = bootstrap.named_stages(
@@ -474,6 +480,30 @@ class WorkerRuntime:
         if self._clip_recorder is None:
             return _NullClipRecorder()
         return _CameraClipRecorderView(self._clip_recorder, camera.camera_id)
+
+    def _default_loop_factory(
+        self,
+        camera: CameraRuntimeConfig,
+        bus: BoundedFrameBus,
+        reporter: ingest.IngestReporter,
+    ) -> _RunnableIngest:
+        """Compose the real per-camera ingest loop from the boot-resolved profile.
+
+        ``self._boot`` is set by ``_initialize_models`` before camera activation
+        (and therefore before this ever runs), so the decode token is always the
+        one the profile verified at boot -- never a second, parallel resolution.
+        """
+        if self._boot is None:
+            raise RuntimeError("camera ingest composition requires a resolved boot profile")
+        return compose_camera_ingest_loop(
+            camera, bus, reporter,
+            decode=self._boot.decode, registry=self._ingest_source_registry(),
+        )
+
+    def _ingest_source_registry(self) -> SourceRegistry:
+        if self._camera_source_registry is None:
+            self._camera_source_registry = build_camera_source_registry(self.config.cameras)
+        return self._camera_source_registry
 
     def _build_decision_stage(
         self, camera: CameraRuntimeConfig, fall_model: FallModelProtocol
