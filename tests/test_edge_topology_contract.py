@@ -299,13 +299,12 @@ def test_repo_does_not_own_rtsp_generation_surface() -> None:
     assert not failures, f"RTSP generation terms remain in active surface: {failures}"
 
 
-def test_worker_imports_no_api_or_serving_packages() -> None:
-    source = (REPO_ROOT / "edge/runtime/edge_worker.py").read_text(encoding="utf-8")
-
-    assert "from api" not in source
-    assert "import api" not in source
-    assert "from serving" not in source
-    assert "import serving" not in source
+# ``test_worker_imports_no_api_or_serving_packages`` was removed with the legacy
+# ``edge/`` tree: it read ``edge/runtime/edge_worker.py`` directly. Its intent --
+# the worker must not reach into the API or serving packages -- is now enforced
+# by the import-linter contract "backend and worker are independent
+# (worker→backend relay boundary only)" in ``pyproject.toml`` and by
+# ``tests/test_serving_boundary_contract.py``.
 
 
 def test_edge_compose_keeps_backend_event_url_on_api_only() -> None:

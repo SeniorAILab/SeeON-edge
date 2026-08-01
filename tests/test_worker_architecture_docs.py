@@ -117,6 +117,100 @@ def _executable_legacy_hits(text: str) -> list[str]:
     return hits
 
 
+PARITY_BASELINE_SHA = "aeed6a8"
+_PARITY_DISPOSITIONS = ("ported", "tracked-deferred", "out-of-scope (uncommitted)")
+
+
+def _parity_ledger_rows() -> list[tuple[str, str, str, str]]:
+    """Capability rows of the feature parity ledger.
+
+    The ledger is a four-column table under ``## Feature parity ledger``. Rows
+    are collected until the next heading so the baseline-uncommitted table that
+    follows is not mistaken for a capability row.
+    """
+    rows: list[tuple[str, str, str, str]] = []
+    in_section = False
+    for line in _read(ARCHITECTURE).splitlines():
+        if line.startswith("## "):
+            in_section = line.strip() == "## Feature parity ledger"
+            continue
+        if not in_section or not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) != 4:
+            continue
+        if cells[0] in {"Capability", "---"} or set(cells[0]) <= {"-", " "}:
+            continue
+        rows.append((cells[0], cells[1], cells[2], cells[3]))
+    return rows
+
+
+def test_architecture_documents_a_non_empty_feature_parity_ledger() -> None:
+    text = _read(ARCHITECTURE)
+    assert "## Feature parity ledger" in text
+    assert _parity_ledger_rows() != []
+
+
+def test_parity_ledger_pins_the_committed_baseline_commit() -> None:
+    text = _read(ARCHITECTURE)
+    assert PARITY_BASELINE_SHA in text
+    assert "committed" in text.lower()
+
+
+def test_every_parity_row_names_an_owner_and_a_known_disposition() -> None:
+    for capability, owner, behaviour_test, disposition in _parity_ledger_rows():
+        assert capability, "a parity row must name a capability"
+        matched = [
+            known for known in _PARITY_DISPOSITIONS if disposition.startswith(known)
+        ]
+        assert matched, f"{capability} has an unknown disposition: {disposition}"
+        if disposition.startswith("ported"):
+            assert owner not in {"", "—"}, f"{capability} is ported without an owner"
+            assert behaviour_test not in {
+                "",
+                "—",
+            }, f"{capability} is ported without a behaviour test"
+
+
+def test_ported_parity_rows_cite_behaviour_tests_that_exist() -> None:
+    missing: list[str] = []
+    for capability, _owner, behaviour_test, disposition in _parity_ledger_rows():
+        if not disposition.startswith("ported"):
+            continue
+        for cited in re.findall(r"`([^`]+)`", behaviour_test):
+            if not (ROOT / cited).exists():
+                missing.append(f"{capability} -> {cited}")
+    assert missing == [], f"parity ledger cites tests that do not exist: {missing}"
+
+
+def test_ported_parity_rows_cite_owners_that_exist() -> None:
+    missing: list[str] = []
+    for capability, owner, _behaviour_test, disposition in _parity_ledger_rows():
+        if not disposition.startswith("ported"):
+            continue
+        for cited in re.findall(r"`([^`]+)`", owner):
+            if not (ROOT / cited).exists():
+                missing.append(f"{capability} -> {cited}")
+    assert missing == [], f"parity ledger cites owners that do not exist: {missing}"
+
+
+def test_parity_ledger_states_the_missing_capability_rule() -> None:
+    text = _read(ARCHITECTURE)
+    assert "Missing-capability rule" in text
+    for expected in ("runtime feature", "script or tool", "behaviour-coverage test"):
+        assert expected in text, f"the missing-capability rule omits {expected}"
+
+
+def test_explicit_fallback_adr_exists_and_is_indexed() -> None:
+    adr = ROOT / "docs" / "decisions" / "0003-explicit-fallback-only.md"
+    assert adr.is_file()
+    body = _read(adr)
+    assert "Status: Accepted" in body
+    assert "Implicit fallback is" in body
+    index = _read(ROOT / "docs" / "decisions" / "README.md")
+    assert "0003-explicit-fallback-only.md" in index
+
+
 def test_architecture_doc_exists_and_is_not_a_placeholder() -> None:
     text = _read(ARCHITECTURE)
     assert len(text.splitlines()) > 50

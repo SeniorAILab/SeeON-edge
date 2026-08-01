@@ -171,7 +171,8 @@ is a loud failure, per ADR-0002.
 | Extractor raises on one frame | per camera | frame dropped, camera continues |
 | Clip encode failure | per camera | alert still relays; evidence marked incomplete |
 | Relay POST failure | per camera | durable outbox retries; no event is lost in memory |
-| Clip store unwritable | global | evidence subsystem degrades; alerts still relay |
+| Clip store locked by another process | global | worker refuses to start: two workers must not share one outbox (ADR-0003) |
+| Evidence delivery enabled but misconfigured or unable to initialise | global | worker refuses to start rather than run with alerts stranded in the local outbox (ADR-0003) |
 
 Rollback of a bad worker image is image-digest based; see
 [`docs/runbooks/worker-migration-rollback.md`](runbooks/worker-migration-rollback.md).
@@ -273,6 +274,65 @@ Deployment identity is deliberately unchanged by this map: the image and service
 stay `ml-worker`, and `Dockerfile.edge`, `compose.edge.yaml`, `.env.edge.prod*`,
 and the `ML_WORKER_*` / `WORKER_*` / `ML_API_*` / `API_*` prefixes keep their
 legacy names. Only the Python package and the entrypoint change.
+
+## Feature parity ledger
+
+The ownership table above maps *files*. This ledger maps *user-observable
+behaviour* from the original repository onto its v2 owner, so `edge/` can be
+deleted without silently dropping a capability. It is the parity criterion for
+the v2 cutover.
+
+**Baseline: `eldercare-fall-ml` at committed `aeed6a8`.** Uncommitted work in
+that checkout is out of scope for parity except where a row says otherwise.
+
+Disposition vocabulary:
+
+- `ported` — behaviour lives in the v2 owner and is covered by a behaviour test.
+- `tracked-deferred` — intentionally not ported yet; a GitHub issue tracks it.
+- `out-of-scope (uncommitted)` — present only as uncommitted work in the
+  baseline checkout, so it is not part of the committed parity baseline.
+
+Missing-capability rule: a missing **runtime feature** is reported to the user
+and then restored; a missing **script or tool** is filed as a GitHub issue and
+deferred; a missing **behaviour-coverage test** is restored as part of the
+feature it proves. Developer-convenience harnesses are deferred with the tools.
+
+| Capability | v2 owner | Behaviour test | Disposition |
+| --- | --- | --- | --- |
+| RTSP ingest and reconnect policy | `worker/pipeline/ingest/rtsp.py`, `worker/pipeline/ingest/lifecycle.py` | `tests/test_worker_ingest_rtsp.py`, `tests/test_worker_ingest_lifecycle.py` | ported |
+| CPU decode adapter and capability probe | `worker/adapters/decode/cpu_av/adapter.py`, `worker/adapters/decode/cpu_av/probe.py` | `tests/test_worker_decode_cpu.py`, `tests/test_worker_opencv_decode_probe.py` | ported |
+| NVDEC decode probe | `worker/adapters/decode/nvdec_cuvid/probe.py` | `tests/test_worker_nvdec_probe.py` | ported |
+| CUDA device selection and verification | `worker/adapters/device/cuda/probe.py` | `tests/test_worker_cuda_device_probe.py` | ported |
+| Model registry, warmup, inference | `worker/adapters/model/registry.py`, `worker/interfaces/serving.py` | `tests/test_worker_production_boot_dependencies.py` | ported |
+| Fall interpretation and latching | `worker/domains/fall/` | `tests/test_domains_fall.py`, `tests/test_worker_fall_decider.py` | ported |
+| Bed-exit interpretation and latching | `worker/domains/bed_exit/` | `tests/test_domains_bed_exit.py`, `tests/test_worker_domains_bed_exit.py` | ported |
+| Incident cooldown and duplicate suppression | `worker/pipeline/decision/incident_manager.py` | `tests/test_worker_incident_manager.py` | ported |
+| Relay heartbeat and alert egress | `shared/events/edge_ingest_client.py` | `tests/test_e2e_night_bed_exit_relay.py` | ported |
+| Evidence clip recording and finalisation | `worker/pipeline/output/evidence/clip_recorder.py` | `tests/test_clip_recorder.py` | ported |
+| Snapshot store | `worker/pipeline/output/evidence/snapshot_store.py` | `tests/test_snapshot_store.py` | ported |
+| Evidence outbox and export delivery | `worker/pipeline/output/evidence/evidence_runtime.py` | `tests/test_worker_evidence_export_composition.py` | ported |
+| Worker config load and LKG fallback | `worker/runtime/config/loader.py` | `tests/test_ml_worker_yaml_config.py` | ported |
+| Runtime status and diagnostics | `worker/runtime/telemetry/status_store.py`, `worker/runtime/telemetry/runtime_status_sender.py` | `tests/test_worker_runtime_status_sender_composition.py` | ported |
+| CLI entrypoint and bounded-run cap | `worker/__main__.py` | `tests/test_worker_entrypoint.py`, `tests/test_worker_max_frames_per_camera_composition.py` | ported |
+| GPU stability preflight installer | — | — | tracked-deferred (`scripts/edge-preflight/gpu-stability-install.sh`, untracked at baseline; GitHub issue) |
+| GPU telemetry preflight | — | — | tracked-deferred (`scripts/edge-preflight/gpu-telemetry.sh`, untracked at baseline; GitHub issue) |
+
+### Baseline uncommitted work
+
+`eldercare-fall-ml@aeed6a8` carries ten uncommitted entries in its checkout.
+Two are tracked above; the remaining eight are `out-of-scope (uncommitted)`:
+
+Listed as a bullet list rather than a table: a two-column table row whose first
+cell is a backticked `edge/` path is reserved for the ownership map above.
+
+- tracked-modified: `compose.edge.yaml`
+- untracked: `docs/research/blackwell-gsp-halt-edge-gpu.md`
+- untracked: `backend/app/features/AGENTS.md`
+- untracked: `edge/evidence/AGENTS.md`
+- untracked: `edge/runtime/AGENTS.md`
+- untracked: `.codex/`
+- untracked: `auto.crt`
+- untracked: `auto.key`
 
 ## Open gaps
 
