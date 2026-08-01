@@ -3,8 +3,13 @@
 `DOMAIN_REGISTRY` maps a domain name to a `DomainRegistration` describing how
 to build its camera-local decider from typed dependencies, which input view
 and event types it owns, and how to read its audit/debug metadata without a
-second detector pass. Registering a domain here is the only step needed for
-its events to reach output; see `worker/domains/AGENTS.md`.
+second detector pass. Registering a domain here is necessary but not
+sufficient for its events to reach output: `WorkerRuntime._build_decider`
+(worker/runtime/worker.py) resolves each domain's typed `*DomainDependencies`
+object through its own `if`/`elif` chain keyed on domain name, and fails
+closed (`raise RuntimeError`) for any registered-but-unhandled name. A new
+domain needs both a `DOMAIN_REGISTRY` entry here and a matching branch in
+`_build_decider`; see `worker/domains/AGENTS.md`.
 """
 
 from __future__ import annotations
