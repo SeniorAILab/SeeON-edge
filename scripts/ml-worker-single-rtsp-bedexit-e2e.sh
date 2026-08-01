@@ -142,7 +142,12 @@ run_worker_with_clock() {
   # this hung with no output. The #!/bin/bash pin only helps on macOS, where
   # /bin/bash is 3.2.57; on a Linux edge host it is a modern bash, so the body
   # had to move to a file. See issue #9.
-  if ! OPENCV_FFMPEG_CAPTURE_OPTIONS="rtsp_transport;tcp" BED_EXIT_NOW="$now" EDGE_CAMERA_CONFIG="$config" uv run python "$repo_root/scripts/single_rtsp_bedexit_worker_run.py" "$frames" >>"$worker_log" 2>&1
+  #
+  # PYTHONPATH is required by that move, not incidental: `python -` puts the
+  # working directory on sys.path, while running a file puts the *script's*
+  # directory there instead -- so `import worker` resolved as a heredoc and
+  # would not as a file. Setting it restores what the heredoc got implicitly.
+  if ! PYTHONPATH="$repo_root" OPENCV_FFMPEG_CAPTURE_OPTIONS="rtsp_transport;tcp" BED_EXIT_NOW="$now" EDGE_CAMERA_CONFIG="$config" uv run python "$repo_root/scripts/single_rtsp_bedexit_worker_run.py" "$frames" >>"$worker_log" 2>&1
   then
     printf 'worker run failed; log follows:\n' >&2
     sed -n '1,200p' "$worker_log" >&2
