@@ -339,6 +339,23 @@ cell is a backticked `edge/` path is reserved for the ownership map above.
 These are known divergences between the plan and the tree. They are recorded
 here so nobody documents an intention as a fact.
 
+**The shipped example config cannot load the fall artifact that ships with it.**
+`worker/ml-worker.example.yaml` pins `models.fall.schema_version: 2` and a
+coco17 `preprocessing_identity`, while `models/fall/lstm/metadata.yaml` declares
+neither, so its manifest defaults to schema version 1 and the loader refuses the
+pair. That refusal is correct (ADR-0003 fail-closed); which side is canonical
+belongs to `eldercare-dataset-ops`. Pinned by a passing negative test in
+`tests/test_worker_real_warmup_no_stub.py`. Tracked in
+[#8](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/8).
+
+**`uv run pytest -q` does not complete without a `--deselect`.**
+`tests/test_edge_topology_contract.py::test_real_rtsp_bedexit_script_generates_supported_production_config`
+calls an unmodified shell script through `subprocess.run` with no timeout and
+hangs. The cause is not established — two hypotheses (mDNS, inherited stdin)
+were checked and rejected — and it reproduces from other worktrees, so it
+predates the `edge/` retirement. Tracked in
+[#9](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/9).
+
 **No `worker/pipeline/camera_pipeline.py`.** The migration plan names that file
 as the owner of `edge/runtime/camera_worker.py`, and it does not exist. The
 orchestration it was meant to hold is currently spread across
