@@ -201,6 +201,41 @@ def test_parity_ledger_states_the_missing_capability_rule() -> None:
         assert expected in text, f"the missing-capability rule omits {expected}"
 
 
+def test_platform_limited_parity_evidence_names_the_exact_cases() -> None:
+    """The rows whose evidence cannot run locally must be listed, not implied.
+
+    Two ``ported`` rows are proven by tests that only run on Linux. A developer
+    on macOS sees those fail and, without this list, has no way to tell a
+    platform limitation from a parity gap -- which is the precise confusion
+    ``Open gaps`` exists to prevent.
+
+    Pinning the individual test IDs rather than a summary sentence is
+    deliberate: if one of these is fixed, renamed, or deleted, this fails and
+    forces the note to be corrected instead of quietly rotting.
+    """
+    text = _read(ARCHITECTURE)
+    platform_limited = (
+        "tests/test_clip_recorder.py::"
+        "test_clip_recorder_finalizes_atomic_manifest_with_pre_and_post_window",
+        "tests/test_clip_recorder.py::"
+        "test_clip_recorder_fsyncs_media_and_manifest_before_staging_cleanup",
+        "tests/test_snapshot_store.py::"
+        "test_snapshot_store_fsyncs_each_file_before_replace_and_directory_after",
+        "tests/test_snapshot_store.py::"
+        "test_snapshot_store_retries_post_replace_directory_fsync",
+        "tests/test_snapshot_store.py::"
+        "test_snapshot_store_does_not_leak_descriptors_when_directory_fsync_fails",
+    )
+    for case in platform_limited:
+        assert case in text, f"Open gaps omits the platform-limited case {case}"
+        module, _, name = case.partition("::")
+        assert (ROOT / module).is_file(), f"{module} no longer exists"
+        assert name in _read(ROOT / module), (
+            f"{name} no longer exists in {module}; the Open gaps note is stale"
+        )
+    assert "/proc/self/fd" in text, "the note omits why these cannot run"
+    assert "ffprobe" in text, "the note omits the ffprobe dependency"
+
 def test_explicit_fallback_adr_exists_and_is_indexed() -> None:
     adr = ROOT / "docs" / "decisions" / "0003-explicit-fallback-only.md"
     assert adr.is_file()
