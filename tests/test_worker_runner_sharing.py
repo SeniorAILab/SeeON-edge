@@ -1,97 +1,196 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal, final
 
 import numpy as np
+import pytest
+from numpy.typing import NDArray
 
-from contracts.runner import RunnerOutput, pose_result
-from edge.runtime.edge_worker_config import CameraRuntimeConfig, EdgeWorkerConfig
-from edge.runtime.status_store import StatusStore
+import worker.runtime.worker as worker_module
+from contracts.runner import Image, RunnerResult
+from shared.events.evidence_http_transport import HttpResult
+from worker.pipeline.bus import BoundedFrameBus
+from worker.pipeline.ingest.lifecycle import IngestReporter
+from worker.runtime.config import CameraRuntimeConfig, WorkerConfig
+from worker.runtime.lease import GpuLease
+from worker.runtime.model_composition import PRODUCTION_EXTRACTOR_NAMES
+from worker.runtime.profile.registry import VerifyResult
+from worker.runtime.worker import WorkerRuntime
+
+ServingOption = str | int | float | bool | None
 
 
-class _Runner:
-    def run(self, image: np.ndarray) -> RunnerOutput:
-        del image
-        return pose_result((), ())
-
+def test_production_extractor_names_intentionally_includes_person() -> None:
+    # No config toggle exists to omit "person": it is unconditionally
+    # provisioned alongside "pose" and "bed" for every profile.
+    assert PRODUCTION_EXTRACTOR_NAMES == ("pose", "person", "bed")
 
 
 @dataclass(frozen=True, slots=True)
 class _FallMetadata:
-    window: int = 30
-    stride: int = 5
+    window: int = 2
+    stride: int = 1
+    mode: Literal["sequence"] = "sequence"
 
 
-@dataclass(frozen=True, slots=True)
-class _FallModel:
-    metadata: _FallMetadata = field(default_factory=_FallMetadata)
-    operating_threshold: float = 0.5
+@final
+class _FakeRunner:
+    def __init__(self, task: str) -> None:
+        self.task = task
+        self.metadata = _FallMetadata()
+        self.operating_threshold = 0.5
 
-    def predict(self, features: np.ndarray) -> float:
-        del features
+    def __call__(self, _image: Image) -> RunnerResult:
+        raise AssertionError("runner-sharing tests must not run model inference")
+
+    def predict(self, _features: NDArray[np.float32]) -> float:
         return 0.0
 
+    def warmup(self) -> None:
+        return None
 
-@dataclass(slots=True)
-class _CountingRegistry:
-    pose_runner: _Runner = field(default_factory=_Runner)
-    person_runner: _Runner = field(default_factory=_Runner)
 
-    bed_runner: _Runner = field(default_factory=_Runner)
-    fall_model: _FallModel = field(default_factory=_FallModel)
-    created: dict[str, int] = field(
-        default_factory=lambda: {"pose": 0, "person": 0, "bed": 0, "fall": 0}
+@final
+class _RecordingServingClient:
+    def __init__(self) -> None:
+        self.create_calls: list[tuple[str, dict[str, ServingOption]]] = []
+
+    def create(self, task: str, **options: ServingOption) -> _FakeRunner:
+        self.create_calls.append((task, dict(options)))
+        return _FakeRunner(task)
+
+
+@final
+class _FakeLoop:
+    def __init__(self, camera_id: str, reporter: IngestReporter) -> None:
+        self.camera_id = camera_id
+        self._reporter = reporter
+        self.stop_count = 0
+
+    def run(self) -> None:
+        if self.stop_count:
+            return
+        self._reporter.mark_starting(self.camera_id)
+        self._reporter.mark_ready(self.camera_id)
+
+    def stop(self) -> None:
+        self.stop_count += 1
+
+
+@final
+class _NoOpPump:
+    def __init__(self, camera_id: str) -> None:
+        self.camera_id = camera_id
+
+    def run(self) -> None:
+        return None
+
+    def stop(self) -> None:
+        return None
+
+
+def _pump_factory(
+    camera: CameraRuntimeConfig,
+    _bus: BoundedFrameBus,
+    _analytics: object,
+    _decision: object,
+    _sink: object,
+) -> _NoOpPump:
+    return _NoOpPump(camera.camera_id)
+
+
+@final
+class _LoopFactory:
+    def __init__(self) -> None:
+        self.loops: list[_FakeLoop] = []
+
+    def __call__(
+        self,
+        camera: CameraRuntimeConfig,
+        _bus: BoundedFrameBus,
+        reporter: IngestReporter,
+    ) -> _FakeLoop:
+        loop = _FakeLoop(camera.camera_id, reporter)
+        self.loops.append(loop)
+        return loop
+
+
+def _stub_heartbeat_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    def request(
+        _url: str,
+        _method: str,
+        _headers: dict[str, str],
+        _data: bytes | None,
+        _timeout: float,
+        _on_response: Callable[[int], None] | None = None,
+    ) -> HttpResult:
+        return 204, {}, b""
+
+    monkeypatch.setattr(worker_module, "bounded_request", request)
+
+
+def _config(*camera_ids: str) -> WorkerConfig:
+    return WorkerConfig.model_validate(
+        {
+            "version": 1,
+            "relay": {"url": "http://127.0.0.1:8000", "token": "relay-token"},
+            "cameras": [
+                {
+                    "camera_id": camera_id,
+                    "facility_id": "facility-1",
+                    "rtsp_url": f"rtsp://camera-{index}.local/trackID=2",
+                    "heartbeat_interval_sec": 30.0,
+                }
+                for index, camera_id in enumerate(camera_ids, start=1)
+            ],
+        }
     )
-    kwargs_by_task: dict[str, dict[str, object]] = field(default_factory=dict)
-
-    def create(self, task: str, **kwargs: object) -> RunnerOutput | _Runner | _FallModel:
-        self.created[task] += 1
-        self.kwargs_by_task[task] = dict(kwargs)
-        if task == "pose":
-            return self.pose_runner
-        if task == "person":
-            return self.person_runner
-        if task == "bed":
-            return self.bed_runner
-        if task == "fall":
-            return self.fall_model
-        raise AssertionError(f"unexpected task {task}")
 
 
-def test_worker_builds_pose_and_bed_runners_once_for_four_cameras(monkeypatch) -> None:
-    from edge.runtime import edge_worker
-
-    registry = _CountingRegistry()
-    monkeypatch.setattr(edge_worker, "DEFAULT_REGISTRY", registry)
-    supervisor = edge_worker._build_supervisor(
-        _four_camera_config(), StatusStore(), device="mps", decode="opencv"
+def _runtime(
+    config: WorkerConfig, serving: _RecordingServingClient, loops: _LoopFactory, state_dir: Path
+) -> WorkerRuntime:
+    return WorkerRuntime(
+        config,
+        env={"ML_WORKER_PROFILE": "cpu"},
+        serving_client=serving,
+        loop_factory=loops,
+        pump_factory=_pump_factory,
+        acquire_lease=lambda: GpuLease.acquire(state_dir),
+        decode_probe=lambda _decode: VerifyResult(True, "cpu", "decode", "available"),
     )
 
-    assert registry.created == {"pose": 1, "person": 0, "bed": 1, "fall": 1}
-    assert registry.kwargs_by_task == {
-        "pose": {"device": "mps"},
-        "bed": {"device": "mps"},
-        "fall": {},
-    }
-    assert {id(loop.worker.runners["pose"]) for loop in supervisor.loops} == {
-        id(registry.pose_runner)
-    }
-    assert {id(loop.worker.runners["bed"]) for loop in supervisor.loops} == {
-        id(registry.bed_runner)
-    }
-    assert all("person" not in loop.worker.runners for loop in supervisor.loops)
 
+def test_pose_person_bed_and_fall_runners_are_created_once_and_shared_across_four_cameras(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _stub_heartbeat_transport(monkeypatch)
+    serving = _RecordingServingClient()
+    loops = _LoopFactory()
+    camera_ids = ("camera-1", "camera-2", "camera-3", "camera-4")
+    runtime = _runtime(_config(*camera_ids), serving, loops, tmp_path)
 
-def _four_camera_config() -> EdgeWorkerConfig:
-    return EdgeWorkerConfig(
-        relay={"url": "http://127.0.0.1:8000", "token": "relay-token"},
-        cameras=tuple(
-            CameraRuntimeConfig(
-                camera_id=f"camera-{index}",
-                facility_id="facility-1",
-                resident_id=None,
-                rtsp_url=f"rtsp://camera-{index}.local/trackID=2",
-            )
-            for index in range(1, 5)
-        ),
-    )
+    runtime.run()
+
+    # Each task is created exactly once regardless of camera count; "device"
+    # is forwarded to the YOLO extractors, the fall model takes no kwargs.
+    assert serving.create_calls == [
+        ("pose", {"device": "cpu"}),
+        ("person", {"device": "cpu"}),
+        ("bed", {"device": "cpu"}),
+        ("fall", {}),
+    ]
+
+    assert len(runtime.cameras) == len(camera_ids)
+    shared_extractors = runtime.cameras[0].analytics.extractors
+    for camera in runtime.cameras[1:]:
+        assert camera.analytics.extractors == shared_extractors
+        assert all(
+            left.runner is right.runner
+            for left, right in zip(camera.analytics.extractors, shared_extractors, strict=True)
+        )
+        fall, _bed_exit = camera.decision.deciders
+        assert fall.classifier.model is runtime.fall_model

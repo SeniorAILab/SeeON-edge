@@ -6,7 +6,6 @@ import pytest
 
 import worker.adapters.model.in_process as in_process_module
 from contracts.runner import Image, RunnerProtocol, RunnerResult, pose_result
-from edge.runners.registry import DEFAULT_REGISTRY as EDGE_DEFAULT_REGISTRY
 from worker.adapters.model import (
     InProcessServingClient,
     ModelRegistry,
@@ -27,15 +26,12 @@ class _Runner:
         return pose_result((), ())
 
 
-def test_model_registry_matches_edge_factory_registration() -> None:
-    worker_registry = default_registry()
+def test_default_registry_registers_the_production_task_set() -> None:
+    registry = default_registry()
 
-    assert worker_registry.tasks() == EDGE_DEFAULT_REGISTRY.tasks()
-    for task in worker_registry.tasks():
-        worker_factory = worker_registry.get_factory(task)
-        edge_factory = EDGE_DEFAULT_REGISTRY.get_factory(task)
-        assert callable(worker_factory)
-        assert worker_factory is not edge_factory
+    assert registry.tasks() == ("bed", "fall", "person", "pose")
+    for task in registry.tasks():
+        assert callable(registry.get_factory(task))
 
 
 def test_model_registry_registers_and_creates_with_factory_options() -> None:
