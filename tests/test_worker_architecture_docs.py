@@ -268,6 +268,32 @@ def test_snapshot_store_evidence_is_not_claimed_to_be_platform_limited() -> None
         "and the Open gaps note needs updating"
     )
 
+def test_open_gaps_absence_claims_are_still_true() -> None:
+    """A gap that says a file is missing must be checked, not trusted.
+
+    ``Open gaps`` claimed "No ``worker/pipeline/camera_pipeline.py`` ... it does
+    not exist" while that file was tracked, 163 lines, and had been on disk since
+    ``6ce0bbc``. Nobody noticed because a prose claim about absence is exactly
+    the kind of thing that rots silently: the file appears, and the sentence
+    saying it has not stays put.
+
+    This scans the section for ``No `path`` / ``no `path`` claims and fails if
+    any of those paths now exists. Fixing a gap should require deleting the
+    entry, not leaving a stale denial behind.
+    """
+    text = _read(ARCHITECTURE)
+    _, _, gaps = text.partition("## Open gaps")
+    assert gaps, "the Open gaps section is missing"
+
+    claimed_absent = re.findall(r"\b[Nn]o `([^`]+\.(?:py|sh|ya?ml|md))`", gaps)
+    assert claimed_absent, "no absence claims found; this guard would be vacuous"
+
+    still_present = [path for path in claimed_absent if (ROOT / path).exists()]
+    assert still_present == [], (
+        f"Open gaps says these do not exist, but they do: {still_present}. "
+        "Delete the entry rather than leaving a stale denial."
+    )
+
 def test_explicit_fallback_adr_exists_and_is_indexed() -> None:
     adr = ROOT / "docs" / "decisions" / "0003-explicit-fallback-only.md"
     assert adr.is_file()

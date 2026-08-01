@@ -314,6 +314,8 @@ feature it proves. Developer-convenience harnesses are deferred with the tools.
 | Worker config load and LKG fallback | `worker/runtime/config/loader.py` | `tests/test_ml_worker_yaml_config.py` | ported |
 | Runtime status and diagnostics | `worker/runtime/telemetry/status_store.py`, `worker/runtime/telemetry/runtime_status_sender.py` | `tests/test_worker_runtime_status_sender_composition.py` | ported |
 | CLI entrypoint and bounded-run cap | `worker/__main__.py` | `tests/test_worker_entrypoint.py`, `tests/test_worker_max_frames_per_camera_composition.py` | ported |
+| Per-frame perception: tracking, scene state, window buffering | `worker/pipeline/perception/`, `worker/pipeline/camera_pipeline.py` | `tests/test_perception_observation_builder.py`, `tests/test_demo_tracking.py`, `tests/test_worker_camera_pipeline_pump.py` | ported |
+| Debug overlay rendering | `worker/pipeline/output/overlay.py`, `worker/pipeline/output/_overlay_primitives.py` | `tests/test_worker_overlay_renderer.py`, `tests/test_worker_overlay_primitives.py` | ported |
 | GPU stability preflight installer | — | — | tracked-deferred (`scripts/edge-preflight/gpu-stability-install.sh`, untracked at baseline; [#6](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/6)) |
 | GPU telemetry preflight | — | — | tracked-deferred (`scripts/edge-preflight/gpu-telemetry.sh`, untracked at baseline; [#7](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/7)) |
 
@@ -419,14 +421,20 @@ path are 527 B and 797 B, both under the Linux threshold. Tracked in
 [#9](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/9), which
 carries the reproduction and the measured size census.
 
-**No `worker/pipeline/camera_pipeline.py`.** The migration plan names that file
-as the owner of `edge/runtime/camera_worker.py`, and it does not exist. The
-orchestration it was meant to hold is currently spread across
-`worker/pipeline/ingest/lifecycle.py`, `worker/pipeline/analytics/composite.py`,
-and `worker/runtime/worker.py`. The ownership row above describes that split
-because that is what is on disk. Either introduce the file and move the
-orchestration into it, or amend the plan's Scope table — do not describe the
-file as if it were there.
+**`worker/pipeline/camera_pipeline.py` exists, but does not own what the plan
+said it would.** This entry previously asserted that the file was absent, which
+was false: it is tracked, 163 lines, and was added in `6ce0bbc`. It holds
+`CameraPipelinePump`, which drives one camera's frame → extraction → decision
+path.
+
+What is still true is the ownership claim. The migration plan names this file as
+the owner of `edge/runtime/camera_worker.py`'s orchestration, and that
+orchestration remains split across `worker/pipeline/ingest/lifecycle.py`
+(supervision and reconnect), `worker/pipeline/analytics/composite.py`
+(extraction fan-out), and `worker/runtime/worker.py` (composition and restart
+policy). The ownership row above describes that split because that is what is on
+disk. Either move the orchestration into the pump, or amend the plan's Scope
+table — do not describe the file as owning something it does not.
 
 **No `worker/runtime/supervisor.py` and no `worker/pipeline/bus/latest_frame.py`.**
 The plan named both. Supervision landed in `worker/pipeline/ingest/lifecycle.py`
