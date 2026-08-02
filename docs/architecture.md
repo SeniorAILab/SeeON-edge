@@ -361,10 +361,19 @@ this is a deliberate floor rather than a portability bug. `tests/test_clip_recor
 documents it in its module docstring and keeps these two cases specifically to
 pin that floor.
 
-The row stays `ported`: the evidence exists and CI runs on Ubuntu. What is
-missing is *local* proof, which matters because this branch was developed and
-gated on macOS. Treat it as CI-verified rather than dev-verified, and do not
-read its local failures as a parity gap.
+This row is **not** verified anywhere today, and saying otherwise was wrong.
+An earlier version of this note claimed "the evidence exists and CI runs on
+Ubuntu, so treat it as CI-verified". Ubuntu CI was then checked: both cases
+fail there too, at a different point. On macOS the probe cannot run at all; on
+Linux it runs, the manifest is built, and `ReadyClipManifest` rejects it with
+`clip timestamps are not ordered` for a `duration_ms` of 32000 on a clip of
+roughly four seconds. Same failing assertion, two unrelated causes, and the
+macOS one hid the other. That is
+[#20](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/20).
+
+The row keeps its `ported` file citations because the code was moved, but it
+has no passing behaviour test on any platform. Do not read it as evidence
+until #20 closes.
 
 All seven local failures outside the vendor-drift one trace to this single
 design decision, not to a missing tool: five in
