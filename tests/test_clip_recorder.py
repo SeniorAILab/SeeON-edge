@@ -17,9 +17,9 @@ itself is now a thin queue-driven facade over these. Most of the original
 white-box tests are superseded by tests written directly against the
 collaborator that now owns the property; this file ports only what still has
 no equivalent coverage, plus the two tests that pin this repo's macOS
-environment floor (no ``/proc``, so ``os.readlink("/proc/self/fd/N")``
-fails) so CI continues to fail closed on the same signature rather than
-silently losing the regression check.
+environment floor (production hands ``ffprobe`` a ``/proc/self/fd/N``
+reference, which macOS cannot resolve) so CI continues to fail closed on the
+same signature rather than silently losing the regression check.
 
 Ported as-is (config/maintenance surface unchanged in the new module):
 
@@ -30,14 +30,18 @@ Ported as-is (config/maintenance surface unchanged in the new module):
 * ``test_clip_recorder_start_sweeps_old_staging_directories``
 * ``test_legacy_retention_clock_uses_manifest_mtime_not_started_at``
 
-Preserved to pin the macOS ``/proc`` environment floor (see module docstring
-above and each test's own docstring for the exact failure signature this
-repo's sandboxed macOS CI observes; both are rooted in ``os.readlink(
-"/proc/self/fd/N")`` raising ``FileNotFoundError`` since macOS has no
-``/proc``, propagating up as an ``OSError`` that ``ClipActor._finalize``
-(``worker/pipeline/output/evidence/clip_actor.py:212-218``) catches and
-counts as a failed write rather than a partial manifest -- a stricter
-behavior than edge's, which wrote a manifest even on this failure):
+Preserved to pin the macOS ``/proc`` environment floor. Both are rooted in
+*production* code, not in test instrumentation:
+``worker/pipeline/output/evidence/evidence_media.py`` probes finalized media
+by handing ``ffprobe`` the TOCTOU-safe path ``/proc/self/fd/{descriptor}``
+rather than the file's own name. macOS has no ``/proc``, so the probe fails,
+and ``ClipActor._finalize`` (``clip_actor.py:212-218``) catches the resulting
+``OSError`` and counts it as a failed write rather than publishing a partial
+manifest -- a stricter behavior than edge's, which wrote a manifest even on
+this failure. The consequence in both tests is the same: no manifest is
+published, so anything asserted about manifest publication cannot run here.
+(This file's own fd-to-path instrumentation is *not* part of that floor; see
+``_path_of_fd``, which works on both platforms.):
 
 * ``test_clip_recorder_finalizes_atomic_manifest_with_pre_and_post_window``
 * ``test_clip_recorder_fsyncs_media_and_manifest_before_staging_cleanup``
@@ -168,6 +172,7 @@ NOT asserted as passing behavior by any test here:
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import shutil
@@ -180,6 +185,28 @@ import pytest
 
 from contracts.frame import Frame
 from worker.pipeline.output.evidence.clip_recorder import ClipRecorder, ClipRecorderConfig
+
+
+def _path_of_fd(descriptor: int) -> str:
+    """Resolve an open descriptor back to its path, on Linux or macOS.
+
+    Test-only instrumentation, mirroring ``tests/test_snapshot_store.py``:
+    ``os.fsync`` takes a bare descriptor, so recovering *which* file or
+    directory each call targeted needs the fd table. ``/proc/self/fd/N`` is a
+    symlink on Linux; macOS has no ``/proc`` at all, and ``fcntl(F_GETPATH)``
+    is how it answers the same question.
+
+    Production is untouched by this: ``fsync_directory`` and the publish path
+    never read ``/proc``. The one place that genuinely does is
+    ``evidence_media.py``, which hands ffprobe a TOCTOU-safe
+    ``/proc/self/fd/N`` -- that is a real Linux-only runtime floor, and
+    ``test_clip_recorder_finalizes_atomic_manifest_with_pre_and_post_window``
+    still pins it.
+    """
+    if Path("/proc/self/fd").exists():
+        return os.readlink(f"/proc/self/fd/{descriptor}")
+    raw: bytes = fcntl.fcntl(descriptor, fcntl.F_GETPATH, bytes(1024))
+    return raw.rstrip(b"\x00").decode()
 
 
 class DiskUsage(NamedTuple):
@@ -444,33 +471,29 @@ def test_clip_recorder_fsyncs_media_and_manifest_before_staging_cleanup(
     ``os.readlink("/proc/self/fd/N")`` purely as test-only instrumentation
     to identify *which* file/directory each fsync call targeted, then
     asserted the durability ordering: clips-dir fsync, media rename+fsync,
-    manifest rename+fsync, then staging cleanup+fsync. That instrumentation
-    technique ports unchanged -- the new code's own fsync calls
+    manifest rename+fsync, then staging cleanup+fsync. The intent ports
+    unchanged -- the new code's own fsync calls
     (``worker/pipeline/output/evidence/durability.py:8-21``'s
     ``fsync_file``/``fsync_directory``, invoked from ``clip_publication.py``
-    and ``clip_identity.py``) still take a bare file descriptor, and
-    ``/proc/self/fd/N`` is still how the test resolves it back to a path --
-    and the ordering assertions below are unchanged from edge's original
-    intent.
+    and ``clip_identity.py``) still take a bare file descriptor, so the test
+    still has to resolve one back to a path.
 
-    On a host with a working ``/proc`` (e.g. Linux CI), every event is
-    recorded and the full ordering assertion passes. On this repo's
-    sandboxed macOS host, ``/proc`` does not exist at all, so the *very
-    first* fsync this test's wrapper intercepts -- not one of the
-    publication-time fsyncs the ordering assertion below targets, but the
-    earlier, synchronous ``fsync_directory(self._staging_root)`` that
-    ``ClipIdAllocator.reserve`` runs on every clip-id reservation
-    (``worker/pipeline/output/evidence/clip_identity.py:69``, called
-    directly from ``recorder.on_event()`` on the caller's own thread, not
-    the background actor) -- raises ``FileNotFoundError`` inside the test's
-    own wrapper. Because ``reserve`` does not catch that exception, it
-    propagates straight out of the ``recorder.on_event(...)`` call below
-    (index 2 in the loop) rather than being absorbed by
-    ``ClipActor._finalize``'s broad ``except (..., OSError)``
-    (``clip_actor.py:212-218``), which only guards the later
-    finalize/publish path. The test still fails on the identical
-    ``/proc/self/fd``-rooted cause edge's original hit, just surfaced at
-    reservation time instead of at the ordering-assertion lookup.
+    That instrumentation no longer needs ``/proc``: ``_path_of_fd`` asks
+    ``fcntl(F_GETPATH)`` on hosts without it. This used to be the *reported*
+    reason the test failed on macOS, and it was the wrong one -- the very
+    first intercepted fsync (``ClipIdAllocator.reserve``'s synchronous
+    ``fsync_directory``) blew up inside the wrapper, hiding the real cause
+    behind a test-harness error.
+
+    With the harness portable, the honest failure surfaces: on macOS the
+    ordering assertion gets as far as the media rename and its fsync, then
+    finds no ``manifest.json`` rename at all, because
+    ``evidence_media.py``'s ``ffprobe`` probe of ``/proc/self/fd/N`` fails and
+    ``ClipActor._finalize`` (``clip_actor.py:212-218``) refuses to publish a
+    manifest it could not verify. That is *production* code requiring
+    ``/proc`` -- the genuine Linux-only floor -- not an artefact of how this
+    test looks things up. On Linux CI the manifest is published and the full
+    ordering assertion runs.
     """
     recorder = ClipRecorder(
         ClipRecorderConfig(
@@ -492,7 +515,7 @@ def test_clip_recorder_fsyncs_media_and_manifest_before_staging_cleanup(
         real_replace(source, target)
 
     def _record_fsync(descriptor: int) -> None:
-        target = Path(os.readlink(f"/proc/self/fd/{descriptor}")).name
+        target = Path(_path_of_fd(descriptor)).name
         events.append(("fsync", target, ""))
         real_fsync(descriptor)
 

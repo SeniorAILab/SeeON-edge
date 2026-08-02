@@ -350,7 +350,7 @@ to one row:
 | Cited test | Row it is evidence for | Why it cannot run |
 | --- | --- | --- |
 | `tests/test_clip_recorder.py::test_clip_recorder_finalizes_atomic_manifest_with_pre_and_post_window` | Evidence clip recording and finalisation | resolving `/proc/self/fd/N` fails, so no manifest is published |
-| `tests/test_clip_recorder.py::test_clip_recorder_fsyncs_media_and_manifest_before_staging_cleanup` | Evidence clip recording and finalisation | reads `/proc/self/fd`, which macOS does not have |
+| `tests/test_clip_recorder.py::test_clip_recorder_fsyncs_media_and_manifest_before_staging_cleanup` | Evidence clip recording and finalisation | the same failed probe means no manifest is renamed, so the ordering assertion has nothing to find |
 
 This row is genuinely Linux-only, and not by accident:
 `worker/pipeline/output/evidence/evidence_media.py` hands `ffprobe` a
@@ -366,15 +366,24 @@ missing is *local* proof, which matters because this branch was developed and
 gated on macOS. Treat it as CI-verified rather than dev-verified, and do not
 read its local failures as a parity gap.
 
-All eight local failures outside the vendor-drift one trace to this single
+All seven local failures outside the vendor-drift one trace to this single
 design decision, not to a missing tool: five in
-`tests/test_clip_export_reconciliation.py`, two in `tests/test_clip_recorder.py`,
-one in `tests/test_evidence_trust_boundaries.py`. `ffprobe` **is** installed on
-this machine, so "install ffprobe" does not clear any of them. Note that the
-production error text says otherwise — it reports `ffprobe unavailable` for an
-unresolvable `/proc/self/fd/N` too, which is
+`tests/test_clip_export_reconciliation.py` and two in
+`tests/test_clip_recorder.py`. `ffprobe` **is** installed on this machine, so
+"install ffprobe" does not clear any of them. Note that the production error
+text says otherwise — it reports `ffprobe unavailable` for an unresolvable
+`/proc/self/fd/N` too, which is
 [#11](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/11) and is a
 misreported reason rather than a second cause.
+
+`tests/test_evidence_trust_boundaries.py` used to be an eighth. It was not a
+floor at all: it mocks `subprocess.run`, so production never spawned anything,
+and the mock itself dereferenced `/proc/self/fd/N` to read the probed bytes.
+Reading the descriptor with `os.pread` instead makes it portable and slightly
+stronger — it now reads *after* the pathname is swapped, so it proves the open
+inode survives losing its name. The same mistake as the snapshot-store rows
+below: a `/proc` mention in a traceback is not by itself evidence of a runtime
+floor. Check whether production or the harness is the one that needs it.
 
 **Snapshot store used to be listed here too, and no longer is.** Three of its
 cited tests also failed on macOS, but for an entirely different reason: they

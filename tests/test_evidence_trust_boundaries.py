@@ -84,11 +84,19 @@ def test_media_probe_uses_same_open_inode_when_path_is_swapped(
         **kwargs: object,
     ) -> subprocess.CompletedProcess[str]:
         probe_target = command[-1]
-        observed_probe_bytes.append(Path(probe_target).read_bytes())
-        os.replace(replacement, media)
+        # Production's TOCTOU-safe contract: ffprobe is handed the *descriptor's*
+        # /proc path, never the file's own pathname.
         assert probe_target.startswith("/proc/self/fd/")
         descriptor = int(probe_target.rsplit("/", maxsplit=1)[1])
         assert kwargs.get("pass_fds") == (descriptor,)
+        os.replace(replacement, media)
+        # Read the descriptor directly instead of resolving the /proc path.
+        # Dereferencing it here would assert that *this host* has /proc -- which
+        # is a fact about the test machine, not about the contract -- and the
+        # swap immediately above is exactly what makes the pathname worthless.
+        # Reading after the swap is also the stronger claim: the open inode
+        # survives having its name taken.
+        observed_probe_bytes.append(os.pread(descriptor, len(original_bytes) + 1, 0))
         stdout = json.dumps(
             {
                 "streams": [
