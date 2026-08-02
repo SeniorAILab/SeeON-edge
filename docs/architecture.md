@@ -379,11 +379,14 @@ All seven local failures outside the vendor-drift one trace to this single
 design decision, not to a missing tool: five in
 `tests/test_clip_export_reconciliation.py` and two in
 `tests/test_clip_recorder.py`. `ffprobe` **is** installed on this machine, so
-"install ffprobe" does not clear any of them. Note that the production error
-text says otherwise — it reports `ffprobe unavailable` for an unresolvable
-`/proc/self/fd/N` too, which is
-[#11](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/11) and is a
-misreported reason rather than a second cause.
+"install ffprobe" does not clear any of them. An earlier version of this note
+added that production misreports the cause as `ffprobe unavailable`
+([#11](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/11)). That
+was measured and is wrong: production raises `CORRUPT: ffprobe rejected media`,
+because `ffprobe` starts fine and then exits nonzero on a path it cannot open.
+The `ffprobe unavailable` text came from a *test* mock that raised
+`FileNotFoundError` while dereferencing `/proc/self/fd/N` itself — the same
+mock corrected below. #11 was filed against a symptom of the harness.
 
 `tests/test_evidence_trust_boundaries.py` used to be an eighth. It was not a
 floor at all: it mocks `subprocess.run`, so production never spawned anything,
