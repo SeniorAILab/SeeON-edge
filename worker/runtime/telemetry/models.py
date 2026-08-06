@@ -24,6 +24,10 @@ class BedRegionDiagnostics:
     """
 
     freshness: BedRegionCacheState
+    # NOTE: ``counters.expired`` counts scheduled-empty cycles observed while
+    # already EXPIRED, not distinct expiry transitions -- one continuous
+    # occlusion re-increments it every cycle, so `expired: 47` can mean one
+    # 47-cycle occlusion rather than 47 separate flaps. See issue #226.
     counters: BedRegionCacheCounterSnapshot
     updated_at_sec: float
 
