@@ -1,27 +1,22 @@
 from __future__ import annotations
 
+import logging
+from functools import lru_cache
+from typing import Final
+
+import cv2
 import numpy as np
 from numpy.typing import NDArray
 
 from contracts.observation import BoundingBox
 
-# Sample-grid resolution used to approximate containment against a bed's
-# traced polygon (see `_polygon_containment_ratio`). Grid points per axis =
-# _POLYGON_GRID_INTERVALS + 1.
-#
-# Why sampling instead of exact clipping: the recorded polygon is a
-# 48-point hand trace and is not guaranteed convex -- a bed with a
-# nightstand or rail notch traces a concave outline. Exact convex clipping
-# (e.g. Sutherland-Hodgman) is only correct for convex clip regions and
-# would silently produce wrong areas here. A general polygon-clipping
-# algorithm that handles non-convex regions correctly (Weiler-Atherton) is
-# easy to get subtly wrong and hard for reviewers to verify. Point-sampling
-# on a fixed grid handles convex and non-convex polygons identically and its
-# error is simple to bound analytically (see `_polygon_containment_ratio`),
-# so it is preferred over hand-rolled clipping. No exact-polygon-
-# intersection library (e.g. shapely) is in this project's dependency set;
-# adding one for this alone was judged not worth a new heavy dependency.
-_POLYGON_GRID_INTERVALS = 32
+LOGGER: Final = logging.getLogger(__name__)
+
+# Rasterized-mask cache for bed polygons (see `_bed_polygon_mask`). Bounded
+# so a long-running worker with many cameras/polygon updates cannot grow
+# this unboundedly; entries are cheap (one small uint8 array each) so a
+# generous size costs little.
+_MASK_CACHE_SIZE: Final = 64
 
 
 def best_bed_id(containments: tuple[float, ...], min_containment: float) -> int | None:
@@ -43,14 +38,17 @@ def containment_ratio(person: BoundingBox, bed: BoundingBox) -> float:
     persisted bed zones (#219), inflating containment for anyone standing
     just outside the real bed but inside its AABB. Falls back to the exact
     axis-aligned-rectangle intersection -- bit-for-bit the prior formula --
-    when no polygon is recorded, so cameras with no drawn bed zone keep
-    working exactly as before.
+    when no polygon is recorded (or the recorded polygon turns out to be
+    unusable, see `_bed_polygon_mask`), so cameras with no drawn bed zone
+    keep working exactly as before.
     """
     person_area = max(0, person.x2 - person.x1) * max(0, person.y2 - person.y1)
     if person_area <= 0:
         return 0.0
     if bed.polygon:
-        return _polygon_containment_ratio(person, bed.polygon, person_area)
+        mask_info = _bed_polygon_mask(bed.polygon)
+        if mask_info is not None:
+            return _mask_containment_ratio(person, mask_info, person_area)
     return _aabb_containment_ratio(person, bed, person_area)
 
 
@@ -65,77 +63,111 @@ def _aabb_containment_ratio(person: BoundingBox, bed: BoundingBox, person_area: 
     return intersection / person_area
 
 
-def _polygon_containment_ratio(
-    person: BoundingBox,
-    polygon: tuple[tuple[int, int], ...],
-    person_area: int,
+# (mask, origin_x, origin_y): `mask[y - origin_y, x - origin_x]` is 1 iff
+# pixel (x, y) in the bed's own coordinate space is inside its polygon.
+_BedMask = tuple[NDArray[np.uint8], int, int]
+
+
+@lru_cache(maxsize=_MASK_CACHE_SIZE)
+def _bed_polygon_mask(polygon: tuple[tuple[int, int], ...]) -> _BedMask | None:
+    """Rasterize a bed polygon into a binary mask, local to its own AABB.
+
+    Why rasterization and not exact analytic clipping: production polygons
+    on this site are confirmed non-convex (17-23 of 48 vertices reflex, per
+    live measurement) and one persisted camera's trace self-intersects at
+    its closing seam (a ~2.2px trace-closure artifact, not a real
+    self-crossing shape). A convex-only clip (e.g. Sutherland-Hodgman) is
+    silently wrong for the non-convex majority; a general polygon-clipping
+    algorithm correct for both non-convexity and self-intersection
+    (Weiler-Atherton and friends) is a subtle-bug factory nobody here could
+    review with confidence. `cv2.fillPoly`'s scanline rasterizer handles
+    both cases correctly with no special-casing, using a dependency this
+    project already has (`opencv-python-headless`) -- adding an exact
+    polygon-intersection library (e.g. shapely) was judged not worth a new
+    dependency for this alone.
+
+    Deliberately permissive: a polygon that self-intersects still gets
+    rasterized (a sane filled region, just not what shoelace-style analytic
+    area would call "valid") -- it is NOT rejected into the AABB fallback.
+    Silently reverting an already-broken camera back to the AABB path while
+    everything else (PR, tests, dashboard) reports the bug fixed is a worse
+    failure than an ambiguous few pixels at a seam. Only genuinely unusable
+    input falls back here: fewer than 3 points, all points collinear, or an
+    empty mask after fill -- each logged once (this function is cached, so
+    the warning does not repeat every frame) so a fallback is never silent.
+
+    Cached (`lru_cache`) because polygons are static per camera between
+    bed-zone re-recognitions; this runs per person per bed per frame at
+    5fps, and re-rasterizing on every call would be wasted, repeated work.
+    """
+    if len(polygon) < 3 or _all_collinear(polygon):
+        LOGGER.warning(
+            "bed polygon has fewer than 3 points or is degenerate (all "
+            "points collinear); falling back to AABB containment for this "
+            "bed region: %r",
+            polygon,
+        )
+        return None
+
+    xs = tuple(point[0] for point in polygon)
+    ys = tuple(point[1] for point in polygon)
+    origin_x, origin_y = min(xs), min(ys)
+    width = max(xs) - origin_x
+    height = max(ys) - origin_y
+    if width <= 0 or height <= 0:
+        LOGGER.warning(
+            "bed polygon has zero-area bounding box; falling back to AABB "
+            "containment for this bed region: %r",
+            polygon,
+        )
+        return None
+
+    mask: NDArray[np.uint8] = np.zeros((height, width), dtype=np.uint8)
+    shifted = np.array(
+        [[point[0] - origin_x, point[1] - origin_y] for point in polygon],
+        dtype=np.int32,
+    ).reshape((1, -1, 2))
+    cv2.fillPoly(mask, shifted, 1)
+    if not mask.any():
+        LOGGER.warning(
+            "bed polygon rasterized to an empty mask; falling back to AABB "
+            "containment for this bed region: %r",
+            polygon,
+        )
+        return None
+    return mask, origin_x, origin_y
+
+
+def _all_collinear(points: tuple[tuple[int, int], ...]) -> bool:
+    origin_x, origin_y = points[0]
+    direction_x, direction_y = 0, 0
+    for point_x, point_y in points[1:]:
+        direction_x, direction_y = point_x - origin_x, point_y - origin_y
+        if direction_x != 0 or direction_y != 0:
+            break
+    else:
+        return True  # every point coincides with the first
+    return all(
+        (point_x - origin_x) * direction_y - (point_y - origin_y) * direction_x == 0
+        for point_x, point_y in points
+    )
+
+
+def _mask_containment_ratio(
+    person: BoundingBox, mask_info: _BedMask, person_area: int
 ) -> float:
-    """Grid-sampling estimate of intersection(person_box, polygon) / person_area.
-
-    Error bound: sampling `person`'s box on an
-    (_POLYGON_GRID_INTERVALS + 1)^2 point grid and testing each point for
-    polygon containment. Within an N-interval grid (N =
-    _POLYGON_GRID_INTERVALS), a single straight polygon edge crossing the
-    sampled box touches at most 2N-1 of the N^2 grid cells -- a straight
-    line can cross at most N-1 internal grid columns and N-1 internal grid
-    rows -- so one boundary edge contributes at most ~2/N to the
-    containment-ratio error. With N=32 that is ~6% per edge the person's
-    box straddles; in the common case of a person standing at a single bed
-    edge, absolute error is bounded by ~6%, comfortably inside the margin
-    this fix creates against the ~94% mean AABB overstatement it corrects.
-
-    Cost: fixed at (_POLYGON_GRID_INTERVALS + 1)^2 = 1,089 point-in-polygon
-    tests per (person, bed) pair, done as one vectorized numpy pass,
-    independent of camera resolution or zoom. This runs per person per bed
-    per frame at 5fps; with a handful of tracked persons and typically one
-    bed region per camera, this is low-single-digit milliseconds per frame
-    -- comfortably inside the frame budget even across many cameras.
-    """
-    bed_xs = tuple(point[0] for point in polygon)
-    bed_ys = tuple(point[1] for point in polygon)
-    left = max(person.x1, min(bed_xs))
-    top = max(person.y1, min(bed_ys))
-    right = min(person.x2, max(bed_xs))
-    bottom = min(person.y2, max(bed_ys))
+    mask, origin_x, origin_y = mask_info
+    height, width = mask.shape
+    left = max(person.x1 - origin_x, 0)
+    top = max(person.y1 - origin_y, 0)
+    right = min(person.x2 - origin_x, width)
+    bottom = min(person.y2 - origin_y, height)
     if right <= left or bottom <= top:
-        return 0.0  # person box doesn't even overlap the polygon's own AABB
-
-    n = _POLYGON_GRID_INTERVALS
-    xs = np.linspace(person.x1, person.x2, n + 1)
-    ys = np.linspace(person.y1, person.y2, n + 1)
-    grid_x, grid_y = np.meshgrid(xs, ys)
-    inside = _points_in_polygon(grid_x.ravel(), grid_y.ravel(), polygon)
-    return float(np.count_nonzero(inside)) / inside.size
-
-
-def _points_in_polygon(
-    px: NDArray[np.float64],
-    py: NDArray[np.float64],
-    polygon: tuple[tuple[int, int], ...],
-) -> NDArray[np.bool_]:
-    """Vectorized even-odd ray-casting point-in-polygon test.
-
-    Correct for convex and non-convex simple polygons alike (unlike
-    clipping algorithms that assume a convex clip region).
-    """
-    poly_x = np.array([point[0] for point in polygon], dtype=np.float64)
-    poly_y = np.array([point[1] for point in polygon], dtype=np.float64)
-    prev_x = np.roll(poly_x, 1)
-    prev_y = np.roll(poly_y, 1)
-
-    # Broadcast points (rows) against polygon edges (columns).
-    points_x = px[:, None]
-    points_y = py[:, None]
-    edge_yi, edge_yj = poly_y[None, :], prev_y[None, :]
-    edge_xi, edge_xj = poly_x[None, :], prev_x[None, :]
-
-    crosses = (edge_yi > points_y) != (edge_yj > points_y)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        denom = np.where(edge_yj == edge_yi, 1.0, edge_yj - edge_yi)
-        x_intersect = edge_xi + (points_y - edge_yi) * (edge_xj - edge_xi) / denom
-    crossings = crosses & (points_x < x_intersect)
-    parity: NDArray[np.bool_] = crossings.sum(axis=1) % 2 == 1
-    return parity
+        return 0.0
+    intersection = int(mask[top:bottom, left:right].sum())
+    if intersection == 0:
+        return 0.0
+    return intersection / person_area
 
 
 __all__ = ["best_bed_id", "containment_ratio"]
