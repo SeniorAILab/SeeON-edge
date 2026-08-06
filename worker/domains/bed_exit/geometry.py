@@ -73,12 +73,14 @@ def _bed_polygon_mask(polygon: tuple[tuple[int, int], ...]) -> _BedMask | None:
     """Rasterize a bed polygon into a binary mask, local to its own AABB.
 
     Why rasterization and not exact analytic clipping: production polygons
-    on this site are confirmed non-convex (17-26 of 48 vertices reflex, per
-    live measurement) and one persisted camera's trace self-intersects at
-    its closing seam (a ~2.2px trace-closure artifact, not a real
-    self-crossing shape). A convex-only clip (e.g. Sutherland-Hodgman) is
-    silently wrong for the non-convex majority; a general polygon-clipping
-    algorithm correct for both non-convexity and self-intersection
+    on this site are confirmed non-convex -- each one's convex-hull area
+    exceeds its own polygon area by 11-31% (mean ~20%), which a rotated
+    rectangle (hull == polygon) could not produce -- and one persisted
+    camera's trace self-intersects at its closing seam (a ~2.2px
+    trace-closure artifact, not a real self-crossing shape). A convex-only
+    clip (e.g. Sutherland-Hodgman) is silently wrong for the non-convex
+    majority; a general polygon-clipping algorithm correct for both
+    non-convexity and self-intersection
     (Weiler-Atherton and friends) is a subtle-bug factory nobody here could
     review with confidence. `cv2.fillPoly`'s scanline rasterizer handles
     both cases correctly with no special-casing, using a dependency this
