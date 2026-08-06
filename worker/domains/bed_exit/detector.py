@@ -100,12 +100,32 @@ class BedExitMonitor:
         else:
             person_ids = tuple(range(len(observation.boxes)))
             live_ids = set(person_ids)
-        for stale_id in set(self._assignments) - live_ids:
-            del self._assignments[stale_id]
-
         events: list[BedExitEvent] = []
         occupied: dict[int, int] = {}
         exit_beds: set[int] = set()
+
+        # A track can vanish mid-exit: `GreedyIouTracker` already tolerates
+        # up to `max_misses` (30, ~6s at 5fps) of failed re-matching before
+        # dropping an id from `live_track_ids`, so a `stale_id` here isn't
+        # reacting to a one-frame blink -- the tracker's own occlusion
+        # tolerance already ran out. Fire only when `grace_frames > 0`: that
+        # means the last live frame already showed the person outside their
+        # own bed's containment, i.e. a departure already in progress before
+        # the id died. A track that was still solidly contained
+        # (`grace_frames == 0`) when it disappeared does not fire -- that
+        # guarantee is what
+        # `test_dead_observed_track_cannot_emit_after_identity_reuse` locks
+        # in, and firing unconditionally here would break it (issue #218).
+        # This is deliberately narrower than "any track loss while
+        # assigned": a resident who gets up and leaves frame in one motion,
+        # with the last live frame still showing containment, is still
+        # swallowed -- see the residual-gap note on the PR.
+        for stale_id in set(self._assignments) - live_ids:
+            assignment = self._assignments[stale_id]
+            if assignment.bed_id is not None and assignment.grace_frames > 0:
+                events.append(BedExitEvent(person_id=stale_id, bed_id=assignment.bed_id))
+                exit_beds.add(assignment.bed_id)
+            del self._assignments[stale_id]
         for person_id, person_box in zip(person_ids, observation.boxes, strict=True):
             if person_id is None or person_id not in live_ids:
                 continue
