@@ -73,7 +73,7 @@ def _bed_polygon_mask(polygon: tuple[tuple[int, int], ...]) -> _BedMask | None:
     """Rasterize a bed polygon into a binary mask, local to its own AABB.
 
     Why rasterization and not exact analytic clipping: production polygons
-    on this site are confirmed non-convex (17-23 of 48 vertices reflex, per
+    on this site are confirmed non-convex (17-26 of 48 vertices reflex, per
     live measurement) and one persisted camera's trace self-intersects at
     its closing seam (a ~2.2px trace-closure artifact, not a real
     self-crossing shape). A convex-only clip (e.g. Sutherland-Hodgman) is

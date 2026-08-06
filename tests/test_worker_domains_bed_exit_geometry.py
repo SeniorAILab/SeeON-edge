@@ -129,6 +129,40 @@ def test_degenerate_person_box_is_zero_regardless_of_polygon() -> None:
     assert containment_ratio(person, bed) == 0.0
 
 
+def test_person_box_fully_outside_bed_aabb_is_zero() -> None:
+    # Given: a person box with a generous margin beyond the bed's own AABB,
+    # diagonally down-right. This is the case `_mask_containment_ratio`'s
+    # four-sided clamp (`max(person.x1 - origin_x, 0)`, `min(person.x2 -
+    # origin_x, width)`, mirrored on y) plus its `right <= left or bottom <=
+    # top` short-circuit exist to protect: numpy silently wraps negative
+    # slice indices instead of raising, so a person nowhere near the bed
+    # could read a plausible-looking nonzero containment off the far side of
+    # the mask if either the clamps or the guard were ever removed. Distinct
+    # from `test_convex_polygon_person_outside_polygon_but_inside_aabb`
+    # above, which is outside the *polygon* but still inside the AABB -- this
+    # one is outside the AABB entirely.
+    bed = _bed(DIAMOND)
+    person = BoundingBox(150, 150, 180, 180, 0.9)
+
+    ratio = containment_ratio(person, bed)
+
+    assert ratio == 0.0
+
+
+def test_person_box_one_pixel_outside_bed_aabb_is_zero() -> None:
+    # Given: a person box immediately adjacent to (not overlapping) the bed's
+    # own AABB, up-left of the origin by exactly one pixel on both axes --
+    # the tightest case for the clamp, and the one most likely to slip
+    # through a future off-by-one if someone "simplifies" the `right <= left`
+    # guard next to the `max`/`min` clamps.
+    bed = _bed(DIAMOND)
+    person = BoundingBox(-20, -20, 0, 0, 0.9)
+
+    ratio = containment_ratio(person, bed)
+
+    assert ratio == 0.0
+
+
 def test_self_intersecting_polygon_is_rasterized_not_rejected() -> None:
     # Given: a polygon whose closing edge crosses its first edge near the
     # origin -- a synthetic stand-in for the real "08 205호" production
