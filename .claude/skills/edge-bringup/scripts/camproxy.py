@@ -20,10 +20,10 @@ import ssl
 import sys
 import threading
 import time
-import urllib3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import requests
+import urllib3
 from requests.adapters import HTTPAdapter
 from requests.auth import HTTPDigestAuth
 
@@ -69,7 +69,10 @@ CAMERAS = _parse_channels(os.environ.get("CAM_CHANNELS", ""))
 if not CAMERAS:
     sys.exit("CAM_CHANNELS 가 비어 있다. 예: CAM_CHANNELS='1:10.0.0.11,2:10.0.0.12'")
 
-_STATIC_EXT = (".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".woff", ".woff2", ".ttf", ".svg")
+_STATIC_EXT = (
+    ".js", ".css", ".png", ".jpg", ".jpeg", ".gif",
+    ".ico", ".woff", ".woff2", ".ttf", ".svg",
+)
 
 _SKIP = {"host", "connection", "content-length", "accept-encoding", "authorization"}
 
@@ -137,7 +140,9 @@ def make_handler(target_port, label):
                     self.command, base + path, data=body, headers=headers,
                     timeout=(10, 60), allow_redirects=False,
                 )
-            except Exception as e:
+            except requests.RequestException as e:
+                # 터널이 잠깐 끊기거나 카메라가 늦게 답하는 일은 흔하다. 브라우저에
+                # 502 를 돌려주고 이 요청만 버려야 나머지 채널이 계속 산다.
                 self._send(502, "text/plain", f"proxy error ({label}): {e}".encode())
                 return
 
@@ -158,7 +163,10 @@ def make_handler(target_port, label):
             self._send(r.status_code, ctype, payload, extra)
             dt = time.monotonic() - t0
             if dt > 1.0 or r.status_code >= 400:
-                print(f"[{label}] {r.status_code} {len(payload)}B {dt:.1f}s {path[:80]}", flush=True)
+                print(
+                    f"[{label}] {r.status_code} {len(payload)}B {dt:.1f}s {path[:80]}",
+                    flush=True,
+                )
 
         def do_GET(self):
             self._relay()
