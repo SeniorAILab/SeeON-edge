@@ -26,16 +26,29 @@
 
 ```sh
 cd /opt/eldercare-fall-ml
-# 오늘 밤(소스 빌드, dev 모드) 기준 $DC — 실행 중인 컨테이너 자신의
-# com.docker.compose.project.config_files 라벨로 직접 확인한 실제 오버레이 목록이다
-# (예전 판은 compose.edge.yaml 하나만 넣고 있었다 — 실제로는 cpu/local 오버레이가
-# 항상 같이 켜져 있었다). GHCR을 pull하는 평상시 배포로 돌아가면 이 목록에서
-# `-f compose.edge.dev.yaml`만 빠지고 나머지 세 개(yaml/cpu/local)는 그대로다 —
-# 두 경우를 혼동하면 아래 모든 명령이 조용히 다른 배포를 가리키게 되니, 다음
-# 배포 전엔 아래 명령으로 실행 중인 컨테이너의 실제 오버레이 목록부터 재확인할 것:
+# 오늘 밤(소스 빌드, dev 모드) 기준 $DC — `docker compose ... config`로 실제
+# 렌더링해서 검증한 목록이다(추측 아님). 순서가 중요하다: dev가 cpu보다
+# 먼저 와야 한다(compose.edge.dev.yaml 자신의 헤더 주석이 이 순서를 명시).
+#   -f compose.edge.yaml   : base. image:는 ${ML_API_IMAGE:?...}/
+#                            ${ML_WORKER_IMAGE:?...}로 필수 — .env.edge.prod에
+#                            eldercare-fall-ml-api:dev / eldercare-fall-ml-worker:dev로
+#                            채워져 있어야 한다(오늘 밤 전용 값, GHCR pull용 값 아님).
+#   -f compose.edge.dev.yaml : 두 서비스에 build:+pull_policy:never를 얹어
+#                            소스에서 직접 빌드하게 만든다. #237(GHCR 403)이
+#                            풀릴 때까지의 임시 경로.
+#   -f compose.edge.cpu.yaml : ml-worker의 무조건적 NVIDIA GPU deploy 예약을
+#                            지운다 — 이 노드는 GPU 드라이버가 없다.
+#                            compose.edge.igpu.yaml은 다른 호스트(Intel
+#                            VAAPI)용이라 여기선 안 쓴다.
+# compose.edge.local.yaml(커밋 안 되는 노드 로컬 파일)은 안 넣는다 — pull_policy:never
+# 와 GPU deploy 제거를 각각 dev/cpu 오버레이가 이제 공식적으로 담당하므로,
+# #239 이전에 임시 로컬 빌드를 굴리려고 만들어 둔 이 파일은 오늘 밤 경로에서
+# 중복이다(내용 대조 완료). GHCR을 pull하는 평상시 배포로 돌아가면 이 목록에서
+# `-f compose.edge.dev.yaml`만 빼면 된다 — 나머지 두 개(yaml/cpu)는 그대로다.
+# 다음 배포 전엔 실행 중인 컨테이너의 실제 오버레이 목록을 아래로 재확인할 것:
 #   docker inspect <container> --format \
 #     '{{index .Config.Labels "com.docker.compose.project.config_files"}}'
-DC='docker compose --env-file .env.edge.prod -f compose.edge.yaml -f compose.edge.cpu.yaml -f compose.edge.local.yaml -f compose.edge.dev.yaml'
+DC='docker compose --env-file .env.edge.prod -f compose.edge.yaml -f compose.edge.dev.yaml -f compose.edge.cpu.yaml'
 docker inspect --format '{{index .Config.Image}} {{.Image}}' "$($DC ps -q ml-worker)"
 ```
 
