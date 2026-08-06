@@ -208,6 +208,8 @@ night window → 스테이징 → 릴레이)가 최소 한 번은 끝까지 살�
        │  (detector.py:90-91, self._night_window.contains(...)가 False —
        │   단 last_debug_snapshot은 이 게이트보다 먼저 채워져서, 오버레이엔
        │   bed:exit이 그대로 뜬다. 아래 표 ④ 참고)
+       │  [상태 의존적: 이 문서 작성 시점엔 관찰 편의를 위해 창이 00:00-23:59로
+       │   넓혀져 있어 사실상 죽어 있는 갈래다 — 표 ④ 각주 참고]
        ▼
 ⑤ 이벤트가 릴레이로 나갔는데 backend가 확인 안 함
 ```
@@ -217,8 +219,25 @@ night window → 스테이징 → 릴레이)가 최소 한 번은 끝까지 살�
 | ① | 대시보드 라이브 뷰의 침대 오버레이 라벨(`bed:empty`/`bed:occupied`/`bed:exit`)이 아예 안 뜸, 또는 폴리곤 자체가 비어 보임 | `GET /api/v1/streams/{camera_id}/snapshot`(대시보드 자체 인증 토큰 사용, 아래 참고) | A-1의 로그 갭 때문에 `bed_region.source`를 직접 볼 수는 없다 — 폴리곤이 있는 카메라라면(0-2) 이 갈래는 구조적으로 배제된다 |
 | ② | 오버레이가 계속 `bed:empty` — 한 번도 `bed:occupied`로 안 바뀜 | 같은 스냅샷 엔드포인트, 사람이 침대 위에 있을 때 관찰 | #219(H2)의 수정(#227)은 이미 main에 머지돼 있어 오늘 밤 이 갈래를 밀어내는 방향으로는 더 이상 작용하지 않는다(0-1 확인 요). **PR #241(미머지)이 붙으면** `bed_exit_scoring.max_containment_observed`가 0에 가까운 채로 남는 것이 ②의 사후 확증 신호가 된다 — 단 #241이 머지돼도 `docker compose logs`엔 안 보인다(아래 각주) |
 | ③ | 오버레이가 `bed:occupied` → `bed:empty`로 **`bed:exit`을 거치지 않고** 바로 바뀜 | 같은 엔드포인트, 실시간 관찰 필요(사후 조회 불가) | **오늘 밤은 구분 신호 없음**: #218(H1, PR #234 미머지)과 #220(H3, PR 없음)이 정확히 같은 겉모습(occupied→empty, exit 없음)을 만든다. 코드상 두 경로 다 카운터/이벤트를 안 남기므로 사후에는 구분 불가 — 어느 쪽인지 알려면 그 순간 라이브 뷰를 보면서 사람이 실제로 방을 나갔는지(H1이면 트랙이 6초 못 잡혔을 뿐 사람은 안 나갔을 수도 있음) 육안 대조가 유일한 방법이다. **이게 team-lead가 미리 알아야 한다고 한 바로 그 종류의 갭이다.** `assignments_made`/`grace_positive_transitions`(PR #241)는 ②/③ 경계는 구분해줘도 ③ 내부에서 H1 vs H3까지는 못 가른다 — 그건 #234가 별도로 다룰 영역이다 |
-| ④ | night window 밖 시간대에 ③까지는 확실히 넘었는데 이벤트가 안 옴 | 오버레이 라벨의 `bed:exit` 플래시 유무 — `detector.py`는 `last_debug_snapshot`을 night window 게이트(90-91행)보다 **먼저** 채우고, `overlay.py`의 `_draw_bedexit_beds`는 그 스냅샷의 `statuses[].occupancy`를 추가 게이팅 없이 그대로 그린다 | 그래서 게이트가 이벤트를 억제해도 오버레이엔 `bed:exit`이 그대로 짧게 뜬다 — **그 순간 `evidence_events`에 대응 행이 없으면 ④**다. ③(#218/#220)은 애초에 `exit_beds`를 채우지 않으므로 `bed:exit` 자체가 절대 안 뜬다 — 이 플래시 유무가 ③/④를 가르는 신호다. window 경계(`night_window` 설정값)와 관찰 시각 대조도 병행할 것 |
+| ④ | night window 밖 시간대에 ③까지는 확실히 넘었는데 이벤트가 안 옴 | 오버레이 라벨의 `bed:exit` 플래시 유무 — `detector.py`는 `last_debug_snapshot`을 night window 게이트(90-91행)보다 **먼저** 채우고, `overlay.py`의 `_draw_bedexit_beds`는 그 스냅샷의 `statuses[].occupancy`를 추가 게이팅 없이 그대로 그린다 | 그래서 게이트가 이벤트를 억제해도 오버레이엔 `bed:exit`이 그대로 짧게 뜬다 — **그 순간 `evidence_events`에 대응 행이 없으면 ④**다. ③(#218/#220)은 애초에 `exit_beds`를 채우지 않으므로 `bed:exit` 자체가 절대 안 뜬다 — 이 플래시 유무가 ③/④를 가르는 신호다. window 경계(`night_window` 설정값)와 관찰 시각 대조도 병행할 것. **현재 상태 의존적으로 사실상 비활성** — 아래 [!NOTE] 참고, 관찰 시점에 `/api/v1/detection-settings`로 반드시 재확인할 것(이 노트를 그대로 믿지 말 것) |
 | ⑤ | A-3의 `delivery_state`/`last_error_code` | SQLite 쿼리(A-3) — 재시도 대기 행은 `delivery_state='PENDING'`으로 조회할 것 | **유실은 구조적으로 없다** — `DurableEvidenceStager`가 네트워크 시도 전에 이미 SQLite에 영속 기록한다. 실패해도 `PENDING`(재시도 대기, 최대 백오프 300초)이나 `PERMANENT`(그래도 행은 남는다)로만 간다 — **`RETRY_SCHEDULED`는 `delivery_state` 값이 아니라 `evidence_sender.py`의 `SenderStep` enum 멤버명이다**; `evidence_outbox_schema.py`의 CHECK 제약이 허용하는 값은 `PENDING`/`ACKED`/`PERMANENT`/`COMPATIBILITY`뿐이라 `RETRY_SCHEDULED`로 쿼리하면 항상 0행이 나온다(재시도가 없다는 뜻이 아니라 쿼리가 틀렸다는 뜻). "이벤트가 발화됐는데 흔적이 아예 없다"는 이 파이프라인에서 일어날 수 없는 일이다 — 그런 게 보이면 이 문서가 기술한 경로 자체가 틀렸다는 뜻이니 바로 알려달라 |
+
+> [!NOTE]
+> **④는 이 문서 작성 시점 기준 상태 의존적으로 사실상 비활성이다.** `bed_exit`의
+> 실제 운영 설정은 21:00-06:00 야간 창이지만, 오늘 밤 관찰 편의를 위해 의도적으로
+> `{mode: 'window', start: '00:00', end: '23:59'}`로 넓혀둔 상태다 — 이 창에서
+> `_WindowGatedDecider`가 억제하는 구간은 자정 전후 1분 안팎뿐이라, ④(night
+> window 게이트 억제)가 오늘 밤 실제로 관측될 가능성은 낮다. **메커니즘 자체(위
+> 표/다이어그램 설명)는 그대로 유효하다** — 창이 21:00-06:00으로 복원되면 이
+> 갈래는 다시 살아난다. 이 값은 가변적이라 이 노트를 그대로 믿지 말고, 판독
+> 시점에 직접 확인할 것:
+> ```
+> curl -s -b jar http://127.0.0.1:8000/api/v1/detection-settings
+> ```
+> (세션 쿠키가 없다면 `/api/v1/auth/session`으로 먼저 로그인) — 응답의
+> `domains.bed_exit.start`/`.end`가 `00:00`/`23:59`가 아니면 창이 복원된 것이고,
+> ④는 다시 활성 갈래다. 관찰이 끝나면 이 창을 21:00-06:00으로 되돌릴 것 —
+> 아직 안 끝났다.
 
 **실전 순서 제안**: A-3에서 0건을 확인했다면, night window 시간대에 실시간으로
 대시보드 라이브 뷰를 침실 카메라 한 대에 띄워놓고 오버레이 라벨 전이를 직접
