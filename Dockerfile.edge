@@ -18,6 +18,26 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && ffmpeg -version
 
+# Intel VAAPI runtime for the `igpu` profile (decode-only; see
+# worker/adapters/decode/vaapi/). `intel-media-va-driver-non-free` is the
+# real iHD driver Arrow Lake needs and lives in Debian's non-free component,
+# which the base image's sources.list does not enable by default -- add it
+# explicitly rather than relying on it already being there. `libva-drm2` is
+# the libva DRM winsys plugin (talks to /dev/dri render nodes); `vainfo` is
+# a diagnostic CLI only, for verifying the driver loads at runtime (see
+# docs/runbooks/vaapi-igpu-decode.md) -- neither pulls a desktop mesa/GL
+# stack. This installs on every profile's image (one shared Dockerfile), the
+# same tradeoff already made for ffmpeg above; it does not touch or gate the
+# nvdec/opencv/cuda paths.
+RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware" \
+        > /etc/apt/sources.list.d/non-free.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        intel-media-va-driver-non-free \
+        libva-drm2 \
+        vainfo \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-default-groups --group worker --no-install-project
