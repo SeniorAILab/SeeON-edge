@@ -111,6 +111,41 @@ def test_track_lost_mid_exit_still_fires_the_event() -> None:
     assert events[0].bed_id == 0
 
 
+def test_single_sub_threshold_frame_before_track_loss_currently_fires() -> None:
+    """Characterization test, not a desired-behavior test.
+
+    A single sub-threshold containment frame (pose/detection jitter, a
+    one-frame blanket/caregiver occlusion -- not necessarily a real
+    departure) immediately followed by track death currently DOES fire a
+    bed-exit event, because the stale-track gate is `grace_frames > 0`.
+    This is a known, deliberately-accepted false positive: the user chose
+    sensitivity over precision for tonight, since bed_exit was producing
+    zero events in production and a missed exit is invisible while a false
+    positive is checkable against footage. See #246 for the reproductions,
+    the trade-off analysis, and the prepared remedy (`>= 2`) for when
+    precision becomes the priority -- adopting it requires first extending
+    #218's regression test past its current 1-frame script, since these
+    two tests collide at exactly one grace frame.
+
+    If this test starts failing, someone changed the gate -- check #246
+    before "fixing" it back.
+    """
+    # Given: a person's bed assignment sees exactly ONE frame of
+    # sub-threshold containment right before their track is lost.
+    monitor = _monitor(camera_id="camera-single-frame-jitter", hold_frames=1, grace_frames=3)
+    _ = monitor.update(_input(IN_BED, (BED,), 0))
+    _ = monitor.update(_input(OUTSIDE_BED, (BED,), 1))
+
+    # When: the track dies immediately after that one sub-threshold frame
+    # (grace_frames=1 at the moment of loss).
+    events = monitor.update(_input(OUTSIDE_BED, (BED,), 2, live_track_ids=()))
+
+    # Then: current behavior is that it fires.
+    assert len(events) == 1
+    assert events[0].person_id == PERSON_ID
+    assert events[0].bed_id == 0
+
+
 def test_dead_observed_track_cannot_emit_after_identity_reuse() -> None:
     # Given
     monitor = _monitor(camera_id="camera-reused-track")

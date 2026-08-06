@@ -120,6 +120,20 @@ class BedExitMonitor:
         # assigned": a resident who gets up and leaves frame in one motion,
         # with the last live frame still showing containment, is still
         # swallowed -- see the residual-gap note on the PR.
+        #
+        # `> 0` is intentional, not unexamined: it also fires on a single
+        # noisy sub-threshold frame (pose/occlusion jitter) that isn't a
+        # real departure -- reproduced and documented in #246. Sensitivity
+        # is chosen over precision for now, deliberately: bed_exit has
+        # produced zero events in production, and a false positive is
+        # visible and checkable against footage while a missed exit is
+        # invisible and indistinguishable from the failure being diagnosed.
+        # This trade-off applies only to this track-loss path; the live
+        # path a few lines down still requires the full configured
+        # `grace_frames` (3 by default) before firing, untouched. When
+        # precision becomes the priority, #246 has the prepared remedy
+        # (`>= 2`) and the caveat it requires first extending #218's
+        # regression test past its current 1-frame script.
         for stale_id in set(self._assignments) - live_ids:
             assignment = self._assignments[stale_id]
             if assignment.bed_id is not None and assignment.grace_frames > 0:
