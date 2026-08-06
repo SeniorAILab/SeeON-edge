@@ -19,8 +19,14 @@ class BoundingBox:
     y2: int
     confidence: float
     # Optional mask contour (issue #243): bed ROIs from instance segmentation
-    # carry the silhouette polygon for shape-accurate rendering. None for plain
-    # detection boxes (person/fall). x1..y2 stays the source of truth for IoU.
+    # or an operator's persisted `bed_zone_polygon` carry the silhouette
+    # polygon for shape-accurate rendering. None for plain detection boxes
+    # (person/fall). x1..y2 stays the source of truth for person-tracker IoU
+    # and remains the containment fallback when no polygon is present; when
+    # a bed carries one, `bed_exit.geometry.containment_ratio` (#219) reads
+    # it as the source of truth for bed containment instead of x1..y2, since
+    # x1..y2 alone is only an axis-aligned bounding box around the polygon
+    # and can measurably overstate a rotated/irregular bed's true area.
     polygon: tuple[tuple[int, int], ...] | None = None
 
 
@@ -112,9 +118,19 @@ class BedRegionCacheState(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class BedRegionDebugSnapshot:
-    """Per-frame bed-ROI cache provenance for the dev overlay and ops telemetry."""
+    """Per-frame bed-ROI cache provenance for the dev overlay and ops telemetry.
+
+    ``age_frames`` and ``reset_reason`` (frame-index age of the cached ROI,
+    and why a per-frame reset fired) were removed in #208 along with the
+    frame-index mechanisms that produced them. Both assumed ``frame_index``
+    was monotonic for a camera's whole lifetime; it is only monotonic within
+    one decode session, so both went silently wrong across a reconnect
+    (``age_frames`` could go negative before being clamped to a
+    misleadingly-confident 0; ``reset_reason`` fired on every reconnect, not
+    just genuine discontinuities). Nothing downstream reads either field.
+    ``scheduled_empty_bed_cycles >= 2`` is now the sole cache-invalidation
+    signal; see ``SceneState.resolve_bed_regions``.
+    """
 
     source: BedRegionCacheState
-    age_frames: int | None = None
     empty_cycles: int = 0
-    reset_reason: str | None = None
