@@ -40,7 +40,6 @@ from backend.app.features.cameras.store import (
 from backend.app.features.clips.storage_location_store import ClipStorageLocationStore
 from backend.app.features.detection_settings.store import DetectionSettingsStore
 from backend.app.features.status.heartbeat_store import ONLINE, get_heartbeat_store
-from backend.app.lifespan import API_FACILITY_ID_ENV
 from backend.app.shared.backend_mapping import (
     BackendCameraMapper,
     MappingResult,
@@ -183,7 +182,10 @@ class WorkerCameraConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     camera_id: str = Field(min_length=1)
-    facility_id: str = Field(min_length=1)
+    # Optional: site facility is not stamped here. Worker defaults missing
+    # facility_id to the local wire placeholder "local".
+    facility_id: str | None = Field(default=None, min_length=1)
+    space_id: str | None = Field(default=None, min_length=1)
     rtsp_url: str = Field(min_length=1)
     fps: float | None = Field(default=None, gt=0)
     frame_stride: int | None = Field(default=None, gt=0)
@@ -455,7 +457,6 @@ def worker_config_snapshot(
     request: Request, *, require_available: bool = False
 ) -> dict[str, object]:
     snapshot = _store(request.app).snapshot()
-    facility_id = _facility_id()
     bed_zones = _bed_zone_store(request.app).get_all()
     cameras = []
     for record in _snapshot_camera_records(snapshot):
@@ -463,11 +464,15 @@ def worker_config_snapshot(
         if not isinstance(rtsp_url, str) or not rtsp_url.strip():
             continue
         canonical_id = str(record.get("backend_camera_id") or record.get("id", ""))
+        # No site facility stamp: worker defaults missing facility_id to the
+        # local wire placeholder "local". space_id is optional registry metadata.
         camera: dict[str, object] = {
             "camera_id": canonical_id,
-            "facility_id": facility_id,
             "rtsp_url": rtsp_url,
         }
+        space_id = record.get("space_id")
+        if isinstance(space_id, str) and space_id.strip():
+            camera["space_id"] = space_id
         fps = record.get("fps") or _default_camera_fps()
         if fps is not None:
             camera["fps"] = fps
@@ -967,9 +972,6 @@ def _bearer_token(value: str | None) -> str | None:
     token = value[len(prefix) :].strip()
     return token or None
 
-
-def _facility_id() -> str:
-    return os.environ.get(API_FACILITY_ID_ENV, "local-facility").strip() or "local-facility"
 
 def _default_camera_fps() -> float | None:
     """Facility-wide processed FPS for live camera streams (worker default 5.0).

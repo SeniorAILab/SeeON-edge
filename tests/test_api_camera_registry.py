@@ -103,10 +103,23 @@ def test_camera_registry_crud_masks_rtsp_versions_and_worker_config_auth(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("API_EDGE_RELAY_TOKEN", "relay-token")
-    monkeypatch.setenv("API_FACILITY_ID", "facility-1")
     monkeypatch.setenv("API_BACKEND_EDGE_CAMERAS_URL", "http://backend/api/v1/edge/cameras")
     monkeypatch.setenv("API_FACILITY_TOKEN", "facility-token")
     monkeypatch.setenv("ML_API_WORKER_PROBE_ORIGIN", "http://worker.local:8090")
+    monkeypatch.setenv(
+        "API_CONNECTION_SETTINGS_PATH", str(tmp_path / "connection-settings.sqlite3")
+    )
+    from backend.app.features.connection.store import ConnectionSettingsStore
+
+    # Single-camera mapping still uses BackendCameraMapper.from_env (token from
+    # API_FACILITY_TOKEN). Roster sync uses the connection store for facility_id.
+    ConnectionSettingsStore(tmp_path / "connection-settings.sqlite3").save(
+        {
+            "events_url": "http://backend/api/v1/events",
+            "facility_id": "facility-1",
+            "facility_token": "facility-token",
+        }
+    )
     captured: list[CapturedBackendCall] = []
     probe_calls: list[dict[str, object]] = []
 
@@ -172,16 +185,12 @@ def test_camera_registry_crud_masks_rtsp_versions_and_worker_config_auth(
         assert len(listed["cameras"]) == 1
         listed_camera = listed["cameras"][0]
         # The POST response never populates `sync` (avoids a BackgroundTask
-        # race against this pinned-shape assertion); GET does. This test's
-        # env sets API_BACKEND_EDGE_CAMERAS_URL/API_FACILITY_TOKEN directly,
-        # neither of which ConnectionSettingsStore (roster_sync's source of
-        # truth) recognizes -- so the roster mapper is unconfigured and the
-        # listed camera reads as disabled.
+        # race against this pinned-shape assertion); GET does. Connection
+        # settings + edge-cameras URL make roster sync succeed.
         sync = listed_camera["sync"]
-        assert sync["status"] == "disabled"
-        assert sync["error_class"] == "unconfigured"
-        assert sync["last_ok_at"] is None
-        assert isinstance(sync["detail"], str) and sync["detail"]
+        assert sync["status"] == "synced"
+        assert sync["error_class"] is None
+        assert sync["last_ok_at"] is not None
         assert {**listed_camera, "sync": None} == camera
 
         assert client.get("/api/v1/cameras/worker-config").status_code == 401
@@ -202,7 +211,7 @@ def test_camera_registry_crud_masks_rtsp_versions_and_worker_config_auth(
             "cameras": [
                 {
                     "camera_id": camera["id"],
-                    "facility_id": "facility-1",
+                    "space_id": "space-1",
                     "rtsp_url": "rtsp://user:secret@camera.local:8554/live",
                 }
             ],
@@ -240,7 +249,7 @@ def test_camera_registry_crud_masks_rtsp_versions_and_worker_config_auth(
         "url": "http://backend/api/v1/edge/cameras",
         "method": "PUT",
         "authorization": "Bearer facility-token",
-        "facility_id": "facility-1",
+        "facility_id": None,
         "body": {
             "edge_camera_ref": captured_body["edge_camera_ref"],
             "label": "Lobby",
@@ -311,7 +320,7 @@ def test_worker_config_uses_registry_first_and_metadata_from_backend_pull(tmp_pa
         "cameras": [
             {
                 "camera_id": "camera-1",
-                "facility_id": "local-facility",
+                "space_id": "space-1",
                 "rtsp_url": "rtsp://camera/stream",
             }
         ],
@@ -657,7 +666,6 @@ def test_worker_config_pull_maps_fps_and_enabled_domains_from_relay_payload(
         "cameras": [
             {
                 "camera_id": "camera-1",
-                "facility_id": "facility-1",
                 "rtsp_url": "rtsp://camera/stream",
                 "fps": 4,
                 "domains": ["fall"],
@@ -688,7 +696,6 @@ def test_worker_config_pull_maps_frame_stride_from_relay_payload(
         "cameras": [
             {
                 "camera_id": "camera-1",
-                "facility_id": "facility-1",
                 "rtsp_url": "rtsp://camera/stream",
                 "fps": 15,
                 "frame_stride": 3,
@@ -718,7 +725,6 @@ def test_worker_config_pull_defaults_frame_stride_to_one_when_absent(
         "cameras": [
             {
                 "camera_id": "camera-1",
-                "facility_id": "facility-1",
                 "rtsp_url": "rtsp://camera/stream",
                 "fps": 15,
             }
@@ -1648,8 +1654,14 @@ def test_list_cameras_reflects_room_name_after_roster_refresh(
         calls["count"] += 1
         return FakeHTTPResponse(payload)
 
-    monkeypatch.setenv("API_FACILITY_ID", "facility-1")
     monkeypatch.setenv("API_BACKEND_CONFIG_URL", "http://backend/ml-config")
+    monkeypatch.setenv(
+        "API_CONNECTION_SETTINGS_PATH", str(tmp_path / "connection-settings.sqlite3")
+    )
+    from backend.app.features.connection.store import ConnectionSettingsStore
+    ConnectionSettingsStore(tmp_path / "connection-settings.sqlite3").save(
+        {"config_url": "http://backend/ml-config", "facility_id": "facility-1"}
+    )
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     app = create_app(lifespan=no_lifespan)
     app.state.edge_relay_token = "relay-token"
@@ -1669,7 +1681,8 @@ def test_list_cameras_reflects_room_name_after_roster_refresh(
 
 
 def test_roster_refresh_failure_preserves_last_good_and_marks_stale(
-    monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     calls = {"count": 0}
 
@@ -1693,8 +1706,13 @@ def test_roster_refresh_failure_preserves_last_good_and_marks_stale(
             )
         raise urllib.error.URLError("offline")
 
-    monkeypatch.setenv("API_FACILITY_ID", "facility-1")
     monkeypatch.setenv("API_BACKEND_CONFIG_URL", "http://backend/ml-config")
+    from backend.app.features.connection.store import ConnectionSettingsStore
+    conn_path = tmp_path / "connection-settings.sqlite3"
+    monkeypatch.setenv("API_CONNECTION_SETTINGS_PATH", str(conn_path))
+    ConnectionSettingsStore(conn_path).save(
+        {"config_url": "http://backend/ml-config", "facility_id": "facility-1"}
+    )
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     app = create_app(lifespan=no_lifespan)
 

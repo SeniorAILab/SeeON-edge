@@ -66,15 +66,16 @@ class _CameraPayload(BaseModel):
     bed_zone_image_width: int | None = Field(default=None, gt=0)
     bed_zone_image_height: int | None = Field(default=None, gt=0)
 
-    @model_validator(mode="after")
-    def _require_location(self) -> _CameraPayload:
-        if self.facility_id is None and self.space_id is None:
-            raise ConfigValidationError("camera must include facility_id or space_id")
-        return self
-
     @property
     def resolved_facility_id(self) -> str:
-        return self.facility_id or self.space_id or ""
+        """Local wire facility for RelayAlertRequest (min_length=1).
+
+        Not site identity: when worker-config omits facility_id, use the fixed
+        placeholder ``"local"``. space_id alone is not treated as facility.
+        """
+        if self.facility_id is not None:
+            return self.facility_id
+        return "local"
 
     @property
     def resolved_space_id(self) -> str:
