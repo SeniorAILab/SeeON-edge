@@ -95,8 +95,13 @@ def relay_heartbeats_once(app: object, now: float | None = None) -> RelayTickRes
     if client is None or not hasattr(client, "for_camera"):
         return RelayTickResult(skipped_reason="no_client")
 
-    inventory = getattr(app.state, "camera_inventory", None)
-    snapshot = get_heartbeat_store(app).snapshot(inventory, now=now)
+    from backend.app.features.cameras.store import CameraRegistryStore, registry_expected_cameras
+
+    registry = getattr(app.state, "camera_registry", None)
+    expected = registry_expected_cameras(
+        registry if isinstance(registry, CameraRegistryStore) else None
+    )
+    snapshot = get_heartbeat_store(app).snapshot(expected, now=now)
     online_camera_ids = [
         camera_id
         for camera_id, info in snapshot["cameras"].items()

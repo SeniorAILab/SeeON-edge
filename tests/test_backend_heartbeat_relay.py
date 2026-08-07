@@ -72,10 +72,16 @@ class FakeClassifiedIngestClient:
         return SimpleNamespace(ok=error_class is None, error_class=error_class)
 
 
-def _make_app(*, client: object | None, inventory: dict[str, dict[str, str | None]]) -> object:
+def _make_app(
+    *,
+    client: object | None,
+    inventory: dict[str, dict[str, str | None]] | None = None,
+) -> object:
+    # inventory kw kept for call-site compatibility; online set is heartbeat-only.
+    del inventory
     state = SimpleNamespace(
         heartbeat_store=HeartbeatStore(stale_after_sec=90.0),
-        camera_inventory=inventory,
+        camera_registry=None,
     )
     if client is not None:
         state.backend_ingest_client = client
@@ -83,13 +89,8 @@ def _make_app(*, client: object | None, inventory: dict[str, dict[str, str | Non
 
 
 def test_online_camera_relayed_stale_and_never_seen_not_called() -> None:
-    inventory = {
-        "cam-online": {"camera_id": "cam-online", "facility_id": "fac-1"},
-        "cam-stale": {"camera_id": "cam-stale", "facility_id": "fac-1"},
-        "cam-never-seen": {"camera_id": "cam-never-seen", "facility_id": "fac-1"},
-    }
     client = FakeIngestClient()
-    app = _make_app(client=client, inventory=inventory)
+    app = _make_app(client=client)
     app.state.heartbeat_store.record("cam-online", "fac-1", received_at=1000.0)
     app.state.heartbeat_store.record("cam-stale", "fac-1", received_at=0.0)
 
@@ -326,7 +327,7 @@ def test_real_lifespan_boots_and_shuts_down_cleanly_with_relay_enabled_and_empty
     with TestClient(create_app()) as client:
         app = client.app
         assert app.state.backend_heartbeat_relay_task is not None
-        assert app.state.camera_inventory == {}
+        assert not hasattr(app.state, "camera_inventory")
 
     assert app.state.backend_heartbeat_relay_task is None
     assert app.state.backend_heartbeat_relay_executor is None
