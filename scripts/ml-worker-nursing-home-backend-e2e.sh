@@ -153,11 +153,15 @@ YAML
 }
 
 start_compose_network() {
+  # Cameras come from EDGE_CAMERA_CONFIG YAML on the worker and must also be
+  # present in ml-api camera_registry for relay binding. Inventory env is gone.
   ML_API_IMAGE="$ml_api_image" \
     ML_WORKER_IMAGE="$ml_worker_image" \
     API_BACKEND_EVENTS_URL="${backend_base_url}/api/v1/events" \
     API_EDGE_RELAY_TOKEN="$relay_token" \
-    API_CAMERA_INVENTORY="[{\"camera_id\":\"${camera_id}\",\"facility_id\":\"${facility_id}\",\"resident_id\":\"${resident_id}\"}]" \
+    API_DASHBOARD_USERNAME="${API_DASHBOARD_USERNAME:-admin}" \
+    API_DASHBOARD_PASSWORD="${API_DASHBOARD_PASSWORD:-admin}" \
+    CLIP_STORE_HOST_DIR="${CLIP_STORE_HOST_DIR:-/tmp/eldercare-e2e-clip-store}" \
     ML_WORKER_PROFILE="$profile" EDGE_CAMERA_CONFIG="$config" ML_MODELS_DIR="$edge_models_dir" docker compose \
     -p "$compose_project" \
     -f compose.edge.yaml \
@@ -169,7 +173,9 @@ run_worker() {
     ML_WORKER_IMAGE="$ml_worker_image" \
     API_BACKEND_EVENTS_URL="${backend_base_url}/api/v1/events" \
     API_EDGE_RELAY_TOKEN="$relay_token" \
-    API_CAMERA_INVENTORY="[{\"camera_id\":\"${camera_id}\",\"facility_id\":\"${facility_id}\",\"resident_id\":\"${resident_id}\"}]" \
+    API_DASHBOARD_USERNAME="${API_DASHBOARD_USERNAME:-admin}" \
+    API_DASHBOARD_PASSWORD="${API_DASHBOARD_PASSWORD:-admin}" \
+    CLIP_STORE_HOST_DIR="${CLIP_STORE_HOST_DIR:-/tmp/eldercare-e2e-clip-store}" \
     ML_WORKER_PROFILE="$profile" EDGE_CAMERA_CONFIG="$config" ML_MODELS_DIR="$edge_models_dir" docker compose \
     -p "$compose_project" \
     -f compose.edge.yaml \

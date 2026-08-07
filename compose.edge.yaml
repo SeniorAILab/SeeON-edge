@@ -24,17 +24,17 @@ services:
       # single base host.
       API_BACKEND_BASE_URL: ${API_BACKEND_BASE_URL:-https://api.eldercare-fall-ai.example}
       # Bearer token ml-api sends to the backend Event API (issue #552). Optional:
-      # unset keeps the pre-#552 no-auth-header request shape. Must match the
-      # backend's EDGE_FACILITY_TOKEN exactly once the backend enforces the guard.
+      # unset keeps the pre-#552 no-auth-header request shape. Facility token is
+      # normally entered in the dashboard (connection_settings DB); this env is
+      # only a gap-fill when the DB token is null.
       EDGE_FACILITY_TOKEN: ${EDGE_FACILITY_TOKEN:-}
-      API_EDGE_RELAY_TOKEN: ${API_EDGE_RELAY_TOKEN:?edge api requires worker relay token}
+      # Internal worker↔ml-api pairing secret. Baked default — not a site secret.
+      # Override only if you deliberately rotate the internal pair on both sides.
+      API_EDGE_RELAY_TOKEN: ${API_EDGE_RELAY_TOKEN:-eldercare-internal-edge-relay}
       API_DASHBOARD_USERNAME: ${API_DASHBOARD_USERNAME:?edge api requires dashboard username}
       API_DASHBOARD_PASSWORD: ${API_DASHBOARD_PASSWORD:?edge api requires dashboard password}
-      # Backend config-read (PR-7): ml-api pulls camera inventory + night window +
-      # config_version from the backend ML config-read. This is the PRIMARY config source.
-      API_FACILITY_ID: ${API_FACILITY_ID:?edge api requires the facility id to pull config for}
-      # Fallback camera inventory: used ONLY when the backend config pull is unavailable.
-      API_CAMERA_INVENTORY: ${API_CAMERA_INVENTORY:-}
+      # Facility id + cameras are dashboard/DB only (connection_settings +
+      # camera_registry). Do not provision API_FACILITY_ID or API_CAMERA_INVENTORY.
       ML_API_WORKER_STREAM_ORIGIN: http://ml-worker:${ML_WORKER_DEV_MJPEG_PORT:-8090}
       ML_API_WORKER_PROBE_ORIGIN: http://ml-worker:${ML_WORKER_DEV_MJPEG_PORT:-8090}
       # Fixed container path of the evidence clip store (host bind below).
@@ -109,8 +109,8 @@ services:
       # the worker's own last-known-good cache as fallback on a pull failure.
       EDGE_CAMERA_CONFIG: ${EDGE_CAMERA_CONFIG:-}
       RELAY_URL: http://ml-api:8000
-      RELAY_TOKEN: ${API_EDGE_RELAY_TOKEN:?edge worker requires relay token shared with ml-api}
-      API_FACILITY_ID: ${API_FACILITY_ID:?edge worker requires the facility id to publish profile boot diagnostics}
+      # Same baked default as ml-api API_EDGE_RELAY_TOKEN (internal pair only).
+      RELAY_TOKEN: ${API_EDGE_RELAY_TOKEN:-eldercare-internal-edge-relay}
       ML_WORKER_PROFILE: ${ML_WORKER_PROFILE:?set cuda|mps|cpu|igpu}
       ML_WORKER_DEV_MJPEG: ${ML_WORKER_DEV_MJPEG:-true}
       ML_WORKER_DEV_MJPEG_HOST: 0.0.0.0
