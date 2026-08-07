@@ -105,9 +105,11 @@ def test_apply_connection_settings_relinks_to_a_new_saved_events_url(
         assert second_evidence.events_url == "http://backend-2.example/api/v1/edge/events"
 
 
-def test_apply_connection_settings_clears_clients_and_relay_returns_503(
+def test_apply_connection_settings_clears_clients_and_relay_stays_local(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from backend.app.features.cameras.store import CameraRegistryStore
+
     store = _settings_store(tmp_path, monkeypatch)
     store.save(
         {"events_url": "http://backend.example/api/v1/edge/events", "facility_token": "tok-1"}
@@ -117,9 +119,15 @@ def test_apply_connection_settings_clears_clients_and_relay_returns_503(
     # state a boot would normally set, without running the real lifespan.
     app = create_app(lifespan=no_lifespan)
     app.state.edge_relay_token = "relay-token"
-    app.state.camera_inventory = {
-        "camera-1": {"camera_id": "camera-1", "facility_id": "facility-1", "resident_id": None},
-    }
+    registry = CameraRegistryStore(tmp_path / "catalog.sqlite3")
+    registry.create(
+        camera_id="camera-1",
+        label="camera-1",
+        rtsp_url="rtsp://example/1",
+        space_id=None,
+        status="online",
+    )
+    app.state.camera_registry = registry
     apply_connection_settings(app)
     assert isinstance(app.state.backend_ingest_client, EdgeIngestClient)
     assert isinstance(app.state.backend_evidence_client, BackendEvidenceClient)
@@ -130,12 +138,14 @@ def test_apply_connection_settings_clears_clients_and_relay_returns_503(
     assert getattr(app.state, "backend_ingest_client", None) is None
     assert getattr(app.state, "backend_evidence_client", None) is None
 
+    # No cloud client: registry-bound alert still accepts locally (no 503).
     response = TestClient(app).post(
         "/api/v1/relay/alerts",
         json=_ALERT_PAYLOAD,
         headers={"X-Edge-Relay-Token": "relay-token"},
     )
-    assert response.status_code == 503
+    assert response.status_code == 202
+    assert response.json()["status"] == "accepted"
 
 
 def test_boot_time_fixture_injection_still_survives_boot(

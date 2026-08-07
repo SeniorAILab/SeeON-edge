@@ -49,7 +49,8 @@ API_EDGE_RELAY_TOKEN_ENV = "API_EDGE_RELAY_TOKEN"
 # Name matches the backend's EdgeFacilityTokenGuard config key exactly so the
 # same value can be copied verbatim across the edge and host env files.
 EDGE_FACILITY_TOKEN_ENV = "EDGE_FACILITY_TOKEN"
-API_CAMERA_INVENTORY_ENV = "API_CAMERA_INVENTORY"
+# Retained as a name-only constant for tests/docs that assert the env key is
+# no longer an admission authority. Production code must not read this env.
 API_FACILITY_ID_ENV = "API_FACILITY_ID"
 API_BACKEND_CONFIG_URL_ENV = "API_BACKEND_CONFIG_URL"
 API_BACKEND_INGEST_TIMEOUT_SEC_ENV = "API_BACKEND_INGEST_TIMEOUT_SEC"
@@ -173,8 +174,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def _configure_backend_ingest(app: FastAPI) -> None:
     if not hasattr(app.state, "edge_relay_token"):
         app.state.edge_relay_token = os.environ.get(API_EDGE_RELAY_TOKEN_ENV)
-    if not hasattr(app.state, "camera_inventory"):
-        app.state.camera_inventory = _camera_inventory_from_env_or_state(app)
     if hasattr(app.state, "backend_ingest_client"):
         if not hasattr(app.state, "backend_evidence_client"):
             existing = app.state.backend_ingest_client
@@ -242,15 +241,12 @@ def apply_connection_settings(app: FastAPI) -> None:
     # camera_id fallback identity for the rebuilt EdgeIngestClient. Every real
     # caller reaches the client through `.for_camera()` (relay/evidence
     # routers), which overrides camera_id per request, so this default is
-    # currently inert -- kept only for parity with the pre-G002 boot
-    # construction. It can go stale if camera_inventory changed since boot or
-    # the last relink; harmless today, but worth knowing if a future caller
-    # ever uses the client without `.for_camera()`.
-    first_camera = next(iter((getattr(app.state, "camera_inventory", None) or {}).values()), {})
+    # currently inert -- kept only for EdgeIngestClient's required constructor
+    # field. Registry is the sole camera SSOT; do not read a local inventory.
     timeout_sec = _backend_ingest_timeout_sec()
     app.state.backend_ingest_client = EdgeIngestClient(
         events_url=events_url,
-        camera_id=str(first_camera.get("camera_id", "api-relay")),
+        camera_id="api-relay",
         timeout_sec=timeout_sec,
         bearer_token=settings.facility_token,
     )
@@ -391,21 +387,19 @@ def _fetch_backend_config(restart_epoch: int) -> PulledWorkerConfig | None:
 
 
 def _apply_backend_config(app: FastAPI, cfg: PulledWorkerConfig) -> None:
-    facility_id = os.environ.get(API_FACILITY_ID_ENV)
+    """Apply non-camera ml-config metadata only.
+
+    Detection windows / config_version land on app.state for worker-config
+    merge. Pulled ``cameras`` are intentionally ignored as a local admission
+    or enumeration authority -- the dashboard camera registry is the sole
+    camera SSOT (see AGENTS.md anti-pattern: no pre-provisioned camera rosters).
+    """
     app.state.pulled_config = cfg
     app.state.config_version = cfg.config_version
     app.state.backend_roster = {
         "config_version": cfg.config_version,
         "received_at": _utc_now(),
         "stale": False,
-    }
-    app.state.camera_inventory = {
-        camera.camera_id: {
-            "camera_id": camera.camera_id,
-            "facility_id": facility_id,
-            "resident_id": None,
-        }
-        for camera in cfg.cameras
     }
 
 
@@ -537,41 +531,6 @@ def _optional_text(data: dict[str, object], name: str) -> str | None:
     if not isinstance(value, str):
         raise TypeError(f"{name} must be a string or null")
     return value
-
-
-def _camera_inventory_from_env_or_state(app: FastAPI) -> dict[str, dict[str, str | None]]:
-    raw_inventory = os.environ.get(API_CAMERA_INVENTORY_ENV)
-    if raw_inventory:
-        parsed = json.loads(raw_inventory)
-        if not isinstance(parsed, list):
-            raise ValueError(f"{API_CAMERA_INVENTORY_ENV} must be a JSON list")
-        return _camera_inventory_from_items(parsed)
-
-    camera_configs = getattr(app.state, "camera_configs", ())
-    return _camera_inventory_from_items(camera_configs)
-
-
-def _camera_inventory_from_items(items: object) -> dict[str, dict[str, str | None]]:
-    inventory: dict[str, dict[str, str | None]] = {}
-    for item in items:
-        camera_id = _item_text(item, "camera_id")
-        facility_id = _item_text(item, "facility_id")
-        if camera_id is None or facility_id is None:
-            continue
-        inventory[camera_id] = {
-            "camera_id": camera_id,
-            "facility_id": facility_id,
-            "resident_id": _item_text(item, "resident_id"),
-        }
-    return inventory
-
-
-def _item_text(item: object, name: str) -> str | None:
-    value = item.get(name) if isinstance(item, dict) else getattr(item, name, None)
-    if value is None:
-        return None
-    stripped = str(value).strip()
-    return stripped or None
 
 
 def _backend_ingest_timeout_sec() -> float:

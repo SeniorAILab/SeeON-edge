@@ -79,10 +79,28 @@ def _backend_config() -> dict[str, object]:
     }
 
 
-def _set_pull_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _set_pull_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path | None = None) -> None:
     monkeypatch.setenv("API_EDGE_RELAY_TOKEN", "relay-token")
-    monkeypatch.setenv("API_FACILITY_ID", "facility-pulled")
     monkeypatch.setenv("API_BACKEND_CONFIG_URL", "http://backend:3000/api/v1/ml-config/")
+    # facility_id is DB-only; seed connection_settings so ml-config pull runs.
+    from backend.app.features.connection.store import (
+        API_CONNECTION_SETTINGS_PATH_ENV,
+        ConnectionSettingsStore,
+    )
+
+    path = (tmp_path or Path("/tmp")) / "connection-settings-pull.sqlite3"
+    if tmp_path is None:
+        import tempfile
+
+        path = Path(tempfile.mkdtemp()) / "connection-settings-pull.sqlite3"
+    monkeypatch.setenv(API_CONNECTION_SETTINGS_PATH_ENV, str(path))
+    ConnectionSettingsStore(path).save(
+        {
+            "config_url": "http://backend:3000/api/v1/ml-config/",
+            "facility_id": "facility-pulled",
+            "facility_token": "facility-token",
+        }
+    )
 
 
 def _dashboard_camera_registry(tmp_path: Path) -> CameraRegistryStore:
@@ -103,16 +121,15 @@ def _dashboard_camera_registry(tmp_path: Path) -> CameraRegistryStore:
     return store
 
 
-def test_backend_config_pull_seeds_inventory_but_not_worker_config_roster(
+def test_backend_config_pull_applies_metadata_not_camera_roster(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    """Backend ml-config pull still seeds app.state.camera_inventory (used by
-    heartbeat/status, unaffected by issue #33). It must NOT seed the worker
-    roster: /cameras/worker-config (require_available=False) must return an
-    empty cameras list rather than the pulled camera, and /relay/config
-    (require_available=True) must treat the now-genuinely-empty dashboard
-    registry as unavailable (503) rather than silently substituting the
-    pulled roster."""
+    """ml-config pull keeps detection windows/config_version only.
+
+    Pulled cameras must not become a local inventory authority; worker-config
+    stays registry-only (empty when registry is empty).
+    """
     captured: list[tuple[str, str | None, float]] = []
 
     def fake_urlopen(request: urllib.request.Request, timeout: float) -> FakeHTTPResponse:
@@ -121,8 +138,7 @@ def test_backend_config_pull_seeds_inventory_but_not_worker_config_roster(
         )
         return FakeHTTPResponse(_backend_config())
 
-    _set_pull_env(monkeypatch)
-    monkeypatch.setenv("EDGE_FACILITY_TOKEN", "facility-token")
+    _set_pull_env(monkeypatch, tmp_path)
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
 
     with TestClient(create_app()) as client:
@@ -135,18 +151,7 @@ def test_backend_config_pull_seeds_inventory_but_not_worker_config_roster(
             )
         ]
         assert app.state.config_version == 7
-        assert app.state.camera_inventory == {
-            "cam-pulled-1": {
-                "camera_id": "cam-pulled-1",
-                "facility_id": "facility-pulled",
-                "resident_id": None,
-            },
-            "cam-pulled-2": {
-                "camera_id": "cam-pulled-2",
-                "facility_id": "facility-pulled",
-                "resident_id": None,
-            },
-        }
+        assert not hasattr(app.state, "camera_inventory")
 
         worker_config = client.get(
             "/api/v1/cameras/worker-config",
@@ -230,7 +235,6 @@ def test_backend_detection_windows_present_ignores_legacy_night_window_entirely(
     assert body["cameras"] == [
         {
             "camera_id": "dashboard-camera",
-            "facility_id": "facility-pulled",
             "rtsp_url": "rtsp://dashboard/stream",
         }
     ]
@@ -313,7 +317,6 @@ def test_backend_config_pull_survives_invalid_window_and_never_populates_cameras
     assert body["cameras"] == [
         {
             "camera_id": "dashboard-camera",
-            "facility_id": "facility-pulled",
             "rtsp_url": "rtsp://dashboard/stream",
         }
     ]
@@ -321,13 +324,14 @@ def test_backend_config_pull_survives_invalid_window_and_never_populates_cameras
     assert body["detection_windows"]["fall"] == {"start": "22:00", "end": "05:00", "tz": "UTC"}
 
 
-def test_backend_config_pull_failure_keeps_env_inventory_fallback(
+def test_backend_config_pull_failure_does_not_create_inventory(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     def fake_urlopen(url: str, timeout: float) -> FakeHTTPResponse:
         raise TimeoutError("boom")
 
-    _set_pull_env(monkeypatch)
+    _set_pull_env(monkeypatch, tmp_path)
     monkeypatch.setenv(
         "API_CAMERA_INVENTORY",
         json.dumps(
@@ -344,13 +348,7 @@ def test_backend_config_pull_failure_keeps_env_inventory_fallback(
 
     with TestClient(create_app()) as client:
         assert client.app.state.pulled_config is None
-        assert client.app.state.camera_inventory == {
-            "cam-env": {
-                "camera_id": "cam-env",
-                "facility_id": "facility-env",
-                "resident_id": "resident-env",
-            }
-        }
+        assert not hasattr(client.app.state, "camera_inventory")
 
 
 def test_config_and_restart_require_token_and_restart_reflects_live_epoch(
@@ -400,28 +398,30 @@ def test_config_and_restart_require_token_and_restart_reflects_live_epoch(
 
 def test_heartbeat_config_version_surfaces_in_status_and_remains_optional(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("API_EDGE_RELAY_TOKEN", "relay-token")
-    monkeypatch.setenv(
-        "API_CAMERA_INVENTORY",
-        json.dumps(
-            [
-                {"camera_id": "cam-1", "facility_id": "facility-1"},
-                {"camera_id": "cam-2", "facility_id": "facility-1"},
-            ]
-        ),
-    )
+    store = CameraRegistryStore(tmp_path / "catalog.sqlite3")
+    for camera_id in ("cam-1", "cam-2"):
+        store.create(
+            camera_id=camera_id,
+            label=camera_id,
+            rtsp_url=f"rtsp://example/{camera_id}",
+            space_id=None,
+            status="online",
+        )
 
     with TestClient(create_app()) as client:
+        client.app.state.camera_registry = store
         client.app.state.backend_ingest_client = FakeBackendIngestClient()
         with_version = client.post(
             "/api/v1/relay/heartbeat",
-            json={"camera_id": "cam-1", "facility_id": "facility-1", "config_version": 7},
+            json={"camera_id": "cam-1", "facility_id": "local", "config_version": 7},
             headers={"X-Edge-Relay-Token": "relay-token"},
         )
         without_version = client.post(
             "/api/v1/relay/heartbeat",
-            json={"camera_id": "cam-2", "facility_id": "facility-1"},
+            json={"camera_id": "cam-2", "facility_id": "local"},
             headers={"X-Edge-Relay-Token": "relay-token"},
         )
         status = client.get("/api/v1/status")
@@ -568,11 +568,12 @@ def test_config_refresh_rejects_partial_roster_and_preserves_last_good(
     with TestClient(create_app()) as client:
         app = client.app
         previous_roster = app.state.backend_roster.copy()
-        previous_inventory = app.state.camera_inventory.copy()
+        previous_config = app.state.pulled_config
 
         assert refresh_backend_config(app) is False
+        assert app.state.pulled_config is previous_config
         assert app.state.pulled_config.config_version == 7
-        assert app.state.camera_inventory == previous_inventory
+        assert not hasattr(app.state, "camera_inventory")
         assert app.state.backend_roster == {
             "config_version": 7,
             "received_at": previous_roster["received_at"],
@@ -641,20 +642,19 @@ def test_shutdown_bounds_late_refresh_and_discards_its_result(
         with TestClient(app):
             assert refresh_started.wait(timeout=2)
             previous_config = app.state.pulled_config
-            previous_inventory = app.state.camera_inventory.copy()
             shutdown_started_at = time.monotonic()
 
         assert time.monotonic() - shutdown_started_at < BACKEND_CONFIG_SHUTDOWN_WAIT_SEC + 0.5
         assert app.state.backend_config_refresh_task is None
         assert app.state.pulled_config == previous_config
         assert app.state.config_version == 7
-        assert app.state.camera_inventory == previous_inventory
+        assert not hasattr(app.state, "camera_inventory")
 
         release_refresh.set()
         assert refresh_finished.wait(timeout=2)
         assert app.state.pulled_config == previous_config
         assert app.state.config_version == 7
-        assert app.state.camera_inventory == previous_inventory
+        assert not hasattr(app.state, "camera_inventory")
     finally:
         release_refresh.set()
 
@@ -799,7 +799,6 @@ def test_backend_detection_windows_populate_per_domain_map_and_bed_exit_alias(
     assert body["cameras"] == [
         {
             "camera_id": "dashboard-camera",
-            "facility_id": "facility-pulled",
             "rtsp_url": "rtsp://dashboard/stream",
         }
     ]
