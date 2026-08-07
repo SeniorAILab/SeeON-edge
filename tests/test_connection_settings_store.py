@@ -80,7 +80,8 @@ class TestLoadPrecedence:
 
         assert settings.events_url == "https://backend.example/events"
         assert settings.config_url == "https://backend.example/ml-config"
-        assert settings.facility_id == "facility-42"
+        # facility_id is DB-only; env API_FACILITY_ID must not seed.
+        assert settings.facility_id is None
         assert settings.facility_token == "supersecrettoken"
         assert settings.updated_at is None
 
@@ -108,14 +109,16 @@ class TestLoadPrecedence:
     def test_unsaved_field_still_falls_back_to_env_after_a_save(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv(API_FACILITY_ID_ENV, "facility-from-env")
+        monkeypatch.setenv(EDGE_FACILITY_TOKEN_ENV, "token-from-env")
         store = _store(tmp_path)
 
         store.save({"events_url": "https://saved.example/events"})
         settings = store.load()
 
         assert settings.events_url == "https://saved.example/events"
-        assert settings.facility_id == "facility-from-env"
+        # facility_id has no env seed; token still gap-fills from env.
+        assert settings.facility_id is None
+        assert settings.facility_token == "token-from-env"
 
 
 class TestLoadBaseUrlPrecedence:
@@ -195,7 +198,8 @@ class TestSavePartialUpdate:
         store.save({"facility_id": None})
         settings = store.load()
 
-        assert settings.facility_id == "facility-from-env"
+        # Cleared DB field stays None even when env API_FACILITY_ID is set.
+        assert settings.facility_id is None
 
     def test_unknown_field_raises(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="unknown connection setting field"):

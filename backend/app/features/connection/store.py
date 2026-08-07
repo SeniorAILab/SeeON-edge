@@ -2,10 +2,9 @@
 
 Historically the ml-api -> backend link (Event API URL, ml-config pull URL,
 facility id, facility bearer token) was configured exclusively through env
-vars read in ``backend/app/lifespan.py`` (``API_BACKEND_EVENTS_URL``,
-``EDGE_FACILITY_TOKEN``, ``API_FACILITY_ID``, ``API_BACKEND_CONFIG_URL``).
-This module adds a persistent sqlite3-backed store so a technician can
-configure the same link from the dashboard UI without env vars or a restart.
+vars. This module is the persistent sqlite3-backed store so a technician can
+configure the link from the dashboard UI without env vars or a restart.
+Site ``facility_id`` is DB-only (never env-seeded).
 Per the "no JSON state stores" rule (AGENTS.md), mutable runtime state that
 is read-modify-written belongs in a table, not a hand-rolled atomic-write
 JSON file -- this store keeps its own dedicated sqlite3 database rather than
@@ -51,7 +50,6 @@ from threading import Lock
 from backend.app.lifespan import (
     API_BACKEND_CONFIG_URL_ENV,
     API_BACKEND_EVENTS_URL_ENV,
-    API_FACILITY_ID_ENV,
     EDGE_FACILITY_TOKEN_ENV,
 )
 
@@ -150,7 +148,9 @@ class ConnectionSettingsStore:
                 or os.environ.get(API_BACKEND_CONFIG_URL_ENV)
                 or (f"{base}/v1/ml-config" if base else None)
             ),
-            facility_id=saved.get("facility_id") or os.environ.get(API_FACILITY_ID_ENV),
+            # Site facility id is dashboard/DB only — never seed from env.
+            facility_id=saved.get("facility_id"),
+            # Token: DB first; optional EDGE_FACILITY_TOKEN gap-fill when unset.
             facility_token=saved.get("facility_token") or os.environ.get(EDGE_FACILITY_TOKEN_ENV),
             updated_at=saved.get("updated_at"),
         )

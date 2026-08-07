@@ -50,7 +50,6 @@ EDGE_FACILITY_TOKEN_ENV = "EDGE_FACILITY_TOKEN"
 API_FACILITY_TOKEN_ENV = "API_FACILITY_TOKEN"
 API_BACKEND_FACILITY_TOKEN_ENV = "API_BACKEND_FACILITY_TOKEN"
 API_EDGE_FACILITY_TOKEN_ENV = "API_EDGE_FACILITY_TOKEN"
-API_FACILITY_ID_ENV = "API_FACILITY_ID"
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,10 +105,13 @@ class BackendCameraMapper:
 
     @classmethod
     def from_env(cls) -> BackendCameraMapper:
+        # facility_id is not env-seeded: production roster sync builds the
+        # mapper from ConnectionSettingsStore (DB). from_env leaves facility
+        # unset so env API_FACILITY_ID is never an admission authority.
         return cls(
             endpoint=_mapping_endpoint_from_env(),
             token=_facility_token_from_env(),
-            facility_id=os.environ.get(API_FACILITY_ID_ENV),
+            facility_id=None,
             timeout_sec=_timeout_sec(),
         )
 

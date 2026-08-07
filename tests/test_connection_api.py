@@ -214,6 +214,7 @@ def test_put_connection_saves_and_relinks_the_running_app_immediately(
         "/api/v1/connection",
         json={
             "events_url": "http://backend.example/api/v1/edge/events",
+            "facility_id": "facility-1",
             "facility_token": "tok-1",
         },
     )
@@ -221,6 +222,7 @@ def test_put_connection_saves_and_relinks_the_running_app_immediately(
     assert response.status_code == 200
     body = response.json()
     assert body["events_url"] == "http://backend.example/api/v1/edge/events"
+    assert body["facility_id"] == "facility-1"
     assert body["facility_token_set"] is True
     assert body["configured"] is True
 

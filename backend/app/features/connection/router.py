@@ -195,7 +195,9 @@ def _status_response(app: FastAPI) -> dict[str, object]:
         "facility_id": masked["facility_id"],
         "facility_token_set": masked["facility_token_set"],
         "facility_token_masked": masked["facility_token_masked"],
-        "configured": bool(masked["events_url"]),
+        "configured": bool(
+            masked["events_url"] and masked["facility_id"] and masked["facility_token_set"]
+        ),
         # Reuses the flags mark_backend_status() already maintains on
         # app.state (shared/backend_mapping.py) instead of tracking a
         # parallel copy of backend reachability here.
