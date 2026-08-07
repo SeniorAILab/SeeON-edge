@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import sqlite3
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -79,17 +80,24 @@ class FakeBackendIngestClient:
 
 
 def _client(
-    fake: FakeBackendIngestClient | None = None, *, catalog_path: Path | None = None
+    fake: FakeBackendIngestClient | None = None,
+    *,
+    catalog_path: Path | None = None,
+    registry_dir: Path | None = None,
 ) -> TestClient:
     app = create_app(lifespan=no_lifespan)
     app.state.edge_relay_token = "relay-token"
-    app.state.camera_inventory = {
-        "camera-1": {
-            "camera_id": "camera-1",
-            "facility_id": "facility-1",
-            "resident_id": "resident-1",
-        }
-    }
+    registry_root = registry_dir if registry_dir is not None else Path(tempfile.mkdtemp())
+    store = CameraRegistryStore(registry_root / "catalog.sqlite3")
+    store.create(
+        camera_id="camera-1",
+        label="camera-1",
+        rtsp_url="rtsp://example/camera-1",
+        space_id=None,
+        status="online",
+        backend_camera_id="camera-1",
+    )
+    app.state.camera_registry = store
     app.state.backend_ingest_client = fake or FakeBackendIngestClient()
     if catalog_path is not None:
         # Pre-set app.state.catalog_store so get_catalog_store() (called
@@ -155,15 +163,16 @@ def test_relay_alert_rejects_unknown_camera() -> None:
     assert "unknown camera" in response.json()["detail"]
 
 
-def test_relay_alert_rejects_facility_mismatch() -> None:
+def test_relay_alert_accepts_any_wire_facility_when_registry_has_camera() -> None:
+    """Worker wire facility_id is not compared to env; registry camera_id binds."""
     response = _client().post(
         "/api/v1/relay/alerts",
         json=_alert_payload(facility_id="facility-2"),
         headers={"X-Edge-Relay-Token": "relay-token"},
     )
 
-    assert response.status_code == 403
-    assert "facility" in response.json()["detail"]
+    assert response.status_code == 202
+    assert response.json()["status"] == "accepted"
 
 
 def test_relay_alert_records_catalog_even_when_camera_unresolved(tmp_path) -> None:
@@ -362,13 +371,12 @@ def test_relay_accepts_canonical_camera_id_from_registry_when_inventory_missing(
         backend_camera_id="backend-camera-1",
     )
     app.state.camera_registry = store
-    app.state.camera_inventory = {}
     app.state.backend_ingest_client = fake
 
     with TestClient(app) as client:
         response = client.post(
             "/api/v1/relay/heartbeat",
-            json={"camera_id": "backend-camera-1", "facility_id": "local-facility"},
+            json={"camera_id": "backend-camera-1", "facility_id": "local"},
             headers={"X-Edge-Relay-Token": "relay-token"},
         )
 
@@ -389,7 +397,6 @@ def _registry_app(fake: FakeBackendIngestClient, tmp_path, *, backend_camera_id:
         backend_camera_id=backend_camera_id,
     )
     app.state.camera_registry = store
-    app.state.camera_inventory = {}
     app.state.backend_ingest_client = fake
     return app
 
