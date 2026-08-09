@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import ClassVar, Literal, Self
+from typing import ClassVar, Literal, Self, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+ClipEventType: TypeAlias = Literal["fall", "bed-exit", "other"]
 
 
 class ClipManifestResponse(BaseModel):
@@ -45,7 +47,7 @@ class ClipListQuery(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
 
     camera_id: str | None = Field(default=None, min_length=1)
-    event_type: str | None = Field(default=None, min_length=1)
+    event_type: ClipEventType | None = None
     limit: int | None = Field(default=None, ge=1, le=100)
     offset: int = Field(default=0, ge=0)
 
