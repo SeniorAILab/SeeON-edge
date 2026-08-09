@@ -199,13 +199,14 @@ describe('EventsPage pagination', () => {
     ]);
   });
 
-  it('preserves an off-page clip deep link through metadata lookup', async () => {
-    resetLocation('?page=events&clip=clip-49');
+  it('preserves an off-page other-facet deep link through metadata lookup', async () => {
+    resetLocation('?page=events&event=other&clip=clip-49');
     const pageClips = Array.from({ length: 48 }, (_, index) => clipManifest({
       clip_id: `clip-${index + 1}`,
       event_ref: `event-${index + 1}`,
+      event_type: 'vendor-detector',
     }));
-    const deepLinkedClip = clipManifest({ clip_id: 'clip-49', event_ref: 'event-49' });
+    const deepLinkedClip = clipManifest({ clip_id: 'clip-49', event_ref: 'event-49', event_type: 'vendor-detector' });
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.includes('/cameras')) {
@@ -221,7 +222,7 @@ describe('EventsPage pagination', () => {
           json: async () => ({
             clips: pageClips,
             pagination: { limit: 48, offset: 0, total: 50, has_more: true },
-            event_type_counts: { fall: 50 },
+            event_type_counts: { 'vendor-detector': 50 },
           }),
         });
       }
@@ -231,8 +232,9 @@ describe('EventsPage pagination', () => {
 
     await renderPage();
 
+    expect(window.location.search).toContain('event=other');
     expect(window.location.search).toContain('clip=clip-49');
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('낙상');
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('기타');
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith('/clips/clip-49/metadata'))).toBe(true);
   });
 });

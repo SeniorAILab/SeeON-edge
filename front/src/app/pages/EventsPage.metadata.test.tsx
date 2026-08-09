@@ -28,11 +28,14 @@ function jsonResponse(body: unknown, status = 200) {
   return { ok: status >= 200 && status < 300, status, json: async () => body };
 }
 
-function pageResponse(clips: readonly Record<string, unknown>[]) {
+function pageResponse(
+  clips: readonly Record<string, unknown>[],
+  eventTypeCounts: Readonly<Record<string, number>> = { fall: clips.length + 1 },
+) {
   return jsonResponse({
     clips,
     pagination: { limit: 48, offset: 0, total: clips.length + 1, has_more: true },
-    event_type_counts: { fall: clips.length + 1 },
+    event_type_counts: eventTypeCounts,
   });
 }
 
@@ -138,11 +141,12 @@ describe('EventsPage metadata validation', () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
-  it('preserves a transient metadata link and retries from an explicit modal surface', async () => {
-    resetLocation('?page=events&clip=clip-49');
+  it('preserves a transient other-facet metadata link and accepts an unknown raw type after retry', async () => {
+    resetLocation('?page=events&event=other&clip=clip-49');
     const pageClips = Array.from({ length: 48 }, (_, index) => clipManifest({
       clip_id: `clip-${index + 1}`,
       event_ref: `event-${index + 1}`,
+      event_type: 'vendor-detector',
     }));
     const firstMetadata = deferred<ReturnType<typeof jsonResponse>>();
     const retryMetadata = deferred<ReturnType<typeof jsonResponse>>();
@@ -154,7 +158,7 @@ describe('EventsPage metadata validation', () => {
         metadataCallCount += 1;
         return metadataCallCount === 1 ? firstMetadata.promise : retryMetadata.promise;
       }
-      if (url.includes('/clips')) return Promise.resolve(pageResponse(pageClips));
+      if (url.includes('/clips')) return Promise.resolve(pageResponse(pageClips, { 'vendor-detector': 49 }));
       return Promise.reject(new Error(`unexpected fetch: ${url}`));
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -180,12 +184,16 @@ describe('EventsPage metadata validation', () => {
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain('이벤트 정보를 불러오는 중입니다.');
 
     await act(async () => {
-      retryMetadata.resolve(jsonResponse(clipManifest({ clip_id: 'clip-49', camera_id: 'cam-1' })));
+      retryMetadata.resolve(jsonResponse(clipManifest({
+        clip_id: 'clip-49', camera_id: 'cam-1', event_type: 'vendor-detector',
+      })));
       await Promise.resolve();
     });
     await flush();
 
+    expect(window.location.search).toContain('event=other');
     expect(window.location.search).toContain('clip=clip-49');
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('기타');
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain('301호');
   });
 });

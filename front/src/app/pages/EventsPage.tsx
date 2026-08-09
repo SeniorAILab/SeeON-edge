@@ -6,6 +6,7 @@ import { ClipGrid } from '@/features/events/ClipGrid';
 import { ClipPlaybackModal } from '@/features/events/ClipPlaybackModal';
 import { EventTypeFilterChips } from '@/features/events/EventTypeFilterChips';
 import { EventsPager } from '@/features/events/EventsPager';
+import { toEventFacet } from '@/shared/api/clipEventFacet';
 import { resolveCameraLabel } from '@/features/events/resolveCameraLabel';
 import { useClipMetadata } from '@/features/events/useClipMetadata';
 import { useEventsPage } from '@/features/events/useEventsPage';
@@ -40,7 +41,7 @@ export function EventsPage(): JSX.Element {
   const cameras = camerasResource.data?.cameras ?? [];
   const metadataMatchesFilters = metadata.clip !== null
     && (!selectedCameraId || metadata.clip.camera_id === selectedCameraId)
-    && (!location.eventType || metadata.clip.event_type === location.eventType);
+    && (!location.eventType || toEventFacet(metadata.clip.event_type) === location.eventType);
   const activeClip = location.clipId
     ? clips.find((clip) => clip.id === location.clipId) ?? (metadataMatchesFilters ? metadata.clip : null)
     : null;
