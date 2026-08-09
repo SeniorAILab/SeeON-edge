@@ -487,9 +487,20 @@ def test_clip_recorder_fsyncs_media_and_manifest_before_staging_cleanup(
     real_fsync = os.fsync
     real_rmtree = shutil.rmtree
 
-    def _record_replace(source: Path, target: Path) -> None:
+    def _record_replace(
+        source: str | os.PathLike[str],
+        target: str | os.PathLike[str],
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
         events.append(("replace", Path(source).name, Path(target).name))
-        real_replace(source, target)
+        real_replace(
+            source,
+            target,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
 
     def _record_fsync(descriptor: int) -> None:
         target = Path(os.readlink(f"/proc/self/fd/{descriptor}")).name
