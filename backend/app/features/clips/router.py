@@ -80,6 +80,24 @@ def _clip_size_bytes(store: ClipStore, manifest: ClipManifest) -> int | None:
         return None
 
 
+@router.get("/clips/{clip_id}/metadata", response_model=ClipManifestResponse)
+def get_clip_metadata(
+    clip_id: str,
+    request: Request,
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+) -> ClipManifestResponse:
+    actor = _authorize(request, authorization)
+    store = _clip_store(request)
+    manifest = _get_manifest_or_404(request, clip_id)
+    response = _clip_response(store, manifest)
+    _ = _audit_store(request).append(
+        actor=actor,
+        action="metadata-view",
+        clip_id=manifest.clip_id,
+    )
+    return response
+
+
 @router.get("/clips/{clip_id}/video")
 def clip_video(
     clip_id: str,
@@ -150,10 +168,16 @@ def list_audit(
 
 
 def _get_manifest_or_404(request: Request, clip_id: str):
+    store = _clip_store(request)
     try:
-        manifest = _clip_store(request).get_manifest(clip_id)
+        manifest = store.get_manifest(clip_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if manifest is None:
+        manifest = next(
+            (candidate for candidate in store.list_manifests() if candidate.clip_id == clip_id),
+            None,
+        )
     if manifest is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="clip not found")
     return manifest
@@ -200,6 +224,8 @@ def _bearer_token(value: str | None) -> str | None:
     if value is None or not value.startswith("Bearer "):
         return None
     return value.removeprefix("Bearer ").strip() or None
+
+
 def _media_type(filename: str) -> str:
     suffix = filename.rsplit(".", maxsplit=1)[-1].lower() if "." in filename else ""
     return _MEDIA_TYPES.get(f".{suffix}", "application/octet-stream")
