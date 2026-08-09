@@ -46,6 +46,36 @@ describe('clip pagination API', () => {
     expect(page.event_type_counts).toEqual({ fall: 100, 'bed-exit': 45 });
   });
 
+  it('collapses thousands of unknown raw count keys and a missing event type into the other facet', async () => {
+    const total = 9_313;
+    const unknownTypeCount = 3_000;
+    const rawCounts = Object.fromEntries(Array.from(
+      { length: unknownTypeCount },
+      (_, index) => [`vendor-event-${index}`, index === 0 ? total - unknownTypeCount + 1 : 1],
+    ));
+    const clips = Array.from({ length: 48 }, (_, index) => clipManifest({
+      clip_id: `clip-${index + 1}`,
+      event_ref: `unique-event-${index + 1}`,
+      event_type: index === 0 ? null : `vendor-event-${index}`,
+    }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        clips,
+        pagination: { limit: 48, offset: 0, total, has_more: true },
+        event_type_counts: rawCounts,
+      }),
+    }));
+
+    const page = await fetchClipPage({ limit: 48, offset: 0 });
+
+    expect(page.clips).toHaveLength(48);
+    expect(page.clips.every((clip) => clip.event_type === 'other')).toBe(true);
+    expect(page.pagination.total).toBe(total);
+    expect(page.event_type_counts).toEqual({ other: total });
+  });
+
   it('normalizes and slices a complete legacy response after applying both filters locally', async () => {
     const clips = [
       clipManifest({ clip_id: 'clip-1', camera_id: 'cam-1', event_type: 'fall' }),

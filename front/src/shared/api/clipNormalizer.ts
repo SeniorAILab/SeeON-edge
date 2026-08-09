@@ -9,6 +9,7 @@ import {
   pickNullableString,
   pickString,
 } from '@/shared/api/normalizerFields';
+import { toEventFacet } from '@/shared/api/clipEventFacet';
 import type { ClipPage, ClipPageQuery, ClipPagination } from '@/shared/api/clipPaginationTypes';
 import type { Clip } from '@/shared/api/types';
 
@@ -26,7 +27,7 @@ export function normalizeClip(value: unknown): Clip | null {
     id,
     camera_id: pickNullableString(value, ['camera_id', 'cameraId']),
     camera_label: pickString(value, ['camera_label', 'cameraLabel', 'camera'], '카메라 미상'),
-    event_type: pickString(value, ['event_type', 'eventType', 'type', 'event_ref', 'eventRef'], '이벤트'),
+    event_type: toEventFacet(pickString(value, ['event_type', 'eventType', 'type', 'event_ref', 'eventRef'])),
     created_at: pickNullableString(value, ['created_at', 'createdAt', 'timestamp', 'started_at', 'startedAt']),
     video_path: getClipVideoUrl(id),
     video_available: normalizedVideoAvailable,
@@ -108,7 +109,8 @@ function normalizeEventTypeCounts(value: unknown): Readonly<Record<string, numbe
     if (!eventType.trim() || !isNonNegativeInteger(count)) {
       throw new Error('Invalid clips pagination response');
     }
-    counts[eventType] = count;
+    const facet = toEventFacet(eventType);
+    counts[facet] = (counts[facet] ?? 0) + count;
   }
   return counts;
 }
