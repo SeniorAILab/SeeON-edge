@@ -2,17 +2,26 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.features.clips.audit_log import (
     AUDIT_NO_CLIP_ID,
     AuditLogStore,
     post_backend_backup,
     utc_now_iso,
+)
+from backend.app.features.clips.listing import select_clip_page
+from backend.app.features.clips.schemas import (
+    AuditResponse,
+    ClipListQuery,
+    ClipManifestResponse,
+    ClipsPaginationResponse,
+    LabelClipRequest,
+    LabelClipResponse,
+    ListClipsResponse,
 )
 from backend.app.features.clips.store import ClipManifest, ClipStore, LabelRecord, LabelStore
 from backend.app.shared.dashboard_auth import authorize_dashboard
@@ -29,69 +38,33 @@ _MEDIA_TYPES = {
 }
 
 
-class ClipManifestResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    clip_id: str = Field(min_length=1)
-    camera_id: str = Field(min_length=1)
-    event_ref: str = Field(min_length=1)
-    event_type: str | None = Field(default=None, min_length=1)
-    started_at: str = Field(min_length=1)
-    duration_s: float = Field(ge=0)
-    codec: str = Field(default="")
-    path: str | None = Field(default=None)
-    video_available: bool
-    video_error: str | None = Field(default=None)
-    finalized: bool
-    size_bytes: int | None = Field(default=None, ge=0)
-
-
-class ListClipsResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    clips: list[ClipManifestResponse]
-
-
-class LabelClipRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    label: Literal["TRUE_POSITIVE", "FALSE_POSITIVE"] | None
-    reviewer: str | None = Field(default=None, min_length=1)
-
-
-class LabelClipResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    clip_id: str = Field(min_length=1)
-    label: Literal["TRUE_POSITIVE", "FALSE_POSITIVE"] | None
-    reviewer: str = Field(min_length=1)
-    reviewed_at: str = Field(min_length=1)
-
-
-class AuditResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    entries: list[dict[str, object]]
-
-
 @router.get("/clips", response_model=ListClipsResponse)
 def list_clips(
     request: Request,
-    camera_id: str | None = None,
+    filters: Annotated[ClipListQuery, Query()],
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
-) -> dict[str, object]:
+) -> ListClipsResponse:
     actor = _authorize(request, authorization)
     store = _clip_store(request)
-    manifests = store.list_manifests(camera_id=camera_id)
-    response = {"clips": [_clip_response(store, manifest) for manifest in manifests]}
-    _audit_store(request).append(actor=actor, action="list", clip_id=AUDIT_NO_CLIP_ID)
+    page = select_clip_page(store.list_manifests(), filters)
+    response = ListClipsResponse(
+        clips=[_clip_response(store, manifest) for manifest in page.manifests],
+        pagination=ClipsPaginationResponse(
+            limit=filters.limit,
+            offset=filters.offset,
+            total=page.total,
+            has_more=page.has_more,
+        ),
+        event_type_counts=dict(page.event_type_counts),
+    )
+    _ = _audit_store(request).append(actor=actor, action="list", clip_id=AUDIT_NO_CLIP_ID)
     return response
 
 
-def _clip_response(store: ClipStore, manifest: ClipManifest) -> dict[str, object]:
+def _clip_response(store: ClipStore, manifest: ClipManifest) -> ClipManifestResponse:
     response = manifest.as_response()
     response["size_bytes"] = _clip_size_bytes(store, manifest)
-    return response
+    return ClipManifestResponse.model_validate(response)
 
 
 def _clip_size_bytes(store: ClipStore, manifest: ClipManifest) -> int | None:
