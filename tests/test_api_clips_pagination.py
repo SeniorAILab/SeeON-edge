@@ -4,8 +4,10 @@ import json
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from backend.app.features.clips.listing_index import ClipListingIndex
 from backend.app.features.clips.store import ClipManifest, ClipStore
 from backend.app.main import create_app, no_lifespan
 
@@ -50,6 +52,16 @@ def _login(client: TestClient) -> None:
     assert response.status_code == 204
 
 
+def _indexed_app(clip_env: Path) -> FastAPI:
+    app = create_app(lifespan=no_lifespan)
+    store = ClipStore(clip_env / "clip-store")
+    index = ClipListingIndex.open(clip_env / "catalog.sqlite3")
+    _ = index.reconcile(store)
+    app.state.clip_store = store
+    app.state.clip_listing_index = index
+    return app
+
+
 @pytest.fixture(autouse=True)
 def clip_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("CLIP_STORE_DIR", str(tmp_path / "clip-store"))
@@ -59,7 +71,7 @@ def clip_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-def test_page_bounds_video_resolution_while_total_and_facets_cover_full_fixture(
+def test_page_uses_sqlite_only_while_total_and_facets_cover_full_fixture(
     clip_env: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -82,6 +94,7 @@ def test_page_bounds_video_resolution_while_total_and_facets_cover_full_fixture(
             event_ref=event_ref,
         )
 
+    app = _indexed_app(clip_env)
     resolved_clip_ids: list[str] = []
     original_resolve = ClipStore.resolve_video_path
 
@@ -91,7 +104,7 @@ def test_page_bounds_video_resolution_while_total_and_facets_cover_full_fixture(
 
     monkeypatch.setattr(ClipStore, "resolve_video_path", instrumented_resolve)
 
-    with TestClient(create_app(lifespan=no_lifespan)) as client:
+    with TestClient(app) as client:
         _login(client)
         response = client.get(
             "/api/v1/clips",
@@ -100,20 +113,20 @@ def test_page_bounds_video_resolution_while_total_and_facets_cover_full_fixture(
 
     assert response.status_code == 200
     body = response.json()
-    assert len(resolved_clip_ids) == 48
+    assert resolved_clip_ids == []
     assert body["pagination"] == {"limit": 48, "offset": 0, "total": 60, "has_more": True}
-    assert body["event_type_counts"] == {"bed-exit": 15, "fall": 35, "legacy": 10}
+    assert body["event_type_counts"] == {"bed-exit": 15, "fall": 35, "other": 10}
     assert [clip["clip_id"] for clip in body["clips"]] == [
         f"clip-{index:03d}" for index in range(59, 11, -1)
     ]
-    assert resolved_clip_ids == [clip["clip_id"] for clip in body["clips"]]
+    app.state.clip_listing_index.close()
 
 
 @pytest.mark.parametrize(
     ("event_type", "expected_ids", "expected_total"),
     [
         ("fall", ["clip-004", "clip-003"], 5),
-        ("legacy", ["clip-011", "clip-010"], 2),
+        ("other", ["clip-011", "clip-010"], 2),
     ],
 )
 def test_event_filter_uses_effective_category_and_keeps_camera_scoped_facets(
@@ -141,7 +154,8 @@ def test_event_filter_uses_effective_category_and_keeps_camera_scoped_facets(
             event_ref=event_ref,
         )
 
-    with TestClient(create_app(lifespan=no_lifespan)) as client:
+    app = _indexed_app(clip_env)
+    with TestClient(app) as client:
         _login(client)
         response = client.get(
             "/api/v1/clips",
@@ -157,7 +171,20 @@ def test_event_filter_uses_effective_category_and_keeps_camera_scoped_facets(
     body = response.json()
     assert [clip["clip_id"] for clip in body["clips"]] == expected_ids
     assert body["pagination"]["total"] == expected_total
-    assert body["event_type_counts"] == {"bed-exit": 5, "fall": 5, "legacy": 2}
+    assert body["event_type_counts"] == {"bed-exit": 5, "fall": 5, "other": 2}
+    app.state.clip_listing_index.close()
+
+
+def test_paged_list_is_unavailable_without_a_successful_index_sync() -> None:
+    # Given: an application whose listing index has not completed startup sync.
+    with TestClient(create_app(lifespan=no_lifespan)) as client:
+        _login(client)
+
+        # When: a bounded listing is requested.
+        response = client.get("/api/v1/clips", params={"limit": 48, "offset": 0})
+
+    # Then: the API fails closed instead of doing an unbounded filesystem scan.
+    assert response.status_code == 503
 
 
 def test_unpaged_list_preserves_all_clips_and_reports_unbounded_pagination(clip_env: Path) -> None:

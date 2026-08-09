@@ -14,6 +14,10 @@ from backend.app.features.clips.audit_log import (
     utc_now_iso,
 )
 from backend.app.features.clips.listing import select_clip_page
+from backend.app.features.clips.listing_index import (
+    ClipListingIndex,
+    ClipListingReconcileError,
+)
 from backend.app.features.clips.schemas import (
     AuditResponse,
     ClipListQuery,
@@ -45,10 +49,30 @@ def list_clips(
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
 ) -> ListClipsResponse:
     actor = _authorize(request, authorization)
-    store = _clip_store(request)
-    page = select_clip_page(store.list_manifests(), filters)
+    if filters.limit is None:
+        store = _clip_store(request)
+        page = select_clip_page(store.list_manifests(), filters)
+        clips = [_clip_response(store, manifest) for manifest in page.manifests]
+    else:
+        index = getattr(request.app.state, "clip_listing_index", None)
+        if not isinstance(index, ClipListingIndex):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="clip listing index unavailable",
+            )
+        try:
+            page = index.page(filters)
+        except ClipListingReconcileError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="clip listing index unavailable",
+            ) from exc
+        clips = [
+            ClipManifestResponse.model_validate(manifest.as_response())
+            for manifest in page.manifests
+        ]
     response = ListClipsResponse(
-        clips=[_clip_response(store, manifest) for manifest in page.manifests],
+        clips=clips,
         pagination=ClipsPaginationResponse(
             limit=filters.limit,
             offset=filters.offset,
