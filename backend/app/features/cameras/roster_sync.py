@@ -20,7 +20,13 @@ Endpoint/token resolution deliberately routes through
 ``ConnectionSettingsStore`` effective settings (lazy import, matching the
 trick ``connection/router.py`` and ``lifespan.py`` already use to avoid a
 circular import) rather than ``BackendCameraMapper.from_env()`` -- see
-``_build_mapper`` and the G004 note in ``shared/backend_mapping.py``.
+``build_mapper`` and the G004 note in ``shared/backend_mapping.py``.
+
+``build_mapper`` is exported (not module-private) so the synchronous
+create/update mapping path in ``cameras/router.py`` (``_map_backend``) can
+reuse the exact same store-first-env-fallback precedence instead of
+``BackendCameraMapper.from_env()``'s raw-env-only resolution -- see the G002
+note in ``shared/backend_mapping.py`` for the gap this closes.
 """
 
 from __future__ import annotations
@@ -141,7 +147,7 @@ def sync_camera_roster(app: object, *, _now: float | None = None) -> RosterSyncR
     records = _snapshot_camera_records(_camera_store(app))
     camera_ids = [str(record["id"]) for record in records if _is_nonempty_str(record.get("id"))]
 
-    mapper = _build_mapper(app)
+    mapper = build_mapper(app)
     if not mapper.configured:
         _apply_disabled(sync_state, camera_ids)
         return _result_from_state(sync_state, attempted=False)
@@ -234,7 +240,7 @@ def camera_sync_view(app: object, camera_id: str) -> dict[str, object]:
     that synced successfully before the operator cleared the connection
     settings should read as disabled, not stale-synced.
     """
-    configured = _build_mapper(app).configured
+    configured = build_mapper(app).configured
     sync_state = get_roster_sync_state(app)
     with sync_state._lock:
         cam = sync_state.cameras.get(camera_id)
@@ -277,11 +283,17 @@ def _result_from_state(sync_state: RosterSyncState, *, attempted: bool) -> Roste
     )
 
 
-def _build_mapper(app: object) -> BackendCameraMapper:
+def build_mapper(app: object) -> BackendCameraMapper:
     """Resolve endpoint/token/facility_id from ``ConnectionSettingsStore``
     effective settings (file-over-env), not raw env directly -- lazy import
     to avoid a circular import (store.py imports lifespan.py's env-name
     constants at module load, same trick connection/router.py uses).
+
+    Public (not module-private) so ``cameras/router.py``'s ``_map_backend``
+    (the synchronous create/update mapping path) can reuse this exact
+    precedence instead of ``BackendCameraMapper.from_env()``, which only
+    reads raw process env and never sees settings saved via the dashboard's
+    ``PUT /api/v1/connection`` flow.
     """
     import os
 
@@ -381,6 +393,7 @@ __all__ = [
     "CameraSyncState",
     "RosterSyncResult",
     "RosterSyncState",
+    "build_mapper",
     "camera_sync_view",
     "get_roster_sync_state",
     "sync_camera_roster",

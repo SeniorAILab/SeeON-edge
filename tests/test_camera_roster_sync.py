@@ -492,7 +492,7 @@ def test_sync_camera_roster_single_flight_prevents_concurrent_pushes(
                 cameras={"cam-1": CameraPushResult(ok=True, error_class=None, status_code=200)},
             )
 
-    monkeypatch.setattr(roster_sync_module, "_build_mapper", lambda app: _BlockingMapper())
+    monkeypatch.setattr(roster_sync_module, "build_mapper", lambda app: _BlockingMapper())
 
     first_result: list[object] = []
     thread = Thread(target=lambda: first_result.append(sync_camera_roster(app)))

@@ -665,25 +665,27 @@ def test_successful_refresh_retries_pending_backend_mappings(
     """A reachable backend converges mapping_pending registry records to their
     canonical backend camera id via the refresh owner."""
     from backend.app.features.cameras.store import CameraRegistryStore
-    from backend.app.shared.backend_mapping import BackendCameraMapper, MappingResult
+    from backend.app.features.connection.store import ConnectionSettingsStore
 
-    _set_pull_env(monkeypatch)
-    monkeypatch.setattr(
-        urllib.request, "urlopen", lambda url, timeout: FakeHTTPResponse(_backend_config())
+    _set_pull_env(monkeypatch, tmp_path)
+    # _map_backend now resolves its mapper via roster_sync.build_mapper
+    # (store-first, env fallback -- see the Bug 1 fix), which derives the
+    # edge-cameras mapping endpoint from the connection store's events_url.
+    # _set_pull_env only seeds config_url (for ml-config pull), so seed
+    # events_url here too for this test's mapping retry to be reachable.
+    ConnectionSettingsStore(tmp_path / "connection-settings-pull.sqlite3").save(
+        {"events_url": "http://backend/api/v1/events"}
     )
 
-    class FakeMapper(BackendCameraMapper):
-        def __init__(self) -> None:
-            super().__init__(endpoint="http://backend/api/v1/edge/cameras", token="tok")
-            self.calls: list[dict[str, str]] = []
+    mapping_calls: list[dict[str, object]] = []
 
-        def put_mapping(self, *, edge_camera_ref: str, label: str, space_id: str) -> MappingResult:
-            self.calls.append(
-                {"edge_camera_ref": edge_camera_ref, "label": label, "space_id": space_id}
-            )
-            return MappingResult(
-                backend_camera_id="backend-cam-9", pending=False, reachable=True
-            )
+    def fake_urlopen(request, timeout: float) -> FakeHTTPResponse:
+        if request.full_url == "http://backend/api/v1/edge/cameras":
+            mapping_calls.append(json.loads(request.data.decode("utf-8")))
+            return FakeHTTPResponse({"cameraId": "backend-cam-9"})
+        return FakeHTTPResponse(_backend_config())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
 
     with TestClient(create_app()) as client:
         store = CameraRegistryStore(tmp_path / "catalog.sqlite3")
@@ -697,8 +699,6 @@ def test_successful_refresh_retries_pending_backend_mappings(
             mapping_pending=True,
         )
         client.app.state.camera_registry = store
-        mapper = FakeMapper()
-        client.app.state.backend_camera_mapper = mapper
 
         assert refresh_backend_config(client.app) is True
 
@@ -706,8 +706,8 @@ def test_successful_refresh_retries_pending_backend_mappings(
         assert record is not None
         assert record["backend_camera_id"] == "backend-cam-9"
         assert record["mapping_pending"] is False
-        assert mapper.calls == [
-            {"edge_camera_ref": "local-uuid-9", "label": "Room 9", "space_id": "space-9"}
+        assert mapping_calls == [
+            {"edge_camera_ref": "local-uuid-9", "label": "Room 9", "spaceId": "space-9"}
         ]
 
 
