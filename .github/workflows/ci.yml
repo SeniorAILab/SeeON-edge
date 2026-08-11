@@ -35,7 +35,16 @@ jobs:
       - name: Fetch packaged default LSTM model
         run: bash scripts/fetch-models.sh
 
-      - run: uv run pytest -q -m "not real_stack and not heavy"
+      # `integration` is deselected here because that is what the marker has
+      # always claimed in pyproject.toml ("excluded from the default CI suite")
+      # while this command never actually excluded it. The one test carrying it
+      # (test_cloud_edge_provisioning_integration.py) drives a *live* enrolled
+      # ml-api over CLOUD_EDGE_ML_URL against a real catalog sqlite file, so on
+      # a runner it can only fail with "CLOUD_EDGE_ML_URL is required" -- and it
+      # has been failing on main for exactly that reason. It is not `real_stack`
+      # (that marker means external RTSP tooling on PATH, which this needs none
+      # of), so the marker is right and the filter was wrong.
+      - run: uv run pytest -q -m "not real_stack and not heavy and not integration"
       - run: uv run --group lint ruff check .
       # Stage 0 guardrail: declarative architecture contracts (import-linter).
       # Tightened per strangler stage; replaces test_import_dependency_ladder.py at Stage 5.

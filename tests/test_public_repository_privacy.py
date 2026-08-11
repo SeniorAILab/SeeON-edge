@@ -800,7 +800,17 @@ def _assert_untrusted_ci_security(workflow: dict[str, object]) -> None:
         # 벽시계 deadline으로 죽기를 기다리므로 부하 걸린 러너에서 기동만으로
         # 넘긴다. 이 문자열이 바뀌면 CI가 무엇을 돌리는지 바뀐 것이므로
         # 여기서 잡는 것이 맞다 — 자동으로 따라가게 하지 않는다.
-        {"run": 'uv run pytest -q -m "not real_stack and not heavy"'},
+        # `integration` also deselects here, which is what pyproject.toml's
+        # marker description already promised ("excluded from the default CI
+        # suite") while this argument did not deliver it. Its one test drives a
+        # live enrolled ml-api via CLOUD_EDGE_ML_URL, so on a runner it can only
+        # fail on the missing env -- and it did, on main.
+        {
+            "run": (
+                "uv run pytest -q -m "
+                '"not real_stack and not heavy and not integration"'
+            )
+        },
         {"run": "uv run --group lint ruff check ."},
         {"run": "uv run --group lint lint-imports"},
         # Scope fidelity runs a tracked in-repo Python script over this same
