@@ -669,20 +669,34 @@ def test_shutdown_bounds_late_refresh_and_discards_its_result(
         release_refresh.set()
 
 
-def test_successful_refresh_retries_pending_backend_mappings(
+def test_successful_refresh_resumes_roster_sync_without_per_camera_mapping(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    """A reachable backend converges mapping_pending registry records to their
-    canonical backend camera id via the refresh owner."""
+    """A backend connectivity recovery (refresh_backend_config transitioning
+    unreachable -> reachable) resumes pending roster-sync work via
+    ``resume_camera_roster_after_connectivity`` -> ``topology_retry_coordinator
+    .trigger(force=True, refresh=True)`` -- not a per-camera mapping PUT any
+    more (there is no ``_map_backend`` retry path left to exercise; see
+    BLOCKER 2 in the merge notes). That trigger only ever reaches the backend
+    once every registered camera has an explicit floor/room reference; this
+    camera has neither, so the coordinator's readiness check stops the
+    snapshot before any outbound call.
+
+    Pinning the two BLOCKER-2 properties this test actually protects:
+    (2) unmapped camera retained rather than dropped -- refresh leaves the
+    pending record exactly as it was (still local-id-addressed, still
+    unmapped), it does not get spuriously mapped or removed; and (1)
+    canonical id resolution -- the worker-config projection falls back to the
+    record's own local id while it is unmapped.
+    """
     from backend.app.features.cameras.store import CameraRegistryStore
     from backend.app.features.connection.store import ConnectionSettingsStore
 
     _set_pull_env(monkeypatch, tmp_path)
-    # _map_backend now resolves its mapper via roster_sync.build_mapper
-    # (store-first, env fallback -- see the Bug 1 fix), which derives the
-    # edge-cameras mapping endpoint from the connection store's events_url.
-    # _set_pull_env only seeds config_url (for ml-config pull), so seed
-    # events_url here too for this test's mapping retry to be reachable.
+    # Roster sync resolves its client off the connection store's events_url
+    # (via backend_client_bundle), same as ml-config pull. _set_pull_env only
+    # seeds config_url; seed events_url here too so a client is constructible
+    # (even though, per the docstring above, no call ends up going out).
     ConnectionSettingsStore(tmp_path / "connection-settings-pull.sqlite3").save(
         {"events_url": "http://backend/api/v1/events"}
     )
@@ -714,11 +728,20 @@ def test_successful_refresh_retries_pending_backend_mappings(
 
         record = store.get("local-uuid-9")
         assert record is not None
-        assert record["backend_camera_id"] == "backend-cam-9"
-        assert record["mapping_pending"] is False
-        assert mapping_calls == [
-            {"edge_camera_ref": "local-uuid-9", "label": "Room 9", "spaceId": "space-9"}
-        ]
+        # (2) Retained, not dropped: refresh does not touch this record --
+        # no legacy per-camera mapping endpoint exists any more to call.
+        assert record["backend_camera_id"] is None
+        assert record["mapping_pending"] is True
+        assert mapping_calls == []
+
+        # (1) Canonical id resolution: unmapped falls back to the local id.
+        worker_config = client.get(
+            "/api/v1/cameras/worker-config",
+            headers={"X-Edge-Relay-Token": "relay-token"},
+        )
+        assert worker_config.status_code == 200
+        camera = worker_config.json()["cameras"][0]
+        assert camera["camera_id"] == "local-uuid-9"
 
 
 def test_backend_camera_mapper_has_no_env_constructor(

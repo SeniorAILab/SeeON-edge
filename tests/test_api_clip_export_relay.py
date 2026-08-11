@@ -200,11 +200,18 @@ def test_clip_relay_rejects_duplicate_or_non_uuid4_event_refs(tmp_path: Path) ->
 def test_ready_relay_rejects_missing_media_without_backend_call(
     tmp_path: Path,
 ) -> None:
-    # Given: no owned media exists for this clip id. `facility_id` is accepted
-    # on the wire but (per _camera_binding's registry-only admission -- see
-    # relay/router.py) is not compared to anything, so it is not a rejection
-    # trigger by itself here; media ownership is scoped by clip_id only, not
-    # by a facility-partitioned path.
+    # Given: no owned media exists for this clip id, and the payload claims a
+    # mismatched facility. That mismatch is not what drives the 404 here,
+    # though -- an Edge is single-facility by construction (one Edge install
+    # serves one facility), so `facility_id` on the wire is informational,
+    # not an admission key: `_camera_binding` (relay/router.py) resolves
+    # ownership from the local camera registry alone and never compares it
+    # to `facility_id`, and clip storage on disk isn't partitioned by
+    # facility either -- `_verified_media` below builds the path from
+    # `clip_id` alone (`root/clips/<clip_id>/clip.mp4`). So the only real
+    # rejection reason left is what's actually true -- no media was ever
+    # written for this clip id -- and 404 (not found), not 403 (forbidden),
+    # is the honest status for that.
     backend = FakeBackendEvidenceClient()
     client = _client(tmp_path, backend, enabled=True)
     payload = _ready_payload()
