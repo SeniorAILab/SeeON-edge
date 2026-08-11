@@ -166,6 +166,17 @@ _SYNTHETIC_RTSP_FIXTURES = {
         "rtsp://admin:admin@cam.local/stream",
         "rtsp://admin:newpass@cam.local/stream",
     },
+    Path("tests/test_camera_api.py"): {
+        # 10.0.0.9 는 사설(RFC 1918) 자리표시자 주소이고 operator:private 는
+        # 고정 더미 자격증명이다 -- 실제 카메라나 비밀이 아니다.
+        "rtsp://operator:private@10.0.0.9/live",
+    },
+    Path("tests/test_camera_roster_sync.py"): {
+        "rtsp://user:password@camera/private",
+    },
+    Path("tests/test_camera_topology_store.py"): {
+        "rtsp://operator:private@10.0.0.9/live",
+    },
     Path("tests/test_sources_rtsp.py"): {
         "rtsp://user:password@camera.local/live",
         "rtsp://user:secret@camera.local/live?token=abc",
@@ -443,6 +454,37 @@ PUBLIC_SAFE_STRUCTURED_FIXTURES = frozenset(
 )
 
 
+PUBLIC_SAFE_CONTRACT_FIXTURES = frozenset(
+    {
+        # edge-provisioning-v1's request/response contract fixtures. This
+        # JSON document trips the identity+evidence-field heuristic below
+        # (it has both "camera_id" and "label" keys, coincidentally --
+        # topology-snapshot request bodies use both) even though it is a
+        # synthetic API-contract corpus, not recorded footage metadata. The
+        # file's own metadata.redaction field is checked below so a future
+        # edit that starts embedding real values changes that string and the
+        # guard catches it again -- the exemption doesn't silently widen.
+        Path("contracts/edge-provisioning-v1/contract-fixtures.json"),
+    }
+)
+_CONTRACT_FIXTURE_REDACTION_NOTICE = "Synthetic identifiers and redacted one-time values only"
+
+
+def _is_public_safe_contract_fixture(relative: Path, blob: bytes) -> bool:
+    if relative not in PUBLIC_SAFE_CONTRACT_FIXTURES:
+        return False
+    try:
+        document = json.loads(blob.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(document, dict):
+        return False
+    metadata = document.get("metadata")
+    if not isinstance(metadata, dict):
+        return False
+    return metadata.get("redaction") == _CONTRACT_FIXTURE_REDACTION_NOTICE
+
+
 def _is_public_safe_structured_fixture(relative: Path, blob: bytes) -> bool:
     if relative not in PUBLIC_SAFE_STRUCTURED_FIXTURES:
         return False
@@ -508,6 +550,7 @@ def test_tracked_tree_contains_no_data_or_private_binary_assets() -> None:
         is_private_structured_data = (
             _looks_like_sensitive_dataset(blob)
             and not _is_public_safe_structured_fixture(relative, blob)
+            and not _is_public_safe_contract_fixture(relative, blob)
         )
         if _contains_forbidden_control_bytes(blob):
             violations.append(f"{relative}:control-bytes")

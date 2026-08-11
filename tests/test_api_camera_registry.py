@@ -17,7 +17,7 @@ from backend.app.core.config import get_settings
 from backend.app.features.cameras.router import _authorize_worker
 from backend.app.features.cameras.store import CameraRegistryStore, public_camera
 from backend.app.features.status.heartbeat_store import get_heartbeat_store
-from backend.app.lifespan import refresh_backend_config
+from backend.app.lifespan import apply_connection_settings, refresh_backend_config
 from backend.app.main import create_app, no_lifespan
 from backend.app.shared.backend_mapping import MappingResult
 from contracts.worker_config import PulledCameraConfig, PulledNightWindow, PulledWorkerConfig
@@ -103,10 +103,25 @@ def test_camera_registry_crud_masks_rtsp_versions_and_worker_config_auth(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("API_EDGE_RELAY_TOKEN", "relay-token")
-    monkeypatch.setenv("API_FACILITY_ID", "facility-1")
     monkeypatch.setenv("API_BACKEND_EDGE_CAMERAS_URL", "http://backend/api/v1/edge/cameras")
     monkeypatch.setenv("API_FACILITY_TOKEN", "facility-token")
     monkeypatch.setenv("ML_API_WORKER_PROBE_ORIGIN", "http://worker.local:8090")
+    monkeypatch.setenv(
+        "API_CONNECTION_SETTINGS_PATH", str(tmp_path / "connection-settings.sqlite3")
+    )
+    from backend.app.features.connection.store import ConnectionSettingsStore
+
+    # Single-camera mapping now resolves via roster_sync.build_mapper (store
+    # first, env fallback) -- same as roster sync -- so the saved connection
+    # settings row below (including facility_id) is what the PUT actually
+    # uses, not just the env-only API_FACILITY_TOKEN.
+    ConnectionSettingsStore(tmp_path / "connection-settings.sqlite3").save(
+        {
+            "events_url": "http://backend/api/v1/events",
+            "facility_id": "facility-1",
+            "facility_token": "facility-token",
+        }
+    )
     captured: list[CapturedBackendCall] = []
     probe_calls: list[dict[str, object]] = []
 
@@ -172,16 +187,12 @@ def test_camera_registry_crud_masks_rtsp_versions_and_worker_config_auth(
         assert len(listed["cameras"]) == 1
         listed_camera = listed["cameras"][0]
         # The POST response never populates `sync` (avoids a BackgroundTask
-        # race against this pinned-shape assertion); GET does. This test's
-        # env sets API_BACKEND_EDGE_CAMERAS_URL/API_FACILITY_TOKEN directly,
-        # neither of which ConnectionSettingsStore (roster_sync's source of
-        # truth) recognizes -- so the roster mapper is unconfigured and the
-        # listed camera reads as disabled.
+        # race against this pinned-shape assertion); GET does. Connection
+        # settings + edge-cameras URL make roster sync succeed.
         sync = listed_camera["sync"]
-        assert sync["status"] == "disabled"
-        assert sync["error_class"] == "unconfigured"
-        assert sync["last_ok_at"] is None
-        assert isinstance(sync["detail"], str) and sync["detail"]
+        assert sync["status"] == "synced"
+        assert sync["error_class"] is None
+        assert sync["last_ok_at"] is not None
         assert {**listed_camera, "sync": None} == camera
 
         assert client.get("/api/v1/cameras/worker-config").status_code == 401
@@ -202,7 +213,7 @@ def test_camera_registry_crud_masks_rtsp_versions_and_worker_config_auth(
             "cameras": [
                 {
                     "camera_id": camera["id"],
-                    "facility_id": "facility-1",
+                    "space_id": "space-1",
                     "rtsp_url": "rtsp://user:secret@camera.local:8554/live",
                 }
             ],
@@ -266,6 +277,81 @@ def test_camera_registry_crud_masks_rtsp_versions_and_worker_config_auth(
     ]
 
 
+def test_create_camera_is_store_only_and_never_credentialed_from_env(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Camera creation must work off dashboard state alone, and the environment
+    must not be able to supply the facility token.
+
+    The env below deliberately carries every legacy facility-token alias plus a
+    facility id. None of them may reach an outbound request: identity is owned by
+    ``ConnectionSettingsStore`` (dashboard-entered), which here is intentionally
+    left *unenrolled*. So creation must still succeed -- an operator adds cameras
+    before enrollment completes -- while nothing is pushed anywhere.
+
+    The camera keeps ``backend_camera_id is None`` and is addressed by its local
+    id. The Edge never self-assigns a backend id: cameras reach the Hub through
+    the topology snapshot flow (``preview``/``confirm``), which is what publishes
+    ``edge_ref``. Persisting the Hub-assigned id back onto the Edge record is a
+    tracked follow-up, not a create-time PUT -- the per-camera
+    ``PUT /v1/edge/cameras`` path this test used to assert was replaced by
+    complete-topology snapshots (see ``backend/app/shared/backend_mapping.py``).
+    """
+    monkeypatch.setenv("API_EDGE_RELAY_TOKEN", "relay-token")
+    monkeypatch.setenv(
+        "API_CONNECTION_SETTINGS_PATH", str(tmp_path / "connection-settings.sqlite3")
+    )
+    for alias in (
+        "EDGE_FACILITY_TOKEN",
+        "API_FACILITY_TOKEN",
+        "API_BACKEND_FACILITY_TOKEN",
+        "API_EDGE_FACILITY_TOKEN",
+    ):
+        monkeypatch.setenv(alias, "token-from-env-must-be-ignored")
+    monkeypatch.setenv("API_FACILITY_ID", "facility-from-env-must-be-ignored")
+    monkeypatch.setenv("API_BACKEND_EDGE_CAMERAS_URL", "http://backend/api/v1/edge/cameras")
+
+    from backend.app.features.connection.store import ConnectionSettingsStore
+
+    # Unenrolled on purpose: no facility_id, no facility_token in the DB.
+    unenrolled = ConnectionSettingsStore(tmp_path / "connection-settings.sqlite3").load()
+    assert unenrolled.facility_token is None
+    assert unenrolled.facility_id is None
+
+    outbound: list[str] = []
+
+    def fake_urlopen(request, timeout: float) -> FakeHTTPResponse:
+        outbound.append(f"{request.get_method()} {request.full_url}")
+        return FakeHTTPResponse({"ok": False, "error_class": "timeout"})
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    app = create_app(lifespan=no_lifespan)
+    app.state.camera_registry = CameraRegistryStore(tmp_path / "catalog.sqlite3")
+
+    with TestClient(app) as client:
+        _login(client)
+        created = client.post(
+            "/api/v1/cameras",
+            headers=AUTH,
+            json={
+                "label": "Lobby",
+                "rtsp_url": "rtsp://user:secret@camera.local:8554/live",
+                "space_id": "space-1",
+                "force_register": True,
+            },
+        )
+        assert created.status_code == 201
+        camera = created.json()
+        assert camera["backend_camera_id"] is None
+        assert camera["id"] and camera["id"] != "facility-from-env-must-be-ignored"
+        assert camera["rtsp_url_masked"] == "rtsp://***:***@redacted-camera:8554/live"
+
+    # The env tokens above configured nothing, so no camera push was attempted.
+    assert not [call for call in outbound if "/v1/edge/cameras" in call]
+
+
 def test_worker_config_uses_registry_first_and_metadata_from_backend_pull(tmp_path) -> None:
     app = create_app(lifespan=no_lifespan)
     app.state.edge_relay_token = "relay-token"
@@ -311,7 +397,7 @@ def test_worker_config_uses_registry_first_and_metadata_from_backend_pull(tmp_pa
         "cameras": [
             {
                 "camera_id": "camera-1",
-                "facility_id": "local-facility",
+                "space_id": "space-1",
                 "rtsp_url": "rtsp://camera/stream",
             }
         ],
@@ -611,11 +697,36 @@ def test_example_camera_registry_seed_is_loadable_and_sanitized() -> None:
         assert forbidden not in serialized
 
 
-def test_system_reports_backend_state_and_version(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("API_BACKEND_URL", "http://backend")
+def test_system_reports_backend_state_and_version(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setenv("ML_EDGE_VERSION", "2026.07.06")
+    # "configured" now comes from an applied backend_client_bundle, which
+    # requires a complete ConnectionSettingsStore enrollment row -- API_BACKEND_URL
+    # alone (the old env-only signal) no longer has any authority over it.
+    from backend.app.features.connection.store import (
+        API_CONNECTION_SETTINGS_PATH_ENV,
+        ConnectionSettingsStore,
+    )
+
+    monkeypatch.setenv(
+        API_CONNECTION_SETTINGS_PATH_ENV, str(tmp_path / "connection-settings.sqlite3")
+    )
+    ConnectionSettingsStore.from_env().save(
+        {
+            "events_url": "http://backend/api/v1/events",
+            "config_url": "http://backend/api/v1/ml-config",
+            "facility_code": "NH-7H2K9M4QXP",
+            "client_installation_ref": "aa83ea3f-6e5f-4f45-a401-fb36c38835b6",
+            "facility_id": "87d79f24-b32f-49a3-b534-19f0af7d9135",
+            "facility_token": "facility-token",
+            "edge_installation_id": "d17e0eb8-cb81-4d8e-a427-dfe690518f2b",
+            "enrollment_generation": 1,
+        }
+    )
 
     app = create_app(lifespan=no_lifespan)
+    apply_connection_settings(app)
     app.state.backend_reachable = True
     app.state.backend_last_ok_at = "2026-07-06T00:00:00.000Z"
 
@@ -657,7 +768,6 @@ def test_worker_config_pull_maps_fps_and_enabled_domains_from_relay_payload(
         "cameras": [
             {
                 "camera_id": "camera-1",
-                "facility_id": "facility-1",
                 "rtsp_url": "rtsp://camera/stream",
                 "fps": 4,
                 "domains": ["fall"],
@@ -688,7 +798,6 @@ def test_worker_config_pull_maps_frame_stride_from_relay_payload(
         "cameras": [
             {
                 "camera_id": "camera-1",
-                "facility_id": "facility-1",
                 "rtsp_url": "rtsp://camera/stream",
                 "fps": 15,
                 "frame_stride": 3,
@@ -718,7 +827,6 @@ def test_worker_config_pull_defaults_frame_stride_to_one_when_absent(
         "cameras": [
             {
                 "camera_id": "camera-1",
-                "facility_id": "facility-1",
                 "rtsp_url": "rtsp://camera/stream",
                 "fps": 15,
             }
@@ -1648,10 +1756,28 @@ def test_list_cameras_reflects_room_name_after_roster_refresh(
         calls["count"] += 1
         return FakeHTTPResponse(payload)
 
-    monkeypatch.setenv("API_FACILITY_ID", "facility-1")
     monkeypatch.setenv("API_BACKEND_CONFIG_URL", "http://backend/ml-config")
+    monkeypatch.setenv(
+        "API_CONNECTION_SETTINGS_PATH", str(tmp_path / "connection-settings.sqlite3")
+    )
+    from backend.app.features.connection.store import ConnectionSettingsStore
+    # refresh_backend_config only runs once a backend_client_bundle exists, which
+    # requires the full enrollment row -- not just config_url/facility_id.
+    ConnectionSettingsStore(tmp_path / "connection-settings.sqlite3").save(
+        {
+            "events_url": "http://backend/api/v1/events",
+            "config_url": "http://backend/ml-config",
+            "facility_code": "NH-7H2K9M4QXP",
+            "client_installation_ref": "aa83ea3f-6e5f-4f45-a401-fb36c38835b6",
+            "facility_id": "facility-1",
+            "facility_token": "facility-token",
+            "edge_installation_id": "d17e0eb8-cb81-4d8e-a427-dfe690518f2b",
+            "enrollment_generation": 1,
+        }
+    )
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     app = create_app(lifespan=no_lifespan)
+    apply_connection_settings(app)
     app.state.edge_relay_token = "relay-token"
     app.state.camera_registry = CameraRegistryStore(tmp_path / "catalog.sqlite3")
 
@@ -1669,7 +1795,8 @@ def test_list_cameras_reflects_room_name_after_roster_refresh(
 
 
 def test_roster_refresh_failure_preserves_last_good_and_marks_stale(
-    monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     calls = {"count": 0}
 
@@ -1693,10 +1820,27 @@ def test_roster_refresh_failure_preserves_last_good_and_marks_stale(
             )
         raise urllib.error.URLError("offline")
 
-    monkeypatch.setenv("API_FACILITY_ID", "facility-1")
     monkeypatch.setenv("API_BACKEND_CONFIG_URL", "http://backend/ml-config")
+    from backend.app.features.connection.store import ConnectionSettingsStore
+    conn_path = tmp_path / "connection-settings.sqlite3"
+    monkeypatch.setenv("API_CONNECTION_SETTINGS_PATH", str(conn_path))
+    # refresh_backend_config only runs once a backend_client_bundle exists, which
+    # requires the full enrollment row -- not just config_url/facility_id.
+    ConnectionSettingsStore(conn_path).save(
+        {
+            "events_url": "http://backend/api/v1/events",
+            "config_url": "http://backend/ml-config",
+            "facility_code": "NH-7H2K9M4QXP",
+            "client_installation_ref": "aa83ea3f-6e5f-4f45-a401-fb36c38835b6",
+            "facility_id": "facility-1",
+            "facility_token": "facility-token",
+            "edge_installation_id": "d17e0eb8-cb81-4d8e-a427-dfe690518f2b",
+            "enrollment_generation": 1,
+        }
+    )
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     app = create_app(lifespan=no_lifespan)
+    apply_connection_settings(app)
 
     assert refresh_backend_config(app) is True
     received_at = app.state.backend_roster["received_at"]

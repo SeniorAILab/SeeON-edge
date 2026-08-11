@@ -41,6 +41,18 @@ jobs:
       # Tightened per strangler stage; replaces test_import_dependency_ladder.py at Stage 5.
       - run: uv run --group lint lint-imports
 
+      # Facility identity (facility id / facility token) and the camera roster
+      # must never be provisionable through the environment: an env var reaches
+      # the runtime via compose, and compose is tracked in Git. `--fixture`
+      # proves the scanner still detects residue; `--repo` scans this tree.
+      # Before `--repo` existed the scan was only reachable behind
+      # --plan/--evidence (a plan file plus 17 evidence files), so it never ran
+      # in CI and residue survived in compose.edge.yaml despite matching.
+      - name: Scope fidelity (no env-provisioned identity or camera roster)
+        run: |
+          uv run python scripts/verify_scope_fidelity.py --fixture
+          uv run python scripts/verify_scope_fidelity.py --repo
+
       # #179/#182: the shipped example must render on its own -- every
       # compose.edge.yaml `${VAR:?...}` needs a value (default or
       # placeholder) in .env.edge.prod.example, or an operator following the
