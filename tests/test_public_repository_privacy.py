@@ -803,6 +803,22 @@ def _assert_untrusted_ci_security(workflow: dict[str, object]) -> None:
         {"run": 'uv run pytest -q -m "not real_stack and not heavy"'},
         {"run": "uv run --group lint ruff check ."},
         {"run": "uv run --group lint lint-imports"},
+        # Scope fidelity runs a tracked in-repo Python script over this same
+        # checkout: it greps for env-provisioned facility identity and camera
+        # roster residue. It fetches nothing, reads no secret, starts no
+        # container, and re-checks out no other repository, so it is admissible
+        # under this closed-world contract. Listing it here is the point of the
+        # contract -- a step added to public CI must be declared, not inferred.
+        {
+            "name": (
+                "Scope fidelity "
+                "(no env-provisioned identity or camera roster)"
+            ),
+            "run": (
+                "uv run python scripts/verify_scope_fidelity.py --fixture\n"
+                "uv run python scripts/verify_scope_fidelity.py --repo\n"
+            ),
+        },
         # #179/#182: the shipped example must render on its own -- this only
         # renders and validates compose config from the tracked, placeholder-
         # only .env.edge.prod.example (never the gitignored real
