@@ -111,8 +111,10 @@ def test_camera_registry_crud_masks_rtsp_versions_and_worker_config_auth(
     )
     from backend.app.features.connection.store import ConnectionSettingsStore
 
-    # Single-camera mapping still uses BackendCameraMapper.from_env (token from
-    # API_FACILITY_TOKEN). Roster sync uses the connection store for facility_id.
+    # Single-camera mapping now resolves via roster_sync.build_mapper (store
+    # first, env fallback) -- same as roster sync -- so the saved connection
+    # settings row below (including facility_id) is what the PUT actually
+    # uses, not just the env-only API_FACILITY_TOKEN.
     ConnectionSettingsStore(tmp_path / "connection-settings.sqlite3").save(
         {
             "events_url": "http://backend/api/v1/events",
@@ -249,7 +251,7 @@ def test_camera_registry_crud_masks_rtsp_versions_and_worker_config_auth(
         "url": "http://backend/api/v1/edge/cameras",
         "method": "PUT",
         "authorization": "Bearer facility-token",
-        "facility_id": None,
+        "facility_id": "facility-1",
         "body": {
             "edge_camera_ref": captured_body["edge_camera_ref"],
             "label": "Lobby",
@@ -273,6 +275,65 @@ def test_camera_registry_crud_masks_rtsp_versions_and_worker_config_auth(
             "timeout": 5.0,
         },
     ]
+
+
+def test_create_camera_resolves_backend_mapping_from_connection_store_only(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bug fix regression test: a camera configured purely through the
+    dashboard's PUT /api/v1/connection flow (ConnectionSettingsStore) must
+    still resolve its backend_camera_id on create -- not stay
+    mapping_pending forever. Deliberately sets NO env vars for the mapping
+    endpoint or facility token (no API_BACKEND_EDGE_CAMERAS_URL, no
+    API_BACKEND_URL, no API_FACILITY_TOKEN/EDGE_FACILITY_TOKEN/etc) so this
+    only passes if _map_backend resolves its mapper via
+    roster_sync.build_mapper's store-first precedence rather than
+    BackendCameraMapper.from_env() (which reads raw process env only and
+    would see nothing here)."""
+    monkeypatch.setenv("API_EDGE_RELAY_TOKEN", "relay-token")
+    monkeypatch.setenv(
+        "API_CONNECTION_SETTINGS_PATH", str(tmp_path / "connection-settings.sqlite3")
+    )
+    from backend.app.features.connection.store import ConnectionSettingsStore
+
+    ConnectionSettingsStore(tmp_path / "connection-settings.sqlite3").save(
+        {
+            "events_url": "http://backend/api/v1/events",
+            "facility_id": "facility-1",
+            "facility_token": "facility-token",
+        }
+    )
+
+    def fake_urlopen(request, timeout: float) -> FakeHTTPResponse:
+        decoded_body = json.loads(request.data.decode("utf-8"))
+        assert request.full_url == "http://backend/api/v1/edge/cameras"
+        assert request.headers.get("Authorization") == "Bearer facility-token"
+        assert decoded_body["spaceId"] == "space-1"
+        return FakeHTTPResponse({"cameraId": "backend-camera-store-only"})
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    app = create_app(lifespan=no_lifespan)
+    app.state.camera_registry = CameraRegistryStore(tmp_path / "catalog.sqlite3")
+
+    with TestClient(app) as client:
+        _login(client)
+        created = client.post(
+            "/api/v1/cameras",
+            headers=AUTH,
+            json={
+                "label": "Lobby",
+                "rtsp_url": "rtsp://user:secret@camera.local:8554/live",
+                "space_id": "space-1",
+                "force_register": True,
+            },
+        )
+        assert created.status_code == 201
+        camera = created.json()
+        assert camera["backend_camera_id"] == "backend-camera-store-only"
+        assert camera["id"] == "backend-camera-store-only"
+        assert camera["mapping_pending"] is False
 
 
 def test_worker_config_uses_registry_first_and_metadata_from_backend_pull(tmp_path) -> None:

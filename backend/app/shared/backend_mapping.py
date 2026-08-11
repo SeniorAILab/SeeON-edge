@@ -1,24 +1,28 @@
 """Best-effort backend edge-camera mapping client.
 
-G002 note: unlike the Event API ingest clients in ``backend/app/lifespan.py``,
-this module's env readers (``backend_status_from_env``,
-``_mapping_endpoint_from_env``, ``BackendCameraMapper.from_env``) still read
-raw process env, not ``ConnectionSettingsStore``. The mapping endpoint has its
-own override chain (``API_BACKEND_EDGE_CAMERAS_URL``, ``API_BACKEND_URL``,
+G002 note: ``backend_status_from_env`` and ``BackendCameraMapper.from_env``
+still read raw process env only, not ``ConnectionSettingsStore`` -- unlike
+the Event API ingest clients in ``backend/app/lifespan.py``. ``from_env`` is
+kept for boot-time status reporting only; both consumers of the mapping
+endpoint (``roster_sync.build_mapper`` below and, through it,
+``cameras/router.py``'s ``_map_backend``) resolve store-first with env only
+as a field-by-field seed -- neither ever falls back to
+``BackendCameraMapper.from_env()`` itself. The mapping endpoint has its own
+override chain (``API_BACKEND_EDGE_CAMERAS_URL``, ``API_BACKEND_URL``,
 falling back to deriving from ``API_BACKEND_EVENTS_URL``) that
-``ConnectionSettingsStore`` does not model (it only tracks a single
-``events_url``), so routing this through the store would either drop those
-overrides or require inventing new store fields -- left for a follow-up if
-runtime-relinking the camera-mapping endpoint is ever needed.
+``ConnectionSettingsStore`` does not fully model on its own (it only tracks a
+single ``events_url``), which is why ``build_mapper`` layers the same
+env-override chain on top of the store rather than replacing it outright.
 
 G004 note: ``BackendCameraMapper.put_roster`` (roster sync, used by
-``features/cameras/roster_sync.py``) is the one caller that DOES route
-endpoint/token through ``ConnectionSettingsStore`` effective settings,
-constructing its own ``BackendCameraMapper`` instance via
-``derive_edge_cameras_endpoint(store_settings.events_url)`` rather than
-``BackendCameraMapper.from_env()`` -- see roster_sync.py's ``_build_mapper``.
-That path only recognizes ``EDGE_FACILITY_TOKEN`` (the store's single
-fallback), not the three legacy token aliases below; see
+``features/cameras/roster_sync.py``) and the synchronous create/update
+mapping path (``cameras/router.py``'s ``_map_backend``) both route
+endpoint/token through ``ConnectionSettingsStore`` effective settings via the
+shared ``roster_sync.build_mapper`` helper, constructing a
+``BackendCameraMapper`` via ``derive_edge_cameras_endpoint(store_settings.
+events_url)`` rather than ``BackendCameraMapper.from_env()``. That path only
+recognizes ``EDGE_FACILITY_TOKEN`` (the store's single fallback), not the
+three legacy token aliases below; see
 ``docs/decisions/0004-camera-roster-sync-contract-assumptions.md``.
 
 ``PUT /v1/edge/cameras`` (the ``EdgeCamerasController.upsert`` handler on the

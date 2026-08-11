@@ -26,7 +26,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from backend.app.core.config import get_settings
 from backend.app.features.cameras.bed_zone_router import BedZonePayload
 from backend.app.features.cameras.bed_zone_store import BedZone, BedZoneStore
-from backend.app.features.cameras.roster_sync import camera_sync_view, sync_camera_roster
+from backend.app.features.cameras.roster_sync import (
+    build_mapper,
+    camera_sync_view,
+    sync_camera_roster,
+)
 from backend.app.features.cameras.store import (
     CameraRegistryStore,
     DuplicateCameraError,
@@ -40,11 +44,7 @@ from backend.app.features.cameras.store import (
 from backend.app.features.clips.storage_location_store import ClipStorageLocationStore
 from backend.app.features.detection_settings.store import DetectionSettingsStore
 from backend.app.features.status.heartbeat_store import ONLINE, get_heartbeat_store
-from backend.app.shared.backend_mapping import (
-    BackendCameraMapper,
-    MappingResult,
-    mark_backend_status,
-)
+from backend.app.shared.backend_mapping import MappingResult, mark_backend_status
 from backend.app.shared.dashboard_auth import authorize_dashboard
 from contracts.worker_config import PulledWorkerConfig
 
@@ -913,14 +913,6 @@ def _lookup_bed_zone(
     return None
 
 
-def _mapper(app: FastAPI) -> BackendCameraMapper:
-    mapper = getattr(app.state, "backend_camera_mapper", None)
-    if not isinstance(mapper, BackendCameraMapper):
-        mapper = BackendCameraMapper.from_env()
-        app.state.backend_camera_mapper = mapper
-    return mapper
-
-
 def _map_backend(
     app: FastAPI,
     *,
@@ -928,7 +920,12 @@ def _map_backend(
     label: str,
     space_id: str | None,
 ) -> MappingResult:
-    mapper = _mapper(app)
+    # Resolved store-first with env fallback (mirrors roster_sync.build_mapper
+    # exactly), not BackendCameraMapper.from_env(): a camera configured purely
+    # through the dashboard's PUT /api/v1/connection flow (ConnectionSettingsStore)
+    # must be able to map here too, not just via roster sync -- see the G002/G004
+    # notes in shared/backend_mapping.py.
+    mapper = build_mapper(app)
     if space_id is None:
         return MappingResult(backend_camera_id=None, pending=False, reachable=None)
     result = mapper.put_mapping(edge_camera_ref=camera_id, label=label, space_id=space_id)
