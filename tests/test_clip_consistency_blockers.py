@@ -1,27 +1,52 @@
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
+import stat
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 import pytest
 
+from worker.pipeline.output.evidence.clip_consistency_authority import RepairAuthority
 from worker.pipeline.output.evidence.clip_consistency_database import validate_database
 from worker.pipeline.output.evidence.clip_consistency_repair import repair_clip_consistency
 from worker.pipeline.output.evidence.clip_consistency_types import (
     ClipConsistencyError,
-    RepairRequest,
+)
+from worker.pipeline.output.evidence.clip_consistency_types import (
+    RepairRequest as _RepairRequest,
 )
 from worker.pipeline.output.evidence.evidence_outbox import EvidenceOutbox
 
 EVENT_ID = str(UUID(int=(4 << 76) | (2 << 62) | 101))
 TIMESTAMP = "2026-08-14T00:00:00.000Z"
+TOOL_REVISION = "31de1430758d05d744686be6098e00641f4ea4d9"
+
+
+def _authority(database: Path, clip_store: Path) -> RepairAuthority:
+    return RepairAuthority(
+        state_uid=database.stat().st_uid,
+        state_gid=database.stat().st_gid,
+        state_db_mode=stat.S_IMODE(database.stat().st_mode),
+        state_dir_mode=stat.S_IMODE(database.parent.stat().st_mode),
+        clip_uid=clip_store.stat().st_uid,
+        clip_gid=clip_store.stat().st_gid,
+        clip_dir_mode=stat.S_IMODE(clip_store.stat().st_mode),
+        tool_revision=TOOL_REVISION,
+    )
+
+
+def RepairRequest(
+    state_db: Path, clip_store: Path, *args: Any, **kwargs: Any
+) -> _RepairRequest:
+    kwargs.setdefault("authority", _authority(state_db, clip_store))
+    return _RepairRequest(state_db, clip_store, *args, **kwargs)
 
 
 def _layout(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -66,7 +91,12 @@ def _layout(tmp_path: Path) -> tuple[Path, Path, Path]:
     return database, clip_store, maintenance
 
 
-def _command(database: Path, clip_store: Path, *extra: str) -> subprocess.CompletedProcess[str]:
+def _command(
+    database: Path,
+    clip_store: Path,
+    *extra: str,
+    with_authority: bool = True,
+) -> subprocess.CompletedProcess[str]:
     repository = Path(__file__).parents[1]
     return subprocess.run(
         [
@@ -76,6 +106,7 @@ def _command(database: Path, clip_store: Path, *extra: str) -> subprocess.Comple
             str(database),
             "--clip-store",
             str(clip_store),
+            *(_authority_args(database, clip_store) if with_authority else ()),
             *extra,
         ],
         cwd=repository,
@@ -86,13 +117,16 @@ def _command(database: Path, clip_store: Path, *extra: str) -> subprocess.Comple
 
 
 def _quiescence(path: Path, database: Path, clip_store: Path) -> None:
+    authority = _authority(database, clip_store)
     payload = {
-        "format_version": 1,
+        "format_version": 2,
         "state_db": str(database.resolve()),
         "clip_store": str(clip_store.resolve()),
         "stopped_service": "ml-worker",
         "stopped_db_writers": ["event", "config", "fault"],
-        "operator_uid": os.getuid(),
+        "operator_uid": authority.state_uid,
+        "authority_sha256": authority.sha256,
+        **authority.to_dict(),
         "issued_at": int(time.time()) - 1,
         "expires_at": int(time.time()) + 3599,
     }
@@ -100,11 +134,34 @@ def _quiescence(path: Path, database: Path, clip_store: Path) -> None:
     path.chmod(0o600)
 
 
-def test_cli_accepts_separate_production_state_and_clip_paths(tmp_path: Path) -> None:
+def _authority_args(database: Path, clip_store: Path) -> tuple[str, ...]:
+    return (
+        "--state-uid",
+        str(database.stat().st_uid),
+        "--state-gid",
+        str(database.stat().st_gid),
+        "--state-db-mode",
+        f"{stat.S_IMODE(database.stat().st_mode):04o}",
+        "--state-dir-mode",
+        f"{stat.S_IMODE(database.parent.stat().st_mode):04o}",
+        "--clip-uid",
+        str(clip_store.stat().st_uid),
+        "--clip-gid",
+        str(clip_store.stat().st_gid),
+        "--clip-dir-mode",
+        f"{stat.S_IMODE(clip_store.stat().st_mode):04o}",
+        "--tool-revision",
+        TOOL_REVISION,
+    )
+
+
+def test_cli_requires_explicit_split_authority(tmp_path: Path) -> None:
     database, clip_store, _ = _layout(tmp_path)
 
+    missing = _command(database, clip_store, with_authority=False)
     completed = _command(database, clip_store)
 
+    assert missing.returncode == 2
     assert completed.returncode == 0
     assert json.loads(completed.stdout)["mode"] == "dry-run"
 

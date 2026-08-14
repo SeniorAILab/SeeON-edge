@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
+from worker.pipeline.output.evidence.clip_consistency_authority import RepairAuthority
 from worker.pipeline.output.evidence.clip_consistency_database import RelationPlan
 from worker.pipeline.output.evidence.clip_consistency_io import (
     read_strict_json,
@@ -35,13 +36,21 @@ from worker.pipeline.output.evidence.clip_consistency_types import (
 )
 from worker.pipeline.output.evidence.evidence_outbox_schema import SCHEMA_VERSION
 
-_FORMAT_VERSION = 2
+_FORMAT_VERSION = 3
 
 
 @dataclass(frozen=True, slots=True)
 class ApplyJournal:
     state: JournalState
-    owner_uid: int
+    state_uid: int
+    state_gid: int
+    state_db_mode: int
+    state_dir_mode: int
+    clip_uid: int
+    clip_gid: int
+    clip_dir_mode: int
+    tool_revision: str
+    authority_sha256: str
     state_db: str
     clip_store: str
     journal_path: str
@@ -79,7 +88,15 @@ class ApplyJournal:
             "format_version": _FORMAT_VERSION,
             "state": self.state,
             "schema_version": SCHEMA_VERSION,
-            "owner_uid": self.owner_uid,
+            "state_uid": self.state_uid,
+            "state_gid": self.state_gid,
+            "state_db_mode": self.state_db_mode,
+            "state_dir_mode": self.state_dir_mode,
+            "clip_uid": self.clip_uid,
+            "clip_gid": self.clip_gid,
+            "clip_dir_mode": self.clip_dir_mode,
+            "tool_revision": self.tool_revision,
+            "authority_sha256": self.authority_sha256,
             "state_db": self.state_db,
             "clip_store": self.clip_store,
             "journal_path": self.journal_path,
@@ -103,7 +120,7 @@ class ApplyJournal:
 
 def prepared_journal(
     *,
-    owner_uid: int,
+    authority: RepairAuthority,
     state_db: Path,
     clip_store: Path,
     journal_path: Path,
@@ -118,7 +135,15 @@ def prepared_journal(
     quarantine = canonical_quarantine_rows(plan.quarantine_clip_ids, plan.plan_sha256)
     return ApplyJournal(
         state="PREPARED",
-        owner_uid=owner_uid,
+        state_uid=authority.state_uid,
+        state_gid=authority.state_gid,
+        state_db_mode=authority.state_db_mode,
+        state_dir_mode=authority.state_dir_mode,
+        clip_uid=authority.clip_uid,
+        clip_gid=authority.clip_gid,
+        clip_dir_mode=authority.clip_dir_mode,
+        tool_revision=authority.tool_revision,
+        authority_sha256=authority.sha256,
         state_db=str(state_db.resolve(strict=True)),
         clip_store=str(clip_store.resolve(strict=True)),
         journal_path=str(journal_path.resolve(strict=False)),
@@ -145,7 +170,7 @@ def mark_journal(
     *,
     path: Path,
     maintenance_root: Path,
-    expected_uid: int,
+    authority: RepairAuthority,
     hook: FaultHook | None,
     error: str | None = None,
 ) -> ApplyJournal:
@@ -154,7 +179,8 @@ def mark_journal(
         updated,
         path=path,
         maintenance_root=maintenance_root,
-        expected_uid=expected_uid,
+        expected_uid=authority.state_uid,
+        expected_gid=authority.state_gid,
         hook=hook,
         stage=f"journal_{state.lower()}",
     )
@@ -165,14 +191,15 @@ def read_journal(
     path: Path,
     *,
     maintenance_root: Path,
-    expected_uid: int,
+    authority: RepairAuthority,
     state_db: Path,
     clip_store: Path,
 ) -> ApplyJournal:
     validate_under_root(path, maintenance_root, allow_missing_leaf=False)
     payload = read_strict_json(
         path,
-        expected_uid=expected_uid,
+        expected_uid=authority.state_uid,
+        expected_gid=authority.state_gid,
         exact_mode=0o600,
         error_code="journal_invalid",
     )
@@ -180,7 +207,15 @@ def read_journal(
         raise ClipConsistencyError("journal_invalid", "journal key set differs")
     journal = ApplyJournal(
         state=journal_state(string(payload, "state")),
-        owner_uid=integer(payload, "owner_uid"),
+        state_uid=integer(payload, "state_uid"),
+        state_gid=integer(payload, "state_gid"),
+        state_db_mode=integer(payload, "state_db_mode"),
+        state_dir_mode=integer(payload, "state_dir_mode"),
+        clip_uid=integer(payload, "clip_uid"),
+        clip_gid=integer(payload, "clip_gid"),
+        clip_dir_mode=integer(payload, "clip_dir_mode"),
+        tool_revision=string(payload, "tool_revision"),
+        authority_sha256=string(payload, "authority_sha256"),
         state_db=string(payload, "state_db"),
         clip_store=string(payload, "clip_store"),
         journal_path=string(payload, "journal_path"),
@@ -219,7 +254,8 @@ def read_journal(
     valid_identity = (
         integer(payload, "format_version") == _FORMAT_VERSION
         and integer(payload, "schema_version") == SCHEMA_VERSION
-        and journal.owner_uid == expected_uid
+        and _journal_authority(journal) == authority
+        and journal.authority_sha256 == authority.sha256
         and journal.state_db == str(state_db.resolve(strict=True))
         and journal.clip_store == str(clip_store.resolve(strict=True))
         and journal.journal_path == str(path.resolve(strict=True))
@@ -228,6 +264,19 @@ def read_journal(
     if not valid_identity:
         raise ClipConsistencyError("journal_invalid", "journal identity differs")
     return journal
+
+
+def _journal_authority(journal: ApplyJournal) -> RepairAuthority:
+    return RepairAuthority(
+        state_uid=journal.state_uid,
+        state_gid=journal.state_gid,
+        state_db_mode=journal.state_db_mode,
+        state_dir_mode=journal.state_dir_mode,
+        clip_uid=journal.clip_uid,
+        clip_gid=journal.clip_gid,
+        clip_dir_mode=journal.clip_dir_mode,
+        tool_revision=journal.tool_revision,
+    )
 
 
 __all__ = [

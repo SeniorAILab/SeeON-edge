@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal, TypeAlias
+
+from worker.pipeline.output.evidence.clip_consistency_authority_types import (
+    RepairAuthority,
+)
 
 JsonScalar: TypeAlias = str | int | bool | None
 JournalState: TypeAlias = Literal[
@@ -49,7 +52,16 @@ class RepairCounters:
 class BackupReceipt:
     format_version: int
     schema_version: int
-    owner_uid: int
+    state_uid: int
+    state_gid: int
+    state_db_mode: int
+    state_dir_mode: int
+    clip_uid: int
+    clip_gid: int
+    clip_dir_mode: int
+    tool_revision: str
+    authority_sha256: str
+    clip_store: str
     source_path: str
     source_mode: int
     source_size: int
@@ -98,13 +110,13 @@ class RepairReceipt:
 class RepairRequest:
     state_db: Path
     clip_store: Path
+    authority: RepairAuthority | None = None
     apply: bool = False
     resume: bool = False
     maintenance_root: Path | None = None
     journal_path: Path | None = None
     quiescence_receipt: Path | None = None
     prebackup_receipt: Path | None = None
-    expected_owner_uid: int = field(default_factory=os.getuid)
     ffprobe_bin: str = "ffprobe"
     fault_hook: FaultHook | None = field(default=None, repr=False, compare=False)
 

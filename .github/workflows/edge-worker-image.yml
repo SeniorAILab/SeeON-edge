@@ -64,8 +64,69 @@ jobs:
             eldercare-fall-ml-worker:ci \
             python -m worker --check-config
 
-      - name: Packaged clip consistency maintenance CLI smoke
+      - name: Packaged clip consistency maintenance CLI split-authority smoke
         run: |
-          docker run --rm \
-            eldercare-fall-ml-worker:ci \
-            python scripts/repair_clip_consistency.py --help
+          docker run --rm eldercare-fall-ml-worker:ci sh -ec '
+            python scripts/repair_clip_consistency.py --help >/dev/null
+            mkdir -p /var/lib/clip-store/clips/.staging
+            chown -R 1000:1000 /var/lib/clip-store
+            chmod 0775 /var/lib/clip-store /var/lib/clip-store/clips /var/lib/clip-store/clips/.staging
+            chmod 0755 /root/.local/state/ml-worker
+            python - <<PY
+          import json
+          import time
+          from pathlib import Path
+
+          from worker.pipeline.output.evidence.clip_consistency_authority import RepairAuthority
+          from worker.pipeline.output.evidence.evidence_outbox import EvidenceOutbox
+
+          state = Path("/root/.local/state/ml-worker")
+          database = state / "worker-state.sqlite3"
+          maintenance = state / "clip-consistency-maintenance"
+          maintenance.mkdir(mode=0o700)
+          with EvidenceOutbox.open(database):
+              pass
+          authority = RepairAuthority(
+              state_uid=0,
+              state_gid=0,
+              state_db_mode=0o644,
+              state_dir_mode=0o755,
+              clip_uid=1000,
+              clip_gid=1000,
+              clip_dir_mode=0o775,
+              tool_revision="${CLIP_CONSISTENCY_TOOL_REVISION}",
+          )
+          now = int(time.time())
+          proof = {
+              "format_version": 2,
+              "state_db": str(database),
+              "clip_store": "/var/lib/clip-store",
+              "stopped_service": "ml-worker",
+              "stopped_db_writers": ["event", "config", "fault"],
+              "operator_uid": 0,
+              "authority_sha256": authority.sha256,
+              **authority.to_dict(),
+              "issued_at": now - 1,
+              "expires_at": now + 3599,
+          }
+          path = maintenance / "quiescence.json"
+          path.write_text(json.dumps(proof) + "\n", encoding="utf-8")
+          path.chmod(0o600)
+          PY
+            authority="--state-uid 0 --state-gid 0 --state-db-mode 0644 --state-dir-mode 0755 --clip-uid 1000 --clip-gid 1000 --clip-dir-mode 0775 --tool-revision ${CLIP_CONSISTENCY_TOOL_REVISION}"
+            python scripts/repair_clip_consistency.py \
+              --state-db /root/.local/state/ml-worker/worker-state.sqlite3 \
+              --clip-store /var/lib/clip-store ${authority}
+            python scripts/repair_clip_consistency.py \
+              --state-db /root/.local/state/ml-worker/worker-state.sqlite3 \
+              --clip-store /var/lib/clip-store ${authority} --apply \
+              --maintenance-root /root/.local/state/ml-worker/clip-consistency-maintenance \
+              --journal /root/.local/state/ml-worker/clip-consistency-maintenance/apply.json \
+              --quiescence-receipt /root/.local/state/ml-worker/clip-consistency-maintenance/quiescence.json
+            python scripts/repair_clip_consistency.py \
+              --state-db /root/.local/state/ml-worker/worker-state.sqlite3 \
+              --clip-store /var/lib/clip-store ${authority} --resume \
+              --maintenance-root /root/.local/state/ml-worker/clip-consistency-maintenance \
+              --journal /root/.local/state/ml-worker/clip-consistency-maintenance/apply.json \
+              --quiescence-receipt /root/.local/state/ml-worker/clip-consistency-maintenance/quiescence.json
+          '

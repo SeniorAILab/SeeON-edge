@@ -48,17 +48,24 @@ def validate_directory(
     expected_uid: int,
     owner_controlled: bool,
     label: str,
+    expected_gid: int | None = None,
+    exact_mode: int | None = None,
 ) -> os.stat_result:
     validate_no_symlink_components(path)
     try:
         info = path.stat(follow_symlinks=False)
     except OSError as exc:
         raise ClipConsistencyError("unsafe_path", f"{label} unavailable") from exc
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != expected_uid:
+    owner_invalid = info.st_uid != expected_uid or (
+        expected_gid is not None and info.st_gid != expected_gid
+    )
+    if not stat.S_ISDIR(info.st_mode) or owner_invalid:
         raise ClipConsistencyError("unsafe_path", f"{label} owner or type invalid")
     mode = stat.S_IMODE(info.st_mode)
     forbidden = 0o077 if owner_controlled else 0o022
-    if mode & forbidden:
+    if (exact_mode is not None and mode != exact_mode) or (
+        exact_mode is None and mode & forbidden
+    ):
         raise ClipConsistencyError("unsafe_path", f"{label} mode is not secure")
     return info
 
@@ -69,6 +76,7 @@ def validate_regular(
     expected_uid: int,
     exact_mode: int | None,
     label: str,
+    expected_gid: int | None = None,
 ) -> os.stat_result:
     validate_no_symlink_components(path)
     try:
@@ -76,7 +84,10 @@ def validate_regular(
     except OSError as exc:
         raise ClipConsistencyError("unsafe_path", f"{label} unavailable") from exc
     mode = stat.S_IMODE(info.st_mode)
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != expected_uid:
+    owner_invalid = info.st_uid != expected_uid or (
+        expected_gid is not None and info.st_gid != expected_gid
+    )
+    if not stat.S_ISREG(info.st_mode) or owner_invalid:
         raise ClipConsistencyError("unsafe_path", f"{label} owner or type invalid")
     if (exact_mode is not None and mode != exact_mode) or (
         exact_mode is None and mode & 0o022
@@ -103,6 +114,7 @@ def read_strict_json(
     path: Path,
     *,
     expected_uid: int | None = None,
+    expected_gid: int | None = None,
     exact_mode: int | None = None,
     max_bytes: int = MAX_JSON_BYTES,
     error_code: str,
@@ -113,6 +125,7 @@ def read_strict_json(
             expected_uid=expected_uid,
             exact_mode=exact_mode,
             label="JSON authority",
+            expected_gid=expected_gid,
         )
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -140,12 +153,14 @@ def atomic_write_json(
     expected_uid: int,
     hook: FaultHook | None,
     stage: str,
+    expected_gid: int | None = None,
 ) -> None:
     validate_directory(
         root,
         expected_uid=expected_uid,
         owner_controlled=True,
         label="maintenance root",
+        expected_gid=expected_gid,
     )
     validate_under_root(path, root, allow_missing_leaf=True)
     validate_directory(
@@ -153,6 +168,7 @@ def atomic_write_json(
         expected_uid=expected_uid,
         owner_controlled=True,
         label="maintenance directory",
+        expected_gid=expected_gid,
     )
     temporary = path.parent / f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp"
     descriptor: int | None = None
@@ -189,7 +205,13 @@ def sha256_regular(path: Path) -> str:
     return digest.hexdigest()
 
 
-def ensure_secure_subdirectory(root: Path, name: str, *, expected_uid: int) -> Path:
+def ensure_secure_subdirectory(
+    root: Path,
+    name: str,
+    *,
+    expected_uid: int,
+    expected_gid: int | None = None,
+) -> Path:
     path = root / name
     validate_under_root(path, root, allow_missing_leaf=True)
     path.mkdir(mode=0o700, exist_ok=True)
@@ -198,6 +220,7 @@ def ensure_secure_subdirectory(root: Path, name: str, *, expected_uid: int) -> P
         expected_uid=expected_uid,
         owner_controlled=True,
         label="maintenance subdirectory",
+        expected_gid=expected_gid,
     )
     return path
 

@@ -45,12 +45,13 @@ def abort_precommit(
     restore_quarantine(moved)
     root, path = required_mutation_paths(request)
     if journal is not None and path.exists():
+        assert request.authority is not None
         mark_journal(
             journal,
             "ABORTED",
             path=path,
             maintenance_root=root,
-            expected_uid=request.expected_owner_uid,
+            authority=request.authority,
             hook=None,
             error=type(error).__name__,
         )
@@ -80,12 +81,13 @@ def classify_ambiguous_commit(
             outcome = "DB_COMMITTED"
         else:
             outcome = "UNKNOWN"
+        assert request.authority is not None
         mark_journal(
             journal,
             outcome,
             path=path,
             maintenance_root=root,
-            expected_uid=request.expected_owner_uid,
+            authority=request.authority,
             hook=None,
             error=f"ambiguous_commit:{type(error).__name__}",
         )

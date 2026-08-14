@@ -19,6 +19,7 @@ def write_journal(
     path: Path,
     maintenance_root: Path,
     expected_uid: int,
+    expected_gid: int,
     hook: FaultHook | None,
     stage: str,
 ) -> None:
@@ -27,6 +28,7 @@ def write_journal(
         journal.to_dict(),
         root=maintenance_root,
         expected_uid=expected_uid,
+        expected_gid=expected_gid,
         hook=hook,
         stage=stage,
     )

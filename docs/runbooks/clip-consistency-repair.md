@@ -23,16 +23,23 @@ DC="$EDGE_DC"
 ```
 
 The selected `ml-worker` image must contain
-`/app/scripts/repair_clip_consistency.py`. The command intentionally uses the
-independent persisted paths from `compose.edge.yaml`:
+`/app/scripts/repair_clip_consistency.py` and its baked
+`CLIP_CONSISTENCY_TOOL_REVISION`. The command intentionally uses the independent
+persisted paths and explicit production authorities from `compose.edge.yaml`:
 
 ```text
 state database: /root/.local/state/ml-worker/worker-state.sqlite3
 clip store:     /var/lib/clip-store
 maintenance:    /root/.local/state/ml-worker/clip-consistency-maintenance
+state authority: UID/GID 0:0, DB mode 0644, state directory mode 0755
+clip authority:  UID/GID 1000:1000, root/clips/.staging mode 0775
 ```
 
-Do not substitute the clip-store path for the state database path.
+These are separate trust domains, not owners to discover from the filesystem.
+Do not substitute the clip-store path for the state database path, copy an
+observed unexpected owner into the command, or use `chown` to make a refusal go
+away. A swapped owner, mixed final/staging owner, changed mode, unsafe writable
+ancestor, symlink, lexical `..`, or revision mismatch is an incident signal.
 
 ## 2. Stop all worker-state writers and create operator proof
 
@@ -53,13 +60,27 @@ root = Path('/root/.local/state/ml-worker/clip-consistency-maintenance')
 root.mkdir(mode=0o700, parents=True, exist_ok=True)
 os.chmod(root, 0o700)
 now = int(time.time())
+from worker.pipeline.output.evidence.clip_consistency_authority import RepairAuthority
+
+authority = RepairAuthority(
+    state_uid=0,
+    state_gid=0,
+    state_db_mode=0o644,
+    state_dir_mode=0o755,
+    clip_uid=1000,
+    clip_gid=1000,
+    clip_dir_mode=0o775,
+    tool_revision=os.environ['CLIP_CONSISTENCY_TOOL_REVISION'],
+)
 receipt = {
-    'format_version': 1,
+    'format_version': 2,
     'state_db': '/root/.local/state/ml-worker/worker-state.sqlite3',
     'clip_store': '/var/lib/clip-store',
     'stopped_service': 'ml-worker',
     'stopped_db_writers': ['event', 'config', 'fault'],
-    'operator_uid': os.getuid(),
+    'operator_uid': 0,
+    'authority_sha256': authority.sha256,
+    **authority.to_dict(),
     'issued_at': now,
     'expires_at': now + 1800,
 }
@@ -78,10 +99,15 @@ check.
 ## 3. Dry-run
 
 ```sh
-$DC run --rm --no-deps ml-worker \
-  python scripts/repair_clip_consistency.py \
-  --state-db /root/.local/state/ml-worker/worker-state.sqlite3 \
-  --clip-store /var/lib/clip-store
+$DC run --rm --no-deps --entrypoint sh ml-worker -ec '
+  exec python scripts/repair_clip_consistency.py \
+    --state-db /root/.local/state/ml-worker/worker-state.sqlite3 \
+    --clip-store /var/lib/clip-store \
+    --state-uid 0 --state-gid 0 \
+    --state-db-mode 0644 --state-dir-mode 0755 \
+    --clip-uid 1000 --clip-gid 1000 --clip-dir-mode 0775 \
+    --tool-revision "$CLIP_CONSISTENCY_TOOL_REVISION"
+'
 ```
 
 Save the single JSON receipt. Review `mismatch_clips`, `mismatch_tuples`,
@@ -96,14 +122,19 @@ Use a new journal path. Never delete or overwrite an existing journal to force
 another apply.
 
 ```sh
-$DC run --rm --no-deps ml-worker \
-  python scripts/repair_clip_consistency.py \
-  --state-db /root/.local/state/ml-worker/worker-state.sqlite3 \
-  --clip-store /var/lib/clip-store \
-  --apply \
-  --maintenance-root /root/.local/state/ml-worker/clip-consistency-maintenance \
-  --journal /root/.local/state/ml-worker/clip-consistency-maintenance/apply.json \
-  --quiescence-receipt /root/.local/state/ml-worker/clip-consistency-maintenance/quiescence.json
+$DC run --rm --no-deps --entrypoint sh ml-worker -ec '
+  exec python scripts/repair_clip_consistency.py \
+    --state-db /root/.local/state/ml-worker/worker-state.sqlite3 \
+    --clip-store /var/lib/clip-store \
+    --state-uid 0 --state-gid 0 \
+    --state-db-mode 0644 --state-dir-mode 0755 \
+    --clip-uid 1000 --clip-gid 1000 --clip-dir-mode 0775 \
+    --tool-revision "$CLIP_CONSISTENCY_TOOL_REVISION" \
+    --apply \
+    --maintenance-root /root/.local/state/ml-worker/clip-consistency-maintenance \
+    --journal /root/.local/state/ml-worker/clip-consistency-maintenance/apply.json \
+    --quiescence-receipt /root/.local/state/ml-worker/clip-consistency-maintenance/quiescence.json
+'
 ```
 
 Apply creates an owner-only online SQLite backup and strict receipt before any
@@ -118,17 +149,26 @@ Do not restart the worker when apply exits nonzero after creating a journal.
 Re-check quiescence, recreate the short-lived receipt, and run:
 
 ```sh
-$DC run --rm --no-deps ml-worker \
-  python scripts/repair_clip_consistency.py \
-  --state-db /root/.local/state/ml-worker/worker-state.sqlite3 \
-  --clip-store /var/lib/clip-store \
-  --resume \
-  --maintenance-root /root/.local/state/ml-worker/clip-consistency-maintenance \
-  --journal /root/.local/state/ml-worker/clip-consistency-maintenance/apply.json \
-  --quiescence-receipt /root/.local/state/ml-worker/clip-consistency-maintenance/quiescence.json
+$DC run --rm --no-deps --entrypoint sh ml-worker -ec '
+  exec python scripts/repair_clip_consistency.py \
+    --state-db /root/.local/state/ml-worker/worker-state.sqlite3 \
+    --clip-store /var/lib/clip-store \
+    --state-uid 0 --state-gid 0 \
+    --state-db-mode 0644 --state-dir-mode 0755 \
+    --clip-uid 1000 --clip-gid 1000 --clip-dir-mode 0775 \
+    --tool-revision "$CLIP_CONSISTENCY_TOOL_REVISION" \
+    --resume \
+    --maintenance-root /root/.local/state/ml-worker/clip-consistency-maintenance \
+    --journal /root/.local/state/ml-worker/clip-consistency-maintenance/apply.json \
+    --quiescence-receipt /root/.local/state/ml-worker/clip-consistency-maintenance/quiescence.json
+'
 ```
 
-Resume is idempotent. A PREPARED journal first requires the schema and every
+Resume is idempotent. It first revalidates both explicit authorities against
+all state and recursively scanned clip paths, then requires the proof, backup
+receipt, and journal to carry the identical paths, modes, owners, and tool
+revision. Any owner/mode change after PREPARED refuses before recovery. A
+PREPARED journal then requires the schema and every
 non-`clip_events` logical row to match the complete preimage, then determines
 whether `clip_events` is at the exact before or after hash. DB_COMMITTED
 completes canonical quarantine deletion; DONE returns the existing receipt.

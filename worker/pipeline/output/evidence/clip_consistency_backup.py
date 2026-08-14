@@ -7,6 +7,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+from worker.pipeline.output.evidence.clip_consistency_authority import RepairAuthority
 from worker.pipeline.output.evidence.clip_consistency_backup_receipt import (
     RECEIPT_VERSION,
     database_state_sha256,
@@ -35,15 +36,19 @@ def create_verified_backup(
     snapshot: sqlite3.Connection,
     *,
     maintenance_root: Path,
-    expected_uid: int,
+    clip_store: Path,
+    authority: RepairAuthority,
     fault_hook: FaultHook | None = None,
 ) -> BackupReceipt:
     backup_root = ensure_secure_subdirectory(
         maintenance_root,
         "backups",
-        expected_uid=expected_uid,
+        expected_uid=authority.state_uid,
+        expected_gid=authority.state_gid,
     )
-    identity = source_identity(source, snapshot, expected_uid)
+    identity = source_identity(
+        source, snapshot, authority.state_uid, authority.state_gid
+    )
     stem = datetime.now(UTC).strftime("worker-state-%Y%m%dT%H%M%S.%fZ")
     backup_path = backup_root / f"{stem}.sqlite3"
     receipt_path = backup_root / f"{stem}.receipt.json"
@@ -75,12 +80,23 @@ def create_verified_backup(
         _require_equal_state(backup_state_sha256, identity.source_state_sha256)
         _require_unchanged_source(
             identity,
-            source_identity(source, snapshot, expected_uid),
+            source_identity(
+                source, snapshot, authority.state_uid, authority.state_gid
+            ),
         )
         receipt = BackupReceipt(
             format_version=RECEIPT_VERSION,
             schema_version=SCHEMA_VERSION,
-            owner_uid=expected_uid,
+            state_uid=authority.state_uid,
+            state_gid=authority.state_gid,
+            state_db_mode=authority.state_db_mode,
+            state_dir_mode=authority.state_dir_mode,
+            clip_uid=authority.clip_uid,
+            clip_gid=authority.clip_gid,
+            clip_dir_mode=authority.clip_dir_mode,
+            tool_revision=authority.tool_revision,
+            authority_sha256=authority.sha256,
+            clip_store=str(clip_store.resolve(strict=True)),
             source_path=identity.source_path,
             source_mode=identity.source_mode,
             source_size=identity.source_size,
@@ -102,7 +118,8 @@ def create_verified_backup(
             receipt_path,
             receipt.to_dict(),
             root=maintenance_root,
-            expected_uid=expected_uid,
+            expected_uid=authority.state_uid,
+            expected_gid=authority.state_gid,
             hook=fault_hook,
             stage="backup_receipt",
         )
@@ -124,7 +141,8 @@ def ensure_prebackup(
     *,
     receipt_path: Path | None,
     maintenance_root: Path,
-    expected_uid: int,
+    clip_store: Path,
+    authority: RepairAuthority,
     hook: FaultHook | None = None,
 ) -> BackupReceipt:
     if receipt_path is None:
@@ -132,15 +150,19 @@ def ensure_prebackup(
             source,
             snapshot,
             maintenance_root=maintenance_root,
-            expected_uid=expected_uid,
+            clip_store=clip_store,
+            authority=authority,
             fault_hook=hook,
         )
     receipt = verify_backup_receipt_for_resume(
         receipt_path,
         maintenance_root=maintenance_root,
-        expected_uid=expected_uid,
+        clip_store=clip_store,
+        authority=authority,
     )
-    current = source_identity(source, snapshot, expected_uid)
+    current = source_identity(
+        source, snapshot, authority.state_uid, authority.state_gid
+    )
     if not current.matches_reusable_source(receipt):
         raise ClipConsistencyError("backup_receipt_stale", "source identity differs")
     return receipt
@@ -150,19 +172,21 @@ def verify_backup_receipt_for_resume(
     path: Path,
     *,
     maintenance_root: Path,
-    expected_uid: int,
+    clip_store: Path,
+    authority: RepairAuthority,
 ) -> BackupReceipt:
     receipt = parse_backup_receipt(
         path,
         maintenance_root=maintenance_root,
-        expected_uid=expected_uid,
+        authority=authority,
+        clip_store=clip_store,
     )
     validate_under_root(
         Path(receipt.backup_path),
         maintenance_root,
         allow_missing_leaf=False,
     )
-    verify_backup(receipt, expected_uid)
+    verify_backup(receipt, authority)
     return receipt
 
 

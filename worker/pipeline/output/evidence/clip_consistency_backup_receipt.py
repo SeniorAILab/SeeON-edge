@@ -9,6 +9,7 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
+from worker.pipeline.output.evidence.clip_consistency_authority import RepairAuthority
 from worker.pipeline.output.evidence.clip_consistency_backup_fields import (
     boolean as _boolean,
 )
@@ -32,7 +33,7 @@ from worker.pipeline.output.evidence.clip_consistency_types import (
 )
 from worker.pipeline.output.evidence.evidence_outbox_schema import SCHEMA_VERSION
 
-RECEIPT_VERSION = 3
+RECEIPT_VERSION = 4
 _RECEIPT_KEYS = frozenset(BackupReceipt.__dataclass_fields__)
 _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 
@@ -61,10 +62,12 @@ def source_identity(
     source: Path,
     snapshot: sqlite3.Connection,
     expected_uid: int,
+    expected_gid: int,
 ) -> SourceIdentity:
     info = validate_regular(
         source,
         expected_uid=expected_uid,
+        expected_gid=expected_gid,
         exact_mode=None,
         label="state database",
     )
@@ -74,6 +77,7 @@ def source_identity(
         wal_info = validate_regular(
             wal,
             expected_uid=expected_uid,
+            expected_gid=expected_gid,
             exact_mode=None,
             label="state database WAL",
         )
@@ -97,12 +101,14 @@ def parse_backup_receipt(
     path: Path,
     *,
     maintenance_root: Path,
-    expected_uid: int,
+    authority: RepairAuthority,
+    clip_store: Path,
 ) -> BackupReceipt:
     validate_under_root(path, maintenance_root, allow_missing_leaf=False)
     payload = read_strict_json(
         path,
-        expected_uid=expected_uid,
+        expected_uid=authority.state_uid,
+        expected_gid=authority.state_gid,
         exact_mode=0o600,
         error_code="backup_receipt_invalid",
     )
@@ -111,7 +117,16 @@ def parse_backup_receipt(
     receipt = BackupReceipt(
         format_version=_integer(payload, "format_version"),
         schema_version=_integer(payload, "schema_version"),
-        owner_uid=_integer(payload, "owner_uid"),
+        state_uid=_integer(payload, "state_uid"),
+        state_gid=_integer(payload, "state_gid"),
+        state_db_mode=_integer(payload, "state_db_mode"),
+        state_dir_mode=_integer(payload, "state_dir_mode"),
+        clip_uid=_integer(payload, "clip_uid"),
+        clip_gid=_integer(payload, "clip_gid"),
+        clip_dir_mode=_integer(payload, "clip_dir_mode"),
+        tool_revision=_string(payload, "tool_revision"),
+        authority_sha256=_string(payload, "authority_sha256"),
+        clip_store=_string(payload, "clip_store"),
         source_path=_string(payload, "source_path"),
         source_mode=_integer(payload, "source_mode"),
         source_size=_integer(payload, "source_size"),
@@ -132,7 +147,10 @@ def parse_backup_receipt(
     if (
         receipt.format_version != RECEIPT_VERSION
         or receipt.schema_version != SCHEMA_VERSION
-        or receipt.owner_uid != expected_uid
+        or _receipt_authority(receipt) != authority
+        or receipt.authority_sha256 != authority.sha256
+        or receipt.clip_store != str(clip_store.resolve(strict=True))
+        or receipt.source_mode != authority.state_db_mode
         or receipt.receipt_path != str(path.resolve(strict=True))
         or not _valid_receipt_facts(receipt)
     ):
@@ -140,11 +158,12 @@ def parse_backup_receipt(
     return receipt
 
 
-def verify_backup(receipt: BackupReceipt, expected_uid: int) -> None:
+def verify_backup(receipt: BackupReceipt, authority: RepairAuthority) -> None:
     backup = Path(receipt.backup_path)
     info = validate_regular(
         backup,
-        expected_uid=expected_uid,
+        expected_uid=authority.state_uid,
+        expected_gid=authority.state_gid,
         exact_mode=0o600,
         label="prebackup",
     )
@@ -174,11 +193,30 @@ def connection_state_sha256(connection: sqlite3.Connection) -> str:
     return digest.hexdigest()
 
 
+def _receipt_authority(receipt: BackupReceipt) -> RepairAuthority:
+    return RepairAuthority(
+        state_uid=receipt.state_uid,
+        state_gid=receipt.state_gid,
+        state_db_mode=receipt.state_db_mode,
+        state_dir_mode=receipt.state_dir_mode,
+        clip_uid=receipt.clip_uid,
+        clip_gid=receipt.clip_gid,
+        clip_dir_mode=receipt.clip_dir_mode,
+        tool_revision=receipt.tool_revision,
+    )
+
+
 def _valid_receipt_facts(receipt: BackupReceipt) -> bool:
     source = Path(receipt.source_path)
     wal = Path(receipt.source_wal_path)
     backup = Path(receipt.backup_path)
-    authority_paths = (source, wal, backup, Path(receipt.receipt_path))
+    authority_paths = (
+        source,
+        wal,
+        backup,
+        Path(receipt.receipt_path),
+        Path(receipt.clip_store),
+    )
     hashes = (
         receipt.source_file_sha256,
         receipt.source_wal_sha256,
@@ -186,6 +224,7 @@ def _valid_receipt_facts(receipt: BackupReceipt) -> bool:
         receipt.source_identity_sha256,
         receipt.backup_file_sha256,
         receipt.backup_state_sha256,
+        receipt.authority_sha256,
     )
     try:
         for path in authority_paths:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import sqlite3
 import stat
 import subprocess
@@ -15,10 +14,13 @@ from uuid import UUID
 import pytest
 
 from worker.pipeline.output.evidence import clip_consistency_apply as apply_module
+from worker.pipeline.output.evidence.clip_consistency_authority import RepairAuthority
 from worker.pipeline.output.evidence.clip_consistency_repair import repair_clip_consistency
 from worker.pipeline.output.evidence.clip_consistency_types import (
     ClipConsistencyError,
-    RepairRequest,
+)
+from worker.pipeline.output.evidence.clip_consistency_types import (
+    RepairRequest as _RepairRequest,
 )
 from worker.pipeline.output.evidence.clip_store_lock import ClipStoreLock, ClipStoreLockedError
 from worker.pipeline.output.evidence.evidence_outbox import EvidenceOutbox
@@ -30,6 +32,27 @@ from worker.pipeline.output.evidence.manifest_models import (
 
 EVENTS = tuple(str(UUID(int=(4 << 76) | (2 << 62) | value)) for value in range(1, 9))
 TIMESTAMP = "2026-08-14T00:00:00.000Z"
+TOOL_REVISION = "31de1430758d05d744686be6098e00641f4ea4d9"
+
+
+def _authority(database: Path, clip_store: Path) -> RepairAuthority:
+    return RepairAuthority(
+        state_uid=database.stat().st_uid,
+        state_gid=database.stat().st_gid,
+        state_db_mode=stat.S_IMODE(database.stat().st_mode),
+        state_dir_mode=stat.S_IMODE(database.parent.stat().st_mode),
+        clip_uid=clip_store.stat().st_uid,
+        clip_gid=clip_store.stat().st_gid,
+        clip_dir_mode=stat.S_IMODE(clip_store.stat().st_mode),
+        tool_revision=TOOL_REVISION,
+    )
+
+
+def RepairRequest(
+    state_db: Path, clip_store: Path, *args: Any, **kwargs: Any
+) -> _RepairRequest:
+    kwargs.setdefault("authority", _authority(state_db, clip_store))
+    return _RepairRequest(state_db, clip_store, *args, **kwargs)
 
 
 def _layout(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -118,13 +141,16 @@ def _ready(clip_store: Path, clip_id: str, refs: tuple[str, ...], ffprobe: Path)
 
 def _quiescence(path: Path, database: Path, clip_store: Path) -> None:
     now = int(time.time())
+    authority = _authority(database, clip_store)
     payload = {
-        "format_version": 1,
+        "format_version": 2,
         "state_db": str(database.absolute()),
         "clip_store": str(clip_store.absolute()),
         "stopped_service": "ml-worker",
         "stopped_db_writers": ["event", "config", "fault"],
-        "operator_uid": os.getuid(),
+        "operator_uid": authority.state_uid,
+        "authority_sha256": authority.sha256,
+        **authority.to_dict(),
         "issued_at": now - 1,
         "expires_at": now + 3599,
     }
@@ -477,9 +503,11 @@ def test_process_crash_at_durable_phase_boundary_resumes_idempotently(
     _quiescence(quiescence, database, clip_store)
     journal = maintenance / "apply.json"
     program = """
+import json
 import os
 import sys
 from pathlib import Path
+from worker.pipeline.output.evidence.clip_consistency_authority import RepairAuthority
 from worker.pipeline.output.evidence.clip_consistency_repair import repair_clip_consistency
 from worker.pipeline.output.evidence.clip_consistency_types import RepairRequest
 
@@ -487,8 +515,12 @@ def crash(observed: str) -> None:
     if observed == sys.argv[6]:
         os._exit(91)
 
+proof = json.loads(Path(sys.argv[5]).read_text(encoding="utf-8"))
+authority = RepairAuthority(**{
+    key: proof[key] for key in RepairAuthority.__dataclass_fields__
+})
 repair_clip_consistency(RepairRequest(
-    Path(sys.argv[1]), Path(sys.argv[2]), apply=True,
+    Path(sys.argv[1]), Path(sys.argv[2]), authority=authority, apply=True,
     maintenance_root=Path(sys.argv[3]), journal_path=Path(sys.argv[4]),
     quiescence_receipt=Path(sys.argv[5]), fault_hook=crash,
 ))
@@ -809,9 +841,11 @@ def _crash_apply(
     stage: str,
 ) -> None:
     program = """
+import json
 import os
 import sys
 from pathlib import Path
+from worker.pipeline.output.evidence.clip_consistency_authority import RepairAuthority
 from worker.pipeline.output.evidence.clip_consistency_repair import repair_clip_consistency
 from worker.pipeline.output.evidence.clip_consistency_types import RepairRequest
 
@@ -819,8 +853,12 @@ def crash(observed: str) -> None:
     if observed == sys.argv[6]:
         os._exit(91)
 
+proof = json.loads(Path(sys.argv[5]).read_text(encoding="utf-8"))
+authority = RepairAuthority(**{
+    key: proof[key] for key in RepairAuthority.__dataclass_fields__
+})
 repair_clip_consistency(RepairRequest(
-    Path(sys.argv[1]), Path(sys.argv[2]), apply=True,
+    Path(sys.argv[1]), Path(sys.argv[2]), authority=authority, apply=True,
     maintenance_root=Path(sys.argv[3]), journal_path=Path(sys.argv[4]),
     quiescence_receipt=Path(sys.argv[5]), fault_hook=crash,
 ))

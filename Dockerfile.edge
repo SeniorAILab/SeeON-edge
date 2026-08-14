@@ -10,7 +10,8 @@ RUN if [ "${#SOURCE_REVISION}" -ne 40 ] || printf '%s' "$SOURCE_REVISION" | grep
 LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.opencontainers.image.source="SeniorAILab/eldercare-fall-ml-v2"
 
-ENV UV_LINK_MODE=copy \
+ENV CLIP_CONSISTENCY_TOOL_REVISION="${SOURCE_REVISION}" \
+    UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

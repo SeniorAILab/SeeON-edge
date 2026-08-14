@@ -31,12 +31,16 @@ def scan_manifest_authority(
     clip_store: Path,
     *,
     expected_uid: int,
+    expected_gid: int,
+    expected_dir_mode: int,
     ffprobe_bin: str,
 ) -> ManifestAuthority:
     validate_directory(
         clip_store,
         expected_uid=expected_uid,
+        expected_gid=expected_gid,
         owner_controlled=False,
+        exact_mode=expected_dir_mode,
         label="clip store",
     )
     clips_root = clip_store / "clips"
@@ -45,7 +49,9 @@ def scan_manifest_authority(
         validate_directory(
             path,
             expected_uid=expected_uid,
+            expected_gid=expected_gid,
             owner_controlled=False,
+            exact_mode=expected_dir_mode,
             label=label,
         )
     for entry in staging_root.iterdir():
@@ -59,6 +65,7 @@ def scan_manifest_authority(
         validate_directory(
             clip_dir,
             expected_uid=expected_uid,
+            expected_gid=expected_gid,
             owner_controlled=False,
             label="final clip",
         )
@@ -69,6 +76,7 @@ def scan_manifest_authority(
         validate_regular(
             manifest_path,
             expected_uid=expected_uid,
+            expected_gid=expected_gid,
             exact_mode=None,
             label="final manifest",
         )
@@ -82,6 +90,7 @@ def scan_manifest_authority(
                     validate_regular(
                         media,
                         expected_uid=expected_uid,
+                        expected_gid=expected_gid,
                         exact_mode=None,
                         label="final media",
                     )
@@ -103,6 +112,7 @@ def scan_manifest_authority(
             validate_directory(
                 candidate,
                 expected_uid=expected_uid,
+                expected_gid=expected_gid,
                 owner_controlled=False,
                 label="same-ID staging",
             )

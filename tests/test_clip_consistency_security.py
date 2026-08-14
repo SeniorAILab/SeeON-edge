@@ -4,12 +4,16 @@ import json
 import os
 import shutil
 import sqlite3
+import stat
 import time
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 import pytest
 
+from worker.pipeline.output.evidence.clip_consistency_authority import RepairAuthority
 from worker.pipeline.output.evidence.clip_consistency_backup import (
     verify_backup_receipt_for_resume,
 )
@@ -18,12 +22,57 @@ from worker.pipeline.output.evidence.clip_consistency_io import validate_under_r
 from worker.pipeline.output.evidence.clip_consistency_repair import repair_clip_consistency
 from worker.pipeline.output.evidence.clip_consistency_types import (
     ClipConsistencyError,
-    RepairRequest,
+)
+from worker.pipeline.output.evidence.clip_consistency_types import (
+    RepairRequest as _RepairRequest,
 )
 from worker.pipeline.output.evidence.evidence_outbox import EvidenceOutbox
 
 EVENT_ID = str(UUID(int=(4 << 76) | (2 << 62) | 301))
 TIMESTAMP = "2026-08-14T00:00:00.000Z"
+TOOL_REVISION = "31de1430758d05d744686be6098e00641f4ea4d9"
+
+
+def _authority(database: Path, clip_store: Path) -> RepairAuthority:
+    return RepairAuthority(
+        state_uid=database.stat().st_uid,
+        state_gid=database.stat().st_gid,
+        state_db_mode=stat.S_IMODE(database.stat().st_mode),
+        state_dir_mode=stat.S_IMODE(database.parent.stat().st_mode),
+        clip_uid=clip_store.stat().st_uid,
+        clip_gid=clip_store.stat().st_gid,
+        clip_dir_mode=stat.S_IMODE(clip_store.stat().st_mode),
+        tool_revision=TOOL_REVISION,
+    )
+
+
+def RepairRequest(
+    state_db: Path, clip_store: Path, *args: Any, **kwargs: Any
+) -> _RepairRequest:
+    kwargs.setdefault("authority", _authority(state_db, clip_store))
+    return _RepairRequest(state_db, clip_store, *args, **kwargs)
+
+
+def _split_clip_gid(clip_store: Path) -> int:
+    alternatives = [gid for gid in os.getgroups() if gid != os.getgid()]
+    if not alternatives:
+        pytest.skip("test user has no supplementary group for split-GID ownership")
+    gid = alternatives[0]
+    for root, directories, files in os.walk(clip_store):
+        os.chown(root, -1, gid)
+        for name in (*directories, *files):
+            os.chown(Path(root) / name, -1, gid)
+    for path in (clip_store, clip_store / "clips", clip_store / "clips/.staging"):
+        path.chmod(0o775)
+    return gid
+
+
+def _receipt_binding(receipt: Path) -> tuple[RepairAuthority, Path]:
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    authority = RepairAuthority(
+        **{key: payload[key] for key in RepairAuthority.__dataclass_fields__}
+    )
+    return authority, Path(payload["clip_store"])
 
 
 def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
@@ -76,15 +125,18 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
 
 def _write_quiescence(path: Path, database: Path, clip_store: Path) -> None:
     now = int(time.time())
+    authority = _authority(database, clip_store)
     path.write_text(
         json.dumps(
             {
-                "format_version": 1,
+                "format_version": 2,
                 "state_db": str(database.absolute()),
                 "clip_store": str(clip_store.absolute()),
                 "stopped_service": "ml-worker",
                 "stopped_db_writers": ["event", "config", "fault"],
-                "operator_uid": os.getuid(),
+                "operator_uid": authority.state_uid,
+                "authority_sha256": authority.sha256,
+                **authority.to_dict(),
                 "issued_at": now - 1,
                 "expires_at": now + 3599,
             }
@@ -124,6 +176,10 @@ def _apply(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
         "receipt-mode",
         "backup-mode",
         "backup-bytes",
+        "state-gid",
+        "clip-gid",
+        "tool-revision",
+        "clip-store",
         "symlink-parent",
     ),
 )
@@ -156,6 +212,14 @@ def test_backup_receipt_rejects_every_tampered_authority(
     elif tamper == "backup-bytes":
         with Path(payload["backup_path"]).open("ab") as backup:
             backup.write(b"tampered")
+    elif tamper == "state-gid":
+        payload["state_gid"] += 1
+    elif tamper == "clip-gid":
+        payload["clip_gid"] += 1
+    elif tamper == "tool-revision":
+        payload["tool_revision"] = "0" * 40
+    elif tamper == "clip-store":
+        payload["clip_store"] = str(tmp_path / "wrong-store")
     elif tamper == "symlink-parent":
         backups = receipt.parent
         outside = tmp_path / "outside-backups"
@@ -184,16 +248,169 @@ def test_backup_receipt_rejects_every_tampered_authority(
         )
 
 
-def test_expected_owner_policy_is_configurable_and_enforced(tmp_path: Path) -> None:
-    database, clip_store, _, _, _ = _fixture(tmp_path)
+@pytest.mark.parametrize(
+    "field,value",
+    (
+        ("state_gid", 99999),
+        ("clip_gid", 99999),
+        ("clip_dir_mode", 0o777),
+        ("tool_revision", "0" * 40),
+    ),
+)
+def test_resume_rejects_tampered_journal_authority(
+    tmp_path: Path, field: str, value: int | str
+) -> None:
+    database, clip_store, maintenance, journal, _ = _apply(tmp_path)
+    payload = json.loads(journal.read_text(encoding="utf-8"))
+    payload[field] = value
+    journal.write_text(json.dumps(payload), encoding="utf-8")
+    journal.chmod(0o600)
 
-    with pytest.raises(ClipConsistencyError, match="unsafe_path"):
+    with pytest.raises(ClipConsistencyError, match="journal_invalid"):
         repair_clip_consistency(
-            RepairRequest(database, clip_store, expected_owner_uid=os.getuid() + 1)
+            RepairRequest(
+                database,
+                clip_store,
+                resume=True,
+                maintenance_root=maintenance,
+                journal_path=journal,
+                quiescence_receipt=maintenance / "quiescence.json",
+            )
         )
 
 
-@pytest.mark.parametrize("tamper", ("unknown", "duplicate", "mode", "path", "writers"))
+def test_legitimate_split_authority_dry_run_apply_and_resume(tmp_path: Path) -> None:
+    database, clip_store, maintenance, quiescence, journal = _fixture(tmp_path)
+    clip_gid = _split_clip_gid(clip_store)
+    _write_quiescence(quiescence, database, clip_store)
+    authority = _authority(database, clip_store)
+    assert authority.state_gid != clip_gid == authority.clip_gid
+
+    dry = repair_clip_consistency(
+        RepairRequest(database, clip_store, authority=authority)
+    )
+    fired = False
+
+    def interrupt_after_commit(stage: str) -> None:
+        nonlocal fired
+        if stage == "apply:after_commit" and not fired:
+            fired = True
+            raise RuntimeError("resume split authority")
+
+    with pytest.raises(RuntimeError, match="resume split authority"):
+        repair_clip_consistency(
+            RepairRequest(
+                database,
+                clip_store,
+                authority=authority,
+                apply=True,
+                maintenance_root=maintenance,
+                journal_path=journal,
+                quiescence_receipt=quiescence,
+                fault_hook=interrupt_after_commit,
+            )
+        )
+    resumed = repair_clip_consistency(
+        RepairRequest(
+            database,
+            clip_store,
+            authority=authority,
+            resume=True,
+            maintenance_root=maintenance,
+            journal_path=journal,
+            quiescence_receipt=quiescence,
+        )
+    )
+
+    assert dry.state == "DRY_RUN"
+    assert resumed.state == "DONE"
+
+
+@pytest.mark.parametrize("entry", ("final", "staging"))
+def test_split_authority_rejects_mixed_clip_entry_owner(
+    tmp_path: Path, entry: str
+) -> None:
+    database, clip_store, _, _, _ = _fixture(tmp_path)
+    _split_clip_gid(clip_store)
+    target = (
+        clip_store / "clips/clip-a/manifest.json"
+        if entry == "final"
+        else clip_store / "clips/.staging"
+    )
+    os.chown(target, -1, os.getgid())
+
+    with pytest.raises(ClipConsistencyError, match="unsafe_path"):
+        repair_clip_consistency(
+            RepairRequest(database, clip_store, authority=_authority(database, clip_store))
+        )
+
+
+def test_prepared_resume_rejects_clip_owner_change(tmp_path: Path) -> None:
+    database, clip_store, maintenance, quiescence, journal = _fixture(tmp_path)
+    _split_clip_gid(clip_store)
+    staging = clip_store / "clips/.staging/clip-a"
+    staging.mkdir()
+    os.chown(staging, -1, clip_store.stat().st_gid)
+    _write_quiescence(quiescence, database, clip_store)
+    authority = _authority(database, clip_store)
+
+    def interrupt_after_commit(stage: str) -> None:
+        if stage == "apply:after_commit":
+            raise RuntimeError("prepared after commit")
+
+    with pytest.raises(RuntimeError, match="prepared after commit"):
+        repair_clip_consistency(
+            RepairRequest(
+                database,
+                clip_store,
+                authority=authority,
+                apply=True,
+                maintenance_root=maintenance,
+                journal_path=journal,
+                quiescence_receipt=quiescence,
+                fault_hook=interrupt_after_commit,
+            )
+        )
+    assert json.loads(journal.read_text(encoding="utf-8"))["state"] == "PREPARED"
+    os.chown(clip_store / "clips/clip-a/manifest.json", -1, authority.state_gid)
+
+    with pytest.raises(ClipConsistencyError, match="unsafe_path"):
+        repair_clip_consistency(
+            RepairRequest(
+                database,
+                clip_store,
+                authority=authority,
+                resume=True,
+                maintenance_root=maintenance,
+                journal_path=journal,
+                quiescence_receipt=quiescence,
+            )
+        )
+
+
+def test_writable_authority_ancestor_is_rejected(tmp_path: Path) -> None:
+    database, clip_store, _, _, _ = _fixture(tmp_path)
+    tmp_path.chmod(0o777)
+
+    with pytest.raises(ClipConsistencyError, match="unsafe_path"):
+        repair_clip_consistency(
+            RepairRequest(database, clip_store, authority=_authority(database, clip_store))
+        )
+
+
+def test_split_owner_policy_is_explicit_and_enforced(tmp_path: Path) -> None:
+    database, clip_store, _, _, _ = _fixture(tmp_path)
+    wrong = replace(_authority(database, clip_store), clip_uid=os.getuid() + 1)
+
+    with pytest.raises(ClipConsistencyError, match="unsafe_path"):
+        repair_clip_consistency(
+            RepairRequest(database, clip_store, authority=wrong)
+        )
+
+
+@pytest.mark.parametrize(
+    "tamper", ("unknown", "duplicate", "mode", "path", "writers", "authority")
+)
 def test_quiescence_receipt_is_strict(tmp_path: Path, tamper: str) -> None:
     database, clip_store, maintenance, receipt, journal = _fixture(tmp_path)
     payload = json.loads(receipt.read_text(encoding="utf-8"))
@@ -208,6 +425,8 @@ def test_quiescence_receipt_is_strict(tmp_path: Path, tamper: str) -> None:
         payload["state_db"] = str(tmp_path / "wrong.sqlite3")
     elif tamper == "writers":
         payload["stopped_db_writers"] = ["event", "config"]
+    elif tamper == "authority":
+        payload["clip_gid"] += 1
     if tamper not in {"duplicate", "mode"}:
         receipt.write_text(json.dumps(payload), encoding="utf-8")
         receipt.chmod(0o600)
@@ -499,12 +718,14 @@ def test_reusable_backup_receipt_rejects_tampered_raw_source_facts(
     payload[field] = payload[field] + 1 if field == "source_size" else "0" * 64
     receipt.write_text(json.dumps(payload), encoding="utf-8")
     receipt.chmod(0o600)
+    authority, clip_store = _receipt_binding(receipt)
 
     with pytest.raises(ClipConsistencyError, match="backup_receipt_invalid"):
         verify_backup_receipt_for_resume(
             receipt,
             maintenance_root=maintenance,
-            expected_uid=os.getuid(),
+            clip_store=clip_store,
+            authority=authority,
         )
 
 
@@ -513,12 +734,14 @@ def test_backup_authority_path_rejects_lexical_parent_alias(tmp_path: Path) -> N
     receipt_alias = receipt.parent / "nested"
     receipt_alias.mkdir()
     lexical = receipt_alias / ".." / receipt.name
+    authority, clip_store = _receipt_binding(receipt)
 
     with pytest.raises(ClipConsistencyError, match="unsafe_path"):
         verify_backup_receipt_for_resume(
             lexical,
             maintenance_root=maintenance,
-            expected_uid=os.getuid(),
+            clip_store=clip_store,
+            authority=authority,
         )
 
 
@@ -538,12 +761,14 @@ def test_backup_receipt_rejects_lexical_parent_in_every_advertised_path(
     payload[field] = str(nested / ".." / original.name)
     receipt.write_text(json.dumps(payload), encoding="utf-8")
     receipt.chmod(0o600)
+    authority, clip_store = _receipt_binding(receipt)
 
     with pytest.raises(ClipConsistencyError, match="unsafe_path|backup_receipt_invalid"):
         verify_backup_receipt_for_resume(
             receipt,
             maintenance_root=maintenance,
-            expected_uid=os.getuid(),
+            clip_store=clip_store,
+            authority=authority,
         )
 
 

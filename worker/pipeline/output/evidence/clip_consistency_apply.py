@@ -60,6 +60,7 @@ from worker.pipeline.output.evidence.clip_consistency_types import (
 
 
 def apply_repair(request: RepairRequest) -> RepairReceipt:
+    assert request.authority is not None
     root, journal_path = required_mutation_paths(request)
     if journal_path.exists():
         raise ClipConsistencyError("journal_exists", "use --resume for existing journal")
@@ -82,7 +83,8 @@ def apply_repair(request: RepairRequest) -> RepairReceipt:
             control,
             receipt_path=request.prebackup_receipt,
             maintenance_root=root,
-            expected_uid=request.expected_owner_uid,
+            clip_store=request.clip_store,
+            authority=request.authority,
             hook=request.fault_hook,
         )
         moved = plan_staging_quarantine(
@@ -91,7 +93,7 @@ def apply_repair(request: RepairRequest) -> RepairReceipt:
             plan.plan_sha256,
         )
         journal = prepared_journal(
-            owner_uid=request.expected_owner_uid,
+            authority=request.authority,
             state_db=request.state_db,
             clip_store=request.clip_store,
             journal_path=journal_path,
@@ -107,7 +109,8 @@ def apply_repair(request: RepairRequest) -> RepairReceipt:
             journal,
             path=journal_path,
             maintenance_root=root,
-            expected_uid=request.expected_owner_uid,
+            expected_uid=request.authority.state_uid,
+            expected_gid=request.authority.state_gid,
             hook=request.fault_hook,
             stage="journal_prepared",
         )
@@ -130,7 +133,7 @@ def apply_repair(request: RepairRequest) -> RepairReceipt:
             "DB_COMMITTED",
             path=journal_path,
             maintenance_root=root,
-            expected_uid=request.expected_owner_uid,
+            authority=request.authority,
             hook=request.fault_hook,
         )
         return journal_receipt("apply", finish_cleanup(request, journal))
@@ -145,15 +148,16 @@ def apply_repair(request: RepairRequest) -> RepairReceipt:
 
 
 def resume_repair(request: RepairRequest) -> RepairReceipt:
+    assert request.authority is not None
     root, journal_path = required_mutation_paths(request)
     journal = read_journal(
         journal_path,
         maintenance_root=root,
-        expected_uid=request.expected_owner_uid,
+        authority=request.authority,
         state_db=request.state_db,
         clip_store=request.clip_store,
     )
-    _verify_journal_backup(journal, root, request.expected_owner_uid)
+    _verify_journal_backup(journal, root, request)
     if journal.state == "UNKNOWN":
         raise ClipConsistencyError(
             "commit_state_unknown", "ambiguous commit state requires incident recovery"
@@ -188,6 +192,7 @@ def _resume_prepared(
     current: str,
 ) -> ApplyJournal:
     assert isinstance(control, sqlite3.Connection)
+    assert request.authority is not None
     if current == journal.relations_before_sha256:
         ensure_quarantine(request.clip_store, journal.quarantine)
         execute_plan(control, journal.relation_plan())
@@ -212,19 +217,23 @@ def _resume_prepared(
         "DB_COMMITTED",
         path=path,
         maintenance_root=root,
-        expected_uid=request.expected_owner_uid,
+        authority=request.authority,
         hook=request.fault_hook,
     )
 
 
-def _verify_journal_backup(journal: ApplyJournal, root: Path, uid: int) -> None:
+def _verify_journal_backup(
+    journal: ApplyJournal, root: Path, request: RepairRequest
+) -> None:
+    assert request.authority is not None
     receipt_path = Path(journal.backup_receipt_path)
     if sha256_regular(receipt_path) != journal.backup_receipt_sha256:
         raise ClipConsistencyError("backup_receipt_invalid", "journal receipt hash differs")
     backup = verify_backup_receipt_for_resume(
         receipt_path,
         maintenance_root=root,
-        expected_uid=uid,
+        clip_store=request.clip_store,
+        authority=request.authority,
     )
     if (
         backup.source_state_sha256 != journal.source_state_sha256
@@ -235,9 +244,12 @@ def _verify_journal_backup(journal: ApplyJournal, root: Path, uid: int) -> None:
 
 
 def _authority(request: RepairRequest) -> ManifestAuthority:
+    assert request.authority is not None
     return scan_manifest_authority(
         request.clip_store,
-        expected_uid=request.expected_owner_uid,
+        expected_uid=request.authority.clip_uid,
+        expected_gid=request.authority.clip_gid,
+        expected_dir_mode=request.authority.clip_dir_mode,
         ffprobe_bin=request.ffprobe_bin,
     )
 

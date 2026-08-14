@@ -127,6 +127,7 @@ def open_write_exclusion(state_db: Path) -> sqlite3.Connection:
 
 
 def finish_cleanup(request: RepairRequest, journal: ApplyJournal) -> ApplyJournal:
+    assert request.authority is not None
     root, path = required_mutation_paths(request)
     for _, held_relative in journal.quarantine:
         held = request.clip_store / held_relative
@@ -151,7 +152,7 @@ def finish_cleanup(request: RepairRequest, journal: ApplyJournal) -> ApplyJourna
         "DONE",
         path=path,
         maintenance_root=root,
-        expected_uid=request.expected_owner_uid,
+        authority=request.authority,
         hook=request.fault_hook,
     )
 
