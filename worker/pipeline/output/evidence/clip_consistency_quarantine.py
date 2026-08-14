@@ -11,7 +11,7 @@ from worker.pipeline.output.evidence.clip_consistency_types import ClipConsisten
 
 def canonical_quarantine_rows(
     clip_ids: tuple[str, ...],
-    plan_sha256: str,
+    quarantine_namespace_sha256: str,
 ) -> tuple[tuple[str, str], ...]:
     if clip_ids != tuple(sorted(set(clip_ids))):
         raise ClipConsistencyError("journal_invalid", "quarantine clip IDs are not canonical")
@@ -22,7 +22,7 @@ def canonical_quarantine_rows(
         held = PurePosixPath(
             "clips",
             ".staging",
-            f".clip-consistency-{plan_sha256[:16]}-{clip_id}",
+            f".clip-consistency-{quarantine_namespace_sha256[:32]}-{clip_id}",
         ).as_posix()
         rows.append((original, held))
     return tuple(rows)
@@ -36,11 +36,13 @@ def quarantine_rows_sha256(rows: tuple[tuple[str, str], ...]) -> str:
 def absolute_quarantine_rows(
     clip_store: Path,
     clip_ids: tuple[str, ...],
-    plan_sha256: str,
+    quarantine_namespace_sha256: str,
 ) -> list[tuple[Path, Path]]:
     return [
         (clip_store / original, clip_store / held)
-        for original, held in canonical_quarantine_rows(clip_ids, plan_sha256)
+        for original, held in canonical_quarantine_rows(
+            clip_ids, quarantine_namespace_sha256
+        )
     ]
 
 

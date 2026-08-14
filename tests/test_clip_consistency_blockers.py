@@ -15,6 +15,9 @@ import pytest
 
 from worker.pipeline.output.evidence.clip_consistency_authority import RepairAuthority
 from worker.pipeline.output.evidence.clip_consistency_database import validate_database
+from worker.pipeline.output.evidence.clip_consistency_operation import (
+    image_artifact_identity,
+)
 from worker.pipeline.output.evidence.clip_consistency_repair import repair_clip_consistency
 from worker.pipeline.output.evidence.clip_consistency_types import (
     ClipConsistencyError,
@@ -119,13 +122,16 @@ def _command(
 def _quiescence(path: Path, database: Path, clip_store: Path) -> None:
     authority = _authority(database, clip_store)
     payload = {
-        "format_version": 2,
+        "format_version": 3,
         "state_db": str(database.resolve()),
         "clip_store": str(clip_store.resolve()),
         "stopped_service": "ml-worker",
         "stopped_db_writers": ["event", "config", "fault"],
         "operator_uid": authority.state_uid,
         "authority_sha256": authority.sha256,
+        "operation_digest_version": 1,
+        "operation_digest": "0" * 64,
+        "image_artifact_identity": image_artifact_identity(authority),
         **authority.to_dict(),
         "issued_at": int(time.time()) - 1,
         "expires_at": int(time.time()) + 3599,
@@ -153,6 +159,18 @@ def _authority_args(database: Path, clip_store: Path) -> tuple[str, ...]:
         "--tool-revision",
         TOOL_REVISION,
     )
+
+
+@pytest.mark.parametrize("identifier", (-1, 2**32 - 1, 2**32, 10**100))
+def test_cli_rejects_unsupported_linux_uid_range(
+    tmp_path: Path, identifier: int
+) -> None:
+    database, clip_store, _ = _layout(tmp_path)
+
+    completed = _command(database, clip_store, "--state-uid", str(identifier))
+
+    assert completed.returncode == 2
+    assert json.loads(completed.stderr)["error"].startswith("authority_invalid:")
 
 
 def test_cli_requires_explicit_split_authority(tmp_path: Path) -> None:

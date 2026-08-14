@@ -78,6 +78,7 @@ jobs:
           from pathlib import Path
 
           from worker.pipeline.output.evidence.clip_consistency_authority import RepairAuthority
+          from worker.pipeline.output.evidence.clip_consistency_operation import image_artifact_identity
           from worker.pipeline.output.evidence.evidence_outbox import EvidenceOutbox
 
           state = Path("/root/.local/state/ml-worker")
@@ -98,13 +99,16 @@ jobs:
           )
           now = int(time.time())
           proof = {
-              "format_version": 2,
+              "format_version": 3,
               "state_db": str(database),
               "clip_store": "/var/lib/clip-store",
               "stopped_service": "ml-worker",
               "stopped_db_writers": ["event", "config", "fault"],
               "operator_uid": 0,
               "authority_sha256": authority.sha256,
+              "operation_digest_version": 1,
+              "operation_digest": "0" * 64,
+              "image_artifact_identity": image_artifact_identity(authority),
               **authority.to_dict(),
               "issued_at": now - 1,
               "expires_at": now + 3599,

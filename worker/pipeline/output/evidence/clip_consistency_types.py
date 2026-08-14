@@ -78,6 +78,8 @@ class BackupReceipt:
     backup_file_sha256: str
     backup_state_sha256: str
     receipt_path: str
+    operation_digest_version: int
+    operation_digest: str
 
     def to_dict(self) -> dict[str, JsonScalar]:
         return asdict(self)
@@ -92,6 +94,8 @@ class RepairReceipt:
     counters: RepairCounters
     backup_receipt_path: str | None
     journal_path: str | None
+    operation_digest_version: int | None = None
+    operation_digest: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -103,6 +107,8 @@ class RepairReceipt:
             "changes": self.counters.changes,
             "backup_receipt_path": self.backup_receipt_path,
             "journal_path": self.journal_path,
+            "operation_digest_version": self.operation_digest_version,
+            "operation_digest": self.operation_digest,
         }
 
 

@@ -18,6 +18,7 @@ from worker.pipeline.output.evidence.clip_consistency_io import (
 from worker.pipeline.output.evidence.clip_consistency_types import ClipConsistencyError
 
 AUTHORITY_KEYS = frozenset(RepairAuthority.__dataclass_fields__)
+_LINUX_ID_MAX = 2**32 - 2
 
 
 def validate_authority(authority: RepairAuthority) -> None:
@@ -32,8 +33,11 @@ def validate_authority(authority: RepairAuthority) -> None:
         authority.state_dir_mode,
         authority.clip_dir_mode,
     )
-    if any(identifier < 0 for identifier in identifiers):
-        raise ClipConsistencyError("authority_invalid", "authority IDs must be nonnegative")
+    if any(identifier < 0 or identifier > _LINUX_ID_MAX for identifier in identifiers):
+        raise ClipConsistencyError(
+            "authority_invalid",
+            "authority IDs must fit Linux uid_t/gid_t without the sentinel",
+        )
     if any(mode < 0 or mode > 0o7777 for mode in modes):
         raise ClipConsistencyError("authority_invalid", "authority mode is invalid")
     if authority.state_db_mode & 0o022:

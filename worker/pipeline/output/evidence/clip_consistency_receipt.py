@@ -41,6 +41,8 @@ def journal_receipt(mode: str, journal: ApplyJournal) -> RepairReceipt:
         journal.counters,
         journal.backup_receipt_path,
         journal.journal_path,
+        journal.operation_digest_version,
+        journal.operation_digest,
     )
 
 

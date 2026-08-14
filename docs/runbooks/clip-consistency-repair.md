@@ -61,6 +61,7 @@ root.mkdir(mode=0o700, parents=True, exist_ok=True)
 os.chmod(root, 0o700)
 now = int(time.time())
 from worker.pipeline.output.evidence.clip_consistency_authority import RepairAuthority
+from worker.pipeline.output.evidence.clip_consistency_operation import image_artifact_identity
 
 authority = RepairAuthority(
     state_uid=0,
@@ -73,13 +74,16 @@ authority = RepairAuthority(
     tool_revision=os.environ['CLIP_CONSISTENCY_TOOL_REVISION'],
 )
 receipt = {
-    'format_version': 2,
+    'format_version': 3,
     'state_db': '/root/.local/state/ml-worker/worker-state.sqlite3',
     'clip_store': '/var/lib/clip-store',
     'stopped_service': 'ml-worker',
     'stopped_db_writers': ['event', 'config', 'fault'],
     'operator_uid': 0,
     'authority_sha256': authority.sha256,
+    'operation_digest_version': 1,
+    'operation_digest': '0' * 64,  # bound by apply before PREPARED
+    'image_artifact_identity': image_artifact_identity(authority),
     **authority.to_dict(),
     'issued_at': now,
     'expires_at': now + 1800,
@@ -137,6 +141,13 @@ $DC run --rm --no-deps --entrypoint sh ml-worker -ec '
 '
 ```
 
+Apply replaces the proof's all-zero `operation_digest` placeholder in place
+before durable PREPARED. The same versioned digest is written to the backup
+receipt, PREPARED/DB_COMMITTED/DONE journal, and command receipt. It binds the
+canonical paths, split authority and modes, packaged image identity, descriptor
+identities, source/backup facts, schema and relation hashes, exact plan, and the
+ordered quarantine set. Do not edit or regenerate any of those artifacts.
+
 Apply creates an owner-only online SQLite backup and strict receipt before any
 relation mutation. The receipt binds all advertised source DB/WAL raw facts,
 the verified logical backup, and the exact schema. Success is a JSON receipt
@@ -166,9 +177,18 @@ $DC run --rm --no-deps --entrypoint sh ml-worker -ec '
 
 Resume is idempotent. It first revalidates both explicit authorities against
 all state and recursively scanned clip paths, then requires the proof, backup
-receipt, and journal to carry the identical paths, modes, owners, and tool
-revision. Any owner/mode change after PREPARED refuses before recovery. A
-PREPARED journal then requires the schema and every
+receipt, and journal to carry the identical paths, modes, owners, tool revision,
+descriptor identities, and operation digest. Revalidation occurs under the clip
+lock before PREPARED, immediately before and after commit classification, before
+each descriptor-backed quarantine deletion, and before returning DONE.
+
+Any inode/owner/mode/content drift fails closed. Before commit, a durable
+PREPARED journal and quarantine are preserved; after commit, PREPARED or
+DB_COMMITTED is preserved according to the durable relation hashes; during
+cleanup, each fsynced deletion is recorded before the next entry; drift during
+the final DONE write downgrades a still-trusted journal to DB_COMMITTED. The
+tool never deletes a changed quarantine entry and never returns a DONE receipt
+for a drifted authority. A PREPARED journal then requires the schema and every
 non-`clip_events` logical row to match the complete preimage, then determines
 whether `clip_events` is at the exact before or after hash. DB_COMMITTED
 completes canonical quarantine deletion; DONE returns the existing receipt.

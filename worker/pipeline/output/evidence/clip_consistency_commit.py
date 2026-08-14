@@ -12,7 +12,13 @@ from worker.pipeline.output.evidence.clip_consistency_database import (
 )
 from worker.pipeline.output.evidence.clip_consistency_journal import (
     ApplyJournal,
+    journal_sha256,
     mark_journal,
+)
+from worker.pipeline.output.evidence.clip_consistency_phase_authority import (
+    capture_proof_identity,
+    validate_journal_identity,
+    validate_phase_authority,
 )
 from worker.pipeline.output.evidence.clip_consistency_preimage import (
     non_relation_preimage_sha256,
@@ -64,6 +70,7 @@ def classify_ambiguous_commit(
     error: BaseException,
 ) -> None:
     root, path = required_mutation_paths(request)
+    _validate_commit_authority(request, journal, path, "held")
     inspection = open_write_exclusion(request.state_db)
     try:
         relation_state, non_relation_state = _durable_state(inspection)
@@ -82,6 +89,12 @@ def classify_ambiguous_commit(
         else:
             outcome = "UNKNOWN"
         assert request.authority is not None
+        _validate_commit_authority(
+            request,
+            journal,
+            path,
+            "original" if outcome == "ABORTED" else "held",
+        )
         mark_journal(
             journal,
             outcome,
@@ -95,6 +108,41 @@ def classify_ambiguous_commit(
         if inspection.in_transaction:
             inspection.rollback()
         inspection.close()
+
+
+def _validate_commit_authority(
+    request: RepairRequest,
+    journal: ApplyJournal,
+    journal_path: Path,
+    quarantine_state: str,
+) -> None:
+    assert request.authority is not None
+    assert request.quiescence_receipt is not None
+    root, _ = required_mutation_paths(request)
+    proof = capture_proof_identity(request.quiescence_receipt, request.authority)
+    if proof != journal.proof_identity:
+        raise ClipConsistencyError("authority_drift", "quiescence proof identity changed")
+    validate_phase_authority(
+        journal.authority_snapshot,
+        state_db=request.state_db,
+        clip_store=request.clip_store,
+        maintenance_root=root,
+        tracked_maintenance=tuple(
+            Path(identity.path)
+            for identity in journal.authority_snapshot.maintenance
+            if identity.path != journal.maintenance_root
+        ),
+        authority=request.authority,
+        quarantine=journal.quarantine,
+        quarantine_state=quarantine_state,
+        deleted_quarantine=journal.deleted_quarantine,
+    )
+    validate_journal_identity(
+        journal_path,
+        request.authority,
+        expected_sha256=journal_sha256(journal),
+        expected_identity=journal.file_identity,
+    )
 
 
 def _durable_state(connection: sqlite3.Connection) -> tuple[str, str]:

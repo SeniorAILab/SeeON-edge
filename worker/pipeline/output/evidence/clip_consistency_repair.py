@@ -49,7 +49,7 @@ def repair_clip_consistency(request: RepairRequest) -> RepairReceipt:
     _validate_mutating_request(request)
     assert request.maintenance_root is not None
     assert request.quiescence_receipt is not None
-    validate_quiescence_receipt(
+    proof_identity = validate_quiescence_receipt(
         request.quiescence_receipt,
         state_db=request.state_db,
         clip_store=request.clip_store,
@@ -58,7 +58,22 @@ def repair_clip_consistency(request: RepairRequest) -> RepairReceipt:
     )
     try:
         with ClipStoreLock.acquire(request.clip_store):
-            return resume_repair(request) if request.resume else apply_repair(request)
+            locked_proof = validate_quiescence_receipt(
+                request.quiescence_receipt,
+                state_db=request.state_db,
+                clip_store=request.clip_store,
+                maintenance_root=request.maintenance_root,
+                authority=request.authority,
+            )
+            if locked_proof != proof_identity:
+                raise ClipConsistencyError(
+                    "authority_drift", "quiescence proof identity changed before lock"
+                )
+            return (
+                resume_repair(request, locked_proof)
+                if request.resume
+                else apply_repair(request, locked_proof)
+            )
     except sqlite3.OperationalError as exc:
         raise ClipConsistencyError(
             "database_busy", "worker-state writer exclusion unavailable"

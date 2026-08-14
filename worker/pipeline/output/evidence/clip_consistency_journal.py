@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
+import hashlib
+import json
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 from worker.pipeline.output.evidence.clip_consistency_authority import RepairAuthority
@@ -24,6 +26,13 @@ from worker.pipeline.output.evidence.clip_consistency_journal_validation import 
     strings,
     validate_counter_facts,
 )
+from worker.pipeline.output.evidence.clip_consistency_operation import OperationBinding
+from worker.pipeline.output.evidence.clip_consistency_phase_authority import (
+    AuthoritySnapshot,
+    FileIdentity,
+    ProofIdentity,
+    validate_journal_identity,
+)
 from worker.pipeline.output.evidence.clip_consistency_quarantine import (
     canonical_quarantine_rows,
     quarantine_rows_sha256,
@@ -36,7 +45,7 @@ from worker.pipeline.output.evidence.clip_consistency_types import (
 )
 from worker.pipeline.output.evidence.evidence_outbox_schema import SCHEMA_VERSION
 
-_FORMAT_VERSION = 3
+_FORMAT_VERSION = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,9 +60,16 @@ class ApplyJournal:
     clip_dir_mode: int
     tool_revision: str
     authority_sha256: str
+    operation_digest_version: int
+    operation_digest: str
+    quarantine_namespace_sha256: str
+    image_artifact_identity: str
     state_db: str
     clip_store: str
+    maintenance_root: str
     journal_path: str
+    proof_identity: ProofIdentity
+    authority_snapshot: AuthoritySnapshot
     source_state_sha256: str
     source_identity_sha256: str
     non_relation_state_sha256: str
@@ -67,8 +83,10 @@ class ApplyJournal:
     quarantine_clip_ids: tuple[str, ...]
     quarantine: tuple[tuple[str, str], ...]
     quarantine_sha256: str
+    deleted_quarantine: tuple[str, ...]
     counters: RepairCounters
     error: str | None = None
+    file_identity: FileIdentity | None = field(default=None, compare=False, repr=False)
 
     def relation_plan(self) -> RelationPlan:
         return RelationPlan(
@@ -97,9 +115,16 @@ class ApplyJournal:
             "clip_dir_mode": self.clip_dir_mode,
             "tool_revision": self.tool_revision,
             "authority_sha256": self.authority_sha256,
+            "operation_digest_version": self.operation_digest_version,
+            "operation_digest": self.operation_digest,
+            "quarantine_namespace_sha256": self.quarantine_namespace_sha256,
+            "image_artifact_identity": self.image_artifact_identity,
             "state_db": self.state_db,
             "clip_store": self.clip_store,
+            "maintenance_root": self.maintenance_root,
             "journal_path": self.journal_path,
+            "proof_identity": self.proof_identity.to_dict(),
+            "authority_snapshot": self.authority_snapshot.to_dict(),
             "source_state_sha256": self.source_state_sha256,
             "source_identity_sha256": self.source_identity_sha256,
             "non_relation_state_sha256": self.non_relation_state_sha256,
@@ -113,9 +138,17 @@ class ApplyJournal:
             "quarantine_clip_ids": list(self.quarantine_clip_ids),
             "quarantine": [list(row) for row in self.quarantine],
             "quarantine_sha256": self.quarantine_sha256,
+            "deleted_quarantine": list(self.deleted_quarantine),
             "counters": asdict(self.counters),
             "error": self.error,
         }
+
+
+def journal_sha256(journal: ApplyJournal) -> str:
+    encoded = json.dumps(
+        journal.to_dict(), sort_keys=True, separators=(",", ":")
+    ).encode("utf-8") + b"\n"
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def prepared_journal(
@@ -124,6 +157,8 @@ def prepared_journal(
     state_db: Path,
     clip_store: Path,
     journal_path: Path,
+    binding: OperationBinding,
+    quarantine: tuple[tuple[str, str], ...],
     source_state_sha256: str,
     source_identity_sha256: str,
     non_relation_state_sha256: str,
@@ -132,7 +167,6 @@ def prepared_journal(
     plan: RelationPlan,
     counters: RepairCounters,
 ) -> ApplyJournal:
-    quarantine = canonical_quarantine_rows(plan.quarantine_clip_ids, plan.plan_sha256)
     return ApplyJournal(
         state="PREPARED",
         state_uid=authority.state_uid,
@@ -144,9 +178,16 @@ def prepared_journal(
         clip_dir_mode=authority.clip_dir_mode,
         tool_revision=authority.tool_revision,
         authority_sha256=authority.sha256,
+        operation_digest_version=binding.version,
+        operation_digest=binding.digest,
+        quarantine_namespace_sha256=binding.quarantine_namespace_sha256,
+        image_artifact_identity=binding.image_artifact_identity,
         state_db=str(state_db.resolve(strict=True)),
         clip_store=str(clip_store.resolve(strict=True)),
+        maintenance_root=binding.maintenance_root,
         journal_path=str(journal_path.resolve(strict=False)),
+        proof_identity=binding.proof,
+        authority_snapshot=binding.snapshot,
         source_state_sha256=source_state_sha256,
         source_identity_sha256=source_identity_sha256,
         non_relation_state_sha256=non_relation_state_sha256,
@@ -160,6 +201,7 @@ def prepared_journal(
         quarantine_clip_ids=plan.quarantine_clip_ids,
         quarantine=quarantine,
         quarantine_sha256=quarantine_rows_sha256(quarantine),
+        deleted_quarantine=(),
         counters=counters,
     )
 
@@ -174,7 +216,13 @@ def mark_journal(
     hook: FaultHook | None,
     error: str | None = None,
 ) -> ApplyJournal:
-    updated = replace(journal, state=state, error=error)
+    if journal.file_identity is not None:
+        validate_journal_identity(
+            path,
+            authority,
+            expected_identity=journal.file_identity,
+        )
+    updated = replace(journal, state=state, error=error, file_identity=None)
     write_journal(
         updated,
         path=path,
@@ -184,7 +232,12 @@ def mark_journal(
         hook=hook,
         stage=f"journal_{state.lower()}",
     )
-    return updated
+    identity = validate_journal_identity(
+        path,
+        authority,
+        expected_sha256=journal_sha256(updated),
+    )
+    return replace(updated, file_identity=identity)
 
 
 def read_journal(
@@ -216,9 +269,16 @@ def read_journal(
         clip_dir_mode=integer(payload, "clip_dir_mode"),
         tool_revision=string(payload, "tool_revision"),
         authority_sha256=string(payload, "authority_sha256"),
+        operation_digest_version=integer(payload, "operation_digest_version"),
+        operation_digest=string(payload, "operation_digest"),
+        quarantine_namespace_sha256=string(payload, "quarantine_namespace_sha256"),
+        image_artifact_identity=string(payload, "image_artifact_identity"),
         state_db=string(payload, "state_db"),
         clip_store=string(payload, "clip_store"),
+        maintenance_root=string(payload, "maintenance_root"),
         journal_path=string(payload, "journal_path"),
+        proof_identity=ProofIdentity.from_dict(payload.get("proof_identity")),
+        authority_snapshot=AuthoritySnapshot.from_dict(payload.get("authority_snapshot")),
         source_state_sha256=string(payload, "source_state_sha256"),
         source_identity_sha256=string(payload, "source_identity_sha256"),
         non_relation_state_sha256=string(payload, "non_relation_state_sha256"),
@@ -232,16 +292,19 @@ def read_journal(
         quarantine_clip_ids=strings(payload.get("quarantine_clip_ids")),
         quarantine=quarantine(payload.get("quarantine")),
         quarantine_sha256=string(payload, "quarantine_sha256"),
+        deleted_quarantine=strings(payload.get("deleted_quarantine")),
         counters=counters(payload.get("counters")),
         error=optional_string(payload, "error"),
     )
     expected_quarantine = canonical_quarantine_rows(
         journal.quarantine_clip_ids,
-        journal.plan_sha256,
+        journal.quarantine_namespace_sha256,
     )
     if (
         journal.quarantine != expected_quarantine
         or journal.quarantine_sha256 != quarantine_rows_sha256(expected_quarantine)
+        or journal.deleted_quarantine
+        != tuple(held for _, held in expected_quarantine if held in journal.deleted_quarantine)
     ):
         raise ClipConsistencyError("journal_invalid", "quarantine authority differs")
     validate_counter_facts(
@@ -258,12 +321,28 @@ def read_journal(
         and journal.authority_sha256 == authority.sha256
         and journal.state_db == str(state_db.resolve(strict=True))
         and journal.clip_store == str(clip_store.resolve(strict=True))
+        and journal.maintenance_root == str(maintenance_root.resolve(strict=True))
         and journal.journal_path == str(path.resolve(strict=True))
         and journal.relation_plan().plan_sha256 == journal.plan_sha256
+        and journal.operation_digest_version == 1
+        and _is_sha256(journal.operation_digest)
+        and _is_sha256(journal.quarantine_namespace_sha256)
+        and _is_sha256(journal.image_artifact_identity)
     )
     if not valid_identity:
         raise ClipConsistencyError("journal_invalid", "journal identity differs")
-    return journal
+    identity = validate_journal_identity(
+        path,
+        authority,
+        expected_sha256=journal_sha256(journal),
+    )
+    return replace(journal, file_identity=identity)
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(
+        character in "0123456789abcdef" for character in value
+    )
 
 
 def _journal_authority(journal: ApplyJournal) -> RepairAuthority:
@@ -281,6 +360,7 @@ def _journal_authority(journal: ApplyJournal) -> RepairAuthority:
 
 __all__ = [
     "ApplyJournal",
+    "journal_sha256",
     "mark_journal",
     "prepared_journal",
     "read_journal",

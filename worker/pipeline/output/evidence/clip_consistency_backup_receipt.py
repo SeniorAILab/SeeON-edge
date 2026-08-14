@@ -33,7 +33,7 @@ from worker.pipeline.output.evidence.clip_consistency_types import (
 )
 from worker.pipeline.output.evidence.evidence_outbox_schema import SCHEMA_VERSION
 
-RECEIPT_VERSION = 4
+RECEIPT_VERSION = 5
 _RECEIPT_KEYS = frozenset(BackupReceipt.__dataclass_fields__)
 _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 
@@ -143,6 +143,8 @@ def parse_backup_receipt(
         backup_file_sha256=_string(payload, "backup_file_sha256"),
         backup_state_sha256=_string(payload, "backup_state_sha256"),
         receipt_path=_string(payload, "receipt_path"),
+        operation_digest_version=_integer(payload, "operation_digest_version"),
+        operation_digest=_string(payload, "operation_digest"),
     )
     if (
         receipt.format_version != RECEIPT_VERSION
@@ -152,6 +154,7 @@ def parse_backup_receipt(
         or receipt.clip_store != str(clip_store.resolve(strict=True))
         or receipt.source_mode != authority.state_db_mode
         or receipt.receipt_path != str(path.resolve(strict=True))
+        or receipt.operation_digest_version != 1
         or not _valid_receipt_facts(receipt)
     ):
         raise ClipConsistencyError("backup_receipt_invalid", "receipt identity differs")
@@ -225,6 +228,7 @@ def _valid_receipt_facts(receipt: BackupReceipt) -> bool:
         receipt.backup_file_sha256,
         receipt.backup_state_sha256,
         receipt.authority_sha256,
+        receipt.operation_digest,
     )
     try:
         for path in authority_paths:

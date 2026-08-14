@@ -15,6 +15,9 @@ import pytest
 
 from worker.pipeline.output.evidence import clip_consistency_apply as apply_module
 from worker.pipeline.output.evidence.clip_consistency_authority import RepairAuthority
+from worker.pipeline.output.evidence.clip_consistency_operation import (
+    image_artifact_identity,
+)
 from worker.pipeline.output.evidence.clip_consistency_repair import repair_clip_consistency
 from worker.pipeline.output.evidence.clip_consistency_types import (
     ClipConsistencyError,
@@ -143,13 +146,16 @@ def _quiescence(path: Path, database: Path, clip_store: Path) -> None:
     now = int(time.time())
     authority = _authority(database, clip_store)
     payload = {
-        "format_version": 2,
+        "format_version": 3,
         "state_db": str(database.absolute()),
         "clip_store": str(clip_store.absolute()),
         "stopped_service": "ml-worker",
         "stopped_db_writers": ["event", "config", "fault"],
         "operator_uid": authority.state_uid,
         "authority_sha256": authority.sha256,
+        "operation_digest_version": 1,
+        "operation_digest": "0" * 64,
+        "image_artifact_identity": image_artifact_identity(authority),
         **authority.to_dict(),
         "issued_at": now - 1,
         "expires_at": now + 3599,
@@ -355,6 +361,9 @@ _PRECOMMIT_STAGES = (
     "backup_receipt:fsync_file",
     "backup_receipt:replace",
     "backup_receipt:fsync_directory",
+    "backup_receipt_bound:write",
+    "backup_receipt_bound:fsync_file",
+    "backup_receipt_bound:fsync_directory",
     "quarantine:rename",
     "quarantine:rename_fsync",
     "journal_prepared:write",
@@ -404,6 +413,7 @@ _POSTCOMMIT_STAGES = (
     "journal_db_committed:replace",
     "journal_db_committed:fsync_directory",
     "quarantine:before_remove",
+    "quarantine:before_descriptor_remove",
     "quarantine:after_remove",
     "quarantine:fsync_directory",
     "journal_done:write",
@@ -453,6 +463,7 @@ def test_every_postcommit_failure_is_durably_resumable(
         "journal_db_committed:replace",
         "journal_db_committed:fsync_directory",
         "quarantine:before_remove",
+        "quarantine:before_descriptor_remove",
         "quarantine:after_remove",
         "quarantine:fsync_directory",
         "journal_done:write",

@@ -8,17 +8,24 @@ import stat
 import time
 from dataclasses import replace
 from pathlib import Path
+from threading import Event, Thread
 from typing import Any
 from uuid import UUID
 
 import pytest
 
-from worker.pipeline.output.evidence.clip_consistency_authority import RepairAuthority
+from worker.pipeline.output.evidence.clip_consistency_authority import (
+    RepairAuthority,
+    validate_authority,
+)
 from worker.pipeline.output.evidence.clip_consistency_backup import (
     verify_backup_receipt_for_resume,
 )
 from worker.pipeline.output.evidence.clip_consistency_database import validate_database
 from worker.pipeline.output.evidence.clip_consistency_io import validate_under_root
+from worker.pipeline.output.evidence.clip_consistency_operation import (
+    image_artifact_identity,
+)
 from worker.pipeline.output.evidence.clip_consistency_repair import repair_clip_consistency
 from worker.pipeline.output.evidence.clip_consistency_types import (
     ClipConsistencyError,
@@ -129,13 +136,16 @@ def _write_quiescence(path: Path, database: Path, clip_store: Path) -> None:
     path.write_text(
         json.dumps(
             {
-                "format_version": 2,
+                "format_version": 3,
                 "state_db": str(database.absolute()),
                 "clip_store": str(clip_store.absolute()),
                 "stopped_service": "ml-worker",
                 "stopped_db_writers": ["event", "config", "fault"],
                 "operator_uid": authority.state_uid,
                 "authority_sha256": authority.sha256,
+                "operation_digest_version": 1,
+                "operation_digest": "0" * 64,
+                "image_artifact_identity": image_artifact_identity(authority),
                 **authority.to_dict(),
                 "issued_at": now - 1,
                 "expires_at": now + 3599,
@@ -179,6 +189,7 @@ def _apply(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
         "state-gid",
         "clip-gid",
         "tool-revision",
+        "operation-digest",
         "clip-store",
         "symlink-parent",
     ),
@@ -218,6 +229,8 @@ def test_backup_receipt_rejects_every_tampered_authority(
         payload["clip_gid"] += 1
     elif tamper == "tool-revision":
         payload["tool_revision"] = "0" * 40
+    elif tamper == "operation-digest":
+        payload["operation_digest"] = "f" * 64
     elif tamper == "clip-store":
         payload["clip_store"] = str(tmp_path / "wrong-store")
     elif tamper == "symlink-parent":
@@ -406,6 +419,308 @@ def test_split_owner_policy_is_explicit_and_enforced(tmp_path: Path) -> None:
         repair_clip_consistency(
             RepairRequest(database, clip_store, authority=wrong)
         )
+
+
+@pytest.mark.parametrize("identifier", (-1, 2**32 - 1, 2**32, 10**100))
+def test_authority_rejects_linux_uid_gid_sentinels_and_overflow(identifier: int) -> None:
+    authority = RepairAuthority(
+        state_uid=identifier,
+        state_gid=0,
+        state_db_mode=0o600,
+        state_dir_mode=0o700,
+        clip_uid=0,
+        clip_gid=0,
+        clip_dir_mode=0o775,
+        tool_revision=TOOL_REVISION,
+    )
+
+    with pytest.raises(ClipConsistencyError, match="authority_invalid"):
+        validate_authority(authority)
+
+
+def test_authority_accepts_maximum_linux_uid_gid() -> None:
+    maximum = 2**32 - 2
+    validate_authority(
+        RepairAuthority(
+            state_uid=maximum,
+            state_gid=maximum,
+            state_db_mode=0o600,
+            state_dir_mode=0o700,
+            clip_uid=maximum,
+            clip_gid=maximum,
+            clip_dir_mode=0o775,
+            tool_revision=TOOL_REVISION,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "stage,target",
+    (
+        ("backup_receipt:fsync_directory", "final-manifest"),
+        ("journal_prepared:fsync_directory", "staging"),
+        ("apply:before_commit", "state-db"),
+        ("apply:before_commit", "journal"),
+        ("apply:after_commit", "final-manifest"),
+        ("journal_db_committed:fsync_directory", "quarantine"),
+        ("quarantine:before_remove", "quarantine"),
+        ("quarantine:before_descriptor_remove", "quarantine"),
+        ("journal_done:fsync_directory", "final-manifest"),
+    ),
+)
+def test_irreversible_phases_reject_inode_drift_without_cleanup(
+    tmp_path: Path,
+    stage: str,
+    target: str,
+) -> None:
+    database, clip_store, maintenance, quiescence, journal = _fixture(tmp_path)
+    staging = clip_store / "clips/.staging/clip-a"
+    staging.mkdir()
+    reached = Event()
+    release = Event()
+    errors: list[BaseException] = []
+
+    def barrier(observed: str) -> None:
+        if observed == stage:
+            reached.set()
+            if not release.wait(timeout=10):
+                raise RuntimeError("barrier release timed out")
+
+    def run_apply() -> None:
+        try:
+            repair_clip_consistency(
+                RepairRequest(
+                    database,
+                    clip_store,
+                    apply=True,
+                    maintenance_root=maintenance,
+                    journal_path=journal,
+                    quiescence_receipt=quiescence,
+                    fault_hook=barrier,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - capture worker-thread result
+            errors.append(exc)
+
+    worker = Thread(target=run_apply, daemon=True)
+    worker.start()
+    assert reached.wait(timeout=10), f"phase barrier was not reached: {stage}"
+    changed: Path
+    if target == "final-manifest":
+        changed = clip_store / "clips/clip-a/manifest.json"
+        replacement = changed.with_suffix(".replacement")
+        replacement.write_bytes(changed.read_bytes())
+        os.replace(replacement, changed)
+    elif target == "staging":
+        changed = staging
+        original = staging.with_name("clip-a-original")
+        staging.rename(original)
+        staging.mkdir()
+        (staging / "attacker-marker").write_text("changed", encoding="utf-8")
+    elif target == "state-db":
+        changed = database
+        replacement = database.with_suffix(".replacement")
+        shutil.copy2(database, replacement)
+        os.replace(replacement, database)
+    elif target == "journal":
+        changed = journal
+        replacement = journal.with_suffix(".replacement")
+        replacement.write_bytes(journal.read_bytes())
+        replacement.chmod(0o600)
+        os.replace(replacement, journal)
+    else:
+        held = tuple((clip_store / "clips/.staging").glob(".clip-consistency-*"))
+        assert len(held) == 1
+        changed = held[0]
+        original = changed.with_name(f"{changed.name}-original")
+        changed.rename(original)
+        changed.mkdir()
+        (changed / "attacker-marker").write_text("changed", encoding="utf-8")
+    changed_identity = (changed.stat().st_dev, changed.stat().st_ino)
+    release.set()
+    worker.join(timeout=10)
+    assert not worker.is_alive()
+
+    assert errors and isinstance(errors[0], ClipConsistencyError)
+    assert (changed.stat().st_dev, changed.stat().st_ino) == changed_identity
+    if journal.exists():
+        assert json.loads(journal.read_text(encoding="utf-8"))["state"] != "DONE"
+
+
+def test_operation_digest_is_shared_by_recovery_artifacts(tmp_path: Path) -> None:
+    database, clip_store, maintenance, journal, receipt = _apply(tmp_path)
+    journal_payload = json.loads(journal.read_text(encoding="utf-8"))
+    receipt_payload = json.loads(receipt.read_text(encoding="utf-8"))
+    proof_payload = json.loads(
+        (maintenance / "quiescence.json").read_text(encoding="utf-8")
+    )
+
+    assert journal_payload["operation_digest_version"] == 1
+    assert receipt_payload["operation_digest_version"] == 1
+    assert len(journal_payload["operation_digest"]) == 64
+    assert receipt_payload["operation_digest"] == journal_payload["operation_digest"]
+    assert proof_payload["operation_digest"] == journal_payload["operation_digest"]
+    assert len(journal_payload["quarantine_namespace_sha256"]) == 64
+
+
+def test_backup_receipt_inode_replacement_breaks_operation_binding(tmp_path: Path) -> None:
+    database, clip_store, maintenance, journal, receipt = _apply(tmp_path)
+    replacement = receipt.with_suffix(".replacement")
+    replacement.write_bytes(receipt.read_bytes())
+    replacement.chmod(0o600)
+    os.replace(replacement, receipt)
+
+    with pytest.raises(ClipConsistencyError, match="operation_digest_invalid"):
+        repair_clip_consistency(
+            RepairRequest(
+                database,
+                clip_store,
+                resume=True,
+                maintenance_root=maintenance,
+                journal_path=journal,
+                quiescence_receipt=maintenance / "quiescence.json",
+            )
+        )
+
+
+def test_bound_proof_operation_digest_tamper_is_rejected(tmp_path: Path) -> None:
+    database, clip_store, maintenance, journal, _ = _apply(tmp_path)
+    proof = maintenance / "quiescence.json"
+    payload = json.loads(proof.read_text(encoding="utf-8"))
+    payload["operation_digest"] = "f" * 64
+    proof.write_text(json.dumps(payload), encoding="utf-8")
+    proof.chmod(0o600)
+
+    with pytest.raises(ClipConsistencyError, match="drift|invalid"):
+        repair_clip_consistency(
+            RepairRequest(
+                database,
+                clip_store,
+                resume=True,
+                maintenance_root=maintenance,
+                journal_path=journal,
+                quiescence_receipt=proof,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "operation_digest",
+        "quarantine_namespace_sha256",
+        "image_artifact_identity",
+        "maintenance_root",
+        "proof_inode",
+        "snapshot_inode",
+        "non_relation_state_sha256",
+        "plan",
+    ),
+)
+def test_operation_digest_rejects_structurally_valid_journal_tamper(
+    tmp_path: Path, field: str
+) -> None:
+    database, clip_store, maintenance, journal, _ = _apply(tmp_path)
+    payload = json.loads(journal.read_text(encoding="utf-8"))
+    if field in {
+        "operation_digest",
+        "quarantine_namespace_sha256",
+        "image_artifact_identity",
+        "non_relation_state_sha256",
+    }:
+        payload[field] = "f" * 64
+    elif field == "maintenance_root":
+        payload[field] = str(tmp_path)
+    elif field == "proof_inode":
+        payload["proof_identity"]["file"]["inode"] += 1
+    elif field == "snapshot_inode":
+        payload["authority_snapshot"]["state_db"]["inode"] += 1
+    else:
+        payload["relations_before_sha256"] = "e" * 64
+    journal.write_text(json.dumps(payload), encoding="utf-8")
+    journal.chmod(0o600)
+
+    with pytest.raises(ClipConsistencyError, match="invalid|differs|drift"):
+        repair_clip_consistency(
+            RepairRequest(
+                database,
+                clip_store,
+                resume=True,
+                maintenance_root=maintenance,
+                journal_path=journal,
+                quiescence_receipt=maintenance / "quiescence.json",
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "stage,target",
+    (
+        ("backup_receipt:fsync_directory", "state-db"),
+        ("journal_prepared:fsync_directory", "staging"),
+        ("apply:after_commit", "final-manifest"),
+        ("journal_db_committed:fsync_directory", "quarantine"),
+        ("quarantine:before_remove", "quarantine"),
+    ),
+)
+def test_owner_drift_at_durable_boundaries_preserves_changed_entry(
+    tmp_path: Path, stage: str, target: str
+) -> None:
+    database, clip_store, maintenance, quiescence, journal = _fixture(tmp_path)
+    staging = clip_store / "clips/.staging/clip-a"
+    staging.mkdir()
+    alternatives = [gid for gid in os.getgroups() if gid != os.getgid()]
+    if not alternatives:
+        pytest.skip("test user has no supplementary group for owner drift")
+    changed_gid = alternatives[0]
+    reached = Event()
+    release = Event()
+    errors: list[BaseException] = []
+
+    def barrier(observed: str) -> None:
+        if observed == stage:
+            reached.set()
+            if not release.wait(timeout=10):
+                raise RuntimeError("barrier release timed out")
+
+    def run_apply() -> None:
+        try:
+            repair_clip_consistency(
+                RepairRequest(
+                    database,
+                    clip_store,
+                    apply=True,
+                    maintenance_root=maintenance,
+                    journal_path=journal,
+                    quiescence_receipt=quiescence,
+                    fault_hook=barrier,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - capture worker-thread result
+            errors.append(exc)
+
+    worker = Thread(target=run_apply, daemon=True)
+    worker.start()
+    assert reached.wait(timeout=10), f"phase barrier was not reached: {stage}"
+    if target == "state-db":
+        changed = database
+    elif target == "staging":
+        changed = staging
+    elif target == "final-manifest":
+        changed = clip_store / "clips/clip-a/manifest.json"
+    else:
+        held = tuple((clip_store / "clips/.staging").glob(".clip-consistency-*"))
+        assert len(held) == 1
+        changed = held[0]
+    os.chown(changed, -1, changed_gid)
+    release.set()
+    worker.join(timeout=10)
+
+    assert not worker.is_alive()
+    assert errors and isinstance(errors[0], ClipConsistencyError)
+    assert changed.exists() and changed.stat().st_gid == changed_gid
+    if journal.exists():
+        assert json.loads(journal.read_text(encoding="utf-8"))["state"] != "DONE"
 
 
 @pytest.mark.parametrize(

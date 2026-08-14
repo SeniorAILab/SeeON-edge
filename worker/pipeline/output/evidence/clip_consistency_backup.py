@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -24,6 +26,7 @@ from worker.pipeline.output.evidence.clip_consistency_io import (
     sha256_regular,
     validate_under_root,
 )
+from worker.pipeline.output.evidence.clip_consistency_phase_authority import FileIdentity
 from worker.pipeline.output.evidence.clip_consistency_types import (
     BackupReceipt,
     ClipConsistencyError,
@@ -113,6 +116,8 @@ def create_verified_backup(
             backup_file_sha256=backup_file_sha256,
             backup_state_sha256=backup_state_sha256,
             receipt_path=str(receipt_path.resolve(strict=False)),
+            operation_digest_version=1,
+            operation_digest="0" * 64,
         )
         atomic_write_json(
             receipt_path,
@@ -168,6 +173,58 @@ def ensure_prebackup(
     return receipt
 
 
+def bind_backup_receipt(
+    receipt: BackupReceipt,
+    operation_digest: str,
+    *,
+    maintenance_root: Path,
+    authority: RepairAuthority,
+    hook: FaultHook | None,
+    expected_identity: FileIdentity,
+) -> BackupReceipt:
+    bound = replace(receipt, operation_digest=operation_digest)
+    path = Path(bound.receipt_path)
+    validate_under_root(path, maintenance_root, allow_missing_leaf=False)
+    if (
+        expected_identity.uid != authority.state_uid
+        or expected_identity.gid != authority.state_gid
+        or expected_identity.mode != 0o600
+    ):
+        raise ClipConsistencyError(
+            "authority_drift", "backup receipt authority changed before binding"
+        )
+    descriptor = os.open(path, os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0))
+    info = os.fstat(descriptor)
+    if (
+        info.st_dev,
+        info.st_ino,
+        info.st_uid,
+        info.st_gid,
+        info.st_mode & 0o7777,
+    ) != (
+        expected_identity.device,
+        expected_identity.inode,
+        expected_identity.uid,
+        expected_identity.gid,
+        expected_identity.mode,
+    ):
+        os.close(descriptor)
+        raise ClipConsistencyError(
+            "authority_drift", "backup receipt changed before binding"
+        )
+    os.ftruncate(descriptor, 0)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+        json.dump(bound.to_dict(), output, sort_keys=True, separators=(",", ":"))
+        output.write("\n")
+        output.flush()
+        checkpoint(hook, "backup_receipt_bound:write")
+        os.fsync(output.fileno())
+        checkpoint(hook, "backup_receipt_bound:fsync_file")
+    fsync_directory(path.parent)
+    checkpoint(hook, "backup_receipt_bound:fsync_directory")
+    return bound
+
+
 def verify_backup_receipt_for_resume(
     path: Path,
     *,
@@ -212,6 +269,7 @@ def _require_unchanged_source(before: object, after: object) -> None:
 
 
 __all__ = [
+    "bind_backup_receipt",
     "create_verified_backup",
     "ensure_prebackup",
     "verify_backup_receipt_for_resume",
