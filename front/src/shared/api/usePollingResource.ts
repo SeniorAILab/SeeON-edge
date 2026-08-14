@@ -5,6 +5,7 @@ import {
   fetchClipStorage,
   fetchConnection,
   fetchDetectionSettings,
+  fetchRuntimeSettings,
   fetchStatus,
   fetchSystem,
 } from '@/shared/api/client';
@@ -14,6 +15,7 @@ import type {
   ClipStorageInfo,
   ConnectionView,
   DetectionSettings,
+  RuntimeSettings,
   StatusSnapshot,
   SystemSnapshot,
 } from '@/shared/api/types';
@@ -125,6 +127,10 @@ export function useConnectionResource(enabled: boolean): PollingResource<Connect
 /** Applies to every camera; the backend polls this into worker config on its own multi-second cycle (no UI immediacy promise). */
 export function useDetectionSettingsResource(enabled: boolean): PollingResource<DetectionSettings> {
   return usePollingResource(fetchDetectionSettings, { enabled, intervalMs: 15_000 });
+}
+
+export function useRuntimeSettingsResource(enabled: boolean): PollingResource<RuntimeSettings> {
+  return usePollingResource(fetchRuntimeSettings, { enabled, intervalMs: 15_000 });
 }
 
 export function useClipStorageResource(enabled: boolean): PollingResource<ClipStorageInfo> {

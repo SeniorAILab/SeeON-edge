@@ -62,4 +62,5 @@ def test_status_does_not_read_worker_runtime_state() -> None:
         "device": None,
         "clip_recorder": None,
     }
+    assert body["runtime_settings"] == {"clip_export_enabled": False, "version": 0}
     assert not hasattr(app.state, "runtime")

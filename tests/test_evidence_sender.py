@@ -142,10 +142,10 @@ def _sender(database: Path, transport: FakeTransport) -> EvidenceSender:
             relay_url="http://127.0.0.1:1",
             relay_token="test-token",
             probe_camera_id="camera-1",
-            enabled=True,
             lease_seconds=10.0,
         ),
         transport=transport,
+        clip_export_enabled=lambda: True,
         clock=lambda: 100.0,
         random_value=lambda: 0.5,
         owner="sender-a",
@@ -171,12 +171,15 @@ def test_compatibility_probe_waits_for_reprobe_and_recovers_without_restart(
             relay_url="http://127.0.0.1:1",
             relay_token="test-token",
             probe_camera_id="camera-1",
-            enabled=True,
         ),
         transport=transport,
+        clip_export_enabled=lambda: True,
         clock=lambda: now[0],
         owner="sender-a",
     )
+    assert sender.run_once() is SenderStep.EVENT_ACKED
+    assert sender.run_once() is SenderStep.EVENT_ACKED
+    assert not any(call.startswith("capability:") for call in transport.calls)
     assert sender.run_once() is SenderStep.CAPABILITY_BLOCKED
     transport.capability_result = BackendCapabilities(event_idempotency=1, clip_export=1)
 
@@ -188,7 +191,7 @@ def test_compatibility_probe_waits_for_reprobe_and_recovers_without_restart(
 
     # Then: no intermediate request is made, and delivery resumes without restart.
     assert before_deadline is SenderStep.CAPABILITY_BLOCKED
-    assert at_deadline is SenderStep.EVENT_ACKED
+    assert at_deadline is SenderStep.CLIP_ACKED
     assert [call for call in transport.calls if call.startswith("capability:")] == [
         "capability:camera-1",
         "capability:camera-1",
@@ -321,8 +324,7 @@ def test_clip_capability_zero_releases_old_event_compatibility_rows(
         assert outbox.is_clip_held(CLIP) is True
 
 
-def test_disabled_sender_never_opens_network_or_claims(tmp_path: Path) -> None:
-    # Given: phase-one export remains disabled by default.
+def test_default_clip_policy_still_delivers_events(tmp_path: Path) -> None:
     database = tmp_path / "evidence.sqlite3"
     _stage_clip(database)
     transport = FakeTransport()
@@ -332,14 +334,10 @@ def test_disabled_sender_never_opens_network_or_claims(tmp_path: Path) -> None:
         probe_camera_id="camera-1",
     )
 
-    # When: a sender turn executes with the default configuration.
     step = EvidenceSender(database, config, transport=transport).run_once()
 
-    # Then: durable evidence is untouched and no egress occurs.
-    assert step is SenderStep.DISABLED
-    assert transport.calls == []
-    with EvidenceOutbox.open(database) as outbox:
-        assert outbox.event_attempt_count(EVENT_A) == 0
+    assert step is SenderStep.EVENT_ACKED
+    assert any(call.startswith("event:") for call in transport.calls)
 
 
 def test_response_loss_converges_when_backend_reports_expired_after_retention(
@@ -369,6 +367,7 @@ def test_response_loss_converges_when_backend_reports_expired_after_retention(
         database,
         sender.config,
         transport=transport,
+        clip_export_enabled=lambda: True,
         clock=lambda: 101.0,
         random_value=lambda: 0.0,
         owner="sender-after-retention",
@@ -493,3 +492,89 @@ def test_stale_clip_sender_never_reports_a_cas_transition(
         assert outbox.clip_publish_state(CLIP) == "PUBLISHED"
         assert outbox.clip_remote_state(CLIP) == "READY"
         assert outbox.is_clip_held(CLIP) is False
+
+
+def test_live_clip_policy_off_delivers_events_but_does_not_claim_clip(tmp_path: Path) -> None:
+    database = tmp_path / "evidence.sqlite3"
+    _stage_clip(database)
+    transport = FakeTransport()
+    enabled = False
+    sender = EvidenceSender(
+        database,
+        SenderConfig(
+            relay_url="http://127.0.0.1:1",
+            relay_token="test-token",
+            probe_camera_id="camera-1",
+            lease_seconds=10.0,
+        ),
+        transport=transport,
+        clip_export_enabled=lambda: enabled,
+        clock=lambda: 100.0,
+        owner="sender-a",
+    )
+
+    steps = (sender.run_once(), sender.run_once(), sender.run_once())
+
+    assert steps == (
+        SenderStep.EVENT_ACKED,
+        SenderStep.EVENT_ACKED,
+        SenderStep.CLIP_POLICY_BLOCKED,
+    )
+    assert not any(call.startswith("clip:") for call in transport.calls)
+    with EvidenceOutbox.open(database) as outbox:
+        assert outbox.is_clip_held(CLIP) is True
+
+
+def test_live_clip_policy_toggle_applies_to_next_run_without_reconstructing_sender(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "evidence.sqlite3"
+    _stage_clip(database)
+    transport = FakeTransport()
+    state = {"enabled": False}
+    sender = EvidenceSender(
+        database,
+        SenderConfig(
+            relay_url="http://127.0.0.1:1",
+            relay_token="test-token",
+            probe_camera_id="camera-1",
+            lease_seconds=10.0,
+        ),
+        transport=transport,
+        clip_export_enabled=lambda: state["enabled"],
+        clock=lambda: 100.0,
+        owner="sender-a",
+    )
+    assert sender.run_once() is SenderStep.EVENT_ACKED
+    assert sender.run_once() is SenderStep.EVENT_ACKED
+    assert sender.run_once() is SenderStep.CLIP_POLICY_BLOCKED
+
+    state["enabled"] = True
+
+    assert sender.run_once() is SenderStep.CLIP_ACKED
+    assert any(call.startswith("clip:") for call in transport.calls)
+
+
+def test_live_clip_policy_true_still_requires_backend_clip_capability(tmp_path: Path) -> None:
+    database = tmp_path / "evidence.sqlite3"
+    _stage_clip(database)
+    transport = FakeTransport()
+    transport.capability_result = BackendCapabilities(event_idempotency=1, clip_export=0)
+    sender = EvidenceSender(
+        database,
+        SenderConfig(
+            relay_url="http://127.0.0.1:1",
+            relay_token="test-token",
+            probe_camera_id="camera-1",
+            lease_seconds=10.0,
+        ),
+        transport=transport,
+        clip_export_enabled=lambda: True,
+        clock=lambda: 100.0,
+        owner="sender-a",
+    )
+
+    assert sender.run_once() is SenderStep.EVENT_ACKED
+    assert sender.run_once() is SenderStep.EVENT_ACKED
+    assert sender.run_once() is SenderStep.CAPABILITY_BLOCKED
+    assert not any(call.startswith("clip:") for call in transport.calls)

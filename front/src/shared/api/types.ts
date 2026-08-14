@@ -288,6 +288,13 @@ export type DetectionSettings = {
 /** PUT body is a full replace of the same shape as the GET response. */
 export type DetectionSettingsInput = DetectionSettings;
 
+export type RuntimeSettings = {
+  clip_export_enabled: boolean;
+  version: number;
+};
+
+export type RuntimeSettingsInput = Pick<RuntimeSettings, 'clip_export_enabled'>;
+
 /** GET /clips/storage — usage + current selection under the CLIP_STORE_DIR mount root. */
 export type ClipStorageInfo = {
   root: string;

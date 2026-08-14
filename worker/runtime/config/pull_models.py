@@ -126,6 +126,10 @@ class BackendWorkerConfigPayload(BaseModel):
     # traversal) is dropped in ``resolved_clip_store_subdir`` -- falling back
     # to the store root -- rather than rejecting the whole payload.
     clip_store_subdir: object = None
+    # Persisted ml-api runtime policy. Missing fields from old payloads and
+    # last-known-good rows are deliberately OFF at version zero.
+    clip_export_enabled: bool = False
+    clip_export_version: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def _require_version(self) -> BackendWorkerConfigPayload:
@@ -292,9 +296,7 @@ class BackendWorkerConfigPayload(BaseModel):
             raise WorkerConfigError("RELAY_TOKEN is required for pulled worker config")
         resolved_cameras = self.resolved_cameras
         cameras = tuple(
-            _runtime_camera(camera)
-            for camera in resolved_cameras
-            if camera.rtsp_url is not None
+            _runtime_camera(camera) for camera in resolved_cameras if camera.rtsp_url is not None
         )
         # Issue #150: an *empty roster* (`self.cameras == ()`) is a legitimate
         # config now -- a fresh install has no cameras until an operator
@@ -319,9 +321,7 @@ class BackendWorkerConfigPayload(BaseModel):
         # for yet -- and must boot with an empty usable roster rather than
         # reject the pull.
         if self.cameras and not resolved_cameras:
-            raise WorkerConfigError(
-                "worker config declared cameras but none of them parsed"
-            )
+            raise WorkerConfigError("worker config declared cameras but none of them parsed")
         detection_windows = {
             domain: NightWindowConfig(start=window.start, end=window.end, tz=window.tz)
             for domain, window in self.resolved_detection_windows.items()
@@ -357,18 +357,10 @@ class BackendWorkerConfigPayload(BaseModel):
             # level down: a camera whose ``domains`` is ``None`` said
             # nothing, but a camera whose ``domains`` is ``()`` explicitly
             # opted out, and the union must not blur the two (issue #191).
-            camera_declared_domains = any(
-                camera.domains is not None for camera in resolved_cameras
-            )
+            camera_declared_domains = any(camera.domains is not None for camera in resolved_cameras)
             camera_domains = (
                 tuple(
-                    sorted(
-                        {
-                            name
-                            for camera in resolved_cameras
-                            for name in (camera.domains or ())
-                        }
-                    )
+                    sorted({name for camera in resolved_cameras for name in (camera.domains or ())})
                 )
                 if camera_declared_domains
                 else None
@@ -398,13 +390,13 @@ class BackendWorkerConfigPayload(BaseModel):
             domains=domains_config,
             clip=resolved_clip,
             dev_mjpeg=dev_mjpeg if dev_mjpeg is not None else DevMjpegConfig(),
+            clip_export_enabled=self.clip_export_enabled,
+            clip_export_version=self.clip_export_version,
             cameras=cameras,
         )
 
 
-def _validated_pulled_window(
-    domain: str, window: _NightWindowPayload
-) -> PulledNightWindow | None:
+def _validated_pulled_window(domain: str, window: _NightWindowPayload) -> PulledNightWindow | None:
     reason = detection_window_validation_error(window.start, window.end, window.tz)
     if reason is not None:
         print(
@@ -435,8 +427,7 @@ def _log_invalid_domain_config(domain: object, value: object, reason: str) -> No
 
 def _log_invalid_clip_store_subdir(value: object, reason: str) -> None:
     print(
-        f"clip_store_subdir is invalid ({reason}): {value!r}; "
-        "falling back to the clip store root",
+        f"clip_store_subdir is invalid ({reason}): {value!r}; falling back to the clip store root",
         file=sys.stderr,
     )
 
@@ -452,8 +443,7 @@ def _log_invalid_camera(value: object, reason: str) -> None:
 
 def _validation_error_reason(exc: ValidationError) -> str:
     return "; ".join(
-        f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
-        for error in exc.errors()
+        f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}" for error in exc.errors()
     )
 
 

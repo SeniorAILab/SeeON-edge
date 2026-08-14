@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { bedZoneRecognitionFailureDetail, browseClipStorage, cameraDuplicateDetail, cameraProbeFailureDetail, createCamera, fetchCameraOverlay, fetchCameras, fetchClips, fetchClipStorage, fetchDetectionSettings, fetchStatus, fetchSystem, getApiBase, getCameraSnapshotUrl, getCameraStreamUrl, loginDashboard, logoutDashboard, recognizeBedZone, saveClipStorageLocation, saveConnection, saveDetectionSettings, setCameraOverlay, testCamera, testConnection, updateCamera, updateCameraDecodeBackend } from '@/shared/api/client';
+import { bedZoneRecognitionFailureDetail, browseClipStorage, cameraDuplicateDetail, cameraProbeFailureDetail, createCamera, fetchCameraOverlay, fetchCameras, fetchClips, fetchClipStorage, fetchDetectionSettings, fetchRuntimeSettings, fetchStatus, fetchSystem, getApiBase, getCameraSnapshotUrl, getCameraStreamUrl, loginDashboard, logoutDashboard, recognizeBedZone, saveClipStorageLocation, saveConnection, saveDetectionSettings, saveRuntimeSettings, setCameraOverlay, testCamera, testConnection, updateCamera, updateCameraDecodeBackend } from '@/shared/api/client';
 import { HttpError } from '@/shared/api/http';
 import type { DetectionSettings } from '@/shared/api/client';
 
@@ -423,6 +423,24 @@ describe('api client contracts', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ domains: null }) }));
 
     await expect(fetchDetectionSettings()).rejects.toThrow('Invalid detection settings response');
+  });
+
+  it('fetches and explicitly saves runtime clip export settings', async () => {
+    const setting = { clip_export_enabled: false, version: 0 };
+    const saved = { clip_export_enabled: true, version: 1 };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => setting })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => saved });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchRuntimeSettings()).resolves.toEqual(setting);
+    await expect(saveRuntimeSettings({ clip_export_enabled: true })).resolves.toEqual(saved);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/runtime-settings', expect.objectContaining({ credentials: 'same-origin' }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/runtime-settings', expect.objectContaining({
+      method: 'PUT',
+      body: JSON.stringify({ clip_export_enabled: true }),
+    }));
   });
 
   it('fetches clip storage info, browses a relative subdirectory, and saves a new location', async () => {
