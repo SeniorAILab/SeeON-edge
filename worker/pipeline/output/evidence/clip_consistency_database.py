@@ -1,70 +1,193 @@
-"""Schema-9 database validation and relation planning for clip repair."""
+"""Exact schema-9 validation and relation planning for clip repair."""
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from dataclasses import dataclass
-from typing import Final
 
+from worker.pipeline.output.evidence.clip_consistency_schema import (
+    canonical_schema9_fingerprint,
+    schema_fingerprint,
+)
 from worker.pipeline.output.evidence.clip_consistency_types import ClipConsistencyError
 from worker.pipeline.output.evidence.evidence_outbox_schema import SCHEMA_VERSION
-
-_EXPECTED_COLUMNS: Final = {
-    "evidence_events": (
-        "edge_event_id", "detected_at", "payload_json", "state", "queued_at",
-        "next_attempt_at", "attempt_count", "lease_owner", "lease_expires_at",
-        "delivery_state", "backend_event_id", "last_error_code",
-    ),
-    "evidence_clips": (
-        "clip_id", "local_state", "manifest_path", "state_version", "media_relpath",
-        "sha256", "size_bytes", "mime_type", "codec", "duration_ms",
-        "clip_start_at", "clip_end_at", "finalized_at", "unavailable_reason",
-        "publish_state", "publish_attempt_count", "publish_next_attempt_at",
-        "publish_lease_owner", "publish_lease_expires_at", "remote_state",
-        "backend_ack_at", "last_error_code",
-    ),
-    "clip_events": ("clip_id", "edge_event_id", "ordinal"),
-}
 
 
 @dataclass(frozen=True, slots=True)
 class RelationPlan:
     relations_before: int
     relations_after: int
+    mismatch_clips: int
+    mismatch_tuples: int
     delete_event_ids: tuple[str, ...]
     insert_rows: tuple[tuple[str, str, int], ...]
+    before_sha256: str
+    after_sha256: str
+
+    def authority_payload(self) -> dict[str, object]:
+        return {
+            "delete_event_ids": list(self.delete_event_ids),
+            "insert_rows": [list(row) for row in self.insert_rows],
+            "before_sha256": self.before_sha256,
+            "after_sha256": self.after_sha256,
+        }
+
+    @property
+    def plan_sha256(self) -> str:
+        encoded = json.dumps(
+            self.authority_payload(), sort_keys=True, separators=(",", ":")
+        ).encode()
+        return hashlib.sha256(encoded).hexdigest()
 
 
-def validate_database(connection: sqlite3.Connection, *, now: float) -> None:
+def validate_database(
+    connection: sqlite3.Connection,
+    *,
+    now: float,
+    check_leases: bool = True,
+) -> None:
     version_row = connection.execute("PRAGMA user_version").fetchone()
     if version_row is None or int(version_row[0]) != SCHEMA_VERSION:
         raise ClipConsistencyError("schema_drift", "database is not schema 9")
-    for table, expected in _EXPECTED_COLUMNS.items():
-        columns = tuple(str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})"))
-        if columns != expected:
-            raise ClipConsistencyError("schema_drift", f"{table} columns differ")
-        table_row = connection.execute(
-            "SELECT strict FROM pragma_table_list WHERE name = ? AND schema = 'main'",
-            (table,),
-        ).fetchone()
-        if table_row is None or int(table_row[0]) != 1:
-            raise ClipConsistencyError("schema_drift", f"{table} is not strict")
-    foreign_keys = {
-        (str(row[2]), str(row[3]), str(row[4]), str(row[6]))
-        for row in connection.execute("PRAGMA foreign_key_list(clip_events)")
-    }
-    expected_foreign_keys = {
-        ("evidence_clips", "clip_id", "clip_id", "RESTRICT"),
-        ("evidence_events", "edge_event_id", "edge_event_id", "RESTRICT"),
-    }
-    if foreign_keys != expected_foreign_keys:
-        raise ClipConsistencyError("schema_drift", "clip_events foreign keys differ")
+    if schema_fingerprint(connection) != canonical_schema9_fingerprint():
+        raise ClipConsistencyError("schema_drift", "schema-9 fingerprint differs")
     if connection.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
         raise ClipConsistencyError("integrity_drift", "database integrity check failed")
     if connection.execute("PRAGMA foreign_key_check").fetchall():
         raise ClipConsistencyError("foreign_key_drift", "database foreign keys are invalid")
+    if check_leases:
+        _reject_active_leases(connection, now)
+
+
+def plan_relations(
+    connection: sqlite3.Connection,
+    desired: dict[str, tuple[str, ...]],
+) -> RelationPlan:
+    clip_ids = {
+        str(row[0]) for row in connection.execute("SELECT clip_id FROM evidence_clips")
+    }
+    event_ids = {
+        str(row[0])
+        for row in connection.execute("SELECT edge_event_id FROM evidence_events")
+    }
+    desired_refs = [event_id for refs in desired.values() for event_id in refs]
+    if len(desired_refs) != len(set(desired_refs)):
+        raise ClipConsistencyError("manifest_conflict", "event has multiple authorities")
+    if not set(desired) <= clip_ids:
+        raise ClipConsistencyError("database_drift", "final clip is absent from database")
+    if not set(desired_refs) <= event_ids:
+        raise ClipConsistencyError("database_drift", "manifest event is absent from database")
+
+    existing_by_clip = {
+        clip_id: tuple(
+            (str(row[0]), int(row[1]))
+            for row in connection.execute(
+                "SELECT edge_event_id, ordinal FROM clip_events "
+                "WHERE clip_id = ? ORDER BY ordinal",
+                (clip_id,),
+            )
+        )
+        for clip_id in desired
+    }
+    desired_by_clip = {
+        clip_id: tuple((event_id, ordinal) for ordinal, event_id in enumerate(refs))
+        for clip_id, refs in desired.items()
+    }
+    changed = {
+        clip_id
+        for clip_id in desired
+        if existing_by_clip[clip_id] != desired_by_clip[clip_id]
+    }
+    owners = {
+        str(row[0]): str(row[1])
+        for row in connection.execute(
+            _select_event_owners_sql(len(desired_refs)), desired_refs
+        )
+    } if desired_refs else {}
+    delete_ids = {
+        str(row[0])
+        for clip_id in changed
+        for row in connection.execute(
+            "SELECT edge_event_id FROM clip_events WHERE clip_id = ?", (clip_id,)
+        )
+    }
+    delete_ids.update(
+        event_id
+        for event_id, owner in owners.items()
+        if owner not in desired
+    )
+    inserts = tuple(
+        (clip_id, event_id, ordinal)
+        for clip_id in sorted(changed)
+        for event_id, ordinal in desired_by_clip[clip_id]
+    )
+    before_rows = relation_rows(connection)
+    after_rows = _project_after(before_rows, delete_ids, inserts)
+    current_scope = {
+        row
+        for row in before_rows
+        if row[0] in desired or row[1] in set(desired_refs)
+    }
+    desired_scope = {
+        (clip_id, event_id, ordinal)
+        for clip_id, rows in desired_by_clip.items()
+        for event_id, ordinal in rows
+    }
+    return RelationPlan(
+        relations_before=len(before_rows),
+        relations_after=len(after_rows),
+        mismatch_clips=len(changed),
+        mismatch_tuples=len(current_scope.symmetric_difference(desired_scope)),
+        delete_event_ids=tuple(sorted(delete_ids)),
+        insert_rows=inserts,
+        before_sha256=_rows_sha256(before_rows),
+        after_sha256=_rows_sha256(after_rows),
+    )
+
+
+def relation_rows(connection: sqlite3.Connection) -> tuple[tuple[str, str, int], ...]:
+    return tuple(
+        (str(row[0]), str(row[1]), int(row[2]))
+        for row in connection.execute(
+            "SELECT clip_id, edge_event_id, ordinal FROM clip_events "
+            "ORDER BY clip_id, ordinal, edge_event_id"
+        )
+    )
+
+
+def relation_state_sha256(connection: sqlite3.Connection) -> str:
+    return _rows_sha256(relation_rows(connection))
+
+
+def _project_after(
+    before: tuple[tuple[str, str, int], ...],
+    delete_ids: set[str],
+    inserts: tuple[tuple[str, str, int], ...],
+) -> tuple[tuple[str, str, int], ...]:
+    rows = [row for row in before if row[1] not in delete_ids]
+    rows.extend(inserts)
+    return tuple(sorted(rows, key=lambda row: (row[0], row[2], row[1])))
+
+
+def _rows_sha256(rows: tuple[tuple[str, str, int], ...]) -> str:
+    payload = json.dumps(rows, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _select_event_owners_sql(count: int) -> str:
+    placeholders = ",".join("?" for _ in range(count))
+    return (
+        "SELECT edge_event_id, clip_id FROM clip_events "
+        f"WHERE edge_event_id IN ({placeholders})"
+    )
+
+
+def _reject_active_leases(connection: sqlite3.Connection, now: float) -> None:
     active_event = connection.execute(
-        "SELECT 1 FROM evidence_events WHERE state = 'IN_FLIGHT' AND lease_expires_at > ? LIMIT 1",
+        "SELECT 1 FROM evidence_events WHERE state = 'IN_FLIGHT' "
+        "AND lease_expires_at > ? LIMIT 1",
         (now,),
     ).fetchone()
     active_clip = connection.execute(
@@ -76,72 +199,10 @@ def validate_database(connection: sqlite3.Connection, *, now: float) -> None:
         raise ClipConsistencyError("active_lease", "active evidence lease exists")
 
 
-def plan_relations(
-    connection: sqlite3.Connection,
-    desired: dict[str, tuple[str, ...]],
-) -> RelationPlan:
-    clip_rows = {
-        str(row[0]): str(row[1])
-        for row in connection.execute("SELECT clip_id, local_state FROM evidence_clips")
-    }
-    event_ids = {
-        str(row[0])
-        for row in connection.execute("SELECT edge_event_id FROM evidence_events")
-    }
-    desired_refs = [event_id for refs in desired.values() for event_id in refs]
-    if len(desired_refs) != len(set(desired_refs)):
-        raise ClipConsistencyError("manifest_conflict", "event appears in multiple final manifests")
-    for clip_id, refs in desired.items():
-        if clip_id not in clip_rows:
-            raise ClipConsistencyError("database_drift", "final clip is absent from evidence_clips")
-        if not set(refs) <= event_ids:
-            raise ClipConsistencyError(
-                "database_drift", "manifest event is absent from evidence_events"
-            )
-
-    existing_by_clip: dict[str, tuple[tuple[str, int], ...]] = {}
-    for clip_id in desired:
-        rows = connection.execute(
-            "SELECT edge_event_id, ordinal FROM clip_events "
-            "WHERE clip_id = ? ORDER BY ordinal",
-            (clip_id,),
-        ).fetchall()
-        existing_by_clip[clip_id] = tuple((str(row[0]), int(row[1])) for row in rows)
-    changed = {
-        clip_id
-        for clip_id, refs in desired.items()
-        if existing_by_clip[clip_id]
-        != tuple((event_id, ordinal) for ordinal, event_id in enumerate(refs))
-    }
-    delete_ids = {
-        str(row[0])
-        for clip_id in changed
-        for row in connection.execute(
-            "SELECT edge_event_id FROM clip_events WHERE clip_id = ?", (clip_id,)
-        )
-    }
-    if desired_refs:
-        placeholders = ",".join("?" for _ in desired_refs)
-        delete_ids.update(
-            str(row[0])
-            for row in connection.execute(
-                f"SELECT edge_event_id FROM clip_events WHERE edge_event_id IN ({placeholders}) "
-                f"AND clip_id NOT IN ({','.join('?' for _ in desired)})",
-                (*desired_refs, *desired),
-            )
-        )
-    inserts = tuple(
-        (clip_id, event_id, ordinal)
-        for clip_id in sorted(changed)
-        for ordinal, event_id in enumerate(desired[clip_id])
-    )
-    before = int(connection.execute("SELECT COUNT(*) FROM clip_events").fetchone()[0])
-    return RelationPlan(
-        before,
-        before - len(delete_ids) + len(inserts),
-        tuple(sorted(delete_ids)),
-        inserts,
-    )
-
-
-__all__ = ["RelationPlan", "plan_relations", "validate_database"]
+__all__ = [
+    "RelationPlan",
+    "plan_relations",
+    "relation_rows",
+    "relation_state_sha256",
+    "validate_database",
+]

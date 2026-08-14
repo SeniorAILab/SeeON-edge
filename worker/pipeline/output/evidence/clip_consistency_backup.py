@@ -1,206 +1,193 @@
-"""Verified online SQLite prebackups for clip consistency apply mode."""
+"""Gap-free SQLite online backup and strict prebackup receipt handling."""
 
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import sqlite3
-import stat
-import time
-from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, cast
 
+from worker.pipeline.output.evidence.clip_consistency_backup_receipt import (
+    RECEIPT_VERSION,
+    database_state_sha256,
+    parse_backup_receipt,
+    source_identity,
+    verify_backup,
+)
+from worker.pipeline.output.evidence.clip_consistency_io import (
+    FaultHook,
+    atomic_write_json,
+    checkpoint,
+    ensure_secure_subdirectory,
+    fsync_directory,
+    sha256_regular,
+    validate_under_root,
+)
 from worker.pipeline.output.evidence.clip_consistency_types import (
     BackupReceipt,
     ClipConsistencyError,
 )
-from worker.pipeline.output.evidence.durability import fsync_directory, fsync_file
 from worker.pipeline.output.evidence.evidence_outbox_schema import SCHEMA_VERSION
 
-_RECEIPT_VERSION: Final = 1
+
+def create_verified_backup(
+    source: Path,
+    snapshot: sqlite3.Connection,
+    *,
+    maintenance_root: Path,
+    expected_uid: int,
+    fault_hook: FaultHook | None = None,
+) -> BackupReceipt:
+    backup_root = ensure_secure_subdirectory(
+        maintenance_root,
+        "backups",
+        expected_uid=expected_uid,
+    )
+    identity = source_identity(source, snapshot, expected_uid)
+    stem = datetime.now(UTC).strftime("worker-state-%Y%m%dT%H%M%S.%fZ")
+    backup_path = backup_root / f"{stem}.sqlite3"
+    receipt_path = backup_root / f"{stem}.receipt.json"
+    destination: sqlite3.Connection | None = None
+    backup_source: sqlite3.Connection | None = None
+    try:
+        descriptor = os.open(backup_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        os.close(descriptor)
+        os.chmod(backup_path, 0o600)
+        destination = sqlite3.connect(backup_path)
+        backup_source = sqlite3.connect(
+            f"file:{source}?mode=ro",
+            uri=True,
+            isolation_level=None,
+        )
+        backup_source.execute("BEGIN")
+        backup_source.backup(destination)
+        backup_source.rollback()
+        backup_source.close()
+        backup_source = None
+        destination.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        destination.commit()
+        destination.close()
+        destination = None
+        _fsync_backup(backup_path, backup_root, fault_hook)
+        backup_size = backup_path.stat().st_size
+        backup_file_sha256 = sha256_regular(backup_path)
+        backup_state_sha256 = database_state_sha256(backup_path)
+        _require_equal_state(backup_state_sha256, identity.source_state_sha256)
+        _require_unchanged_source(
+            identity,
+            source_identity(source, snapshot, expected_uid),
+        )
+        receipt = BackupReceipt(
+            format_version=RECEIPT_VERSION,
+            schema_version=SCHEMA_VERSION,
+            owner_uid=expected_uid,
+            source_path=identity.source_path,
+            source_mode=identity.source_mode,
+            source_size=identity.source_size,
+            source_file_sha256=identity.source_file_sha256,
+            source_wal_path=identity.source_wal_path,
+            source_wal_present=identity.source_wal_present,
+            source_wal_size=identity.source_wal_size,
+            source_wal_sha256=identity.source_wal_sha256,
+            source_state_sha256=identity.source_state_sha256,
+            backup_path=str(backup_path.absolute()),
+            backup_mode=0o600,
+            backup_size=backup_size,
+            backup_file_sha256=backup_file_sha256,
+            backup_state_sha256=backup_state_sha256,
+            receipt_path=str(receipt_path.absolute()),
+        )
+        atomic_write_json(
+            receipt_path,
+            receipt.to_dict(),
+            root=maintenance_root,
+            expected_uid=expected_uid,
+            hook=fault_hook,
+            stage="backup_receipt",
+        )
+    except BaseException:
+        if backup_source is not None:
+            backup_source.close()
+        if destination is not None:
+            destination.close()
+        receipt_path.unlink(missing_ok=True)
+        backup_path.unlink(missing_ok=True)
+        fsync_directory(backup_root)
+        raise
+    return receipt
 
 
 def ensure_prebackup(
     source: Path,
-    connection: sqlite3.Connection,
+    snapshot: sqlite3.Connection,
     *,
     receipt_path: Path | None,
-    backup_dir: Path,
+    maintenance_root: Path,
+    expected_uid: int,
+    hook: FaultHook | None = None,
 ) -> BackupReceipt:
-    checkpoint = cast(
-        "tuple[int, int, int] | None",
-        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone(),
-    )
-    if checkpoint is None or int(checkpoint[0]) != 0:
-        raise ClipConsistencyError("backup_checkpoint_failed", "WAL checkpoint was busy")
-    source_hash = _sha256_regular(source)
-    if receipt_path is not None:
-        return _verify_receipt(receipt_path, source, source_hash)
-    return _create_backup(source, connection, source_hash, backup_dir)
-
-
-def _create_backup(
-    source: Path,
-    connection: sqlite3.Connection,
-    source_hash: str,
-    backup_dir: Path,
-) -> BackupReceipt:
-    _safe_directory(backup_dir)
-    token = f"{time.time_ns()}-{source_hash[:12]}"
-    backup_path = backup_dir / f"worker-state-schema9-{token}.sqlite3"
-    receipt_path = backup_dir / f"worker-state-schema9-{token}.receipt.json"
-    try:
-        destination = sqlite3.connect(backup_path)
-        try:
-            connection.backup(destination)
-        finally:
-            destination.close()
-        os.chmod(backup_path, 0o600)
-        fsync_file(backup_path)
-        fsync_directory(backup_dir)
-        backup_hash = _sha256_regular(backup_path)
-        _verify_backup_database(backup_path)
-        receipt = BackupReceipt(
-            format_version=_RECEIPT_VERSION,
-            schema_version=SCHEMA_VERSION,
-            source_sha256=source_hash,
-            source_mode=stat.S_IMODE(source.stat(follow_symlinks=False).st_mode),
-            backup_sha256=backup_hash,
-            backup_mode=0o600,
-            backup_path=str(backup_path.resolve()),
-            receipt_path=str(receipt_path.resolve()),
+    if receipt_path is None:
+        return create_verified_backup(
+            source,
+            snapshot,
+            maintenance_root=maintenance_root,
+            expected_uid=expected_uid,
+            fault_hook=hook,
         )
-        _write_new_json(receipt_path, receipt.to_dict())
-    except Exception:
-        backup_path.unlink(missing_ok=True)
-        receipt_path.unlink(missing_ok=True)
-        raise
-    else:
-        return receipt
-
-
-def _verify_receipt(path: Path, source: Path, source_hash: str) -> BackupReceipt:
-    receipt_info = _regular_info(path)
-    if stat.S_IMODE(receipt_info.st_mode) != 0o600:
-        raise ClipConsistencyError("backup_mode_invalid", "receipt is not owner-only")
-    payload = _read_json_regular(path)
-    receipt = BackupReceipt(
-        format_version=_required_int(payload, "format_version"),
-        schema_version=_required_int(payload, "schema_version"),
-        source_sha256=_required_str(payload, "source_sha256"),
-        source_mode=_required_int(payload, "source_mode"),
-        backup_sha256=_required_str(payload, "backup_sha256"),
-        backup_mode=_required_int(payload, "backup_mode"),
-        backup_path=_required_str(payload, "backup_path"),
-        receipt_path=str(path.resolve()),
+    receipt = verify_backup_receipt_for_resume(
+        receipt_path,
+        maintenance_root=maintenance_root,
+        expected_uid=expected_uid,
     )
-    backup = Path(receipt.backup_path)
-    if receipt.format_version != _RECEIPT_VERSION or receipt.schema_version != SCHEMA_VERSION:
-        raise ClipConsistencyError("backup_receipt_invalid", "receipt version mismatch")
-    if receipt.source_sha256 != source_hash:
-        raise ClipConsistencyError("backup_stale", "receipt does not match current database")
-    if source.resolve() == backup.resolve():
-        raise ClipConsistencyError("backup_receipt_invalid", "backup aliases source database")
-    info = _regular_info(backup)
-    if stat.S_IMODE(info.st_mode) != 0o600 or receipt.backup_mode != 0o600:
-        raise ClipConsistencyError("backup_mode_invalid", "backup is not owner-only")
-    if _sha256_regular(backup) != receipt.backup_sha256:
-        raise ClipConsistencyError("backup_hash_mismatch", "backup hash mismatch")
-    _verify_backup_database(backup)
+    current = source_identity(source, snapshot, expected_uid)
+    if not current.matches_reusable_source(receipt):
+        raise ClipConsistencyError("backup_receipt_stale", "source identity differs")
     return receipt
 
 
-def _verify_backup_database(path: Path) -> None:
-    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+def verify_backup_receipt_for_resume(
+    path: Path,
+    *,
+    maintenance_root: Path,
+    expected_uid: int,
+) -> BackupReceipt:
+    receipt = parse_backup_receipt(
+        path,
+        maintenance_root=maintenance_root,
+        expected_uid=expected_uid,
+    )
+    validate_under_root(
+        Path(receipt.backup_path),
+        maintenance_root,
+        allow_missing_leaf=False,
+    )
+    verify_backup(receipt, expected_uid)
+    return receipt
+
+
+def _fsync_backup(path: Path, root: Path, hook: FaultHook | None) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
-        version_row = cast(
-            "tuple[int] | None", connection.execute("PRAGMA user_version").fetchone()
-        )
-        version = -1 if version_row is None else version_row[0]
-        integrity = connection.execute("PRAGMA integrity_check").fetchall()
-        foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
-    finally:
-        connection.close()
-    if version != SCHEMA_VERSION or integrity != [("ok",)] or foreign_keys:
-        raise ClipConsistencyError("backup_verification_failed", "backup database check failed")
-
-
-def _safe_directory(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if path.is_symlink() or not path.is_dir():
-        raise ClipConsistencyError("unsafe_path", "backup directory is unsafe")
-
-
-def _regular_info(path: Path) -> os.stat_result:
-    try:
-        info = path.stat(follow_symlinks=False)
-    except OSError as exc:
-        raise ClipConsistencyError("unsafe_path", "required file is unavailable") from exc
-    if not stat.S_ISREG(info.st_mode) or path.is_symlink():
-        raise ClipConsistencyError("unsafe_path", "required file is not regular")
-    return info
-
-
-def _sha256_regular(path: Path) -> str:
-    _regular_info(path)
-    digest = hashlib.sha256()
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
-    try:
-        while chunk := os.read(descriptor, 1024 * 1024):
-            digest.update(chunk)
+        os.fsync(descriptor)
     finally:
         os.close(descriptor)
-    return digest.hexdigest()
+    checkpoint(hook, "backup:file_fsynced")
+    fsync_directory(root)
+    checkpoint(hook, "backup:directory_fsynced")
 
 
-def _read_json_regular(path: Path) -> dict[str, object]:
-    _regular_info(path)
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(path, flags)
-        try:
-            raw = b""
-            while chunk := os.read(descriptor, 8192):
-                raw += chunk
-                if len(raw) > 64 * 1024:
-                    raise OSError("receipt too large")
-        finally:
-            os.close(descriptor)
-        loaded: object = json.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ClipConsistencyError("backup_receipt_invalid", "receipt cannot be read") from exc
-    if not isinstance(loaded, dict) or not all(
-        isinstance(key, str) for key in loaded
-    ):
-        raise ClipConsistencyError("backup_receipt_invalid", "receipt is not an object")
-    return cast("dict[str, object]", loaded)
+def _require_equal_state(backup_sha256: str, source_sha256: str) -> None:
+    if backup_sha256 != source_sha256:
+        raise ClipConsistencyError("backup_verification_failed", "snapshot state differs")
 
 
-def _required_int(payload: Mapping[str, object], key: str) -> int:
-    value = payload.get(key)
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise ClipConsistencyError("backup_receipt_invalid", "receipt fields invalid")
-    return value
+def _require_unchanged_source(before: object, after: object) -> None:
+    if before != after:
+        raise ClipConsistencyError("source_changed", "database changed during backup")
 
 
-def _required_str(payload: Mapping[str, object], key: str) -> str:
-    value = payload.get(key)
-    if not isinstance(value, str):
-        raise ClipConsistencyError("backup_receipt_invalid", "receipt fields invalid")
-    return value
-
-
-def _write_new_json(path: Path, payload: Mapping[str, object]) -> None:
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-        json.dump(payload, output, sort_keys=True, separators=(",", ":"))
-        output.write("\n")
-        output.flush()
-        os.fsync(output.fileno())
-    fsync_directory(path.parent)
-
-
-__all__ = ["ensure_prebackup"]
+__all__ = [
+    "create_verified_backup",
+    "ensure_prebackup",
+    "verify_backup_receipt_for_resume",
+]

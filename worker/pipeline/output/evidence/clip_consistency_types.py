@@ -1,12 +1,16 @@
-"""Typed reports for the schema-9 clip consistency maintenance command."""
+"""Typed contracts for schema-9 clip consistency maintenance."""
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+import os
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import TypeAlias
+from typing import Literal, TypeAlias
 
 JsonScalar: TypeAlias = str | int | bool | None
+JournalState: TypeAlias = Literal["PREPARED", "DB_COMMITTED", "DONE", "ABORTED"]
+FaultHook: TypeAlias = Callable[[str], None]
 
 
 @dataclass(slots=True)
@@ -24,8 +28,10 @@ class RepairCounters:
     unavailable_finals: int
     relations_before: int
     relations_after: int
-    relations_deleted: int
-    relations_inserted: int
+    mismatch_clips: int
+    mismatch_tuples: int
+    sql_relations_deleted: int
+    sql_relations_inserted: int
     staging_before: int
     staging_after: int
     staging_to_delete: int
@@ -33,19 +39,29 @@ class RepairCounters:
 
     @property
     def changes(self) -> int:
-        staging_changes = max(self.staging_to_delete, self.staging_deleted)
-        return self.relations_deleted + self.relations_inserted + staging_changes
+        staging = max(self.staging_to_delete, self.staging_deleted)
+        return self.mismatch_tuples + staging
 
 
 @dataclass(frozen=True, slots=True)
 class BackupReceipt:
     format_version: int
     schema_version: int
-    source_sha256: str
+    owner_uid: int
+    source_path: str
     source_mode: int
-    backup_sha256: str
-    backup_mode: int
+    source_size: int
+    source_file_sha256: str
+    source_wal_path: str
+    source_wal_present: bool
+    source_wal_size: int
+    source_wal_sha256: str
+    source_state_sha256: str
     backup_path: str
+    backup_mode: int
+    backup_size: int
+    backup_file_sha256: str
+    backup_state_sha256: str
     receipt_path: str
 
     def to_dict(self) -> dict[str, JsonScalar]:
@@ -56,36 +72,45 @@ class BackupReceipt:
 class RepairReceipt:
     format_version: int
     mode: str
+    state: JournalState | Literal["DRY_RUN"]
     schema_version: int
     counters: RepairCounters
     backup_receipt_path: str | None
-    receipt_path: str | None
+    journal_path: str | None
 
     def to_dict(self) -> dict[str, object]:
         return {
             "format_version": self.format_version,
             "mode": self.mode,
+            "state": self.state,
             "schema_version": self.schema_version,
             "counters": asdict(self.counters),
             "changes": self.counters.changes,
             "backup_receipt_path": self.backup_receipt_path,
-            "receipt_path": self.receipt_path,
+            "journal_path": self.journal_path,
         }
 
 
 @dataclass(frozen=True, slots=True)
 class RepairRequest:
-    store_dir: Path
+    state_db: Path
+    clip_store: Path
     apply: bool = False
+    resume: bool = False
+    maintenance_root: Path | None = None
+    journal_path: Path | None = None
+    quiescence_receipt: Path | None = None
     prebackup_receipt: Path | None = None
-    backup_dir: Path | None = None
-    receipt_dir: Path | None = None
+    expected_owner_uid: int = field(default_factory=os.getuid)
     ffprobe_bin: str = "ffprobe"
+    fault_hook: FaultHook | None = field(default=None, repr=False, compare=False)
 
 
 __all__ = [
     "BackupReceipt",
     "ClipConsistencyError",
+    "FaultHook",
+    "JournalState",
     "RepairCounters",
     "RepairReceipt",
     "RepairRequest",

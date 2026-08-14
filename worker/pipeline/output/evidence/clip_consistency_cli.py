@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
-from worker.pipeline.output.evidence.clip_consistency_repair import (
-    repair_clip_consistency,
-)
+from worker.pipeline.output.evidence.clip_consistency_repair import repair_clip_consistency
 from worker.pipeline.output.evidence.clip_consistency_types import (
     ClipConsistencyError,
     RepairRequest,
@@ -18,11 +17,15 @@ from worker.pipeline.output.evidence.clip_store_lock import ClipStoreLockedError
 
 
 class _Arguments(argparse.Namespace):
-    store_dir: Path = Path()
+    state_db: Path = Path()
+    clip_store: Path = Path()
     apply: bool = False
+    resume: bool = False
+    maintenance_root: Path | None = None
+    journal: Path | None = None
+    quiescence_receipt: Path | None = None
     prebackup_receipt: Path | None = None
-    backup_dir: Path | None = None
-    receipt_dir: Path | None = None
+    expected_owner_uid: int = os.getuid()
     ffprobe_bin: str = "ffprobe"
 
 
@@ -30,15 +33,16 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Repair schema-9 clip relations from authoritative final manifests."
     )
-    _ = parser.add_argument("store_dir", type=Path)
-    _ = parser.add_argument(
-        "--apply",
-        action="store_true",
-        help="apply the reported repair; default is read-only dry-run",
-    )
+    _ = parser.add_argument("--state-db", type=Path, required=True)
+    _ = parser.add_argument("--clip-store", type=Path, required=True)
+    mode = parser.add_mutually_exclusive_group()
+    _ = mode.add_argument("--apply", action="store_true")
+    _ = mode.add_argument("--resume", action="store_true")
+    _ = parser.add_argument("--maintenance-root", type=Path)
+    _ = parser.add_argument("--journal", type=Path)
+    _ = parser.add_argument("--quiescence-receipt", type=Path)
     _ = parser.add_argument("--prebackup-receipt", type=Path)
-    _ = parser.add_argument("--backup-dir", type=Path)
-    _ = parser.add_argument("--receipt-dir", type=Path)
+    _ = parser.add_argument("--expected-owner-uid", type=int, default=os.getuid())
     _ = parser.add_argument("--ffprobe-bin", default="ffprobe")
     return parser
 
@@ -48,11 +52,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         receipt = repair_clip_consistency(
             RepairRequest(
-                store_dir=arguments.store_dir,
+                state_db=arguments.state_db,
+                clip_store=arguments.clip_store,
                 apply=arguments.apply,
+                resume=arguments.resume,
+                maintenance_root=arguments.maintenance_root,
+                journal_path=arguments.journal,
+                quiescence_receipt=arguments.quiescence_receipt,
                 prebackup_receipt=arguments.prebackup_receipt,
-                backup_dir=arguments.backup_dir,
-                receipt_dir=arguments.receipt_dir,
+                expected_owner_uid=arguments.expected_owner_uid,
                 ffprobe_bin=arguments.ffprobe_bin,
             )
         )
