@@ -32,6 +32,17 @@ class RuntimeSetting:
         }
 
 
+class RuntimeSettingsVersionConflict(RuntimeError):
+    def __init__(self, current: RuntimeSetting) -> None:
+        super().__init__("runtime settings version conflict")
+        self.current = current
+
+
+def _check_expected_version(current: RuntimeSetting, expected: int | None) -> None:
+    if expected is not None and expected != current.version:
+        raise RuntimeSettingsVersionConflict(current)
+
+
 class RuntimeSettingsStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -44,14 +55,21 @@ class RuntimeSettingsStore:
 
     def get(self) -> RuntimeSetting:
         with self._lock:
-            row = self._connect().execute(
-                "SELECT clip_export_enabled, version FROM runtime_settings WHERE id = 1"
-            ).fetchone()
+            row = (
+                self._connect()
+                .execute("SELECT clip_export_enabled, version FROM runtime_settings WHERE id = 1")
+                .fetchone()
+            )
         if row is None:
             return RuntimeSetting()
         return RuntimeSetting(clip_export_enabled=bool(row[0]), version=int(row[1]))
 
-    def set_clip_export_enabled(self, enabled: bool) -> RuntimeSetting:
+    def set_clip_export_enabled(
+        self,
+        enabled: bool,
+        *,
+        expected_version: int | None = None,
+    ) -> RuntimeSetting:
         with self._lock:
             connection = self._connect()
             connection.execute("BEGIN IMMEDIATE")
@@ -59,12 +77,18 @@ class RuntimeSettingsStore:
                 row = connection.execute(
                     "SELECT clip_export_enabled, version FROM runtime_settings WHERE id = 1"
                 ).fetchone()
-                if row is None:
-                    setting = RuntimeSetting(clip_export_enabled=enabled, version=1)
+                current = (
+                    RuntimeSetting() if row is None else RuntimeSetting(bool(row[0]), int(row[1]))
+                )
+                _check_expected_version(current, expected_version)
+                if row is None and not enabled:
+                    setting = current
+                elif row is None:
+                    setting = RuntimeSetting(clip_export_enabled=True, version=1)
                     connection.execute(
                         "INSERT INTO runtime_settings "
                         "(id, clip_export_enabled, version) VALUES (1, ?, ?)",
-                        (int(enabled), setting.version),
+                        (1, setting.version),
                     )
                 elif bool(row[0]) == enabled:
                     setting = RuntimeSetting(clip_export_enabled=enabled, version=int(row[1]))
@@ -86,9 +110,7 @@ class RuntimeSettingsStore:
 
     def _connect(self) -> sqlite3.Connection:
         if self._connection is None:
-            self._connection = connect_catalog_store(
-                self.path, (_CREATE_RUNTIME_SETTINGS_TABLE,)
-            )
+            self._connection = connect_catalog_store(self.path, (_CREATE_RUNTIME_SETTINGS_TABLE,))
         return self._connection
 
 
@@ -101,4 +123,9 @@ def get_runtime_settings_store(app: FastAPI) -> RuntimeSettingsStore:
     return store
 
 
-__all__ = ["RuntimeSetting", "RuntimeSettingsStore", "get_runtime_settings_store"]
+__all__ = [
+    "RuntimeSetting",
+    "RuntimeSettingsStore",
+    "RuntimeSettingsVersionConflict",
+    "get_runtime_settings_store",
+]

@@ -110,6 +110,12 @@ export type RuntimeDeviceDiagnostics = {
   captured_at_sec: number | null;
 };
 
+export type RuntimeClipExportApplied = {
+  enabled: boolean | null;
+  version: number | null;
+  freshness: 'fresh' | 'stale' | 'offline' | 'unknown';
+};
+
 export type RuntimeWorkerDiagnostics = {
   alive: boolean | null;
   pid: number | null;
@@ -134,6 +140,7 @@ export type StatusSnapshot = {
     cameras: Record<string, RuntimeCameraDiagnostics>;
     worker: RuntimeWorkerDiagnostics | null;
     device: RuntimeDeviceDiagnostics | null;
+    clip_export_applied: RuntimeClipExportApplied;
     clip_recorder: RuntimeClipRecorder | null;
     stale_after_sec: number | null;
   };
@@ -293,7 +300,9 @@ export type RuntimeSettings = {
   version: number;
 };
 
-export type RuntimeSettingsInput = Pick<RuntimeSettings, 'clip_export_enabled'>;
+export type RuntimeSettingsInput = Pick<RuntimeSettings, 'clip_export_enabled'> & {
+  expected_version: number;
+};
 
 /** GET /clips/storage — usage + current selection under the CLIP_STORE_DIR mount root. */
 export type ClipStorageInfo = {

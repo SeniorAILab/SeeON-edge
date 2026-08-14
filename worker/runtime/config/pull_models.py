@@ -4,7 +4,15 @@ import sys
 from pathlib import PurePosixPath
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    ValidationError,
+    model_validator,
+)
 
 from contracts.worker_config import (
     PulledCameraConfig,
@@ -128,8 +136,8 @@ class BackendWorkerConfigPayload(BaseModel):
     clip_store_subdir: object = None
     # Persisted ml-api runtime policy. Missing fields from old payloads and
     # last-known-good rows are deliberately OFF at version zero.
-    clip_export_enabled: bool = False
-    clip_export_version: int = Field(default=0, ge=0)
+    clip_export_enabled: StrictBool = False
+    clip_export_version: StrictInt = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def _require_version(self) -> BackendWorkerConfigPayload:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -196,6 +197,73 @@ def test_compatibility_probe_waits_for_reprobe_and_recovers_without_restart(
         "capability:camera-1",
         "capability:camera-1",
     ]
+
+
+def test_policy_flip_during_capability_probe_prevents_clip_claim(tmp_path: Path) -> None:
+    database = tmp_path / "evidence.sqlite3"
+    _stage_clip(database)
+    enabled = True
+
+    class FlipDuringProbeTransport(FakeTransport):
+        def probe_capabilities(self, camera_id: str):  # noqa: ANN201
+            nonlocal enabled
+            enabled = False
+            return super().probe_capabilities(camera_id)
+
+    transport = FlipDuringProbeTransport()
+    sender = EvidenceSender(
+        database,
+        SenderConfig(
+            relay_url="http://127.0.0.1:1",
+            relay_token="test-token",
+            probe_camera_id="camera-1",
+        ),
+        transport=transport,
+        clip_export_enabled=lambda: enabled,
+        clock=lambda: 100.0,
+        owner="sender-a",
+    )
+    assert sender.run_once() is SenderStep.EVENT_ACKED
+    assert sender.run_once() is SenderStep.EVENT_ACKED
+
+    assert sender.run_once() is SenderStep.CLIP_POLICY_BLOCKED
+    assert not any(call.startswith("clip:") for call in transport.calls)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT publish_state, publish_attempt_count FROM evidence_clips WHERE clip_id = ?",
+            (CLIP,),
+        ).fetchone() == ("WAITING", 0)
+
+
+def test_policy_flip_at_dispatch_boundary_releases_claim_without_attempt_mutation(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "evidence.sqlite3"
+    _stage_clip(database)
+    transport = FakeTransport()
+    reads = iter((True, True, False))
+    sender = EvidenceSender(
+        database,
+        SenderConfig(
+            relay_url="http://127.0.0.1:1",
+            relay_token="test-token",
+            probe_camera_id="camera-1",
+        ),
+        transport=transport,
+        clip_export_enabled=lambda: next(reads),
+        clock=lambda: 100.0,
+        owner="sender-a",
+    )
+    assert sender.run_once() is SenderStep.EVENT_ACKED
+    assert sender.run_once() is SenderStep.EVENT_ACKED
+
+    assert sender.run_once() is SenderStep.CLIP_POLICY_BLOCKED
+    assert not any(call.startswith("clip:") for call in transport.calls)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT publish_state, publish_attempt_count FROM evidence_clips WHERE clip_id = ?",
+            (CLIP,),
+        ).fetchone() == ("WAITING", 0)
 
 
 def test_sender_acks_every_event_before_one_coalesced_clip(tmp_path: Path) -> None:

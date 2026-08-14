@@ -52,7 +52,14 @@ describe('api client contracts', () => {
     await expect(fetchStatus()).resolves.toEqual({
       cameras: {},
       stale_after_sec: null,
-      runtime: { cameras: {}, worker: null, device: null, clip_recorder: null, stale_after_sec: null },
+      runtime: {
+        cameras: {},
+        worker: null,
+        device: null,
+        clip_export_applied: { enabled: null, version: null, freshness: 'unknown' },
+        clip_recorder: null,
+        stale_after_sec: null,
+      },
     });
     await expect(fetchClips()).resolves.toEqual([]);
   });
@@ -434,12 +441,14 @@ describe('api client contracts', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(fetchRuntimeSettings()).resolves.toEqual(setting);
-    await expect(saveRuntimeSettings({ clip_export_enabled: true })).resolves.toEqual(saved);
+    await expect(
+      saveRuntimeSettings({ clip_export_enabled: true, expected_version: 0 }),
+    ).resolves.toEqual(saved);
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/runtime-settings', expect.objectContaining({ credentials: 'same-origin' }));
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/runtime-settings', expect.objectContaining({
       method: 'PUT',
-      body: JSON.stringify({ clip_export_enabled: true }),
+      body: JSON.stringify({ clip_export_enabled: true, expected_version: 0 }),
     }));
   });
 

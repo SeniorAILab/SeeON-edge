@@ -21,6 +21,10 @@ class LiveClipExportPolicy:
         with self._lock:
             return self._version
 
+    def snapshot(self) -> tuple[bool, int]:
+        with self._lock:
+            return self._enabled, self._version
+
     def apply(self, *, enabled: bool, version: int) -> bool:
         """Apply a non-stale snapshot and report whether effective state changed."""
         with self._lock:

@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClipExportSettingsCard } from '@/features/settings/ClipExportSettingsCard';
 import { saveRuntimeSettings } from '@/shared/api/client';
+import { HttpError } from '@/shared/api/http';
 import type { RuntimeSettings } from '@/shared/api/client';
 import type { PollingResource } from '@/shared/api/usePollingResource';
 
@@ -21,6 +22,7 @@ function resource(overrides: Partial<PollingResource<RuntimeSettings>> = {}): Po
     lastSuccessAt: Date.now(),
     refreshing: false,
     retry: vi.fn(),
+    replace: vi.fn(),
     ...overrides,
   };
 }
@@ -61,7 +63,11 @@ describe('ClipExportSettingsCard', () => {
 
     await act(async () => button(host, '저장').click());
 
-    expect(saveRuntimeSettings).toHaveBeenCalledWith({ clip_export_enabled: true });
+    expect(saveRuntimeSettings).toHaveBeenCalledWith({
+      clip_export_enabled: true,
+      expected_version: 0,
+    });
+    expect(value.replace).toHaveBeenCalledWith({ clip_export_enabled: true, version: 1 });
     expect(value.retry).toHaveBeenCalled();
     act(() => root.unmount());
   });
@@ -79,6 +85,24 @@ describe('ClipExportSettingsCard', () => {
     expect(rendered.host.querySelector('[role="alert"]')?.textContent).toContain('저장하지 못했습니다');
     expect(rendered.host.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked).toBe(true);
     act(() => rendered.root.unmount());
+  });
+
+  it('reports a stale-write conflict and adopts the server current value', async () => {
+    vi.mocked(saveRuntimeSettings).mockRejectedValue(new HttpError(409, {
+      detail: {
+        code: 'runtime_settings_version_conflict',
+        current: { clip_export_enabled: true, version: 3 },
+      },
+    }));
+    const { host, root, value } = render();
+    act(() => host.querySelector<HTMLInputElement>('input[type="checkbox"]')?.click());
+
+    await act(async () => button(host, '저장').click());
+
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('다른 운영자가 먼저 변경했습니다');
+    expect(value.replace).toHaveBeenCalledWith({ clip_export_enabled: true, version: 3 });
+    expect(value.retry).toHaveBeenCalled();
+    act(() => root.unmount());
   });
 
   it('offers an accessible retry when the initial request fails', () => {

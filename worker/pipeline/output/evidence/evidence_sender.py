@@ -110,12 +110,25 @@ class EvidenceSender:
         self._next_capability_probe_at = 0.0
         if capabilities.clip_export != 1:
             return SenderStep.CAPABILITY_BLOCKED
+        # The capability probe is network I/O. Re-read the live switch after
+        # it returns so an OFF transition cannot race into a durable claim.
+        if not self._clip_export_enabled():
+            return SenderStep.CLIP_POLICY_BLOCKED
 
         clip_now = self._clock()
         clip_lease = ClaimLease(self._owner, clip_now, self.config.lease_seconds)
         with EvidenceOutbox.open(self.database_path) as outbox:
             clip = outbox.claim_clip(clip_lease)
             if clip is not None:
+                # This is the final dispatch boundary. If OFF wins after the
+                # claim, release it with the lease CAS and restore the attempt
+                # count because no request was sent.
+                if not self._clip_export_enabled():
+                    return (
+                        SenderStep.CLIP_POLICY_BLOCKED
+                        if outbox.release_clip_claim(clip)
+                        else SenderStep.LEASE_LOST
+                    )
                 return self._send_clip(outbox, clip, clip_now)
         return SenderStep.IDLE
 

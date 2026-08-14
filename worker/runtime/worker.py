@@ -991,7 +991,7 @@ class WorkerRuntime:
             self.diagnostics,
             facility_by_camera,
             transport,
-            before_publish=self._refresh_clip_recorder_telemetry,
+            before_publish=self._refresh_runtime_status_telemetry,
         )
         try:
             sender.start()
@@ -1472,6 +1472,11 @@ class WorkerRuntime:
             return
         self._clip_recorder = recorder
         self.diagnostics.set_clip_recorder_status(ClipRecorderStatus(available=True))
+
+    def _refresh_runtime_status_telemetry(self) -> None:
+        enabled, version = self._clip_export_policy.snapshot()
+        self.diagnostics.set_clip_export_applied(enabled=enabled, version=version)
+        self._refresh_clip_recorder_telemetry()
 
     def _refresh_clip_recorder_telemetry(self) -> None:
         """Push the clip recorder's live counters into diagnostics.
