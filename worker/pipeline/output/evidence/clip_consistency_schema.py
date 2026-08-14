@@ -27,7 +27,7 @@ def schema_fingerprint(connection: sqlite3.Connection) -> tuple[object, ...]:
         (str(row[0]), str(row[1]), str(row[2]), _normalize_sql(row[3]))
         for row in connection.execute(
             "SELECT type, name, tbl_name, sql FROM sqlite_master "
-            "WHERE type IN ('table', 'index') ORDER BY type, name"
+            "ORDER BY type, name, tbl_name"
         )
     )
     tables = tuple(row[1] for row in master if row[0] == "table")

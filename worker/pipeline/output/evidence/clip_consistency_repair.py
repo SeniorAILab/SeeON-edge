@@ -78,7 +78,11 @@ def _dry_run(request: RepairRequest) -> RepairReceipt:
             expected_uid=request.expected_owner_uid,
             ffprobe_bin=request.ffprobe_bin,
         )
-        plan = plan_relations(connection, authority.desired)
+        plan = plan_relations(
+            connection,
+            authority.desired,
+            quarantine_clip_ids=tuple(path.name for path in authority.staging),
+        )
         return RepairReceipt(
             RECEIPT_VERSION,
             "dry-run",

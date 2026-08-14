@@ -23,6 +23,7 @@ class RelationPlan:
     mismatch_tuples: int
     delete_event_ids: tuple[str, ...]
     insert_rows: tuple[tuple[str, str, int], ...]
+    quarantine_clip_ids: tuple[str, ...]
     before_sha256: str
     after_sha256: str
 
@@ -30,6 +31,7 @@ class RelationPlan:
         return {
             "delete_event_ids": list(self.delete_event_ids),
             "insert_rows": [list(row) for row in self.insert_rows],
+            "quarantine_clip_ids": list(self.quarantine_clip_ids),
             "before_sha256": self.before_sha256,
             "after_sha256": self.after_sha256,
         }
@@ -64,6 +66,8 @@ def validate_database(
 def plan_relations(
     connection: sqlite3.Connection,
     desired: dict[str, tuple[str, ...]],
+    *,
+    quarantine_clip_ids: tuple[str, ...] = (),
 ) -> RelationPlan:
     clip_ids = {
         str(row[0]) for row in connection.execute("SELECT clip_id FROM evidence_clips")
@@ -72,6 +76,10 @@ def plan_relations(
         str(row[0])
         for row in connection.execute("SELECT edge_event_id FROM evidence_events")
     }
+    if quarantine_clip_ids != tuple(sorted(set(quarantine_clip_ids))):
+        raise ClipConsistencyError("manifest_conflict", "staging authority is not canonical")
+    if not set(quarantine_clip_ids) <= set(desired):
+        raise ClipConsistencyError("manifest_conflict", "staging lacks final authority")
     desired_refs = [event_id for refs in desired.values() for event_id in refs]
     if len(desired_refs) != len(set(desired_refs)):
         raise ClipConsistencyError("manifest_conflict", "event has multiple authorities")
@@ -142,6 +150,7 @@ def plan_relations(
         mismatch_tuples=len(current_scope.symmetric_difference(desired_scope)),
         delete_event_ids=tuple(sorted(delete_ids)),
         insert_rows=inserts,
+        quarantine_clip_ids=quarantine_clip_ids,
         before_sha256=_rows_sha256(before_rows),
         after_sha256=_rows_sha256(after_rows),
     )

@@ -3,15 +3,25 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import stat
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from worker.pipeline.output.evidence.clip_consistency_backup_fields import (
+    boolean as _boolean,
+)
+from worker.pipeline.output.evidence.clip_consistency_backup_fields import (
+    integer as _integer,
+)
+from worker.pipeline.output.evidence.clip_consistency_backup_fields import (
+    string as _string,
+)
 from worker.pipeline.output.evidence.clip_consistency_database import validate_database
 from worker.pipeline.output.evidence.clip_consistency_io import (
     read_strict_json,
+    reject_lexical_parent_components,
     sha256_regular,
     validate_regular,
     validate_under_root,
@@ -22,7 +32,7 @@ from worker.pipeline.output.evidence.clip_consistency_types import (
 )
 from worker.pipeline.output.evidence.evidence_outbox_schema import SCHEMA_VERSION
 
-RECEIPT_VERSION = 2
+RECEIPT_VERSION = 3
 _RECEIPT_KEYS = frozenset(BackupReceipt.__dataclass_fields__)
 _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 
@@ -39,15 +49,12 @@ class SourceIdentity:
     source_wal_sha256: str
     source_state_sha256: str
 
+    @property
+    def source_identity_sha256(self) -> str:
+        return _source_identity_sha256(self)
+
     def matches_reusable_source(self, receipt: BackupReceipt) -> bool:
-        # WAL checkpoint/deletion may change raw file facts after the creating
-        # connection closes. Reuse binds the path, mode, and exact logical
-        # SQLite snapshot; the receipt still retains the creation-time raw facts.
-        return (
-            self.source_path == receipt.source_path
-            and self.source_mode == receipt.source_mode
-            and self.source_state_sha256 == receipt.source_state_sha256
-        )
+        return self.source_identity_sha256 == receipt.source_identity_sha256
 
 
 def source_identity(
@@ -61,7 +68,8 @@ def source_identity(
         exact_mode=None,
         label="state database",
     )
-    wal = Path(f"{source}-wal")
+    canonical_source = source.resolve(strict=True)
+    wal = Path(f"{canonical_source}-wal")
     if wal.exists():
         wal_info = validate_regular(
             wal,
@@ -73,7 +81,7 @@ def source_identity(
     else:
         wal_present, wal_size, wal_sha = False, 0, _EMPTY_SHA256
     return SourceIdentity(
-        source_path=str(source.absolute()),
+        source_path=str(canonical_source),
         source_mode=stat.S_IMODE(info.st_mode),
         source_size=info.st_size,
         source_file_sha256=sha256_regular(source),
@@ -113,6 +121,7 @@ def parse_backup_receipt(
         source_wal_size=_integer(payload, "source_wal_size"),
         source_wal_sha256=_string(payload, "source_wal_sha256"),
         source_state_sha256=_string(payload, "source_state_sha256"),
+        source_identity_sha256=_string(payload, "source_identity_sha256"),
         backup_path=_string(payload, "backup_path"),
         backup_mode=_integer(payload, "backup_mode"),
         backup_size=_integer(payload, "backup_size"),
@@ -124,7 +133,7 @@ def parse_backup_receipt(
         receipt.format_version != RECEIPT_VERSION
         or receipt.schema_version != SCHEMA_VERSION
         or receipt.owner_uid != expected_uid
-        or receipt.receipt_path != str(path.absolute())
+        or receipt.receipt_path != str(path.resolve(strict=True))
         or not _valid_receipt_facts(receipt)
     ):
         raise ClipConsistencyError("backup_receipt_invalid", "receipt identity differs")
@@ -174,9 +183,15 @@ def _valid_receipt_facts(receipt: BackupReceipt) -> bool:
         receipt.source_file_sha256,
         receipt.source_wal_sha256,
         receipt.source_state_sha256,
+        receipt.source_identity_sha256,
         receipt.backup_file_sha256,
         receipt.backup_state_sha256,
     )
+    try:
+        for path in authority_paths:
+            reject_lexical_parent_components(path)
+    except ClipConsistencyError:
+        return False
     wal_facts = (
         receipt.source_wal_size >= 0
         and (receipt.source_wal_present or receipt.source_wal_size == 0)
@@ -194,33 +209,22 @@ def _valid_receipt_facts(receipt: BackupReceipt) -> bool:
         and receipt.backup_mode == 0o600
         and all(_is_sha256(value) for value in hashes)
         and receipt.source_state_sha256 == receipt.backup_state_sha256
+        and receipt.source_identity_sha256 == _source_identity_sha256(receipt)
         and wal_facts
     )
 
 
+def _source_identity_sha256(identity: SourceIdentity | BackupReceipt) -> str:
+    payload = {
+        field: getattr(identity, field)
+        for field in SourceIdentity.__dataclass_fields__
+    }
+    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _is_sha256(value: str) -> bool:
     return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
-
-
-def _integer(payload: Mapping[str, object], key: str) -> int:
-    value = payload.get(key)
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise ClipConsistencyError("backup_receipt_invalid", "receipt field type differs")
-    return value
-
-
-def _string(payload: Mapping[str, object], key: str) -> str:
-    value = payload.get(key)
-    if not isinstance(value, str):
-        raise ClipConsistencyError("backup_receipt_invalid", "receipt field type differs")
-    return value
-
-
-def _boolean(payload: Mapping[str, object], key: str) -> bool:
-    value = payload.get(key)
-    if not isinstance(value, bool):
-        raise ClipConsistencyError("backup_receipt_invalid", "receipt field type differs")
-    return value
 
 
 __all__ = [

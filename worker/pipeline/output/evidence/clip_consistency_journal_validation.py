@@ -23,6 +23,8 @@ JOURNAL_KEYS = frozenset(
         "clip_store",
         "journal_path",
         "source_state_sha256",
+        "source_identity_sha256",
+        "non_relation_state_sha256",
         "plan_sha256",
         "relations_before_sha256",
         "relations_after_sha256",
@@ -30,13 +32,15 @@ JOURNAL_KEYS = frozenset(
         "backup_receipt_sha256",
         "delete_event_ids",
         "insert_rows",
+        "quarantine_clip_ids",
         "quarantine",
+        "quarantine_sha256",
         "counters",
         "error",
     }
 )
 _COUNTER_KEYS = frozenset(RepairCounters.__dataclass_fields__)
-_STATES = frozenset({"PREPARED", "DB_COMMITTED", "DONE", "ABORTED"})
+_STATES = frozenset({"PREPARED", "DB_COMMITTED", "DONE", "ABORTED", "UNKNOWN"})
 
 
 def counters(value: object) -> RepairCounters:

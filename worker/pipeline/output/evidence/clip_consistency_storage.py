@@ -17,6 +17,9 @@ from worker.pipeline.output.evidence.clip_consistency_journal import (
     ApplyJournal,
     mark_journal,
 )
+from worker.pipeline.output.evidence.clip_consistency_quarantine import (
+    absolute_quarantine_rows,
+)
 from worker.pipeline.output.evidence.clip_consistency_types import (
     ClipConsistencyError,
     RepairRequest,
@@ -46,17 +49,11 @@ def execute_plan(connection: sqlite3.Connection, plan: RelationPlan) -> None:
 
 
 def plan_staging_quarantine(
-    staging: tuple[Path, ...],
+    clip_store: Path,
+    clip_ids: tuple[str, ...],
     plan_sha256: str,
 ) -> list[tuple[Path, Path]]:
-    rows = [
-        (
-            original,
-            original.parent
-            / f".clip-consistency-{plan_sha256[:16]}-{original.name}",
-        )
-        for original in staging
-    ]
+    rows = absolute_quarantine_rows(clip_store, clip_ids, plan_sha256)
     for _, held in rows:
         _require_available_quarantine(held)
     return rows
@@ -118,6 +115,10 @@ def open_write_exclusion(state_db: Path) -> sqlite3.Connection:
     try:
         connection.execute("PRAGMA busy_timeout = 0")
         connection.execute("PRAGMA foreign_keys = ON")
+        # Normalize quiescent WAL bytes before taking the raw source identity.
+        # A pinned reader may leave frames in WAL; BEGIN IMMEDIATE still excludes
+        # every writer and the receipt then binds that exact WAL-aware state.
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
         connection.execute("BEGIN IMMEDIATE")
     except BaseException:
         connection.close()

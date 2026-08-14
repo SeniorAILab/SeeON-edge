@@ -90,12 +90,13 @@ def create_verified_backup(
             source_wal_size=identity.source_wal_size,
             source_wal_sha256=identity.source_wal_sha256,
             source_state_sha256=identity.source_state_sha256,
-            backup_path=str(backup_path.absolute()),
+            source_identity_sha256=identity.source_identity_sha256,
+            backup_path=str(backup_path.resolve(strict=True)),
             backup_mode=0o600,
             backup_size=backup_size,
             backup_file_sha256=backup_file_sha256,
             backup_state_sha256=backup_state_sha256,
-            receipt_path=str(receipt_path.absolute()),
+            receipt_path=str(receipt_path.resolve(strict=False)),
         )
         atomic_write_json(
             receipt_path,

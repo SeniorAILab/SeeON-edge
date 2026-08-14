@@ -14,6 +14,7 @@ from uuid import UUID
 
 import pytest
 
+from worker.pipeline.output.evidence import clip_consistency_apply as apply_module
 from worker.pipeline.output.evidence.clip_consistency_repair import repair_clip_consistency
 from worker.pipeline.output.evidence.clip_consistency_types import (
     ClipConsistencyError,
@@ -520,3 +521,323 @@ repair_clip_consistency(RepairRequest(
     assert resumed.state == repeated.state == "DONE"
     assert _relations(database) == [("clip-a", EVENTS[0], 0)]
     assert not staging.exists()
+
+
+@pytest.mark.parametrize("writer", ("event", "config", "fault"))
+def test_prepared_resume_rejects_any_non_relation_database_write(
+    tmp_path: Path,
+    writer: str,
+) -> None:
+    database, clip_store, maintenance = _layout(tmp_path)
+    _unavailable(clip_store, "clip-a", (EVENTS[0],))
+    _seed(
+        database,
+        clips=(("clip-a", "UNAVAILABLE"),),
+        relations=(("clip-a", EVENTS[1], 0),),
+    )
+    staging = clip_store / "clips/.staging/clip-a"
+    staging.mkdir()
+    quiescence = maintenance / "quiescence.json"
+    _quiescence(quiescence, database, clip_store)
+    journal = maintenance / "apply.json"
+    _crash_apply(
+        database,
+        clip_store,
+        maintenance,
+        journal,
+        quiescence,
+        "journal_prepared:fsync_directory",
+    )
+    with sqlite3.connect(database) as connection:
+        if writer == "event":
+            connection.execute(
+                "UPDATE evidence_events SET payload_json = '{\"changed\":true}' "
+                "WHERE edge_event_id = ?",
+                (EVENTS[0],),
+            )
+        elif writer == "config":
+            connection.execute(
+                """INSERT INTO config_current
+                   (id, generation, config_version, registry_version, payload_json, saved_at)
+                   VALUES (1, 1, 1, 1, '{}', 1)"""
+            )
+        else:
+            connection.execute(
+                """INSERT INTO faults (
+                    id, pid, boot_time_iso, profile, task, stage, camera_id,
+                    frame_index, pts, frame_shape_json, frame_hash_sha256,
+                    model_artifact_digest, invocation_seq, exception_type,
+                    exception_message, exit_code, action, fault_time_iso
+                ) VALUES (
+                    1, 1, 'boot', 'cpu', 'task', 'stage', 'camera',
+                    NULL, NULL, NULL, NULL, NULL, 1, 'Error', 'changed', 1,
+                    'stop', 'fault-time'
+                )"""
+            )
+
+    with pytest.raises(ClipConsistencyError, match="resume_conflict"):
+        repair_clip_consistency(
+            _request(database, clip_store, maintenance, resume=True)
+        )
+
+    assert json.loads(journal.read_text(encoding="utf-8"))["state"] == "PREPARED"
+    assert staging.is_dir()
+    assert _relations(database) == [("clip-a", EVENTS[1], 0)]
+
+
+@pytest.mark.parametrize(
+    "outcome,expected_state",
+    (("commit", "DB_COMMITTED"), ("rollback", "ABORTED"), ("partial", "UNKNOWN")),
+)
+def test_ambiguous_commit_exception_is_classified_from_fresh_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+    expected_state: str,
+) -> None:
+    database, clip_store, maintenance = _layout(tmp_path)
+    _unavailable(clip_store, "clip-a", (EVENTS[0],))
+    _seed(
+        database,
+        clips=(("clip-a", "UNAVAILABLE"),),
+        relations=(("clip-a", EVENTS[1], 0),),
+    )
+    staging = clip_store / "clips/.staging/clip-a"
+    staging.mkdir()
+
+    def ambiguous_commit(connection: sqlite3.Connection) -> None:
+        if outcome == "commit":
+            connection.commit()
+        elif outcome == "rollback":
+            connection.rollback()
+        else:
+            connection.execute(
+                "DELETE FROM clip_events WHERE edge_event_id = ?", (EVENTS[0],)
+            )
+            connection.commit()
+        raise OSError(f"{outcome}-then-raise")
+
+    monkeypatch.setattr(apply_module, "_commit_connection", ambiguous_commit)
+
+    with pytest.raises(OSError, match=f"{outcome}-then-raise"):
+        repair_clip_consistency(
+            _request(database, clip_store, maintenance, apply=True)
+        )
+
+    journal = maintenance / "apply.json"
+    assert json.loads(journal.read_text(encoding="utf-8"))["state"] == expected_state
+    if outcome == "rollback":
+        assert staging.is_dir()
+        assert _relations(database) == [("clip-a", EVENTS[1], 0)]
+    elif outcome == "commit":
+        assert not staging.exists()
+        assert tuple((clip_store / "clips/.staging").glob(".clip-consistency-*"))
+        resumed = repair_clip_consistency(
+            _request(database, clip_store, maintenance, resume=True)
+        )
+        assert resumed.state == "DONE"
+        assert _relations(database) == [("clip-a", EVENTS[0], 0)]
+    else:
+        assert not staging.exists()
+        assert tuple((clip_store / "clips/.staging").glob(".clip-consistency-*"))
+        with pytest.raises(ClipConsistencyError, match="unknown|corrupt"):
+            repair_clip_consistency(
+                _request(database, clip_store, maintenance, resume=True)
+            )
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ("held-final", "original-final", "changed-id", "missing", "extra", "duplicate"),
+)
+def test_prepared_journal_rejects_noncanonical_quarantine_authority(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    database, clip_store, maintenance = _layout(tmp_path)
+    manifest = _unavailable(clip_store, "clip-a", (EVENTS[0],))
+    _seed(
+        database,
+        clips=(("clip-a", "UNAVAILABLE"),),
+        relations=(("clip-a", EVENTS[1], 0),),
+    )
+    staging = clip_store / "clips/.staging/clip-a"
+    staging.mkdir()
+    quiescence = maintenance / "quiescence.json"
+    _quiescence(quiescence, database, clip_store)
+    journal = maintenance / "apply.json"
+    _crash_apply(
+        database,
+        clip_store,
+        maintenance,
+        journal,
+        quiescence,
+        "journal_prepared:fsync_directory",
+    )
+    payload = json.loads(journal.read_text(encoding="utf-8"))
+    row = payload["quarantine"][0]
+    if tamper == "held-final":
+        row[1] = "clips/clip-a"
+    elif tamper == "original-final":
+        row[0] = "clips/clip-a"
+    elif tamper == "changed-id":
+        payload["quarantine_clip_ids"][0] = "clip-other"
+        row[0] = "clips/.staging/clip-other"
+        row[1] = row[1].replace("clip-a", "clip-other")
+    elif tamper == "missing":
+        payload["quarantine"] = []
+    elif tamper == "extra":
+        payload["quarantine"].append(
+            [
+                "clips/.staging/clip-other",
+                "clips/.staging/.clip-consistency-x-clip-other",
+            ]
+        )
+    else:
+        payload["quarantine"].append(list(row))
+    journal.write_text(json.dumps(payload), encoding="utf-8")
+    journal.chmod(0o600)
+    manifest_before = manifest.read_bytes()
+
+    with pytest.raises(ClipConsistencyError, match="journal_invalid"):
+        repair_clip_consistency(
+            _request(database, clip_store, maintenance, resume=True)
+        )
+
+    assert manifest.read_bytes() == manifest_before
+    assert staging.is_dir()
+
+
+def test_prepared_journal_rejects_reordered_quarantine_set(tmp_path: Path) -> None:
+    database, clip_store, maintenance = _layout(tmp_path)
+    _unavailable(clip_store, "clip-a", (EVENTS[0],))
+    _unavailable(clip_store, "clip-b", (EVENTS[2],))
+    _seed(
+        database,
+        clips=(("clip-a", "UNAVAILABLE"), ("clip-b", "UNAVAILABLE")),
+        relations=(("clip-a", EVENTS[1], 0),),
+    )
+    (clip_store / "clips/.staging/clip-a").mkdir()
+    (clip_store / "clips/.staging/clip-b").mkdir()
+    quiescence = maintenance / "quiescence.json"
+    _quiescence(quiescence, database, clip_store)
+    journal = maintenance / "apply.json"
+    _crash_apply(
+        database,
+        clip_store,
+        maintenance,
+        journal,
+        quiescence,
+        "journal_prepared:fsync_directory",
+    )
+    payload = json.loads(journal.read_text(encoding="utf-8"))
+    payload["quarantine"].reverse()
+    journal.write_text(json.dumps(payload), encoding="utf-8")
+    journal.chmod(0o600)
+
+    with pytest.raises(ClipConsistencyError, match="journal_invalid"):
+        repair_clip_consistency(
+            _request(database, clip_store, maintenance, resume=True)
+        )
+
+
+@pytest.mark.parametrize(
+    "outcome,expected_state",
+    (("commit", "DB_COMMITTED"), ("rollback", "ABORTED"), ("partial", "UNKNOWN")),
+)
+def test_prepared_resume_classifies_ambiguous_commit_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+    expected_state: str,
+) -> None:
+    database, clip_store, maintenance = _layout(tmp_path)
+    _unavailable(clip_store, "clip-a", (EVENTS[0],))
+    _seed(
+        database,
+        clips=(("clip-a", "UNAVAILABLE"),),
+        relations=(("clip-a", EVENTS[1], 0),),
+    )
+    staging = clip_store / "clips/.staging/clip-a"
+    staging.mkdir()
+    quiescence = maintenance / "quiescence.json"
+    _quiescence(quiescence, database, clip_store)
+    journal = maintenance / "apply.json"
+    _crash_apply(
+        database,
+        clip_store,
+        maintenance,
+        journal,
+        quiescence,
+        "journal_prepared:fsync_directory",
+    )
+
+    def ambiguous_commit(connection: sqlite3.Connection) -> None:
+        if outcome == "commit":
+            connection.commit()
+        elif outcome == "rollback":
+            connection.rollback()
+        else:
+            connection.execute(
+                "DELETE FROM clip_events WHERE edge_event_id = ?", (EVENTS[0],)
+            )
+            connection.commit()
+        raise OSError(f"resume-{outcome}-then-raise")
+
+    monkeypatch.setattr(apply_module, "_commit_connection", ambiguous_commit)
+
+    with pytest.raises(OSError, match=f"resume-{outcome}-then-raise"):
+        repair_clip_consistency(
+            _request(database, clip_store, maintenance, resume=True)
+        )
+
+    assert json.loads(journal.read_text(encoding="utf-8"))["state"] == expected_state
+    if outcome == "rollback":
+        assert staging.is_dir()
+        assert _relations(database) == [("clip-a", EVENTS[1], 0)]
+    else:
+        assert not staging.exists()
+        assert tuple((clip_store / "clips/.staging").glob(".clip-consistency-*"))
+
+
+def _crash_apply(
+    database: Path,
+    clip_store: Path,
+    maintenance: Path,
+    journal: Path,
+    quiescence: Path,
+    stage: str,
+) -> None:
+    program = """
+import os
+import sys
+from pathlib import Path
+from worker.pipeline.output.evidence.clip_consistency_repair import repair_clip_consistency
+from worker.pipeline.output.evidence.clip_consistency_types import RepairRequest
+
+def crash(observed: str) -> None:
+    if observed == sys.argv[6]:
+        os._exit(91)
+
+repair_clip_consistency(RepairRequest(
+    Path(sys.argv[1]), Path(sys.argv[2]), apply=True,
+    maintenance_root=Path(sys.argv[3]), journal_path=Path(sys.argv[4]),
+    quiescence_receipt=Path(sys.argv[5]), fault_hook=crash,
+))
+"""
+    crashed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            program,
+            str(database),
+            str(clip_store),
+            str(maintenance),
+            str(journal),
+            str(quiescence),
+            stage,
+        ],
+        cwd=Path(__file__).parents[1],
+        check=False,
+    )
+    assert crashed.returncode == 91

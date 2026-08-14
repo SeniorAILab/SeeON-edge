@@ -10,7 +10,11 @@ from uuid import UUID
 
 import pytest
 
+from worker.pipeline.output.evidence.clip_consistency_backup import (
+    verify_backup_receipt_for_resume,
+)
 from worker.pipeline.output.evidence.clip_consistency_database import validate_database
+from worker.pipeline.output.evidence.clip_consistency_io import validate_under_root
 from worker.pipeline.output.evidence.clip_consistency_repair import repair_clip_consistency
 from worker.pipeline.output.evidence.clip_consistency_types import (
     ClipConsistencyError,
@@ -365,6 +369,188 @@ def test_verified_prebackup_can_be_reused_once_and_then_refuses_stale_source(
                 prebackup_receipt=backup_receipt,
             )
         )
+
+
+@pytest.mark.parametrize("object_kind", ("trigger", "view", "table"))
+def test_schema9_rejects_every_unexpected_sqlite_master_object_before_plan(
+    tmp_path: Path,
+    object_kind: str,
+) -> None:
+    database, clip_store, maintenance, quiescence, journal = _fixture(tmp_path)
+    statements = {
+        "trigger": """
+            CREATE TRIGGER mutate_event_after_relation
+            AFTER INSERT ON clip_events BEGIN
+                UPDATE evidence_events SET payload_json = '{\"mutated\":true}';
+            END
+        """,
+        "view": "CREATE VIEW leaked_events AS SELECT * FROM evidence_events",
+        "table": "CREATE TABLE unexpected_authority (value TEXT) STRICT",
+    }
+    with sqlite3.connect(database) as connection:
+        before = connection.execute(
+            "SELECT payload_json FROM evidence_events WHERE edge_event_id = ?",
+            (EVENT_ID,),
+        ).fetchone()
+        connection.execute(statements[object_kind])
+
+    with pytest.raises(ClipConsistencyError, match="schema_drift"):
+        repair_clip_consistency(
+            RepairRequest(
+                database,
+                clip_store,
+                apply=True,
+                maintenance_root=maintenance,
+                journal_path=journal,
+                quiescence_receipt=quiescence,
+            )
+        )
+
+    assert not journal.exists()
+    assert not (maintenance / "backups").exists()
+    with sqlite3.connect(database) as connection:
+        after = connection.execute(
+            "SELECT payload_json FROM evidence_events WHERE edge_event_id = ?",
+            (EVENT_ID,),
+        ).fetchone()
+        assert connection.execute("SELECT COUNT(*) FROM clip_events").fetchone() == (0,)
+    assert after == before
+
+
+@pytest.mark.parametrize(
+    "drop_sql",
+    (
+        "DROP TABLE faults",
+        "DROP TABLE config_history",
+        "DROP INDEX evidence_events_claim_idx",
+    ),
+)
+def test_schema9_rejects_every_missing_canonical_object(
+    tmp_path: Path,
+    drop_sql: str,
+) -> None:
+    database, _, _, _, _ = _fixture(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute(drop_sql)
+    with sqlite3.connect(database) as connection:
+        with pytest.raises(ClipConsistencyError, match="schema_drift"):
+            validate_database(connection, now=0)
+
+
+@pytest.mark.parametrize("authority", ("state", "clip", "maintenance", "journal", "proof"))
+def test_every_request_authority_rejects_lexical_parent_components(
+    tmp_path: Path,
+    authority: str,
+) -> None:
+    database, clip_store, maintenance, quiescence, journal = _fixture(tmp_path)
+    (database.parent / "nested").mkdir()
+    (clip_store / "nested").mkdir()
+    (maintenance / "nested").mkdir()
+    aliases = {
+        "state": database.parent / "nested" / ".." / database.name,
+        "clip": clip_store / "nested" / "..",
+        "maintenance": maintenance / "nested" / "..",
+        "journal": maintenance / "nested" / ".." / journal.name,
+        "proof": maintenance / "nested" / ".." / quiescence.name,
+    }
+    request = RepairRequest(
+        aliases["state"] if authority == "state" else database,
+        aliases["clip"] if authority == "clip" else clip_store,
+        apply=authority not in {"state", "clip"},
+        maintenance_root=(
+            aliases["maintenance"] if authority == "maintenance" else maintenance
+        ),
+        journal_path=aliases["journal"] if authority == "journal" else journal,
+        quiescence_receipt=(
+            aliases["proof"] if authority == "proof" else quiescence
+        ),
+    )
+
+    with pytest.raises(ClipConsistencyError, match="unsafe_path"):
+        repair_clip_consistency(request)
+
+
+def test_root_containment_rejects_lexical_and_resolved_escape_forms(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "maintenance"
+    nested = root / "nested"
+    escape = tmp_path / "escape"
+    nested.mkdir(parents=True)
+    escape.mkdir()
+    candidates = (
+        root / ".." / "escape",
+        nested / "." / ".." / ".." / "escape",
+        Path(str(root) + "/nested/../../escape"),
+    )
+    for candidate in candidates:
+        with pytest.raises(ClipConsistencyError, match="unsafe_path"):
+            validate_under_root(candidate, root, allow_missing_leaf=False)
+
+
+@pytest.mark.parametrize("field", ("source_size", "source_file_sha256"))
+def test_reusable_backup_receipt_rejects_tampered_raw_source_facts(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    _, _, maintenance, _, receipt = _apply(tmp_path)
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload[field] = payload[field] + 1 if field == "source_size" else "0" * 64
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    receipt.chmod(0o600)
+
+    with pytest.raises(ClipConsistencyError, match="backup_receipt_invalid"):
+        verify_backup_receipt_for_resume(
+            receipt,
+            maintenance_root=maintenance,
+            expected_uid=os.getuid(),
+        )
+
+
+def test_backup_authority_path_rejects_lexical_parent_alias(tmp_path: Path) -> None:
+    _, _, maintenance, _, receipt = _apply(tmp_path)
+    receipt_alias = receipt.parent / "nested"
+    receipt_alias.mkdir()
+    lexical = receipt_alias / ".." / receipt.name
+
+    with pytest.raises(ClipConsistencyError, match="unsafe_path"):
+        verify_backup_receipt_for_resume(
+            lexical,
+            maintenance_root=maintenance,
+            expected_uid=os.getuid(),
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("source_path", "source_wal_path", "backup_path", "receipt_path"),
+)
+def test_backup_receipt_rejects_lexical_parent_in_every_advertised_path(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    _, _, maintenance, _, receipt = _apply(tmp_path)
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    original = Path(payload[field])
+    nested = original.parent / "nested-authority"
+    nested.mkdir(exist_ok=True)
+    payload[field] = str(nested / ".." / original.name)
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    receipt.chmod(0o600)
+
+    with pytest.raises(ClipConsistencyError, match="unsafe_path|backup_receipt_invalid"):
+        verify_backup_receipt_for_resume(
+            receipt,
+            maintenance_root=maintenance,
+            expected_uid=os.getuid(),
+        )
+
+
+def test_edge_worker_ci_smokes_packaged_maintenance_cli() -> None:
+    workflow = Path(".github/workflows/edge-worker-image.yml").read_text(encoding="utf-8")
+
+    assert "scripts/repair_clip_consistency.py --help" in workflow
 
 
 def test_gap_free_backup_contains_committed_wal_state(tmp_path: Path) -> None:

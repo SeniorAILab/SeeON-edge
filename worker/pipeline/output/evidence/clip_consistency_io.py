@@ -26,6 +26,7 @@ def checkpoint(hook: FaultHook | None, stage: str) -> None:
 
 
 def validate_no_symlink_components(path: Path, *, allow_missing_leaf: bool = False) -> None:
+    reject_lexical_parent_components(path)
     absolute = path.absolute()
     current = Path(absolute.anchor)
     parts = absolute.parts[1:] if absolute.anchor else absolute.parts
@@ -88,8 +89,13 @@ def validate_under_root(path: Path, root: Path, *, allow_missing_leaf: bool) -> 
     validate_no_symlink_components(root)
     validate_no_symlink_components(path, allow_missing_leaf=allow_missing_leaf)
     try:
-        path.absolute().relative_to(root.absolute())
-    except ValueError as exc:
+        resolved_root = root.resolve(strict=True)
+        if allow_missing_leaf and not path.exists():
+            resolved_path = path.parent.resolve(strict=True) / path.name
+        else:
+            resolved_path = path.resolve(strict=True)
+        resolved_path.relative_to(resolved_root)
+    except (OSError, ValueError) as exc:
         raise ClipConsistencyError("unsafe_path", "maintenance path escaped root") from exc
 
 
@@ -172,6 +178,7 @@ def atomic_write_json(
 
 
 def sha256_regular(path: Path) -> str:
+    validate_no_symlink_components(path)
     digest = hashlib.sha256()
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
@@ -195,6 +202,11 @@ def ensure_secure_subdirectory(root: Path, name: str, *, expected_uid: int) -> P
     return path
 
 
+def reject_lexical_parent_components(path: Path) -> None:
+    if ".." in path.parts:
+        raise ClipConsistencyError("unsafe_path", "path contains a lexical parent component")
+
+
 def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     result: dict[str, object] = {}
     for key, value in pairs:
@@ -209,6 +221,7 @@ __all__ = [
     "checkpoint",
     "ensure_secure_subdirectory",
     "read_strict_json",
+    "reject_lexical_parent_components",
     "sha256_regular",
     "validate_directory",
     "validate_no_symlink_components",

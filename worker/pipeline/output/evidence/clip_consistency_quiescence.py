@@ -53,8 +53,8 @@ def validate_quiescence_receipt(
     valid = (
         _integer(payload, "format_version") == 1
         and _integer(payload, "operator_uid") == expected_uid
-        and _string(payload, "state_db") == str(state_db.absolute())
-        and _string(payload, "clip_store") == str(clip_store.absolute())
+        and _string(payload, "state_db") == str(state_db.resolve(strict=True))
+        and _string(payload, "clip_store") == str(clip_store.resolve(strict=True))
         and _string(payload, "stopped_service") == "ml-worker"
         and isinstance(writers, list)
         and tuple(cast("list[object]", writers)) == _WRITERS

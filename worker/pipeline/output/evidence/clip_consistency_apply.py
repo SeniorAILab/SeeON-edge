@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from pathlib import Path
 
 from worker.pipeline.output.evidence.clip_consistency_backup import (
     ensure_prebackup,
     verify_backup_receipt_for_resume,
+)
+from worker.pipeline.output.evidence.clip_consistency_commit import (
+    abort_precommit as _abort_precommit,
+)
+from worker.pipeline.output.evidence.clip_consistency_commit import (
+    classify_ambiguous_commit as _classify_ambiguous_commit,
+)
+from worker.pipeline.output.evidence.clip_consistency_commit import (
+    commit_connection as _commit_connection,
 )
 from worker.pipeline.output.evidence.clip_consistency_database import (
     plan_relations,
@@ -26,6 +36,9 @@ from worker.pipeline.output.evidence.clip_consistency_manifest import (
     ManifestAuthority,
     scan_manifest_authority,
 )
+from worker.pipeline.output.evidence.clip_consistency_preimage import (
+    non_relation_preimage_sha256,
+)
 from worker.pipeline.output.evidence.clip_consistency_receipt import (
     build_counters,
     journal_receipt,
@@ -38,7 +51,6 @@ from worker.pipeline.output.evidence.clip_consistency_storage import (
     plan_staging_quarantine,
     quarantine_staging,
     required_mutation_paths,
-    restore_quarantine,
 )
 from worker.pipeline.output.evidence.clip_consistency_types import (
     ClipConsistencyError,
@@ -51,14 +63,19 @@ def apply_repair(request: RepairRequest) -> RepairReceipt:
     root, journal_path = required_mutation_paths(request)
     if journal_path.exists():
         raise ClipConsistencyError("journal_exists", "use --resume for existing journal")
-    control = open_write_exclusion(request.state_db)
+    control: sqlite3.Connection | None = open_write_exclusion(request.state_db)
     moved: list[tuple[Path, Path]] = []
     journal: ApplyJournal | None = None
     committed = False
+    commit_attempted = False
     try:
         validate_database(control, now=time.time())
         authority = _authority(request)
-        plan = plan_relations(control, authority.desired)
+        plan = plan_relations(
+            control,
+            authority.desired,
+            quarantine_clip_ids=tuple(path.name for path in authority.staging),
+        )
         counters = build_counters(plan, authority)
         backup = ensure_prebackup(
             request.state_db,
@@ -68,17 +85,22 @@ def apply_repair(request: RepairRequest) -> RepairReceipt:
             expected_uid=request.expected_owner_uid,
             hook=request.fault_hook,
         )
-        moved = plan_staging_quarantine(authority.staging, plan.plan_sha256)
+        moved = plan_staging_quarantine(
+            request.clip_store,
+            plan.quarantine_clip_ids,
+            plan.plan_sha256,
+        )
         journal = prepared_journal(
             owner_uid=request.expected_owner_uid,
             state_db=request.state_db,
             clip_store=request.clip_store,
             journal_path=journal_path,
             source_state_sha256=backup.source_state_sha256,
+            source_identity_sha256=backup.source_identity_sha256,
+            non_relation_state_sha256=non_relation_preimage_sha256(control),
             backup_receipt_path=backup.receipt_path,
             backup_receipt_sha256=sha256_regular(Path(backup.receipt_path)),
             plan=plan,
-            quarantine=_relative_quarantine(request.clip_store, moved),
             counters=counters,
         )
         write_journal(
@@ -93,7 +115,14 @@ def apply_repair(request: RepairRequest) -> RepairReceipt:
         checkpoint(request.fault_hook, "apply:before_relations")
         execute_plan(control, plan)
         checkpoint(request.fault_hook, "apply:before_commit")
-        control.commit()
+        commit_attempted = True
+        try:
+            _commit_connection(control)
+        except BaseException as commit_error:
+            control.close()
+            control = None
+            _classify_ambiguous_commit(request, journal, moved, commit_error)
+            raise
         committed = True
         checkpoint(request.fault_hook, "apply:after_commit")
         journal = mark_journal(
@@ -106,11 +135,13 @@ def apply_repair(request: RepairRequest) -> RepairReceipt:
         )
         return journal_receipt("apply", finish_cleanup(request, journal))
     except BaseException as exc:
-        if not committed:
+        if not committed and not commit_attempted:
+            assert control is not None
             _abort_precommit(request, control, moved, journal, exc)
         raise
     finally:
-        control.close()
+        if control is not None:
+            control.close()
 
 
 def resume_repair(request: RepairRequest) -> RepairReceipt:
@@ -123,11 +154,19 @@ def resume_repair(request: RepairRequest) -> RepairReceipt:
         clip_store=request.clip_store,
     )
     _verify_journal_backup(journal, root, request.expected_owner_uid)
+    if journal.state == "UNKNOWN":
+        raise ClipConsistencyError(
+            "commit_state_unknown", "ambiguous commit state requires incident recovery"
+        )
     if journal.state in {"DONE", "ABORTED"}:
         return journal_receipt("resume", journal)
     control = open_write_exclusion(request.state_db)
     try:
         validate_database(control, now=time.time())
+        if non_relation_preimage_sha256(control) != journal.non_relation_state_sha256:
+            raise ClipConsistencyError(
+                "resume_conflict", "non-relation database preimage changed"
+            )
         current = relation_state_sha256(control)
         if journal.state == "PREPARED":
             journal = _resume_prepared(request, journal, control, current)
@@ -148,14 +187,20 @@ def _resume_prepared(
     control: object,
     current: str,
 ) -> ApplyJournal:
-    # The caller supplies an open sqlite3.Connection; object avoids an import-only dependency.
-    import sqlite3
-
     assert isinstance(control, sqlite3.Connection)
     if current == journal.relations_before_sha256:
         ensure_quarantine(request.clip_store, journal.quarantine)
         execute_plan(control, journal.relation_plan())
-        control.commit()
+        try:
+            _commit_connection(control)
+        except BaseException as commit_error:
+            control.close()
+            moved = [
+                (request.clip_store / original, request.clip_store / held)
+                for original, held in journal.quarantine
+            ]
+            _classify_ambiguous_commit(request, journal, moved, commit_error)
+            raise
         checkpoint(request.fault_hook, "resume:after_commit")
     elif current == journal.relations_after_sha256:
         control.rollback()
@@ -172,32 +217,6 @@ def _resume_prepared(
     )
 
 
-def _abort_precommit(
-    request: RepairRequest,
-    control: object,
-    moved: list[tuple[Path, Path]],
-    journal: ApplyJournal | None,
-    error: BaseException,
-) -> None:
-    import sqlite3
-
-    assert isinstance(control, sqlite3.Connection)
-    if control.in_transaction:
-        control.rollback()
-    restore_quarantine(moved)
-    root, path = required_mutation_paths(request)
-    if journal is not None and path.exists():
-        mark_journal(
-            journal,
-            "ABORTED",
-            path=path,
-            maintenance_root=root,
-            expected_uid=request.expected_owner_uid,
-            hook=None,
-            error=type(error).__name__,
-        )
-
-
 def _verify_journal_backup(journal: ApplyJournal, root: Path, uid: int) -> None:
     receipt_path = Path(journal.backup_receipt_path)
     if sha256_regular(receipt_path) != journal.backup_receipt_sha256:
@@ -207,21 +226,12 @@ def _verify_journal_backup(journal: ApplyJournal, root: Path, uid: int) -> None:
         maintenance_root=root,
         expected_uid=uid,
     )
-    if backup.source_state_sha256 != journal.source_state_sha256:
-        raise ClipConsistencyError("backup_receipt_invalid", "journal source state differs")
-
-
-def _relative_quarantine(
-    clip_store: Path,
-    moved: list[tuple[Path, Path]],
-) -> tuple[tuple[str, str], ...]:
-    return tuple(
-        (
-            original.relative_to(clip_store).as_posix(),
-            held.relative_to(clip_store).as_posix(),
-        )
-        for original, held in moved
-    )
+    if (
+        backup.source_state_sha256 != journal.source_state_sha256
+        or backup.source_identity_sha256 != journal.source_identity_sha256
+        or backup.source_path != journal.state_db
+    ):
+        raise ClipConsistencyError("backup_receipt_invalid", "journal source identity differs")
 
 
 def _authority(request: RepairRequest) -> ManifestAuthority:

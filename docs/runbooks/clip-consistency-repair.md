@@ -107,8 +107,10 @@ $DC run --rm --no-deps ml-worker \
 ```
 
 Apply creates an owner-only online SQLite backup and strict receipt before any
-relation mutation. Success is a JSON receipt with `state` equal to `DONE`.
-Record its `backup_receipt_path` and `journal_path`.
+relation mutation. The receipt binds all advertised source DB/WAL raw facts,
+the verified logical backup, and the exact schema. Success is a JSON receipt
+with `state` equal to `DONE`. Record its `backup_receipt_path` and
+`journal_path`.
 
 ## 5. Resume an interrupted apply
 
@@ -126,12 +128,14 @@ $DC run --rm --no-deps ml-worker \
   --quiescence-receipt /root/.local/state/ml-worker/clip-consistency-maintenance/quiescence.json
 ```
 
-Resume is idempotent. A PREPARED journal determines whether the database is at
-the before or after relation hash; a DB_COMMITTED journal completes quarantine
-deletion; DONE returns the existing receipt. ABORTED records a pre-commit
-rollback and is not converted into a new apply. Any other relation state is a
-`resume_conflict` and requires incident review with the journal and backup
-preserved.
+Resume is idempotent. A PREPARED journal first requires the schema and every
+non-`clip_events` logical row to match the complete preimage, then determines
+whether `clip_events` is at the exact before or after hash. DB_COMMITTED
+completes canonical quarantine deletion; DONE returns the existing receipt.
+ABORTED records a proven pre-commit rollback and is not converted into a new
+apply. UNKNOWN records an ambiguous commit whose durable state matched neither
+complete boundary and always fails closed. A `resume_conflict` or UNKNOWN state
+requires incident review with the journal, quarantine, and backup preserved.
 
 ## 6. Verify and restart
 

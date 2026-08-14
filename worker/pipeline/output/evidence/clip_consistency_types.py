@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Literal, TypeAlias
 
 JsonScalar: TypeAlias = str | int | bool | None
-JournalState: TypeAlias = Literal["PREPARED", "DB_COMMITTED", "DONE", "ABORTED"]
+JournalState: TypeAlias = Literal[
+    "PREPARED", "DB_COMMITTED", "DONE", "ABORTED", "UNKNOWN"
+]
 FaultHook: TypeAlias = Callable[[str], None]
 
 
@@ -57,6 +59,7 @@ class BackupReceipt:
     source_wal_size: int
     source_wal_sha256: str
     source_state_sha256: str
+    source_identity_sha256: str
     backup_path: str
     backup_mode: int
     backup_size: int
