@@ -27,9 +27,15 @@ Model materialization is a pre-boot host step. Image builds must not fetch
 weights. A greenfield host uses `scripts/fetch-models.sh` for the packaged
 LSTM default. A cutover copies only declared relative paths from an approved
 live worker through the normal Docker CLI after source identity and
-destination hashes pass:
+destination hashes pass. Generate the operator-private receipt as root
+from the approved running worker and the model-root checkout, then
+materialize:
 
 ```sh
+scripts/ops/generate-model-receipt.sh \
+  --container "$APPROVED_WORKER_CONTAINER" \
+  --out "$OPERATOR_PRIVATE_RECEIPT" \
+  --checkout ./models
 scripts/ops/materialize-model-artifacts.sh \
   --receipt "$OPERATOR_PRIVATE_RECEIPT" \
   --dest ./models \
