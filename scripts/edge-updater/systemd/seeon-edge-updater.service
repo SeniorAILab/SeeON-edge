@@ -1,6 +1,6 @@
 [Unit]
 Description=SeeON edge updater
-Documentation=file:scripts/edge-updater/README.md
+Documentation=https://github.com/SeniorAILab/SeeON-edge/blob/main/scripts/edge-updater/README.md
 After=docker.service network-online.target
 Wants=network-online.target
 Requires=docker.service

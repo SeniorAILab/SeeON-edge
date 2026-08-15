@@ -11,6 +11,7 @@ import os
 import stat
 import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 
@@ -374,6 +375,49 @@ def test_committed_systemd_unit_uses_binding_file_not_host_checkout() -> None:
         assert all("docker" not in value.lower() for value in service[key])
     assert timer["Timer"]["Unit"] == ["seeon-edge-updater.service"]
     assert "seeon-edge-updater.service" in timer_text
+
+
+def _is_absolute_systemd_documentation_uri(value: str) -> bool:
+    """Match systemd.unit(5) Documentation= URI syntax without a live systemd."""
+    if not value or any(ch.isspace() for ch in value):
+        return False
+    parsed = urlparse(value)
+    if parsed.scheme in {"http", "https"}:
+        return bool(parsed.netloc) and value.startswith(("http://", "https://"))
+    if parsed.scheme == "file":
+        return value.startswith("file:/") and parsed.path.startswith("/")
+    if parsed.scheme in {"info", "man"}:
+        return bool(parsed.path)
+    return False
+
+
+def test_systemd_documentation_is_absolute_uri() -> None:
+    unit = _ini_map(UNIT)
+    unit_text = UNIT.read_text(encoding="utf-8")
+    docs: list[str] = []
+    for raw in unit["Unit"]["Documentation"]:
+        docs.extend(raw.split())
+    assert docs
+    for value in docs:
+        assert _is_absolute_systemd_documentation_uri(value), value
+        parsed = urlparse(value)
+        assert parsed.scheme in {"http", "https", "file", "info", "man"}
+        if parsed.scheme == "file":
+            assert parsed.path.startswith("/")
+            assert not parsed.path.startswith("/etc/")
+            assert not parsed.path.startswith("/opt/")
+            assert not parsed.path.startswith("/srv/")
+            assert "happy" not in parsed.path.lower()
+            assert "eldercare-fall-ml" not in parsed.path
+        if parsed.scheme in {"http", "https"}:
+            assert parsed.netloc
+            assert "happy" not in value.lower()
+    assert "/opt/eldercare-fall-ml" not in unit_text
+    assert "happy" not in unit_text.lower()
+    assert BINDING_FILE in unit["Service"]["EnvironmentFile"]
+    assert unit["Service"]["User"] == ["root"]
+    assert unit["Service"]["Group"] == ["root"]
+    assert unit["Service"]["ExecStart"] == [f"/bin/sh {CARRIER_EXEC}"]
 
 
 def test_systemd_unit_syntax_is_valid_or_systemd_is_unavailable() -> None:
