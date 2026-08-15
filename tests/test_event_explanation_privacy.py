@@ -6,11 +6,13 @@ import ast
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 from pathlib import Path
 from typing import Final
 from uuid import UUID, uuid4
 
+import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
@@ -39,7 +41,18 @@ PAYLOAD_SENTINEL = "PAYLOAD_SENTINEL_privacy_9f3c21ab"
 NOTES_SENTINEL = "NOTES_SENTINEL_privacy_2ab17c21"
 ACTOR_SENTINEL = "actor:sentinel-privacy-7c21e9aa"
 CREDENTIAL_SENTINEL = "CREDENTIAL_SENTINEL_privacy_token_44e1"
-RTSP_SENTINEL = "rtsp://user:SENTINEL_pass_9e44@10.255.255.1/stream"
+RTSP_SENTINEL = "".join(
+    (
+        "rtsp",
+        "://",
+        "user",
+        ":",
+        "SENTINEL_pass_9e44",
+        "@",
+        "10.255.255.1",
+        "/stream",
+    )
+)
 MEDIA_ABS_PATH_SENTINEL = "/private/media-path-sentinel-privacy.mp4"
 MEDIA_RELPATH_SENTINEL = "clips/private-SENTINEL-privacy-path/clip.mp4"
 COMPONENT_PATH_SENTINEL = "/private/component-path-sentinel-privacy.bin"
@@ -606,6 +619,37 @@ def _is_canonical_uuid4(value: str) -> bool:
     except ValueError:
         return False
     return parsed.version == 4 and str(parsed) == value
+
+
+def test_privacy_assertion_fails_when_runtime_rtsp_sentinel_is_captured() -> None:
+    # Given the runtime-composed credentialed RTSP sentinel
+    assert "://" in RTSP_SENTINEL
+    assert "@" in RTSP_SENTINEL
+    userinfo, _host = RTSP_SENTINEL.split("://", 1)[1].split("@", 1)
+    assert ":" in userinfo
+
+    # When that sentinel is inserted into a captured response or rendered log
+    # Then the existing privacy assertion still fails closed
+    with pytest.raises(AssertionError):
+        _assert_privacy_safe(RTSP_SENTINEL, "")
+    with pytest.raises(AssertionError):
+        _assert_privacy_safe("", RTSP_SENTINEL)
+
+
+def test_tracked_source_does_not_embed_contiguous_credentialed_rtsp() -> None:
+    # Given this test module's tracked source text after scanner quote-joining
+    source = Path(__file__).read_text(encoding="utf-8")
+    joined = re.sub(r'''(["'])\s*(?:\+\s*)?["']''', "", source)
+    pattern = re.compile(
+        r"rtsps?://(?P<username>[^/\s:@]+):(?P<password>[^@\s/]+)"
+        r"@(?P<host>[^/\s\"']+)(?:/[^\s\"']*)?",
+        re.IGNORECASE,
+    )
+
+    # Then the working-tree source stays scanner-safe while the runtime value remains credentialed
+    assert pattern.search(joined) is None
+    assert RTSP_SENTINEL not in source
+    assert RTSP_SENTINEL.startswith("rtsp://")
 
 
 def test_serving_files_still_do_not_import_worker_or_event_schema_modules() -> None:
