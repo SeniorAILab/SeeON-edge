@@ -7,8 +7,16 @@ from worker.fp_attribution.cohort import (
     FalsePositiveCohortQuery,
     open_query_only_connection,
 )
+from worker.fp_attribution.evidence import (
+    AttributionEvidence,
+    AttributionEvidenceQuery,
+    AttributionEvidenceRecord,
+)
 
 __all__ = [
+    "AttributionEvidence",
+    "AttributionEvidenceQuery",
+    "AttributionEvidenceRecord",
     "FalsePositiveCohort",
     "FalsePositiveCohortExclusion",
     "FalsePositiveCohortMember",
