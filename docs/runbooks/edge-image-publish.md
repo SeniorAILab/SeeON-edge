@@ -33,12 +33,16 @@ destination hashes pass:
 scripts/ops/materialize-model-artifacts.sh \
   --receipt "$OPERATOR_PRIVATE_RECEIPT" \
   --dest ./models \
-  --checkout .
+  --checkout ./models
 scripts/ops/verify-model-artifacts.sh \
   --receipt "$OPERATOR_PRIVATE_RECEIPT" \
   --dest ./models \
-  --checkout .
+  --checkout ./models
 ```
+
+`--checkout ./models` is the model-root checkout. Tracked sidecars then
+resolve as destination-relative `fall/lstm/...` paths. `git status` still
+checks the sealed parent worktree.
 
 The receipt is operator-private and hash-only: schema, source image digest,
 revision, and relative path SHA-256 values. It must not contain credentials,
