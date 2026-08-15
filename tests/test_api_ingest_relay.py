@@ -457,21 +457,37 @@ def test_relay_accepts_canonical_camera_id_from_registry_when_inventory_missing(
     assert fake.heartbeats == 1
 
 
-def _registry_app(fake: FakeBackendIngestClient, tmp_path, *, backend_camera_id: str | None):
+def _registry_app(
+    fake: FakeBackendIngestClient,
+    tmp_path,
+    *,
+    backend_camera_id: str | None,
+    mapping_pending: bool = False,
+    camera_id: str = "local-uuid-1",
+):
     app = create_app(lifespan=no_lifespan)
     app.state.edge_relay_token = "relay-token"
     store = CameraRegistryStore(tmp_path / "catalog.sqlite3")
     store.create(
-        camera_id="local-uuid-1",
+        camera_id=camera_id,
         label="Lobby",
-        rtsp_url="rtsp://camera/stream",
+        rtsp_url=f"rtsp://camera/{camera_id}",
         space_id="space-1",
         status="online",
         backend_camera_id=backend_camera_id,
+        mapping_pending=mapping_pending,
     )
     app.state.camera_registry = store
     app.state.backend_ingest_client = fake
     return app
+
+
+def _login(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/auth/session",
+        json={"username": "admin", "password": "admin"},
+    )
+    assert response.status_code == 204
 
 
 def test_relay_heartbeat_egresses_canonical_backend_id_for_mapped_local_camera(tmp_path) -> None:
@@ -508,11 +524,130 @@ def test_relay_alert_egresses_canonical_backend_id_for_mapped_local_camera(tmp_p
     assert fake.egress_camera_ids == ["backend-camera-1"]
 
 
-def test_relay_heartbeat_egresses_local_id_when_camera_is_unmapped(tmp_path) -> None:
-    """Unmapped cameras forward their local id; the authoritative backend may
-    reject it (loud failure), never a silently re-attributed identity."""
+def test_relay_heartbeat_skips_external_egress_when_camera_is_unmapped(tmp_path) -> None:
+    """Registered-but-unmapped cameras stay local: accept the worker heartbeat,
+    keep mapping-pending observable, and never emit the local id to Hub."""
     fake = FakeBackendIngestClient()
-    app = _registry_app(fake, tmp_path, backend_camera_id=None)
+    app = _registry_app(
+        fake, tmp_path, backend_camera_id=None, mapping_pending=True
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/relay/heartbeat",
+            json={"camera_id": "local-uuid-1", "facility_id": "local-facility"},
+            headers={"X-Edge-Relay-Token": "relay-token"},
+        )
+        _login(client)
+        listed = client.get("/api/v1/cameras")
+
+    assert response.status_code == 202
+    assert response.json() == {"status": "accepted"}
+    assert fake.heartbeats == 0
+    assert fake.egress_camera_ids == []
+    snapshot = get_heartbeat_store(app).snapshot()
+    assert snapshot["cameras"]["local-uuid-1"]["status"] == ONLINE
+    cameras = {camera["id"]: camera for camera in listed.json()["cameras"]}
+    assert cameras["local-uuid-1"]["backend_camera_id"] is None
+    assert cameras["local-uuid-1"]["mapping_pending"] is True
+    assert app.state.camera_registry.get("local-uuid-1")["backend_camera_id"] is None
+
+
+def test_relay_alert_skips_external_egress_when_camera_is_unmapped(tmp_path) -> None:
+    """One-shot alert must not guess an external id for a registered-but-unmapped camera."""
+    fake = FakeBackendIngestClient()
+    app = _registry_app(
+        fake, tmp_path, backend_camera_id=None, mapping_pending=True
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/relay/alerts",
+            json=_alert_payload(camera_id="local-uuid-1", facility_id="local-facility"),
+            headers={"X-Edge-Relay-Token": "relay-token"},
+        )
+        _login(client)
+        listed = client.get("/api/v1/cameras")
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "accepted"
+    assert fake.alerts == []
+    assert fake.egress_camera_ids == []
+    cameras = {camera["id"]: camera for camera in listed.json()["cameras"]}
+    assert cameras["local-uuid-1"]["backend_camera_id"] is None
+    assert cameras["local-uuid-1"]["mapping_pending"] is True
+
+
+def test_relay_unmapped_skip_does_not_apply_to_unknown_or_mapped_cameras(tmp_path) -> None:
+    """Safe skip is only for registered-but-unmapped cameras."""
+    unmapped_fake = FakeBackendIngestClient()
+    unmapped_app = _registry_app(
+        unmapped_fake, tmp_path / "unmapped", backend_camera_id=None
+    )
+    mapped_fake = FakeBackendIngestClient()
+    mapped_app = _registry_app(
+        mapped_fake, tmp_path / "mapped", backend_camera_id="backend-camera-1"
+    )
+    unknown_fake = FakeBackendIngestClient()
+    unknown_app = _registry_app(
+        unknown_fake, tmp_path / "unknown", backend_camera_id="backend-camera-9"
+    )
+
+    with TestClient(unmapped_app) as client:
+        unmapped = client.post(
+            "/api/v1/relay/heartbeat",
+            json={"camera_id": "local-uuid-1", "facility_id": "local-facility"},
+            headers={"X-Edge-Relay-Token": "relay-token"},
+        )
+    with TestClient(mapped_app) as client:
+        mapped = client.post(
+            "/api/v1/relay/heartbeat",
+            json={"camera_id": "local-uuid-1", "facility_id": "local-facility"},
+            headers={"X-Edge-Relay-Token": "relay-token"},
+        )
+    with TestClient(unknown_app) as client:
+        unknown = client.post(
+            "/api/v1/relay/heartbeat",
+            json={"camera_id": "camera-unknown", "facility_id": "local-facility"},
+            headers={"X-Edge-Relay-Token": "relay-token"},
+        )
+
+    assert unmapped.status_code == 202
+    assert unmapped_fake.egress_camera_ids == []
+    assert mapped.status_code == 202
+    assert mapped_fake.egress_camera_ids == ["backend-camera-1"]
+    assert unknown.status_code == 403
+    assert "unknown camera" in unknown.json()["detail"]
+    assert unknown_fake.egress_camera_ids == []
+
+
+def test_relay_unmapped_skip_preserves_mapped_auth_and_backend_rejection(tmp_path) -> None:
+    """Skipping unmapped cameras must not swallow mapped-camera egress failures."""
+    failing = FakeBackendIngestClient(alert_ok=False, heartbeat_ok=False)
+    app = _registry_app(failing, tmp_path, backend_camera_id="backend-camera-1")
+
+    with TestClient(app) as client:
+        heartbeat = client.post(
+            "/api/v1/relay/heartbeat",
+            json={"camera_id": "local-uuid-1", "facility_id": "local-facility"},
+            headers={"X-Edge-Relay-Token": "relay-token"},
+        )
+        alert = client.post(
+            "/api/v1/relay/alerts",
+            json=_alert_payload(camera_id="local-uuid-1", facility_id="local-facility"),
+            headers={"X-Edge-Relay-Token": "relay-token"},
+        )
+
+    assert heartbeat.status_code == 502
+    assert heartbeat.json()["detail"] == "backend ingest rejected heartbeat"
+    assert alert.status_code == 502
+    assert alert.json()["detail"] == "backend ingest rejected alert"
+    assert failing.egress_camera_ids == ["backend-camera-1", "backend-camera-1"]
+
+
+def test_relay_blank_backend_camera_id_is_treated_as_unmapped(tmp_path) -> None:
+    fake = FakeBackendIngestClient()
+    app = _registry_app(fake, tmp_path, backend_camera_id="   ")
 
     with TestClient(app) as client:
         response = client.post(
@@ -522,7 +657,8 @@ def test_relay_heartbeat_egresses_local_id_when_camera_is_unmapped(tmp_path) -> 
         )
 
     assert response.status_code == 202
-    assert fake.egress_camera_ids == ["local-uuid-1"]
+    assert fake.egress_camera_ids == []
+    assert app.state.camera_registry.get("local-uuid-1")["backend_camera_id"] == "   "
 
 
 def test_relay_heartbeat_clears_never_connected_on_first_heartbeat(tmp_path) -> None:

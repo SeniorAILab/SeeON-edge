@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from shared.edge_db.importer import LegacyDatabasePaths, import_legacy_databases
+from shared.edge_db.importer import LegacyDatabasePaths, import_legacy_databases, main
 from shared.edge_db.migrator import migrate_database
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REQUIRED_SOURCE_NAMES = ("catalog", "connection", "worker")
 
 
 def _catalog(path: Path) -> None:
@@ -406,3 +412,363 @@ def test_fresh_migration_has_complete_schema_and_runtime_actions_need_no_ddl(
         }
     finally:
         connection.close()
+
+
+def test_zero_source_import_without_explicit_intent_does_not_report_fresh_success(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Zero inputs are not a fresh install. The public path must not print success.
+
+    Baseline characterization first pinned the old skip-missing CLI success
+    (`EDGE_DB_IMPORT_OK sources=fresh`). The fail-closed contract replaces that
+    observable: implicit zero-source and flagless CLI both refuse a fresh receipt.
+    """
+    target = tmp_path / "edge" / "edge.sqlite3"
+    missing = LegacyDatabasePaths(
+        catalog=tmp_path / "missing" / "catalog.sqlite3",
+        connection=tmp_path / "missing" / "connection-settings.sqlite3",
+        worker=tmp_path / "missing" / "worker-state.sqlite3",
+    )
+
+    with pytest.raises(ValueError):
+        import_legacy_databases(target, missing)
+    _assert_no_successful_import_receipt(target)
+
+    exit_code = main(
+        [
+            "--database",
+            str(target),
+            "--catalog",
+            str(missing.catalog),
+            "--connection",
+            str(missing.connection),
+            "--worker",
+            str(missing.worker),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert exit_code != 0
+    assert "EDGE_DB_IMPORT_OK" not in captured.out
+    assert captured.out == "" or "sources=fresh" not in captured.out
+    _assert_no_successful_import_receipt(target)
+
+
+def _source_named_tuple(sources: LegacyDatabasePaths) -> tuple[tuple[str, Path], ...]:
+    return (
+        ("catalog", sources.catalog),
+        ("connection", sources.connection),
+        ("worker", sources.worker),
+    )
+
+
+def _partial_sources(tmp_path: Path, present: str) -> LegacyDatabasePaths:
+    complete = _paths(tmp_path / "present")
+    missing_root = tmp_path / "missing"
+    named = dict(_source_named_tuple(complete))
+    return LegacyDatabasePaths(
+        **{
+            name: named[name] if name == present else missing_root / Path(named[name]).name
+            for name in _REQUIRED_SOURCE_NAMES
+        }
+    )
+
+
+def _assert_no_successful_import_receipt(target: Path) -> None:
+    if not target.is_file():
+        return
+    connection = sqlite3.connect(target)
+    try:
+        tables = {
+            str(row[0])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        if "schema_import_sources" in tables:
+            assert connection.execute("SELECT count(*) FROM schema_import_sources").fetchone() == (
+                0,
+            )
+        if "schema_import_receipts" in tables:
+            assert connection.execute("SELECT count(*) FROM schema_import_receipts").fetchone() == (
+                0,
+            )
+        if "credentials" in tables:
+            assert connection.execute("SELECT count(*) FROM credentials").fetchone() == (0,)
+        if "connection_settings" in tables:
+            assert connection.execute("SELECT count(*) FROM connection_settings").fetchone() == (0,)
+        if "evidence_events" in tables:
+            assert connection.execute("SELECT count(*) FROM evidence_events").fetchone() == (0,)
+    finally:
+        connection.close()
+
+
+def _run_importer_cli(argv: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "shared.edge_db.importer", *argv],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=_REPO_ROOT,
+        env=os.environ.copy(),
+    )
+
+
+def test_required_source_mode_rejects_zero_inputs(tmp_path: Path) -> None:
+    from shared.edge_db.importer import ImportIntent, ImportMode
+
+    target = tmp_path / "edge" / "edge.sqlite3"
+    missing = LegacyDatabasePaths(
+        catalog=tmp_path / "missing" / "catalog.sqlite3",
+        connection=tmp_path / "missing" / "connection-settings.sqlite3",
+        worker=tmp_path / "missing" / "worker-state.sqlite3",
+    )
+
+    with pytest.raises(ValueError, match="required source"):
+        import_legacy_databases(
+            target,
+            missing,
+            intent=ImportIntent(
+                mode=ImportMode.REQUIRE_SOURCES,
+                required_sources=_REQUIRED_SOURCE_NAMES,
+            ),
+        )
+
+    _assert_no_successful_import_receipt(target)
+    completed = _run_importer_cli(
+        [
+            "--database",
+            str(target),
+            "--require-sources",
+            "catalog,connection,worker",
+            "--catalog",
+            str(missing.catalog),
+            "--connection",
+            str(missing.connection),
+            "--worker",
+            str(missing.worker),
+        ]
+    )
+    assert completed.returncode != 0
+    assert "EDGE_DB_IMPORT_OK" not in completed.stdout
+    assert "EDGE_DB_IMPORT_FAILED" in completed.stderr
+    assert "fresh" not in completed.stdout
+    _assert_no_successful_import_receipt(target)
+
+
+def test_required_source_mode_rejects_partial_input(tmp_path: Path) -> None:
+    from shared.edge_db.importer import ImportIntent, ImportMode
+
+    target = tmp_path / "edge" / "edge.sqlite3"
+    sources = _partial_sources(tmp_path, present="catalog")
+
+    with pytest.raises(ValueError, match="required source"):
+        import_legacy_databases(
+            target,
+            sources,
+            intent=ImportIntent(
+                mode=ImportMode.REQUIRE_SOURCES,
+                required_sources=_REQUIRED_SOURCE_NAMES,
+            ),
+        )
+
+    _assert_no_successful_import_receipt(target)
+    completed = _run_importer_cli(
+        [
+            "--database",
+            str(target),
+            "--require-sources",
+            "catalog,connection,worker",
+            "--catalog",
+            str(sources.catalog),
+            "--connection",
+            str(sources.connection),
+            "--worker",
+            str(sources.worker),
+        ]
+    )
+    assert completed.returncode != 0
+    assert "EDGE_DB_IMPORT_OK" not in completed.stdout
+    assert "EDGE_DB_IMPORT_FAILED" in completed.stderr
+    assert "sources=catalog" not in completed.stdout
+    _assert_no_successful_import_receipt(target)
+
+
+def test_fresh_install_succeeds_only_when_explicitly_selected(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from shared.edge_db.importer import ImportIntent, ImportMode
+
+    target = tmp_path / "edge" / "edge.sqlite3"
+    missing = LegacyDatabasePaths(
+        catalog=tmp_path / "unused" / "catalog.sqlite3",
+        connection=tmp_path / "unused" / "connection-settings.sqlite3",
+        worker=tmp_path / "unused" / "worker-state.sqlite3",
+    )
+
+    with pytest.raises(ValueError, match="fresh-install"):
+        import_legacy_databases(target, missing)
+
+    _assert_no_successful_import_receipt(target)
+    implicit = main(
+        [
+            "--database",
+            str(target),
+            "--catalog",
+            str(missing.catalog),
+            "--connection",
+            str(missing.connection),
+            "--worker",
+            str(missing.worker),
+        ]
+    )
+    implicit_output = capsys.readouterr()
+    assert implicit != 0
+    assert "EDGE_DB_IMPORT_OK" not in implicit_output.out
+    assert "EDGE_DB_IMPORT_FAILED" in implicit_output.err
+    _assert_no_successful_import_receipt(target)
+
+    result = import_legacy_databases(
+        target,
+        missing,
+        intent=ImportIntent(mode=ImportMode.FRESH_INSTALL),
+    )
+    assert result.imported_sources == ("fresh",)
+    connection = sqlite3.connect(target)
+    try:
+        tables = {
+            str(row[0])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        assert {
+            "connection_settings",
+            "camera_registry",
+            "evidence_events",
+            "schema_import_sources",
+        } <= tables
+        assert connection.execute("SELECT count(*) FROM schema_import_sources").fetchone() == (0,)
+        assert connection.execute("SELECT count(*) FROM schema_import_receipts").fetchone() == (0,)
+    finally:
+        connection.close()
+
+    explicit = main(
+        [
+            "--database",
+            str(target),
+            "--fresh-install",
+            "--catalog",
+            str(missing.catalog),
+            "--connection",
+            str(missing.connection),
+            "--worker",
+            str(missing.worker),
+        ]
+    )
+    explicit_output = capsys.readouterr()
+    assert explicit == 0
+    assert explicit_output.err == ""
+    assert explicit_output.out == f"EDGE_DB_IMPORT_OK path={target} sources=fresh\n"
+
+
+def test_required_all_source_migration_retains_receipt_and_count_semantics(
+    tmp_path: Path,
+) -> None:
+    from shared.edge_db.importer import ImportIntent, ImportMode
+
+    sources = _paths(tmp_path)
+    implicit_target = tmp_path / "implicit" / "edge.sqlite3"
+    required_target = tmp_path / "required" / "edge.sqlite3"
+    implicit = import_legacy_databases(implicit_target, sources)
+    required = import_legacy_databases(
+        required_target,
+        sources,
+        intent=ImportIntent(
+            mode=ImportMode.REQUIRE_SOURCES,
+            required_sources=_REQUIRED_SOURCE_NAMES,
+        ),
+    )
+
+    assert implicit.imported_sources == ("catalog", "connection", "worker")
+    assert required.imported_sources == implicit.imported_sources
+
+    def _source_receipts(path: Path) -> list[tuple[str, str, str, int]]:
+        connection = sqlite3.connect(path)
+        try:
+            return connection.execute(
+                "SELECT source_name,source_schema,source_sha256,row_count "
+                "FROM schema_import_sources ORDER BY source_name"
+            ).fetchall()
+        finally:
+            connection.close()
+
+    implicit_receipts = _source_receipts(implicit_target)
+    required_receipts = _source_receipts(required_target)
+    assert [row[0] for row in required_receipts] == ["catalog", "connection", "worker"]
+    assert required_receipts == implicit_receipts
+    assert all(len(row[2]) == 64 and int(row[3]) > 0 for row in required_receipts)
+    completed = _run_importer_cli(
+        [
+            "--database",
+            str(tmp_path / "cli" / "edge.sqlite3"),
+            "--require-sources",
+            "catalog,connection,worker",
+            "--catalog",
+            str(sources.catalog),
+            "--connection",
+            str(sources.connection),
+            "--worker",
+            str(sources.worker),
+        ]
+    )
+    assert completed.returncode == 0
+    assert completed.stderr == ""
+    assert completed.stdout == (
+        f"EDGE_DB_IMPORT_OK path={tmp_path / 'cli' / 'edge.sqlite3'} "
+        "sources=catalog,connection,worker\n"
+    )
+
+
+def test_public_cli_exits_nonzero_for_disallowed_source_sets(tmp_path: Path) -> None:
+    sources = _paths(tmp_path)
+    target = tmp_path / "edge" / "edge.sqlite3"
+    cases = (
+        [
+            "--database",
+            str(target),
+            "--require-sources",
+            "catalog",
+            "--catalog",
+            str(sources.catalog),
+            "--connection",
+            str(sources.connection),
+            "--worker",
+            str(sources.worker),
+        ],
+        [
+            "--database",
+            str(target),
+            "--require-sources",
+            "catalog,connection,worker",
+            "--fresh-install",
+            "--catalog",
+            str(sources.catalog),
+            "--connection",
+            str(sources.connection),
+            "--worker",
+            str(sources.worker),
+        ],
+        [
+            "--database",
+            str(target),
+            "--require-sources",
+            "catalog,mystery,worker",
+            "--catalog",
+            str(sources.catalog),
+            "--connection",
+            str(sources.connection),
+            "--worker",
+            str(sources.worker),
+        ],
+    )
+    for argv in cases:
+        completed = _run_importer_cli(argv)
+        assert completed.returncode != 0
+        assert "EDGE_DB_IMPORT_OK" not in completed.stdout
+        _assert_no_successful_import_receipt(target)

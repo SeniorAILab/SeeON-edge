@@ -2,8 +2,9 @@
 
 The API and worker retain separate image-owned XDG state directories for
 non-database runtime files, but all persistent SQLite owners use the one
-``edge-state`` volume at ``/var/lib/seeon-state/edge.sqlite3``. The migrator
-alone also mounts the two released legacy volumes during one-time import.
+``edge-state`` volume at ``/var/lib/seeon-state/edge.sqlite3``. The base
+Compose stack is greenfield: the migrator mounts only that central volume.
+Legacy ``ml-api-state``/``ml-worker-state`` volumes are not declared here.
 """
 
 from __future__ import annotations
@@ -113,20 +114,19 @@ def test_compose_mounts_central_state_at_baked_path(compose: dict, service: str)
     assert target == EXPECTED_EDGE_STATE_DIR
 
 
-def test_only_migrator_mounts_released_legacy_state_volumes(compose: dict) -> None:
-    assert (
-        _compose_named_volume_target(compose, "edge-db-migrator", "ml-api-state")
-        == "/var/lib/legacy-api-state"
-    )
-    assert (
-        _compose_named_volume_target(compose, "edge-db-migrator", "ml-worker-state")
-        == "/var/lib/legacy-worker-state"
-    )
+def test_base_compose_has_no_released_legacy_state_volumes(compose: dict) -> None:
+    migrator_volumes = compose["services"]["edge-db-migrator"]["volumes"]
+    assert migrator_volumes == ["edge-state:/var/lib/seeon-state"]
+    assert set(compose["volumes"]) == {"edge-state"}
 
-    for service in ("ml-api", "ml-worker"):
+    compose_text = (ROOT / "compose.edge.yaml").read_text(encoding="utf-8")
+    assert "ml-api-state" not in compose_text
+    assert "ml-worker-state" not in compose_text
+    for service in ("edge-db-migrator", "ml-api", "ml-worker"):
         volumes = compose["services"][service]["volumes"]
         assert not any(
-            str(volume).startswith(("ml-api-state:", "ml-worker-state:")) for volume in volumes
+            str(volume).startswith(("ml-api-state:", "ml-worker-state:"))
+            for volume in volumes
         )
 
 

@@ -112,7 +112,7 @@ def _make_app(
     unmapped/pending camera -- a camera recorded via
     ``heartbeat_store.record()`` but absent from the registry, or present
     with ``backend_camera_id=None``, must be skipped rather than relayed
-    under a guessed id (see ``_canonical_backend_camera_id``).
+    under a guessed id (see ``canonical_backend_camera_id``).
     """
     if registry_records is None:
         registry_records = [
@@ -244,8 +244,8 @@ def test_backoff_doubles_on_consecutive_all_fail_ticks_and_resets_on_success() -
 # --------------------------------------------------------------------------
 # Backend-id canonicalization (bug fix: periodic relay must not send
 # HeartbeatStore's worker-local ids straight through -- see
-# _canonical_backend_camera_id and relay/router.py's
-# _camera_binding_from_registry for the one-shot equivalent).
+# canonical_backend_camera_id and relay/router.py's
+# _camera_binding_from_registry / _egress_backend_camera_id).
 # --------------------------------------------------------------------------
 
 
@@ -308,6 +308,44 @@ def test_all_cameras_unmapped_is_skipped_tick_and_backoff_untouched() -> None:
     assert result.skipped_reason == "no_mapped_cameras"
     assert result.attempted == 0
     assert relay_state.backoff_multiplier == 4  # untouched: not a delivery attempt
+
+
+def test_blank_backend_camera_id_is_skipped_like_unmapped() -> None:
+    client = FakeIngestClient()
+    app = _make_app(
+        client=client,
+        registry_records=[{"id": "cam-blank", "backend_camera_id": "   "}],
+    )
+    app.state.heartbeat_store.record("cam-blank", "fac-1", received_at=1000.0)
+
+    result = relay_heartbeats_once(app, now=1010.0)
+
+    assert client.calls == []
+    assert result.skipped_reason == "no_mapped_cameras"
+    assert result.attempted == 0
+
+
+def test_stale_mapping_after_lookup_still_uses_resolved_backend_id() -> None:
+    """A mapping that disappears after canonicalization must not invent a new id."""
+    client = FakeIngestClient()
+    app = _make_app(
+        client=client,
+        registry_records=[{"id": "cam-local", "backend_camera_id": "backend-cam-stale"}],
+    )
+    app.state.heartbeat_store.record("cam-local", "fac-1", received_at=1000.0)
+    original_for_camera = client.for_camera
+
+    def forget_mapping_then_clone(camera_id: str):
+        app.state.camera_registry.update("cam-local", {"backend_camera_id": None})
+        return original_for_camera(camera_id)
+
+    client.for_camera = forget_mapping_then_clone  # type: ignore[method-assign]
+    result = relay_heartbeats_once(app, now=1010.0)
+
+    assert client.calls == ["backend-cam-stale"]
+    assert result.attempted == 1
+    assert result.sent == 1
+    assert app.state.camera_registry.get("cam-local")["backend_camera_id"] is None
 
 
 # --------------------------------------------------------------------------

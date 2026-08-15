@@ -1,0 +1,11 @@
+[Unit]
+Description=Run SeeON edge updater periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Persistent=true
+Unit=seeon-edge-updater.service
+
+[Install]
+WantedBy=timers.target

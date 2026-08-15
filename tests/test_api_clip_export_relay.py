@@ -25,16 +25,23 @@ class FakeBackendEvidenceClient:
     capability_result: BackendCapabilities | DeliveryFailure = BackendCapabilities(1, 1)
     clip_result: ClipReceipt | DeliveryFailure = ClipReceipt("clip-1", "READY", 2, MEDIA_SHA256, 4)
     ready_calls: int = 0
+    unavailable_calls: int = 0
+    capability_calls: int = 0
+    egress_camera_ids: list[str] = field(default_factory=list)
+    probed_camera_ids: list[str] = field(default_factory=list)
     before_read: Callable[[], None] | None = None
     opened_media: BinaryIO | None = field(default=None, init=False)
     uploaded_bytes: bytes | None = field(default=None, init=False)
     ready_request: ReadyClipRequest | None = field(default=None, init=False)
     unavailable_request: UnavailableClipRequest | None = field(default=None, init=False)
 
-    def for_camera(self, _camera_id: str) -> FakeBackendEvidenceClient:
+    def for_camera(self, camera_id: str) -> FakeBackendEvidenceClient:
+        self.egress_camera_ids.append(camera_id)
         return self
 
-    def probe_capabilities(self, _camera_id: str) -> BackendCapabilities | DeliveryFailure:
+    def probe_capabilities(self, camera_id: str) -> BackendCapabilities | DeliveryFailure:
+        self.capability_calls += 1
+        self.probed_camera_ids.append(camera_id)
         return self.capability_result
 
     def publish_ready(
@@ -50,24 +57,34 @@ class FakeBackendEvidenceClient:
         return self.clip_result
 
     def report_unavailable(self, request: UnavailableClipRequest) -> ClipReceipt | DeliveryFailure:
+        self.unavailable_calls += 1
         self.unavailable_request = request
         return self.clip_result
 
 
-def _client(tmp_path: Path, backend: FakeBackendEvidenceClient, *, enabled: bool) -> TestClient:
+def _client(
+    tmp_path: Path,
+    backend: FakeBackendEvidenceClient,
+    *,
+    enabled: bool,
+    camera_id: str = "camera-1",
+    backend_camera_id: str | None = "camera-1",
+    mapping_pending: bool = False,
+) -> TestClient:
     app = create_app(lifespan=no_lifespan)
     app.state.edge_relay_token = TOKEN
     # Camera binding is registry-only now (no camera_inventory fallback --
     # see _camera_binding_from_registry in relay/router.py), so the fixture
-    # must register "camera-1" in a CameraRegistryStore for _camera_binding
-    # to resolve it instead of 403ing every export.
+    # must register the local camera in a CameraRegistryStore for admission.
     registry = CameraRegistryStore(tmp_path / "catalog.sqlite3")
     registry.create(
-        camera_id="camera-1",
-        label="Camera 1",
-        rtsp_url="rtsp://camera/1",
+        camera_id=camera_id,
+        label=camera_id,
+        rtsp_url=f"rtsp://camera/{camera_id}",
         space_id="facility-1",
         status="online",
+        backend_camera_id=backend_camera_id,
+        mapping_pending=mapping_pending,
     )
     app.state.camera_registry = registry
     app.state.backend_evidence_client = backend
@@ -343,3 +360,212 @@ def test_ready_relay_rejects_missing_media_without_backend_call(
     assert response.status_code == 404
     assert "clip-store" not in response.text
     assert backend.ready_calls == 0
+
+
+def _write_owned_media(tmp_path: Path) -> None:
+    media = tmp_path / "clip-store" / "clips" / "clip-1" / "clip.mp4"
+    media.parent.mkdir(parents=True, exist_ok=True)
+    media.write_bytes(b"mp4x")
+
+
+def test_capability_does_not_probe_hub_for_unmapped_or_unknown_camera(tmp_path: Path) -> None:
+    """Capabilities must not invent a Hub identity or probe for unknown cameras."""
+    unmapped_backend = FakeBackendEvidenceClient()
+    unmapped_client = _client(
+        tmp_path / "unmapped",
+        unmapped_backend,
+        enabled=True,
+        camera_id="local-uuid-1",
+        backend_camera_id=None,
+        mapping_pending=True,
+    )
+    mapped_backend = FakeBackendEvidenceClient()
+    mapped_client = _client(
+        tmp_path / "mapped",
+        mapped_backend,
+        enabled=True,
+        camera_id="local-uuid-1",
+        backend_camera_id="backend-camera-1",
+    )
+    unknown_backend = FakeBackendEvidenceClient()
+    unknown_client = _client(
+        tmp_path / "unknown",
+        unknown_backend,
+        enabled=True,
+        camera_id="local-uuid-1",
+        backend_camera_id="backend-camera-9",
+    )
+    headers = {"X-Edge-Relay-Token": TOKEN}
+
+    unmapped = unmapped_client.get(
+        "/api/v1/relay/capabilities",
+        params={"camera_id": "local-uuid-1"},
+        headers=headers,
+    )
+    mapped = mapped_client.get(
+        "/api/v1/relay/capabilities",
+        params={"camera_id": "local-uuid-1"},
+        headers=headers,
+    )
+    unknown = unknown_client.get(
+        "/api/v1/relay/capabilities",
+        params={"camera_id": "camera-unknown"},
+        headers=headers,
+    )
+
+    assert unmapped.status_code == 200
+    assert unmapped.json() == {"event_idempotency": 1, "clip_export": 0}
+    assert unmapped_backend.capability_calls == 0
+    assert unmapped_backend.egress_camera_ids == []
+    assert unmapped_backend.probed_camera_ids == []
+    assert unmapped_client.app.state.camera_registry.get("local-uuid-1")[
+        "backend_camera_id"
+    ] is None
+    assert unmapped_client.app.state.camera_registry.get("local-uuid-1")[
+        "mapping_pending"
+    ] is True
+
+    assert mapped.status_code == 200
+    assert mapped.json() == {"event_idempotency": 1, "clip_export": 1}
+    assert mapped_backend.capability_calls == 1
+    assert mapped_backend.egress_camera_ids == ["backend-camera-1"]
+    assert mapped_backend.probed_camera_ids == ["backend-camera-1"]
+
+    assert unknown.status_code == 403
+    assert "unknown camera" in unknown.json()["detail"]
+    assert unknown_backend.capability_calls == 0
+    assert unknown_backend.egress_camera_ids == []
+    assert unknown_backend.probed_camera_ids == []
+
+
+def test_clip_export_skips_hub_for_registered_unmapped_camera(tmp_path: Path) -> None:
+    _write_owned_media(tmp_path)
+    backend = FakeBackendEvidenceClient()
+    client = _client(
+        tmp_path,
+        backend,
+        enabled=True,
+        camera_id="local-uuid-1",
+        backend_camera_id=None,
+        mapping_pending=True,
+    )
+    payload = _ready_payload()
+    payload["camera_id"] = "local-uuid-1"
+
+    ready = client.put(
+        "/api/v1/relay/clips/clip-1",
+        json=payload,
+        headers={"X-Edge-Relay-Token": TOKEN},
+    )
+    unavailable = client.put(
+        "/api/v1/relay/clips/clip-1",
+        json={**_unavailable_payload(), "camera_id": "local-uuid-1"},
+        headers={"X-Edge-Relay-Token": TOKEN},
+    )
+
+    assert ready.status_code == 404
+    assert ready.json()["detail"] == "clip export unavailable"
+    assert unavailable.status_code == 404
+    assert unavailable.json()["detail"] == "clip export unavailable"
+    assert backend.ready_calls == 0
+    assert backend.unavailable_calls == 0
+    assert backend.egress_camera_ids == []
+    record = client.app.state.camera_registry.get("local-uuid-1")
+    assert record["backend_camera_id"] is None
+    assert record["mapping_pending"] is True
+
+
+def test_clip_export_skips_hub_for_blank_backend_mapping(tmp_path: Path) -> None:
+    _write_owned_media(tmp_path)
+    backend = FakeBackendEvidenceClient()
+    client = _client(
+        tmp_path,
+        backend,
+        enabled=True,
+        camera_id="local-uuid-1",
+        backend_camera_id="   ",
+    )
+    payload = _ready_payload()
+    payload["camera_id"] = "local-uuid-1"
+
+    response = client.put(
+        "/api/v1/relay/clips/clip-1",
+        json=payload,
+        headers={"X-Edge-Relay-Token": TOKEN},
+    )
+    capability = client.get(
+        "/api/v1/relay/capabilities",
+        params={"camera_id": "local-uuid-1"},
+        headers={"X-Edge-Relay-Token": TOKEN},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "clip export unavailable"
+    assert backend.ready_calls == 0
+    assert backend.egress_camera_ids == []
+    assert capability.status_code == 200
+    assert capability.json() == {"event_idempotency": 1, "clip_export": 0}
+    assert backend.capability_calls == 0
+    assert client.app.state.camera_registry.get("local-uuid-1")["backend_camera_id"] == "   "
+
+
+def test_clip_export_uses_exact_backend_id_for_mapped_camera(tmp_path: Path) -> None:
+    _write_owned_media(tmp_path)
+    backend = FakeBackendEvidenceClient()
+    client = _client(
+        tmp_path,
+        backend,
+        enabled=True,
+        camera_id="local-uuid-1",
+        backend_camera_id="backend-camera-1",
+    )
+    payload = _ready_payload()
+    payload["camera_id"] = "local-uuid-1"
+
+    response = client.put(
+        "/api/v1/relay/clips/clip-1",
+        json=payload,
+        headers={"X-Edge-Relay-Token": TOKEN},
+    )
+
+    assert response.status_code == 200
+    assert backend.ready_calls == 1
+    assert backend.egress_camera_ids == ["backend-camera-1"]
+    assert backend.ready_request is not None
+    assert backend.ready_request.camera_id == "backend-camera-1"
+    unavailable = client.put(
+        "/api/v1/relay/clips/clip-1",
+        json={**_unavailable_payload(), "camera_id": "local-uuid-1"},
+        headers={"X-Edge-Relay-Token": TOKEN},
+    )
+    assert unavailable.status_code == 200
+    assert backend.unavailable_calls == 1
+    assert backend.egress_camera_ids == ["backend-camera-1", "backend-camera-1"]
+    assert backend.unavailable_request is not None
+    assert backend.unavailable_request.camera_id == "backend-camera-1"
+
+
+def test_clip_export_rejects_unknown_camera_without_hub_call(tmp_path: Path) -> None:
+    _write_owned_media(tmp_path)
+    backend = FakeBackendEvidenceClient()
+    client = _client(
+        tmp_path,
+        backend,
+        enabled=True,
+        camera_id="local-uuid-1",
+        backend_camera_id="backend-camera-9",
+    )
+    payload = _ready_payload()
+    payload["camera_id"] = "camera-unknown"
+
+    response = client.put(
+        "/api/v1/relay/clips/clip-1",
+        json=payload,
+        headers={"X-Edge-Relay-Token": TOKEN},
+    )
+
+    assert response.status_code == 403
+    assert "unknown camera" in response.json()["detail"]
+    assert backend.ready_calls == 0
+    assert backend.unavailable_calls == 0
+    assert backend.egress_camera_ids == []

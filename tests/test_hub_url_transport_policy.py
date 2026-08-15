@@ -15,7 +15,9 @@ from backend.app.features.connection.enrollment import (
 )
 from backend.app.features.connection.hub_url import (
     API_BACKEND_ALLOW_INSECURE_HTTP_ENV,
+    UNSUPPORTED_HUB_API_BASE_PATH_REASON,
     hub_url_transport_allowed,
+    reject_hub_api_base_path_reason,
 )
 from backend.app.features.connection.store import (
     API_BACKEND_BASE_URL_ENV,
@@ -58,6 +60,15 @@ class TestHubUrlPolicy:
         monkeypatch.setenv(API_BACKEND_ALLOW_INSECURE_HTTP_ENV, "1")
         assert hub_url_transport_allowed("http://backend.example/api/v1/events")
 
+    def test_hub_api_base_path_accepts_only_origin_or_api(self) -> None:
+        assert reject_hub_api_base_path_reason("https://hub.example.com") is None
+        assert reject_hub_api_base_path_reason("https://hub.example.com/") is None
+        assert reject_hub_api_base_path_reason("https://hub.example.com/api") is None
+        assert reject_hub_api_base_path_reason("https://hub.example.com/api/") is None
+        assert reject_hub_api_base_path_reason("https://hub.example.com/api/v1") == (
+            UNSUPPORTED_HUB_API_BASE_PATH_REASON
+        )
+
 
 class TestStoreRejectsInsecureHubUrls:
     def test_base_url_http_public_does_not_seed_events(
@@ -83,6 +94,27 @@ class TestStoreRejectsInsecureHubUrls:
         settings = ConnectionSettingsStore(tmp_path / "c.sqlite3").load()
         assert settings.events_url == "https://hub.example.com/api/v1/events"
         assert settings.config_url == "https://hub.example.com/api/v1/ml-config"
+
+    def test_base_url_https_api_suffix_seeds_same_events(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(API_BACKEND_BASE_URL_ENV, "https://hub.example.com/api")
+        settings = ConnectionSettingsStore(tmp_path / "c.sqlite3").load()
+        assert settings.events_url == "https://hub.example.com/api/v1/events"
+        assert settings.config_url == "https://hub.example.com/api/v1/ml-config"
+
+    def test_base_url_https_api_v1_is_rejected_without_repair(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(API_BACKEND_BASE_URL_ENV, "https://hub.example.com/api/v1")
+        with pytest.raises(InvalidConnectionSettingError) as exc:
+            _ = ConnectionSettingsStore(tmp_path / "c.sqlite3").load()
+        assert exc.value.field_name == API_BACKEND_BASE_URL_ENV
+        assert exc.value.reason == UNSUPPORTED_HUB_API_BASE_PATH_REASON
+        assert reject_hub_api_base_path_reason("https://hub.example.com/api/v1") == (
+            UNSUPPORTED_HUB_API_BASE_PATH_REASON
+        )
+        assert "https://hub.example.com/api/v1/api/v1/events" not in exc.value.reason
 
     def test_save_rejects_cleartext_public_events_url(self, tmp_path: Path) -> None:
         store = ConnectionSettingsStore(tmp_path / "c.sqlite3")

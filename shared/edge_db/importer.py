@@ -11,6 +11,7 @@ import sys
 import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Final
 
@@ -20,6 +21,7 @@ from shared.edge_db.paths import EDGE_DATABASE_PATH, secure_database_files
 from shared.edge_db.review_migration import classify_legacy_labels
 
 ImportProgress = Callable[[str, str], None]
+_ALLOWED_SOURCE_NAMES: Final = ("catalog", "connection", "worker")
 _ALLOWED_WORKER_SCHEMAS: Final = {6, 7, 8, 9, 10}
 _RETIRED_LEGACY_TABLES: Final = frozenset({"system_test_runs"})
 _TABLE_PRIORITY: Final = {
@@ -47,6 +49,42 @@ class LegacyDatabasePaths:
         )
 
 
+class ImportMode(StrEnum):
+    REQUIRE_SOURCES = "require-sources"
+    FRESH_INSTALL = "fresh-install"
+
+
+class ImportIntentError(ValueError):
+    """An importer invocation used an incomplete or contradictory source intent."""
+
+
+@dataclass(frozen=True, slots=True)
+class ImportIntent:
+    mode: ImportMode
+    required_sources: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "required_sources", _normalized_required_sources(self))
+
+
+def _normalized_required_sources(intent: ImportIntent) -> tuple[str, ...]:
+    if intent.mode is ImportMode.FRESH_INSTALL:
+        if intent.required_sources:
+            raise ImportIntentError("fresh-install does not accept required sources")
+        return ()
+    names = tuple(intent.required_sources)
+    if not names:
+        raise ImportIntentError("require-sources needs an explicit source set")
+    unknown = [name for name in names if name not in _ALLOWED_SOURCE_NAMES]
+    if unknown:
+        raise ImportIntentError(f"unsupported required source: {','.join(unknown)}")
+    if frozenset(names) != frozenset(_ALLOWED_SOURCE_NAMES) or len(names) != len(
+        _ALLOWED_SOURCE_NAMES
+    ):
+        raise ImportIntentError("required source set must be catalog,connection,worker")
+    return _ALLOWED_SOURCE_NAMES
+
+
 @dataclass(frozen=True, slots=True)
 class ImportResult:
     path: Path
@@ -67,10 +105,12 @@ def import_legacy_databases(
     target: Path = EDGE_DATABASE_PATH,
     sources: LegacyDatabasePaths | None = None,
     *,
+    intent: ImportIntent | None = None,
     on_receipt: ImportProgress | None = None,
 ) -> ImportResult:
-    """Import each existing legacy database under one exclusive deployment lock."""
+    """Import each selected legacy database under one exclusive deployment lock."""
     resolved = sources or LegacyDatabasePaths.production()
+    selected = _selected_source_names(resolved, intent)
     imported: list[str] = []
     with deployment_lock(target.parent) as lock:
         migrate_database(target, lock=lock)
@@ -82,7 +122,7 @@ def import_legacy_databases(
                 ("connection", resolved.connection),
                 ("worker", resolved.worker),
             ):
-                if not path.is_file():
+                if name not in selected:
                     continue
                 snapshot = _snapshot_source(name, path, target.parent)
                 _record_backup_receipt(target_connection, snapshot, on_receipt)
@@ -101,7 +141,33 @@ def import_legacy_databases(
         finally:
             target_connection.close()
             secure_database_files(target)
+    if intent is not None and intent.mode is ImportMode.FRESH_INSTALL:
+        return ImportResult(target, ("fresh",))
     return ImportResult(target, tuple(imported))
+
+
+def _selected_source_names(
+    sources: LegacyDatabasePaths, intent: ImportIntent | None
+) -> frozenset[str]:
+    present = {
+        name
+        for name, path in (
+            ("catalog", sources.catalog),
+            ("connection", sources.connection),
+            ("worker", sources.worker),
+        )
+        if path.is_file()
+    }
+    if intent is None:
+        if not present:
+            raise ImportIntentError("fresh-install must be selected explicitly")
+        return frozenset(present)
+    if intent.mode is ImportMode.FRESH_INSTALL:
+        return frozenset()
+    missing = [name for name in intent.required_sources if name not in present]
+    if missing:
+        raise ImportIntentError(f"required source missing: {','.join(missing)}")
+    return frozenset(intent.required_sources)
 
 
 def _snapshot_source(name: str, path: Path, state_directory: Path) -> _SourceSnapshot:
@@ -430,7 +496,25 @@ def _parser() -> argparse.ArgumentParser:
         "--connection", type=Path, default=LegacyDatabasePaths.production().connection
     )
     parser.add_argument("--worker", type=Path, default=LegacyDatabasePaths.production().worker)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--fresh-install", action="store_true")
+    mode.add_argument("--require-sources", type=_parse_required_sources)
     return parser
+
+
+def _parse_required_sources(raw: str) -> tuple[str, ...]:
+    names = tuple(part.strip() for part in raw.split(",") if part.strip())
+    if not names:
+        raise argparse.ArgumentTypeError("require-sources needs an explicit source set")
+    return names
+
+
+def _cli_intent(args: argparse.Namespace) -> ImportIntent:
+    if args.fresh_install:
+        return ImportIntent(mode=ImportMode.FRESH_INSTALL)
+    if args.require_sources is not None:
+        return ImportIntent(mode=ImportMode.REQUIRE_SOURCES, required_sources=args.require_sources)
+    raise ImportIntentError("fresh-install must be selected explicitly")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -439,12 +523,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = import_legacy_databases(
             args.database,
             LegacyDatabasePaths(args.catalog, args.connection, args.worker),
+            intent=_cli_intent(args),
         )
     except (OSError, sqlite3.Error, RuntimeError, ValueError) as error:
         print(f"EDGE_DB_IMPORT_FAILED: {error}", file=sys.stderr)
         return 1
-    sources = ",".join(result.imported_sources) or "fresh"
-    print(f"EDGE_DB_IMPORT_OK path={result.path} sources={sources}")
+    print(f"EDGE_DB_IMPORT_OK path={result.path} sources={','.join(result.imported_sources)}")
     return 0
 
 
@@ -453,6 +537,9 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "ImportIntent",
+    "ImportIntentError",
+    "ImportMode",
     "ImportResult",
     "LegacyDatabasePaths",
     "deployment_lock",

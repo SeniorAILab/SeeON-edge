@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,10 @@ from worker.adapters.model.lstm_manifest import LstmFallManifest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _PACKAGED_ARTIFACT_DIR = _REPO_ROOT / "models" / "fall" / "lstm"
+_TRACKED_LSTM_SIDECARS = (
+    Path("models/fall/lstm/arch.json"),
+    Path("models/fall/lstm/metadata.yaml"),
+)
 
 
 def _write_manifest(path: Path) -> Path:
@@ -31,6 +36,18 @@ def _write_manifest(path: Path) -> Path:
     return path
 
 
+def test_packaged_lstm_sidecars_are_the_only_tracked_model_files() -> None:
+    result = subprocess.run(
+        ["git", "-C", str(_REPO_ROOT), "ls-files", "-z", "models"],
+        check=True,
+        capture_output=True,
+    )
+    tracked = {Path(item.decode()) for item in result.stdout.split(b"\0") if item}
+    assert tracked == set(_TRACKED_LSTM_SIDECARS)
+    for relative in _TRACKED_LSTM_SIDECARS:
+        assert (_REPO_ROOT / relative).is_file()
+
+
 def test_packaged_lstm_metadata_declares_the_artifact_identity() -> None:
     metadata = yaml.safe_load(
         (_PACKAGED_ARTIFACT_DIR / "metadata.yaml").read_text(encoding="utf-8")
@@ -41,6 +58,9 @@ def test_packaged_lstm_metadata_declares_the_artifact_identity() -> None:
         "889075695884742475b9713e3b86ba67085bb96979b64c51756ea3fd715ab57a"
     )
     assert metadata["preprocessing_identity"] == "legacy-coco17-xyc-frame-normalized-zero-fill-v1"
+    assert metadata["architecture"] == "arch.json"
+    assert metadata["metadata"] == "metadata.yaml"
+    assert metadata["weights"] == "model.pt"
 
 
 def test_packaged_lstm_weights_match_the_metadata_digest_when_provisioned() -> None:

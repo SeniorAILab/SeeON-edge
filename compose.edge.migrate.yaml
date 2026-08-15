@@ -1,0 +1,38 @@
+# Cutover-only overlay. Use it on top of compose.edge.yaml when importing
+# existing facility state. Greenfield installs must not include this file.
+#
+#   docker compose -f compose.edge.yaml -f compose.edge.migrate.yaml up -d
+#
+# Bind the three existing named source volumes through non-secret deployment
+# environment keys. The overlay never invents those names from the Compose
+# project and never pins a host-specific facility. Missing or empty bindings
+# fail interpolation before Docker starts any service.
+services:
+  edge-db-migrator:
+    volumes:
+      - legacy-catalog:/var/lib/legacy-catalog:ro
+      - legacy-connection:/var/lib/legacy-connection:ro
+      - legacy-worker:/var/lib/legacy-worker:ro
+    command:
+      - python
+      - -m
+      - shared.edge_db.importer
+      - --require-sources
+      - catalog,connection,worker
+      - --catalog
+      - /var/lib/legacy-catalog/catalog.sqlite3
+      - --connection
+      - /var/lib/legacy-connection/connection-settings.sqlite3
+      - --worker
+      - /var/lib/legacy-worker/worker-state.sqlite3
+
+volumes:
+  legacy-catalog:
+    name: ${EDGE_LEGACY_CATALOG_VOLUME:?cutover requires EDGE_LEGACY_CATALOG_VOLUME}
+    external: true
+  legacy-connection:
+    name: ${EDGE_LEGACY_CONNECTION_VOLUME:?cutover requires EDGE_LEGACY_CONNECTION_VOLUME}
+    external: true
+  legacy-worker:
+    name: ${EDGE_LEGACY_WORKER_VOLUME:?cutover requires EDGE_LEGACY_WORKER_VOLUME}
+    external: true

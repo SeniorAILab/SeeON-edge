@@ -353,6 +353,46 @@
       "compose": true,
       "example": true,
       "service_environment": true
+    },
+    {
+      "name": "EDGE_RENDER_GID",
+      "category": "deployment artifact",
+      "authority": "deployment env",
+      "behavior": "required host render group GID for intel-vaapi-host/igpu; no host default; compose.edge.igpu.yaml group_add only",
+      "compose": true,
+      "example": true
+    },
+    {
+      "name": "EDGE_VIDEO_GID",
+      "category": "deployment artifact",
+      "authority": "deployment env",
+      "behavior": "required host video group GID for intel-vaapi-host/igpu; no host default; compose.edge.igpu.yaml group_add only",
+      "compose": true,
+      "example": true
+    },
+    {
+      "name": "EDGE_LEGACY_CATALOG_VOLUME",
+      "category": "deployment artifact",
+      "authority": "deployment env",
+      "behavior": "optional named external catalog volume for compose.edge.migrate.yaml only; no host default and never a Compose project prefix",
+      "compose": true,
+      "example": true
+    },
+    {
+      "name": "EDGE_LEGACY_CONNECTION_VOLUME",
+      "category": "deployment artifact",
+      "authority": "deployment env",
+      "behavior": "optional named external connection volume for compose.edge.migrate.yaml only; no host default and never a Compose project prefix",
+      "compose": true,
+      "example": true
+    },
+    {
+      "name": "EDGE_LEGACY_WORKER_VOLUME",
+      "category": "deployment artifact",
+      "authority": "deployment env",
+      "behavior": "optional named external worker volume for compose.edge.migrate.yaml only; no host default and never a Compose project prefix",
+      "compose": true,
+      "example": true
     }
   ]
 }

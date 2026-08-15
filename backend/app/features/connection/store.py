@@ -34,7 +34,9 @@ from typing import Final, TypedDict
 
 from backend.app.features.connection.hub_url import (
     API_BACKEND_ALLOW_INSECURE_HTTP_ENV,
+    canonical_hub_api_base,
     hub_url_transport_allowed,
+    reject_hub_api_base_path_reason,
     reject_hub_url_reason,
 )
 from backend.app.features.connection.sqlite_store import (
@@ -93,14 +95,20 @@ class MaskedConnectionSettings(TypedDict):
 def _normalize_api_base(base: str | None) -> str | None:
     if not base:
         return None
-    trimmed = base.strip().rstrip("/")
+    trimmed = base.strip()
     if not trimmed:
         return None
     # Reject cleartext public Hub bases before deriving events/config paths so a
     # mis-baked compose default cannot seed bearer-bearing outbound URLs.
     if not hub_url_transport_allowed(trimmed):
         return None
-    return trimmed if trimmed.endswith("/api") else f"{trimmed}/api"
+    path_reason = reject_hub_api_base_path_reason(trimmed)
+    if path_reason is not None:
+        raise InvalidConnectionSettingError(
+            field_name=API_BACKEND_BASE_URL_ENV,
+            reason=path_reason,
+        )
+    return canonical_hub_api_base(trimmed)
 
 
 def _permitted_hub_url(value: str | None) -> str | None:

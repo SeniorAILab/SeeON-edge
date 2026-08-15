@@ -7,12 +7,15 @@ import pytest
 
 from backend.app.core.config import reject_retired_backend_environment
 from backend.app.features.connection import store as connection_store_module
+from backend.app.features.connection.hub_url import UNSUPPORTED_HUB_API_BASE_PATH_REASON
 from backend.app.features.connection.store import (
     API_BACKEND_BASE_URL_ENV,
     API_CONNECTION_SETTINGS_PATH_ENV,
     DEFAULT_CONNECTION_SETTINGS_PATH,
     ConnectionSettings,
     ConnectionSettingsStore,
+    InvalidConnectionSettingError,
+    _normalize_api_base,
 )
 from backend.app.lifespan import (
     API_BACKEND_CONFIG_URL_ENV,
@@ -330,6 +333,56 @@ class TestApiPrefixNormalization:
         settings = _store(tmp_path).load()
 
         assert settings.events_url is None
+
+    def test_origin_and_optional_api_derive_exact_hub_endpoints(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(API_BACKEND_BASE_URL_ENV, "https://backend.example")
+        origin = _store(tmp_path).load()
+        assert origin.events_url == "https://backend.example/api/v1/events"
+        assert origin.config_url == "https://backend.example/api/v1/ml-config"
+
+        monkeypatch.setenv(API_BACKEND_BASE_URL_ENV, "https://backend.example/api")
+        prefixed = _store(tmp_path).load()
+        assert prefixed.events_url == "https://backend.example/api/v1/events"
+        assert prefixed.config_url == "https://backend.example/api/v1/ml-config"
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "https://backend.example/api/v1",
+            "https://backend.example/api/v1/",
+            "https://backend.example/foo",
+            "https://backend.example/api/v1/events",
+            "https://backend.example/api?x=1",
+            "https://backend.example/api#frag",
+            "https://user:pass@backend.example",
+            "https://backend.example/api/../api",
+            "https://backend.example/API",
+            "https://backend.example /api",
+        ],
+    )
+    def test_unsupported_api_base_is_rejected_without_repair(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: str
+    ) -> None:
+        monkeypatch.setenv(API_BACKEND_BASE_URL_ENV, raw)
+
+        with pytest.raises(InvalidConnectionSettingError) as exc:
+            _ = _store(tmp_path).load()
+
+        assert exc.value.field_name == API_BACKEND_BASE_URL_ENV
+        assert exc.value.reason == UNSUPPORTED_HUB_API_BASE_PATH_REASON
+        assert "https://backend.example/api/v1/api/v1/events" not in exc.value.reason
+        with pytest.raises(InvalidConnectionSettingError) as direct:
+            _ = _normalize_api_base(raw)
+        assert direct.value.reason == UNSUPPORTED_HUB_API_BASE_PATH_REASON
+
+    def test_normalize_api_base_accepts_origin_and_optional_api(self) -> None:
+        assert _normalize_api_base("https://backend.example") == "https://backend.example/api"
+        assert _normalize_api_base("https://backend.example/") == "https://backend.example/api"
+        assert _normalize_api_base("https://backend.example/api") == "https://backend.example/api"
+        assert _normalize_api_base("https://backend.example/api/") == "https://backend.example/api"
+        assert _normalize_api_base("  https://backend.example/api  ") == "https://backend.example/api"
 
 
 def test_compose_edge_persists_only_the_central_connection_database() -> None:

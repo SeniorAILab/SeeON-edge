@@ -121,6 +121,55 @@ sh scripts/ops/cloud-enrollment-smoke.sh \
   --host happy-nursing-home-raw --full-lifecycle --rollback-drill
 ```
 
+## Cutover mapping and backend delivery gates
+
+Do not accept a real event, clip transfer, or Vercel read-side result until the
+reusable delivery gate is green. Expected camera count and the designated real
+witness are operator-private snapshot facts, not a repository roster and not a
+host-specific room label.
+
+Obtain a sealed pre-cutover snapshot receipt and an independently recorded
+SHA-256. The snapshot lists opaque local camera IDs and exactly one designated
+witness from that same list. Then collect a redacted delivery readout with
+enrollment, per-camera Backend mappings, per-camera external heartbeat results,
+authenticated SSE timing, and the witness event/clip/Vercel proof.
+
+```sh
+export EDGE_PROVISIONING_SNAPSHOT=/secure/pointers/pre-cutover-snapshot.json
+export EDGE_PROVISIONING_SNAPSHOT_SHA256='<independently recorded snapshot digest>'
+export EDGE_PROVISIONING_DELIVERY=/secure/pointers/cutover-delivery-readout.json
+export EDGE_PROVISIONING_DELIVERY_SHA256='<independently recorded readout digest>'
+sh scripts/ops/cloud-enrollment-smoke.sh --delivery-gate \
+  --snapshot "$EDGE_PROVISIONING_SNAPSHOT" \
+  --delivery "$EDGE_PROVISIONING_DELIVERY"
+sh scripts/ops/cloud-enrollment-smoke.sh --print-checklist
+```
+
+Stop, and do not enable witness processing or treat an event as acceptance, unless
+every item below holds:
+
+- enrollment succeeded and was authenticated
+- the snapshot content-address still matches the sealed digest
+- the snapshot-derived expected camera count equals the number of listed cameras
+- every expected camera has a non-empty Backend camera ID
+- `mapping_pending` is false for every expected camera
+- every expected camera has a successful, fresh external heartbeat
+- authenticated Hub SSE is established before designated-witness processing
+- the witness event is real, not fabricated
+- the resulting clip and Vercel read-side proof are authenticated
+
+A single unmapped camera, blank mapping, `mapping_pending=true`, missed
+heartbeat, or stale heartbeat is a clear stop. Count drift between the sealed
+snapshot and the readout is a clear stop. The gate prints only reason tokens,
+counts, and SHA bindings. It must not print RTSP, tokens, cookies, or other
+secrets, and it must not contact a production Hub.
+
+Preserve the existing privilege and rollback boundary: no Docker-socket mount,
+no privileged container, no Docker-group grant, and no legacy-volume restore
+after central cutover traffic. Intel hosts still require `EDGE_RENDER_GID` to
+equal the live `/dev/dri/renderD128` owner GID; there is no repository GID
+default.
+
 Success evidence contains only plan/SHA/digest bindings, backup metadata,
 versioned API statuses, counts, and redacted lifecycle results. Never put SQLite
 bytes or secret values in `.omo` evidence.

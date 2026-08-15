@@ -37,15 +37,18 @@ ML_WORKER_PROFILE=igpu
   설치돼 있어야 한다 — `Dockerfile.edge`가 빌드 시점에 설치한다. 별도로
   호스트에 설치할 필요는 없다(디바이스 노드만 통과시키면 된다).
 - 컨테이너를 구동하는 사용자가 `/dev/dri/renderD128`의 그룹(대개
-  `render`, 배포에 따라 `video`)에 접근 가능해야 한다. 정확한 GID는 호스트
-  마다 다를 수 있으므로 배포 전에 확인한다:
+  `render`, 배포에 따라 `video`)에 접근 가능해야 한다. GID는 호스트
+  배포 바인딩이며 저장소 기본값이 없다. 배포 전에 반드시 확인한다:
 
   ```bash
   getent group render video
+  stat -c '%g %G' /dev/dri/renderD128
   ```
 
-  `compose.edge.igpu.yaml`의 `group_add` 값(기본 `104`/`44`)이 실제 호스트
-  값과 다르면 그에 맞게 오버레이를 수정한다.
+  `EDGE_RENDER_GID`는 실제 `/dev/dri/renderD128` **owner GID**와 같아야 한다.
+  `EDGE_VIDEO_GID`는 같은 호스트에서 읽은 `video` GID다. 누락·공백·불일치는
+  Compose/프리플라이트가 Docker 실행 전에 거절한다. 오버레이에 GID를
+  기록하지 말 것.
 
 ## iGPU를 실제로 쓰고 있는지 검증
 
@@ -105,9 +108,9 @@ VAAPI를 쓸 수 없으면(드라이버 없음, `/dev/dri` 없음, 지원하지 
    절차). "Failed to initialise VAAPI connection" 류의 오류가 나오면
    `intel-media-va-driver-non-free`가 이미지에 실제로 설치돼 있는지
    `Dockerfile.edge` 빌드 로그를 확인한다.
-3. **그룹 권한** — `group_add`에 넣은 GID가 실제 `/dev/dri/renderD128`의
-   그룹 GID와 일치하는지 호스트에서 `stat /dev/dri/renderD128` 및
-   `getent group render video`로 대조한다.
+3. **그룹 권한** — `EDGE_RENDER_GID`가 실제 `/dev/dri/renderD128` owner GID
+   (`stat -c '%g' /dev/dri/renderD128`)와 같은지, `EDGE_VIDEO_GID`가 호스트
+   `video` GID와 같은지 대조한다. 저장소 기본 GID는 없다.
 4. **코덱 미지원** — 특정 카메라의 코덱을 VAAPI가 지원하지 않는 경우는
    부팅 시점의 호스트-레벨 프리플라이트로는 잡히지 않는다(프리플라이트는
    더미 디바이스 초기화만 확인하지, 카메라별 스트림 코덱까지는 모른다).

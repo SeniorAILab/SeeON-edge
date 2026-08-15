@@ -15,14 +15,11 @@ services:
     restart: "no"
     volumes:
       - edge-state:/var/lib/seeon-state
-      # Released state volumes remain rollback evidence and are writable only
-      # before cutover. The migrator checkpoints/backs them up, then reads them.
-      - ml-api-state:/var/lib/legacy-api-state
-      - ml-worker-state:/var/lib/legacy-worker-state
     command:
       - python
       - -m
       - shared.edge_db.importer
+      - --fresh-install
 
   ml-api:
     image: ${ML_API_IMAGE:?ML_API_IMAGE is required in edge prod}
@@ -116,6 +113,3 @@ services:
 
 volumes:
   edge-state: {}
-  # Read-only rollback boundary for the one-time import; runtimes never mount these.
-  ml-api-state: {}
-  ml-worker-state: {}

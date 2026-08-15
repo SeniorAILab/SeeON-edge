@@ -23,6 +23,51 @@ seal. Never substitute `latest`, `dev`, a branch, or a hand-written digest.
 
 ## Host preflight
 
+Model materialization is a pre-boot host step. Image builds must not fetch
+weights. A greenfield host uses `scripts/fetch-models.sh` for the packaged
+LSTM default. A cutover copies only declared relative paths from an approved
+live worker through the normal Docker CLI after source identity and
+destination hashes pass:
+
+```sh
+scripts/ops/materialize-model-artifacts.sh \
+  --receipt "$OPERATOR_PRIVATE_RECEIPT" \
+  --dest ./models \
+  --checkout .
+scripts/ops/verify-model-artifacts.sh \
+  --receipt "$OPERATOR_PRIVATE_RECEIPT" \
+  --dest ./models \
+  --checkout .
+```
+
+The receipt is operator-private and hash-only: schema, source image digest,
+revision, and relative path SHA-256 values. It must not contain credentials,
+RTSP, model bytes, or host volume paths. The scripts emit only a count,
+path-class, and destination-hash verdict. Incomplete, extra, altered,
+wrong-image, dirty-checkout, or missing-sidecar inputs fail before Compose
+starts. Tests and QA use synthetic files and a mocked Docker CLI adapter.
+
+The supported Linux deploy path is the root-owned systemd carrier in
+`scripts/edge-updater/systemd/`. Initial unit installation is a host-operator
+action: copy the sealed updater to `/usr/local/libexec/seeon-edge/`, create
+mode-0600 `/etc/seeon/edge-deploy.env`, then enable `seeon-edge-updater.timer`.
+Do not grant an interactive deploy user the Docker group, mount the Docker
+socket, or run a privileged updater container. Containers stay root.
+
+Complete fresh preflight:
+
+- clean checkout at the sealed SHA
+- root-owned carrier, carrier-writable deploy root, mode-0600 env
+- updater state owned by the carrier and idle
+- digest-pinned `ML_API_IMAGE` / `ML_WORKER_IMAGE`
+- base Compose only, explicit `--fresh-install`
+- Intel hosts also need `EDGE_RENDER_GID` / `EDGE_VIDEO_GID` matching
+  `renderD128`
+
+Complete cutover preflight is the same carrier/env/image gate plus
+`compose.edge.migrate.yaml`, the three `EDGE_LEGACY_*` volume names, and
+required `catalog,connection,worker` import sources.
+
 The only approved edge alias is `happy-nursing-home-raw`. SSH uses
 `StrictHostKeyChecking=yes`, `CheckHostIP=yes`, `IdentitiesOnly=yes`, and a
 dedicated pinned `UserKnownHostsFile`. Reject JNU signatures.

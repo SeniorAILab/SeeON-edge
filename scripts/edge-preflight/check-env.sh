@@ -147,6 +147,70 @@ case "$profile" in
       die "compose.edge.nvidia.yaml requires an NVIDIA ML_WORKER_PROFILE"
     ;;
 esac
+require_gids=0
+case "$profile" in
+  igpu|intel-vaapi-host) require_gids=1 ;;
+esac
+if [ "$igpu_overlay_supplied" -eq 1 ]; then
+  require_gids=1
+fi
+if ! gid_validation=$(REQUIRE_GIDS="$require_gids" python3 - "$env_file" <<'PY' 2>&1
+import os
+import re
+import sys
+from pathlib import Path
+
+env_path = Path(sys.argv[1])
+require_gids = os.environ.get("REQUIRE_GIDS") == "1"
+values: dict[str, str] = {}
+for original in env_path.read_text(encoding="utf-8").splitlines():
+    stripped = original.strip()
+    if not stripped or stripped.startswith("#") or "=" not in stripped:
+        continue
+    key, value = stripped.split("=", 1)
+    if key in {"EDGE_RENDER_GID", "EDGE_VIDEO_GID"}:
+        values[key] = value.strip().strip('"').strip("'")
+
+gid_re = re.compile(r"^[0-9]{1,10}$")
+max_gid = 4_294_967_294
+
+def fail(message: str) -> None:
+    print(message, file=sys.stderr)
+    raise SystemExit(1)
+
+for name in ("EDGE_RENDER_GID", "EDGE_VIDEO_GID"):
+    process_value = os.environ.get(name)
+    if process_value is not None:
+        fail(f"process environment override of {name} is forbidden; use the env file")
+
+if require_gids:
+    for name in ("EDGE_RENDER_GID", "EDGE_VIDEO_GID"):
+        if name not in values or not values[name].strip():
+            fail(f"{name} is required for intel-vaapi-host/igpu")
+
+for name, raw in values.items():
+    if not gid_re.fullmatch(raw) or int(raw) > max_gid:
+        fail(f"{name} must be a decimal host GID")
+
+if require_gids:
+    render_gid = values["EDGE_RENDER_GID"]
+    device = os.environ.get("EDGE_RENDER_DEVICE", "/dev/dri/renderD128")
+    observed = os.environ.get("EDGE_RENDER_DEVICE_GID")
+    if observed is None:
+        path = Path(device)
+        if not path.exists():
+            fail("render device missing or inaccessible")
+        observed = str(path.stat().st_gid)
+    if not gid_re.fullmatch(observed) or int(observed) > max_gid:
+        fail("render device GID is malformed")
+    if observed != render_gid:
+        fail("EDGE_RENDER_GID does not match the render device GID (mismatch)")
+PY
+); then
+  printf '%s host GID/device preflight failed:\n' "$prefix" >&2
+  printf '%s\n' "$gid_validation" | sed 's/^/  /' >&2
+  die "fix EDGE_RENDER_GID/EDGE_VIDEO_GID and the host render device, then re-run this check"
+fi
 if ! render=$(docker compose --env-file "$env_file" "$@" config -q 2>&1); then
   printf '%s compose failed to render from %s:\n' "$prefix" "$env_file" >&2
   printf '%s\n' "$render" >&2
@@ -182,6 +246,17 @@ case "$hub_base" in
     die "API_BACKEND_BASE_URL must use https:// (got: $hub_base). Cleartext public Hub URLs are forbidden."
     ;;
 esac
+if ! hub_path=$(PYTHONPATH="$repo_root${PYTHONPATH:+:$PYTHONPATH}" python3 - "$hub_base" <<'PY' 2>&1
+import sys
+from backend.app.features.connection.hub_url import reject_hub_api_base_path_reason
+reason = reject_hub_api_base_path_reason(sys.argv[1])
+if reason:
+    print(reason)
+    raise SystemExit(1)
+PY
+); then
+  die "$hub_path"
+fi
 allow_insecure=$(python3 - "$env_file" <<'PY'
 import sys
 from pathlib import Path

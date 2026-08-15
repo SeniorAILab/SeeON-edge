@@ -1,12 +1,14 @@
 # Runbook: 재배포 후 fall / bed_exit 판독 절차
 
-13대 카메라 재배포 후 "이벤트가 왜 안 오는지"를 판단하기 위한 **읽기 전용** 절차다.
-이 문서는 배포를 수행하지 않는다 — `lane-edge-redeploy`가 실행하는 쪽이고, 이 문서는
-그 결과를 읽는 쪽이다. 아키텍처 설명은 [`docs/architecture.md`](../architecture.md)에
-있으니 여기서는 반복하지 않는다.
+배포 후 "이벤트가 왜 안 오는지"를 판단하기 위한 **읽기 전용** 절차다.
+기대 카메라 수와 지정 증인 카메라는 연산자 비밀 밀봉 pre-cutover
+스냅샷에서만 얻는다. 이 문서는 배포를 수행하지 않는다 —
+`lane-edge-redeploy`가 실행하는 쪽이고, 이 문서는 그 결과를 읽는 쪽이다.
+아키텍처 설명은 [`docs/architecture.md`](../architecture.md)에 있으니 여기서는
+반복하지 않는다.
 
 > [!WARNING]
-> **`worker-config` 응답(`GET /api/v1/cameras/worker-config`)은 13대 카메라의 RTSP
+> **`worker-config` 응답(`GET /api/v1/cameras/worker-config`)은 등록된 모든 카메라의 RTSP
 > URL을 자격증명 포함 평문으로 담고 있다.** 이 런북의 어떤 점검도 그 엔드포인트를
 > 직접 호출하지 않는다 — 아래 점검들은 전부 카메라 ID, 불리언 상태, 타임스탬프만
 > 필요하기 때문이다. 정말 그 엔드포인트를 확인해야 하는 상황이 오면, 응답 전체를
@@ -16,6 +18,38 @@
 > 셸 확장된 뒤 `ps aux`에 평문으로 남는다). 이 저장소는 **공개** 저장소다. 노드
 > 주소, SSH 계정, 키 경로, 카메라 IP, 비밀번호는 이 문서에도, 이 문서가 만들어내는
 > 어떤 출력에도 남지 않아야 한다.
+
+## Cutover mapping and backend delivery gates
+
+실제 이벤트·클립·Vercel 판독을 합격으로 쓰기 전에 재사용 가능한 delivery
+게이트가 통과해야 한다. 기대 대수와 지정 증인은 밀봉된 pre-cutover 스냅샷에서만
+읽는다. 저장소에 카메라 수나 호스트 방 이름을 계약으로 적지 않는다.
+
+```sh
+export EDGE_PROVISIONING_SNAPSHOT=/secure/pointers/pre-cutover-snapshot.json
+export EDGE_PROVISIONING_SNAPSHOT_SHA256='<independently recorded snapshot digest>'
+export EDGE_PROVISIONING_DELIVERY=/secure/pointers/cutover-delivery-readout.json
+export EDGE_PROVISIONING_DELIVERY_SHA256='<independently recorded readout digest>'
+sh scripts/ops/cloud-enrollment-smoke.sh --delivery-gate \
+  --snapshot "$EDGE_PROVISIONING_SNAPSHOT" \
+  --delivery "$EDGE_PROVISIONING_DELIVERY"
+sh scripts/ops/cloud-enrollment-smoke.sh --print-checklist
+```
+
+게이트가 요구하는 것:
+
+- enrollment 성공 + 인증됨
+- 스냅샷 SHA-256이 밀봉 영수증과 일치
+- snapshot-derived expected camera count가 스냅샷 목록과 같음
+- 모든 기대 카메라의 Backend ID가 비어 있지 않음
+- 모든 기대 카메라의 `mapping_pending` 이 false
+- 모든 기대 카메라의 외부 heartbeat가 성공이고 fresh
+- 지정 증인 처리 시작 전에 인증된 Hub SSE가 이미 열려 있음
+- 조작된(fabricated) 이벤트가 아님
+- 그 결과 클립과 Vercel read-side 증명이 인증됨
+
+한 대라도 미매핑이거나 heartbeat가 빠지면 즉시 중단한다. 이 스크립트는 생산 Hub를
+호출하지 않는다. 비밀·RTSP·토큰을 출력하지 않는다.
 
 ## 0. 사전 확인 — 지금 뭘 보고 있는지부터 확정한다
 

@@ -46,6 +46,80 @@ if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   exit 2
 fi
 
+host_preflight() {
+  [ "${EDGE_HOST_PREFLIGHT:-0}" = "1" ] || return 0
+  deploy_root=${EDGE_DEPLOY_ROOT:-}
+  carrier_uid=${EDGE_CARRIER_UID:-}
+  if ! python3 - "$deploy_root" "$carrier_uid" "$ENV_FILE" "$DATA_DIR" <<'PY'
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+deploy_raw, carrier_raw, env_raw, data_raw = sys.argv[1:5]
+safe_path = re.compile(r"^/[A-Za-z0-9/._-]+$")
+
+
+def fail(message: str) -> None:
+    print(message, file=sys.stderr)
+    raise SystemExit(1)
+
+
+if not safe_path.fullmatch(deploy_raw) or ".." in Path(deploy_raw).parts:
+    fail("deploy root binding is missing or unsafe")
+deploy = Path(deploy_raw)
+if not deploy.is_dir() or not os.access(deploy, os.W_OK):
+    fail("deploy root is missing or not writable by the carrier")
+if not re.fullmatch(r"[0-9]+", carrier_raw):
+    fail("carrier uid is missing or malformed")
+expected_uid = int(carrier_raw)
+if os.geteuid() != expected_uid:
+    fail("carrier uid does not match the running updater")
+env_path = Path(env_raw)
+if not env_path.is_file():
+    fail("env file not found")
+mode = env_path.stat().st_mode & 0o777
+if mode != 0o600:
+    fail("env file must be mode 0600")
+data_path = Path(data_raw)
+if not data_path.is_dir():
+    fail("updater state directory is missing or not owned by the carrier")
+if data_path.stat().st_uid != expected_uid:
+    fail("updater state directory is missing or not owned by the carrier")
+
+digest_re = re.compile(r"@sha256:[0-9a-f]{64}$")
+required = {"ML_API_IMAGE": None, "ML_WORKER_IMAGE": None}
+for original in env_path.read_text(encoding="utf-8").splitlines():
+    stripped = original.strip()
+    if not stripped or stripped.startswith("#") or "=" not in stripped:
+        continue
+    key, value = stripped.split("=", 1)
+    if key in required:
+        required[key] = value.strip().strip('"').strip("'")
+for key, value in required.items():
+    if not value or digest_re.search(value) is None:
+        fail(f"{key} must be a digest-pinned @sha256: reference")
+
+git_dir = deploy / ".git"
+if git_dir.exists():
+    status = subprocess.run(
+        ["git", "-C", str(deploy), "status", "--porcelain"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if status.returncode != 0 or status.stdout.strip():
+        fail("dirty worktree; seal the checkout before the updater runs")
+PY
+  then
+    printf '%s\n' "host preflight failed" >&2
+    exit 1
+  fi
+}
+
+host_preflight
+
 mkdir -p "$DATA_DIR" "$OUTBOX_DIR"
 
 cleanup_lock() {

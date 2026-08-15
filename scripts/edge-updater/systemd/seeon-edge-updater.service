@@ -1,0 +1,20 @@
+[Unit]
+Description=SeeON edge updater
+Documentation=file:scripts/edge-updater/README.md
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# Audited host bindings only. This file is created by the host operator and
+# must not be optional: a missing binding file is a failed deployment.
+EnvironmentFile=/etc/seeon/edge-deploy.env
+Environment=EDGE_HOST_PREFLIGHT=1
+# Fixed executable path. systemd Environment= must not be able to redirect it.
+ExecStart=/bin/sh /usr/local/libexec/seeon-edge/update-edge.sh
+
+[Install]
+WantedBy=multi-user.target

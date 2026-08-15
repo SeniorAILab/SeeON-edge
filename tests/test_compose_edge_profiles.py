@@ -36,6 +36,13 @@ EXTERNAL_COMPOSE_KEYS = {
     "ML_WORKER_IMAGE",
     "ML_WORKER_PROFILE",
 }
+MIGRATION_OVERLAY_FILE = ROOT / "compose.edge.migrate.yaml"
+LEGACY_VOLUME_BINDINGS = {
+    "EDGE_LEGACY_CATALOG_VOLUME",
+    "EDGE_LEGACY_CONNECTION_VOLUME",
+    "EDGE_LEGACY_WORKER_VOLUME",
+}
+_LEGACY_VOLUME_MARKERS = ("ml-api-state", "ml-worker-state")
 HISTORICAL_COMPOSE_EXAMPLE_KEYS = EXTERNAL_COMPOSE_KEYS | {
     "API_ALLOW_LEGACY_DASHBOARD_AUTH",
     "API_BACKEND_CONFIG_URL",
@@ -124,10 +131,30 @@ def test_compose_and_example_external_keys_cannot_drift_from_inventory() -> None
         for entry in entries
         if entry.get("compose") is True or entry.get("example") is True
     }
+    igpu_keys = set(
+        re.findall(
+            r"\$\{([A-Z][A-Z0-9_]*)",
+            (ROOT / "compose.edge.igpu.yaml").read_text(encoding="utf-8"),
+        )
+    )
 
     assert compose_keys == EXTERNAL_COMPOSE_KEYS
     assert example_keys == EXTERNAL_COMPOSE_KEYS
-    assert compose_keys | example_keys == exposed
+    assert igpu_keys >= {"EDGE_RENDER_GID", "EDGE_VIDEO_GID"}
+    migrate_keys = set(
+        re.findall(
+            r"\$\{([A-Z][A-Z0-9_]*)",
+            MIGRATION_OVERLAY_FILE.read_text(encoding="utf-8"),
+        )
+    )
+    assert migrate_keys == LEGACY_VOLUME_BINDINGS
+    assert (
+        compose_keys
+        | example_keys
+        | {"EDGE_RENDER_GID", "EDGE_VIDEO_GID"}
+        | LEGACY_VOLUME_BINDINGS
+        == exposed
+    )
 
     compose = _compose()
     services = compose["services"]
@@ -370,11 +397,27 @@ def _run_preflight(
     *compose_args: str,
 ) -> subprocess.CompletedProcess[str]:
     env_file = tmp_path / "edge.env"
-    env_file.write_text(_merge_preflight_env(content), encoding="utf-8")
+    merged = _merge_preflight_env(content)
+    env_file.write_text(merged, encoding="utf-8")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     docker_log = tmp_path / "docker.log"
     _write_fake_docker(bin_dir / "docker")
+    env = {
+        **os.environ,
+        "FAKE_DOCKER_LOG": str(docker_log),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+    }
+    env.pop("EDGE_RENDER_GID", None)
+    env.pop("EDGE_VIDEO_GID", None)
+    if re.search(r"^EDGE_RENDER_GID=", merged, re.MULTILINE):
+        device = tmp_path / "renderD128"
+        if not device.exists():
+            device.write_bytes(b"")
+        env["EDGE_RENDER_DEVICE"] = str(device)
+        render_match = re.search(r"^EDGE_RENDER_GID=(\S+)", merged, re.MULTILINE)
+        if render_match and re.fullmatch(r"[0-9]+", render_match.group(1)):
+            env["EDGE_RENDER_DEVICE_GID"] = render_match.group(1)
     return subprocess.run(
         [
             str(ROOT / "scripts/edge-preflight/check-env.sh"),
@@ -382,11 +425,7 @@ def _run_preflight(
             *compose_args,
         ],
         cwd=ROOT,
-        env={
-            **os.environ,
-            "FAKE_DOCKER_LOG": str(docker_log),
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-        },
+        env=env,
         capture_output=True,
         text=True,
         check=False,
@@ -438,7 +477,10 @@ def test_preflight_selects_only_the_profile_compatible_overlay(
     profile: str,
     expected_overlay: str | None,
 ) -> None:
-    result = _run_preflight(tmp_path, f"ML_WORKER_PROFILE={profile}\n")
+    extra = f"ML_WORKER_PROFILE={profile}\n"
+    if expected_overlay == "compose.edge.igpu.yaml":
+        extra += "EDGE_RENDER_GID=993\nEDGE_VIDEO_GID=44\n"
+    result = _run_preflight(tmp_path, extra)
 
     assert result.returncode == 0, result.stderr
     invocations = _render_invocations(tmp_path)
@@ -463,9 +505,12 @@ def test_preflight_rejects_nvidia_overlay_for_non_nvidia_profiles(
     tmp_path: Path,
     profile: str,
 ) -> None:
+    extra = f"ML_WORKER_PROFILE={profile}\n"
+    if profile in {"igpu", "intel-vaapi-host"}:
+        extra += "EDGE_RENDER_GID=993\nEDGE_VIDEO_GID=44\n"
     result = _run_preflight(
         tmp_path,
-        f"ML_WORKER_PROFILE={profile}\n",
+        extra,
         "-f",
         "compose.edge.nvidia.yaml",
     )
@@ -592,3 +637,406 @@ def test_preflight_accepts_deployment_unique_relay_token(tmp_path: Path) -> None
         tmp_path, "API_EDGE_RELAY_TOKEN=b4e1c9a72f0d5836a1c7e9d2f4b60853\n"
     )
     assert result.returncode == 0, result.stderr
+
+
+_SYNTHETIC_RENDER_ENV = "\n".join(
+    (
+        "ML_API_IMAGE=ghcr.io/example/ml-api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ML_WORKER_IMAGE=ghcr.io/example/ml-worker@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "ML_WORKER_PROFILE=cpu-host",
+        "CLIP_STORE_HOST_DIR=/tmp/seeon-edge-contract-clip-store",
+        "API_BACKEND_BASE_URL=https://hub.example.test",
+        "API_BACKEND_INGEST_TIMEOUT_SEC=10",
+        "API_DASHBOARD_USERNAME=site-ops-contract",
+        "API_DASHBOARD_PASSWORD=disposable-bootstrap-9f3a",
+        "API_EDGE_RELAY_TOKEN=disposable-relay-7c1e5b9a2f4d8e6b",
+        "ML_RTSP_ALLOW_PRIVATE_DESTINATIONS=1",
+        "ML_RTSP_ALLOW_LOCAL_DESTINATIONS=0",
+        "",
+    )
+)
+_SYNTHETIC_LEGACY_VOLUME_NAMES = {
+    "EDGE_LEGACY_CATALOG_VOLUME": "seeon-contract-legacy-catalog",
+    "EDGE_LEGACY_CONNECTION_VOLUME": "seeon-contract-legacy-connection",
+    "EDGE_LEGACY_WORKER_VOLUME": "seeon-contract-legacy-worker",
+}
+_FORBIDDEN_CUTOVER_TOKENS = (
+    "happy",
+    "nursing",
+    "hn-",
+    "COMPOSE_PROJECT_NAME",
+)
+
+
+def _write_render_env(path: Path, extra: str = "") -> Path:
+    path.write_text(_SYNTHETIC_RENDER_ENV + extra, encoding="utf-8")
+    return path
+
+
+def _render_compose(
+    tmp_path: Path,
+    *compose_files: str,
+    extra: str = "",
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env_file = _write_render_env(tmp_path / "render.env", extra)
+    command = [
+        "docker",
+        "compose",
+        "--env-file",
+        str(env_file),
+    ]
+    for compose_file in compose_files:
+        command.extend(["-f", compose_file])
+    command.append("config")
+    rendered_env = os.environ.copy()
+    rendered_env.pop("EDGE_RENDER_GID", None)
+    rendered_env.pop("EDGE_VIDEO_GID", None)
+    if env:
+        rendered_env.update(env)
+    return subprocess.run(
+        command,
+        cwd=ROOT,
+        env=rendered_env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _load_rendered_config(completed: subprocess.CompletedProcess[str]) -> dict[str, object]:
+    assert completed.returncode == 0, completed.stderr
+    payload = yaml.safe_load(completed.stdout)
+    assert isinstance(payload, dict)
+    return payload
+
+
+def _volume_sources(service: dict[str, object]) -> list[str]:
+    volumes = service.get("volumes", [])
+    assert isinstance(volumes, list)
+    sources: list[str] = []
+    for entry in volumes:
+        if isinstance(entry, dict) and entry.get("type") == "volume":
+            source = entry.get("source")
+            if isinstance(source, str):
+                sources.append(source)
+        elif isinstance(entry, str) and ":" in entry:
+            sources.append(entry.split(":", 1)[0])
+    return sources
+
+
+def _legacy_markers_in_render(payload: dict[str, object], stdout: str) -> list[str]:
+    text = stdout.lower()
+    declared = payload.get("volumes", {})
+    declared_names = set(declared) if isinstance(declared, dict) else set()
+    return [
+        marker
+        for marker in _LEGACY_VOLUME_MARKERS
+        if marker in declared_names or marker in text
+    ]
+
+
+def test_base_compose_render_is_explicit_greenfield(tmp_path: Path) -> None:
+    completed = _render_compose(tmp_path, "compose.edge.yaml")
+    payload = _load_rendered_config(completed)
+    services = payload["services"]
+    assert isinstance(services, dict)
+    migrator = services["edge-db-migrator"]
+    assert isinstance(migrator, dict)
+    volumes = payload.get("volumes", {})
+    assert isinstance(volumes, dict)
+
+    assert migrator["command"] == [
+        "python",
+        "-m",
+        "shared.edge_db.importer",
+        "--fresh-install",
+    ]
+    assert set(volumes) == {"edge-state"}
+    assert not _legacy_markers_in_render(payload, completed.stdout)
+    assert "--require-sources" not in completed.stdout
+    for service_name in ("edge-db-migrator", "ml-api", "ml-worker"):
+        service = services[service_name]
+        assert isinstance(service, dict)
+        assert "edge-state" in _volume_sources(service)
+        assert not any(
+            marker in source
+            for source in _volume_sources(service)
+            for marker in _LEGACY_VOLUME_MARKERS
+        )
+    for token in _FORBIDDEN_CUTOVER_TOKENS:
+        assert token not in completed.stdout.lower()
+
+
+def test_cutover_overlay_render_binds_three_external_legacy_volumes(
+    tmp_path: Path,
+) -> None:
+    extra = "".join(
+        f"{key}={value}\n" for key, value in _SYNTHETIC_LEGACY_VOLUME_NAMES.items()
+    )
+    completed = _render_compose(
+        tmp_path,
+        "compose.edge.yaml",
+        "compose.edge.migrate.yaml",
+        extra=extra,
+        env={"COMPOSE_PROJECT_NAME": "stale-compose-project"},
+    )
+    payload = _load_rendered_config(completed)
+    services = payload["services"]
+    assert isinstance(services, dict)
+    migrator = services["edge-db-migrator"]
+    assert isinstance(migrator, dict)
+    volumes = payload.get("volumes", {})
+    assert isinstance(volumes, dict)
+
+    assert migrator["command"] == [
+        "python",
+        "-m",
+        "shared.edge_db.importer",
+        "--require-sources",
+        "catalog,connection,worker",
+        "--catalog",
+        "/var/lib/legacy-catalog/catalog.sqlite3",
+        "--connection",
+        "/var/lib/legacy-connection/connection-settings.sqlite3",
+        "--worker",
+        "/var/lib/legacy-worker/worker-state.sqlite3",
+    ]
+    assert set(volumes) >= {
+        "edge-state",
+        "legacy-catalog",
+        "legacy-connection",
+        "legacy-worker",
+    }
+    assert not _legacy_markers_in_render(payload, completed.stdout)
+    for logical_name, expected_name in (
+        ("legacy-catalog", "seeon-contract-legacy-catalog"),
+        ("legacy-connection", "seeon-contract-legacy-connection"),
+        ("legacy-worker", "seeon-contract-legacy-worker"),
+    ):
+        declaration = volumes[logical_name]
+        assert isinstance(declaration, dict)
+        assert declaration["name"] == expected_name
+        assert declaration["external"] is True
+
+    migrator_volumes = migrator["volumes"]
+    assert isinstance(migrator_volumes, list)
+    by_source = {
+        entry["source"]: entry
+        for entry in migrator_volumes
+        if isinstance(entry, dict) and entry.get("type") == "volume"
+    }
+    assert by_source["legacy-catalog"]["target"] == "/var/lib/legacy-catalog"
+    assert by_source["legacy-connection"]["target"] == "/var/lib/legacy-connection"
+    assert by_source["legacy-worker"]["target"] == "/var/lib/legacy-worker"
+    legacy_targets = {
+        by_source[name]["target"]
+        for name in ("legacy-catalog", "legacy-connection", "legacy-worker")
+    }
+    assert len(legacy_targets) == 3
+    for source in ("legacy-catalog", "legacy-connection", "legacy-worker"):
+        assert by_source[source]["read_only"] is True
+    for runtime_name in ("ml-api", "ml-worker"):
+        runtime = services[runtime_name]
+        assert isinstance(runtime, dict)
+        assert not any(
+            source.startswith("legacy-") for source in _volume_sources(runtime)
+        )
+    assert "stale-compose-project" not in {
+        declaration.get("name")
+        for declaration in volumes.values()
+        if isinstance(declaration, dict)
+    }
+    for token in _FORBIDDEN_CUTOVER_TOKENS:
+        assert token not in completed.stdout.lower()
+    assert "--fresh-install" not in completed.stdout
+
+
+@pytest.mark.parametrize("missing", sorted(LEGACY_VOLUME_BINDINGS))
+def test_cutover_overlay_rejects_missing_legacy_volume_binding_before_docker(
+    tmp_path: Path,
+    missing: str,
+) -> None:
+    extra = "".join(
+        f"{key}={value}\n"
+        for key, value in _SYNTHETIC_LEGACY_VOLUME_NAMES.items()
+        if key != missing
+    )
+    completed = _render_compose(
+        tmp_path,
+        "compose.edge.yaml",
+        "compose.edge.migrate.yaml",
+        extra=extra,
+    )
+
+    assert completed.returncode != 0
+    assert missing in completed.stderr
+    assert "required variable" in completed.stderr
+    assert completed.stdout.strip() == ""
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "EDGE_LEGACY_CATALOG_VOLUME=\n"
+        "EDGE_LEGACY_CONNECTION_VOLUME=seeon-contract-legacy-connection\n"
+        "EDGE_LEGACY_WORKER_VOLUME=seeon-contract-legacy-worker\n",
+        "EDGE_LEGACY_CATALOG_VOLUME=seeon-contract-legacy-catalog\n"
+        "EDGE_LEGACY_CONNECTION_VOLUME=   \n"
+        "EDGE_LEGACY_WORKER_VOLUME=seeon-contract-legacy-worker\n",
+        "EDGE_LEGACY_CATALOG_VOLUME=seeon-contract-legacy-catalog\n"
+        "EDGE_LEGACY_CATALOG_VOLUME=\n"
+        "EDGE_LEGACY_CONNECTION_VOLUME=seeon-contract-legacy-connection\n"
+        "EDGE_LEGACY_WORKER_VOLUME=seeon-contract-legacy-worker\n",
+    ],
+)
+def test_cutover_overlay_rejects_empty_or_blank_legacy_volume_bindings(
+    tmp_path: Path,
+    extra: str,
+) -> None:
+    completed = _render_compose(
+        tmp_path,
+        "compose.edge.yaml",
+        "compose.edge.migrate.yaml",
+        extra=extra,
+    )
+
+    assert completed.returncode != 0
+    assert "required variable" in completed.stderr
+    assert completed.stdout.strip() == ""
+
+
+def test_example_env_documents_cutover_bindings_without_assigning_them() -> None:
+    example = (ROOT / ".env.edge.prod.example").read_text(encoding="utf-8")
+    assigned = set(
+        re.findall(r"^([A-Z][A-Z0-9_]*)=", example, re.MULTILINE)
+    )
+    commented = set(
+        re.findall(r"^#\s*([A-Z][A-Z0-9_]*)=", example, re.MULTILINE)
+    )
+
+    assert MIGRATION_OVERLAY_FILE.name in example
+    assert LEGACY_VOLUME_BINDINGS.isdisjoint(assigned)
+    assert LEGACY_VOLUME_BINDINGS <= commented
+    for token in ("happy", "nursing", "hn-", "COMPOSE_PROJECT_NAME"):
+        assert token not in example.lower()
+
+
+def _worker_group_add(payload: dict[str, object]) -> list[str]:
+    services = payload["services"]
+    assert isinstance(services, dict)
+    worker = services["ml-worker"]
+    assert isinstance(worker, dict)
+    group_add = worker.get("group_add", [])
+    assert isinstance(group_add, list)
+    return [str(value) for value in group_add]
+
+
+def test_igpu_overlay_does_not_hardcode_host_gids_or_docker_privilege(
+    tmp_path: Path,
+) -> None:
+    overlay = (ROOT / "compose.edge.igpu.yaml").read_text(encoding="utf-8")
+    assert "EDGE_RENDER_GID" in overlay
+    assert "EDGE_VIDEO_GID" in overlay
+    assert '"104"' not in overlay
+    assert "- \"104\"" not in overlay
+    for token in ("docker.sock", "privileged", "usermod", "-G docker"):
+        assert token not in overlay
+    completed = _render_compose(
+        tmp_path,
+        "compose.edge.yaml",
+        "compose.edge.igpu.yaml",
+        extra=(
+            "ML_WORKER_PROFILE=intel-vaapi-host\n"
+            "EDGE_RENDER_GID=993\n"
+            "EDGE_VIDEO_GID=44\n"
+        ),
+    )
+    payload = _load_rendered_config(completed)
+    assert _worker_group_add(payload) == ["993", "44"]
+    for token in ("docker.sock", "privileged", "usermod", "-G docker"):
+        assert token not in completed.stdout
+
+
+IGPU_GID_BINDINGS = {
+    "EDGE_RENDER_GID": "993",
+    "EDGE_VIDEO_GID": "44",
+}
+
+
+def test_igpu_overlay_renders_injected_gids_exactly(tmp_path: Path) -> None:
+    extra = (
+        "ML_WORKER_PROFILE=intel-vaapi-host\n"
+        + "".join(f"{key}={value}\n" for key, value in IGPU_GID_BINDINGS.items())
+    )
+    completed = _render_compose(
+        tmp_path,
+        "compose.edge.yaml",
+        "compose.edge.igpu.yaml",
+        extra=extra,
+        env={"COMPOSE_PROJECT_NAME": "stale-compose-project"},
+    )
+    payload = _load_rendered_config(completed)
+    assert _worker_group_add(payload) == ["993", "44"]
+    assert completed.stdout.count("993") >= 1
+    assert "group_add" in completed.stdout
+    for stale in ("104", "1", "2"):
+        assert stale not in _worker_group_add(payload)
+    for token in ("docker.sock", "privileged", "usermod"):
+        assert token not in completed.stdout
+
+
+@pytest.mark.parametrize("missing", sorted(IGPU_GID_BINDINGS))
+def test_igpu_overlay_rejects_missing_gid_before_docker(
+    tmp_path: Path, missing: str
+) -> None:
+    extra = (
+        "ML_WORKER_PROFILE=intel-vaapi-host\n"
+        + "".join(
+            f"{key}={value}\n"
+            for key, value in IGPU_GID_BINDINGS.items()
+            if key != missing
+        )
+    )
+    completed = _render_compose(
+        tmp_path,
+        "compose.edge.yaml",
+        "compose.edge.igpu.yaml",
+        extra=extra,
+    )
+    assert completed.returncode != 0
+    assert missing in completed.stderr
+    assert "required variable" in completed.stderr
+    assert completed.stdout.strip() == ""
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "ML_WORKER_PROFILE=intel-vaapi-host\nEDGE_RENDER_GID=\nEDGE_VIDEO_GID=44\n",
+        "ML_WORKER_PROFILE=intel-vaapi-host\nEDGE_RENDER_GID=993\nEDGE_VIDEO_GID=   \n",
+        "ML_WORKER_PROFILE=intel-vaapi-host\nEDGE_RENDER_GID=993\nEDGE_RENDER_GID=\nEDGE_VIDEO_GID=44\n",
+    ],
+)
+def test_igpu_overlay_rejects_empty_or_blank_gids(tmp_path: Path, extra: str) -> None:
+    completed = _render_compose(
+        tmp_path,
+        "compose.edge.yaml",
+        "compose.edge.igpu.yaml",
+        extra=extra,
+    )
+    assert completed.returncode != 0
+    assert "required variable" in completed.stderr
+    assert completed.stdout.strip() == ""
+
+
+def test_example_env_documents_gid_bindings_without_assigning_them() -> None:
+    example = (ROOT / ".env.edge.prod.example").read_text(encoding="utf-8")
+    assigned = set(re.findall(r"^([A-Z][A-Z0-9_]*)=", example, re.MULTILINE))
+    commented = set(re.findall(r"^#\s*([A-Z][A-Z0-9_]*)=", example, re.MULTILINE))
+    assert set(IGPU_GID_BINDINGS).isdisjoint(assigned)
+    assert set(IGPU_GID_BINDINGS) <= commented
+    assert "104" not in example
+    video_gid_tail = example.split("EDGE_VIDEO_GID=", 1)[-1][:20]
+    assert "EDGE_VIDEO_GID=" in example
+    assert "44" not in video_gid_tail

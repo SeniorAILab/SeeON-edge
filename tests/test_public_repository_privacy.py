@@ -225,6 +225,12 @@ _SYNTHETIC_RTSP_FIXTURES = {
         # user:secret 는 고정 더미이고 자격증명 자체는 검증 대상이 아니다.
         "rtsp://user:secret@camera/model",
     },
+    Path("tests/test_cutover_delivery_gate.py"): {
+        # 192.0.2.10 은 RFC 5737 TEST-NET-1 이고 operator:secret 는 고정
+        # 더미다. 이 픽스처는 opaque ID 가 자격증명 URL 을 품으면
+        # fail-closed 됨을 증명한다.
+        "rtsp://operator:secret@192.0.2.10/live",
+    },
     Path("tests/test_edge_topology_contract.py"): {
         # bed-exit e2e 스크립트가 BED_EXIT_RTSP_URL 을 dry-run 출력에서
         # `rtsp://<redacted>` 로 마스킹함을 증명한다. camera-1.local 은
@@ -646,6 +652,20 @@ def test_text_scanner_rejects_encoded_payloads(
 
 def test_text_scanner_allows_short_encoded_looking_text() -> None:
     assert _text_violation_labels(Path("synthetic-input.txt"), "A" * 63) == set()
+
+
+def test_text_scanner_allows_cutover_synthetic_credentialed_rtsp() -> None:
+    relative = Path("tests/test_cutover_delivery_gate.py")
+    text = (ROOT / relative).read_text(encoding="utf-8")
+    assert "credentialed-rtsp" not in _text_violation_labels(relative, text)
+
+
+def test_text_scanner_rejects_cutover_rtsp_outside_allowlisted_path() -> None:
+    labels = _text_violation_labels(
+        Path("synthetic-input.txt"),
+        "rtsp://operator:secret@192.0.2.10/live",
+    )
+    assert "credentialed-rtsp" in labels
 
 
 @pytest.mark.parametrize(

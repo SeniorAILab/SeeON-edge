@@ -16,7 +16,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.app.features.clips.store import CLIP_STORE_DIR_ENV, DEFAULT_CLIP_STORE_DIR
 from backend.app.features.relay.auth import authorize_relay as _authorize
-from backend.app.features.relay.router import RELAY_TOKEN_HEADER, _camera_binding
+from backend.app.features.relay.router import (
+    RELAY_TOKEN_HEADER,
+    _camera_binding,
+    _egress_backend_camera_id,
+)
 from backend.app.features.runtime_settings.store import get_runtime_settings_store
 from backend.app.shared.backend_client_bundle import backend_client_bundle
 from shared.events.evidence_export_client import ReadyClipRequest, UnavailableClipRequest
@@ -143,8 +147,12 @@ def capabilities(
     _authorize(request, relay_token)
     if not _enabled(request):
         return CapabilityResponse(event_idempotency=1, clip_export=0)
-    client = _backend_client(request, camera_id)
-    result = client.probe_capabilities(camera_id)
+    _ = _camera_binding(request, camera_id, facility_id="local")
+    egress_camera_id = _egress_backend_camera_id(request, camera_id)
+    if egress_camera_id is None:
+        return CapabilityResponse(event_idempotency=1, clip_export=0)
+    client = _backend_client(request, egress_camera_id)
+    result = client.probe_capabilities(egress_camera_id)
     if isinstance(result, DeliveryFailure):
         if result.disposition is DeliveryDisposition.COMPATIBILITY:
             return CapabilityResponse(event_idempotency=1, clip_export=0)
@@ -165,8 +173,12 @@ def export_clip(
     _authorize(request, relay_token)
     if not _enabled(request) or CLIP_ID_PATTERN.fullmatch(clip_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="clip export unavailable")
-    binding = _camera_binding(request, payload.camera_id, payload.facility_id)
-    camera_id = str(binding.get("camera_id") or payload.camera_id)
+    _ = _camera_binding(request, payload.camera_id, payload.facility_id)
+    camera_id = _egress_backend_camera_id(request, payload.camera_id)
+    if camera_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="clip export unavailable"
+        )
     client = _backend_client(request, camera_id)
     if isinstance(payload, ReadyClipPayload):
         media = _verified_media(request, clip_id, payload)

@@ -8,7 +8,11 @@
 # Issue #133: the worker must be able to boot with zero env vars using a
 # packaged default LSTM model. Weights are large binary artifacts and stay
 # gitignored (see .gitignore); this script is how an operator (or CI/dev
-# bootstrap) materializes them locally before first boot.
+# bootstrap) materializes the packaged LSTM default locally before first boot.
+# A sealed cutover or multi-artifact host copy is a different path: the
+# pre-boot hash gate in scripts/ops/materialize-model-artifacts.sh and
+# scripts/ops/verify-model-artifacts.sh. This fetch script never talks to
+# Docker and never copies from a live worker.
 #
 # Upstream's metadata.json is saved as metadata.upstream.json (not
 # metadata.json): worker.adapters.model.lstm_manifest.LstmFallManifest

@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 from typing import Final, TypeAlias
 
@@ -14,6 +16,7 @@ from worker.runtime.config.pull_models import BackendWorkerConfigPayload
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[1]
 EDGE_COMPOSE_FILE: Final = "compose.edge.yaml"
+EDGE_MIGRATE_COMPOSE_FILE: Final = "compose.edge.migrate.yaml"
 EDGE_IMAGES_WORKFLOW: Final = ".github/workflows/edge-images.yml"
 EDGE_PREFLIGHT_SCRIPT: Final = "scripts/edge-preflight/check-nvidia-runtime.sh"
 EDGE_RUNTIME_SERVICES: Final = {
@@ -123,9 +126,56 @@ def test_edge_db_migrator_owns_schema_lifecycle_before_runtime_start() -> None:
     worker_depends_on = _mapping_field(services["ml-worker"], "depends_on")
 
     assert migrator["restart"] == "no"
-    assert migrator["command"] == ["python", "-m", "shared.edge_db.importer"]
+    assert migrator["command"] == [
+        "python",
+        "-m",
+        "shared.edge_db.importer",
+        "--fresh-install",
+    ]
     assert api_depends_on == {"edge-db-migrator": {"condition": "service_completed_successfully"}}
     assert worker_depends_on == {"ml-api": {"condition": "service_healthy"}}
+
+
+def test_public_importer_cli_exits_nonzero_for_disallowed_source_set(tmp_path: Path) -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "shared.edge_db.importer",
+            "--database",
+            str(tmp_path / "edge.sqlite3"),
+            "--require-sources",
+            "catalog",
+            "--catalog",
+            str(tmp_path / "missing-catalog.sqlite3"),
+            "--connection",
+            str(tmp_path / "missing-connection.sqlite3"),
+            "--worker",
+            str(tmp_path / "missing-worker.sqlite3"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        env=os.environ.copy(),
+    )
+
+    assert completed.returncode != 0
+    assert "EDGE_DB_IMPORT_OK" not in completed.stdout
+    target = tmp_path / "edge.sqlite3"
+    if target.exists():
+        connection = sqlite3.connect(target)
+        try:
+            tables = {
+                str(row[0])
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            if "schema_import_sources" in tables:
+                assert connection.execute(
+                    "SELECT count(*) FROM schema_import_sources"
+                ).fetchone() == (0,)
+        finally:
+            connection.close()
 
 
 def test_edge_services_pin_release_images_with_dockerfiles_for_build() -> None:
@@ -202,17 +252,69 @@ def test_edge_runtimes_share_one_central_state_volume() -> None:
 
     for service_name in EDGE_SERVICES:
         assert "edge-state:/var/lib/seeon-state" in _list_field(services[service_name], "volumes")
-    assert set(compose.get("volumes", {})) == {
-        "edge-state",
-        "ml-api-state",
-        "ml-worker-state",
-    }
+    assert set(compose.get("volumes", {})) == {"edge-state"}
+    compose_text = (REPO_ROOT / EDGE_COMPOSE_FILE).read_text(encoding="utf-8")
+    assert "ml-api-state" not in compose_text
+    assert "ml-worker-state" not in compose_text
     for runtime_name in EDGE_RUNTIME_SERVICES:
         runtime_volumes = _list_field(services[runtime_name], "volumes")
         assert not any(
-            str(volume).startswith(("ml-api-state:", "ml-worker-state:"))
+            str(volume).startswith(("ml-api-state:", "ml-worker-state:", "legacy-"))
             for volume in runtime_volumes
         )
+    migrator_volumes = _list_field(services["edge-db-migrator"], "volumes")
+    assert migrator_volumes == ["edge-state:/var/lib/seeon-state"]
+
+
+def test_cutover_overlay_declares_external_legacy_volumes_on_migrator_only() -> None:
+    compose = yaml.load(
+        (REPO_ROOT / EDGE_MIGRATE_COMPOSE_FILE).read_text(encoding="utf-8"),
+        Loader=ComposeLoader,
+    )
+    assert isinstance(compose, dict)
+    services = _compose_services(EDGE_MIGRATE_COMPOSE_FILE)
+    assert set(services) == {"edge-db-migrator"}
+    migrator = services["edge-db-migrator"]
+    volumes = compose.get("volumes", {})
+    assert isinstance(volumes, dict)
+    overlay_text = (REPO_ROOT / EDGE_MIGRATE_COMPOSE_FILE).read_text(encoding="utf-8")
+
+    assert migrator["command"] == [
+        "python",
+        "-m",
+        "shared.edge_db.importer",
+        "--require-sources",
+        "catalog,connection,worker",
+        "--catalog",
+        "/var/lib/legacy-catalog/catalog.sqlite3",
+        "--connection",
+        "/var/lib/legacy-connection/connection-settings.sqlite3",
+        "--worker",
+        "/var/lib/legacy-worker/worker-state.sqlite3",
+    ]
+    assert set(volumes) == {"legacy-catalog", "legacy-connection", "legacy-worker"}
+    assert volumes["legacy-catalog"] == {
+        "name": "${EDGE_LEGACY_CATALOG_VOLUME:?cutover requires EDGE_LEGACY_CATALOG_VOLUME}",
+        "external": True,
+    }
+    assert volumes["legacy-connection"] == {
+        "name": "${EDGE_LEGACY_CONNECTION_VOLUME:?cutover requires EDGE_LEGACY_CONNECTION_VOLUME}",
+        "external": True,
+    }
+    assert volumes["legacy-worker"] == {
+        "name": "${EDGE_LEGACY_WORKER_VOLUME:?cutover requires EDGE_LEGACY_WORKER_VOLUME}",
+        "external": True,
+    }
+    assert _list_field(migrator, "volumes") == [
+        "legacy-catalog:/var/lib/legacy-catalog:ro",
+        "legacy-connection:/var/lib/legacy-connection:ro",
+        "legacy-worker:/var/lib/legacy-worker:ro",
+    ]
+    assert "ml-api-state" not in overlay_text
+    assert "ml-worker-state" not in overlay_text
+    assert "COMPOSE_PROJECT_NAME" not in overlay_text
+    for token in ("happy", "nursing", "hn-"):
+        assert token not in overlay_text.lower()
 
 
 def test_edge_service_builds_do_not_depend_on_dockerfile_targets() -> None:

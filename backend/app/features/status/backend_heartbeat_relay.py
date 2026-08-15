@@ -21,12 +21,9 @@ Design notes:
   ``relay_heartbeat``, which stamps liveness before resolving any backend
   mapping). The external backend only knows its own camera ids, so every id
   must be canonicalized through the camera registry's ``backend_camera_id``
-  mapping before being pushed -- mirroring the one-shot alert/heartbeat path
-  in ``relay/router.py``'s ``_camera_binding_from_registry``. Unlike that
-  one-shot path (which falls back to the local id when no backend mapping
-  exists yet, because the registry lookup there also gates local admission),
-  this periodic tick has nothing to gate: an unmapped camera is simply
-  skipped-and-logged rather than sent as a guaranteed-404 request.
+  mapping before being pushed. One-shot alert/heartbeat in ``relay/router.py``
+  uses the same ``canonical_backend_camera_id`` skip: a registered-but-unmapped
+  camera is accepted locally and never sent under its local id.
 """
 
 from __future__ import annotations
@@ -132,7 +129,7 @@ def relay_heartbeats_once(app: object, now: float | None = None) -> RelayTickRes
     # for yet.
     canonical_camera_ids: list[str] = []
     for camera_id in online_camera_ids:
-        canonical_id = _canonical_backend_camera_id(registry_store, camera_id)
+        canonical_id = canonical_backend_camera_id(registry_store, camera_id)
         if canonical_id is None:
             logger.info(
                 "backend heartbeat relay: skipping camera_id=%s, no backend mapping yet",
@@ -164,17 +161,15 @@ def relay_heartbeats_once(app: object, now: float | None = None) -> RelayTickRes
     return result
 
 
-def _canonical_backend_camera_id(registry: object | None, camera_id: str) -> str | None:
-    """Resolve a HeartbeatStore camera_id (worker-local or already-canonical)
-    to the external backend's own camera id, or ``None`` if the registry has
-    no explicit ``backend_camera_id`` mapping for it yet.
+def canonical_backend_camera_id(registry: object | None, camera_id: str) -> str | None:
+    """Resolve a worker-local or already-canonical camera_id to the external
+    backend's own camera id, or ``None`` if the registry has no explicit
+    non-empty ``backend_camera_id`` mapping for it yet.
 
-    Mirrors ``relay/router.py``'s ``_camera_binding_from_registry`` matching
-    (by local id OR backend_camera_id), but deliberately does NOT fall back
-    to the local id when unmapped -- that one-shot path's fallback exists to
-    gate local admission, which this periodic tick has no equivalent of; here
-    an unmapped camera must be skipped, not sent under an id the backend will
-    reject.
+    Matching follows ``relay/router.py``'s ``_camera_binding_from_registry``
+    (by local id OR backend_camera_id). Blank/whitespace mappings are treated
+    as unmapped so neither periodic nor one-shot egress can emit a guessed or
+    empty external identity.
     """
     if registry is None:
         return None
@@ -188,7 +183,11 @@ def _canonical_backend_camera_id(registry: object | None, camera_id: str) -> str
         local_id = record.get("id")
         backend_id = record.get("backend_camera_id")
         if camera_id in (local_id, backend_id):
-            return backend_id if isinstance(backend_id, str) and backend_id else None
+            if isinstance(backend_id, str):
+                stripped = backend_id.strip()
+                if stripped:
+                    return stripped
+            return None
     return None
 
 
@@ -267,6 +266,7 @@ __all__ = [
     "MAX_BACKOFF_MULTIPLIER",
     "HeartbeatRelayState",
     "RelayTickResult",
+    "canonical_backend_camera_id",
     "effective_relay_interval_sec",
     "get_heartbeat_relay_state",
     "relay_heartbeats_once",

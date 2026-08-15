@@ -10,6 +10,8 @@ DEPLOY=false
 RESTART_CHECK=false
 FULL_LIFECYCLE=false
 ROLLBACK_DRILL=false
+DELIVERY_GATE=false
+PRINT_CHECKLIST=false
 HOST=
 PLAN=${EDGE_PROVISIONING_PLAN:-}
 DRAFT=${EDGE_PROVISIONING_DRAFT:-}
@@ -21,10 +23,14 @@ APPROVED_PLAN_SHA256=${EDGE_PROVISIONING_APPROVED_PLAN_SHA256:-}
 SEAL_SHA256=${EDGE_PROVISIONING_SEAL_SHA256:-}
 READBACK_SHA256=${EDGE_PROVISIONING_EDGE_READBACK_SHA256:-}
 KNOWN_HOST_FINGERPRINT=${EDGE_PROVISIONING_KNOWN_HOST_FINGERPRINT:-}
+SNAPSHOT=${EDGE_PROVISIONING_SNAPSHOT:-}
+SNAPSHOT_SHA256=${EDGE_PROVISIONING_SNAPSHOT_SHA256:-}
+DELIVERY=${EDGE_PROVISIONING_DELIVERY:-}
+DELIVERY_SHA256=${EDGE_PROVISIONING_DELIVERY_SHA256:-}
 
 fail() { printf '%s\n' "$1" >&2; exit 1; }
 usage() {
-  printf '%s\n' 'Usage: cloud-enrollment-smoke.sh --fixture --dry-run | --host happy-nursing-home-raw [--deploy --restart-check|--full-lifecycle --rollback-drill]' >&2
+  printf '%s\n' 'Usage: cloud-enrollment-smoke.sh --fixture --dry-run | --print-checklist | --delivery-gate [--snapshot PATH --delivery PATH] | --host happy-nursing-home-raw [--deploy --restart-check|--full-lifecycle --rollback-drill]' >&2
   exit 2
 }
 sha256_file() {
@@ -162,6 +168,304 @@ assert observed > completed
 PY
   fi
 }
+delivery_fail() {
+  printf 'CUTOVER_DELIVERY_FAIL reason=%s\n' "$1"
+  exit 1
+}
+print_checklist() {
+  printf '%s\n' 'CUTOVER_OPERATOR_CHECKLIST'
+  printf '%s\n' \
+    'item=enrollment' \
+    'item=sealed-pre-cutover-snapshot' \
+    'item=snapshot-derived-camera-count' \
+    'item=non-empty-backend-mapping' \
+    'item=mapping-pending-false' \
+    'item=external-heartbeat-fresh' \
+    'item=authenticated-sse-before-witness' \
+    'item=no-fabricated-event' \
+    'item=authenticated-clip' \
+    'item=authenticated-vercel-read-side' \
+    'item=edge-render-gid-matches-renderD128-owner' \
+    'item=no-repository-gid-default' \
+    'item=no-socket-privileged-docker-group-bypass' \
+    'item=legacy-rollback-boundary-preserved'
+  printf '%s\n' 'gid_contract=EDGE_RENDER_GID must equal the live /dev/dri/renderD128 owner GID; EDGE_VIDEO_GID is the live host video GID; there is no repository default'
+}
+check_delivery_gate() {
+  [ -n "$SNAPSHOT" ] || delivery_fail missing-snapshot
+  [ -n "$DELIVERY" ] || delivery_fail missing-delivery
+  [ -f "$SNAPSHOT" ] || delivery_fail missing-snapshot
+  [ -f "$DELIVERY" ] || delivery_fail missing-delivery
+  case "$SNAPSHOT_SHA256" in *[!0-9a-f]*) delivery_fail malformed-receipt ;; esac
+  [ "${#SNAPSHOT_SHA256}" -eq 64 ] || delivery_fail malformed-receipt
+  case "$DELIVERY_SHA256" in *[!0-9a-f]*) delivery_fail malformed-receipt ;; esac
+  [ "${#DELIVERY_SHA256}" -eq 64 ] || delivery_fail malformed-receipt
+  [ "$(sha256_file "$SNAPSHOT")" = "$SNAPSHOT_SHA256" ] || delivery_fail dirty-snapshot
+  [ "$(sha256_file "$DELIVERY")" = "$DELIVERY_SHA256" ] || delivery_fail dirty-delivery
+  python3 - "$SNAPSHOT" "$DELIVERY" <<'PY'
+import datetime as dt
+import json
+import re
+import sys
+
+snapshot_path, delivery_path = sys.argv[1], sys.argv[2]
+
+class GateError(Exception):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+LOCAL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
+BACKEND_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
+EVENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
+SECRET_KEYS = {
+    "password",
+    "token",
+    "secret",
+    "authorization",
+    "rtsp",
+    "rtsps",
+    "credential",
+    "api_key",
+    "apikey",
+}
+SECRET_VALUE = re.compile(r"(rtsp://|rtsps://|password=|token=|bearer\s)", re.I)
+
+def fail(reason: str) -> None:
+    raise GateError(reason)
+
+def load(path: str) -> object:
+    try:
+        return json.loads(open(path, encoding="utf-8").read())
+    except (OSError, json.JSONDecodeError):
+        fail("malformed-receipt")
+
+def walk(value: object) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            lowered = str(key).lower()
+            if lowered in SECRET_KEYS or any(part in lowered for part in ("password", "token", "secret", "rtsp")):
+                fail("secret-bearing")
+            walk(child)
+    elif isinstance(value, list):
+        for child in value:
+            walk(child)
+    elif isinstance(value, str) and SECRET_VALUE.search(value):
+        fail("secret-bearing")
+
+def parse_time(raw: object, reason: str) -> dt.datetime:
+    if not isinstance(raw, str):
+        fail(reason)
+    try:
+        return dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        fail(reason)
+
+def require_opaque(value: object, reason: str, pattern: re.Pattern[str]) -> str:
+    if not isinstance(value, str):
+        fail(reason)
+    if value != value.strip() or not pattern.fullmatch(value):
+        fail(reason)
+    lowered = value.lower()
+    if "room" in lowered or " " in value or "/" in value:
+        fail(reason)
+    return value
+
+try:
+    snapshot = load(snapshot_path)
+    delivery = load(delivery_path)
+    walk(snapshot)
+    walk(delivery)
+    if not isinstance(snapshot, dict) or not isinstance(delivery, dict):
+        fail("malformed-receipt")
+    if snapshot.get("schemaVersion") != 1 or snapshot.get("kind") != "pre-cutover-snapshot":
+        fail("malformed-receipt")
+    if delivery.get("schemaVersion") != 1 or delivery.get("kind") != "cutover-delivery-readout":
+        fail("malformed-receipt")
+    cameras = snapshot.get("cameras")
+    if not isinstance(cameras, list) or not cameras:
+        fail("malformed-receipt")
+    expected = snapshot.get("cameraCount")
+    if not isinstance(expected, int) or expected != len(cameras) or expected < 1:
+        fail("count-drift")
+    expected_ids: list[str] = []
+    seen: set[str] = set()
+    for row in cameras:
+        if not isinstance(row, dict):
+            fail("malformed-receipt")
+        local_id = require_opaque(row.get("localId"), "malformed-id", LOCAL_RE)
+        if local_id in seen:
+            fail("malformed-id")
+        seen.add(local_id)
+        expected_ids.append(local_id)
+        klass = row.get("class")
+        if klass not in {"expected", "expected-witness"}:
+            fail("malformed-receipt")
+    witness = require_opaque(snapshot.get("designatedWitnessLocalId"), "malformed-id", LOCAL_RE)
+    if witness not in seen:
+        fail("malformed-id")
+    enrollment = delivery.get("enrollment")
+    if not isinstance(enrollment, dict):
+        fail("malformed-receipt")
+    if enrollment.get("ok") is not True or enrollment.get("authenticated") is not True:
+        fail("auth-absent")
+    observed = delivery.get("cameras")
+    if not isinstance(observed, list):
+        fail("malformed-receipt")
+    if len(observed) != expected:
+        fail("count-drift")
+    mapped = 0
+    heartbeats = 0
+    seen_delivery: set[str] = set()
+    seen_backends: set[str] = set()
+    for row in observed:
+        if not isinstance(row, dict):
+            fail("malformed-receipt")
+        local_id = require_opaque(row.get("localId"), "malformed-id", LOCAL_RE)
+        if local_id not in seen or local_id in seen_delivery:
+            fail("count-drift")
+        seen_delivery.add(local_id)
+        backend = row.get("backendCameraId")
+        if not isinstance(backend, str) or not backend.strip():
+            fail("unmapped-camera" if backend in (None, "") else "blank-mapping")
+        if backend != backend.strip():
+            fail("blank-mapping")
+        require_opaque(backend, "malformed-id", BACKEND_RE)
+        if backend in seen_backends:
+            fail("duplicate-mapping")
+        seen_backends.add(backend)
+        if row.get("mappingPending") is True:
+            fail("mapping-pending")
+        if row.get("mappingPending") is not False:
+            fail("malformed-receipt")
+        heartbeat = row.get("externalHeartbeat")
+        if not isinstance(heartbeat, dict):
+            fail("missed-heartbeat")
+        if heartbeat.get("ok") is not True:
+            fail("missed-heartbeat")
+        if heartbeat.get("fresh") is not True:
+            fail("stale-heartbeat")
+        mapped += 1
+        heartbeats += 1
+    if seen_delivery != seen:
+        fail("count-drift")
+    sse = delivery.get("sse")
+    if not isinstance(sse, dict):
+        fail("malformed-receipt")
+    if sse.get("authenticated") is not True:
+        fail("auth-absent")
+    sse_at = parse_time(sse.get("establishedAt"), "sse-order")
+    witness_body = delivery.get("witness")
+    if not isinstance(witness_body, dict):
+        fail("malformed-receipt")
+    observed_witness = require_opaque(witness_body.get("localId"), "malformed-id", LOCAL_RE)
+    if observed_witness != witness:
+        fail("malformed-id")
+    processing_at = parse_time(witness_body.get("processingEnabledAt"), "sse-order")
+    if sse.get("establishedBeforeWitnessProcessing") is not True or sse_at >= processing_at:
+        fail("sse-order")
+    if witness_body.get("eventFabricated") is True or witness_body.get("realEvent") is not True:
+        fail("fabricated-event")
+    require_opaque(witness_body.get("edgeEventId"), "malformed-id", EVENT_RE)
+    if witness_body.get("clipAuthenticated") is not True:
+        fail("clip-unauthenticated")
+    if witness_body.get("vercelReadSideAuthenticated") is not True:
+        fail("vercel-unauthenticated")
+    print(f"CUTOVER_DELIVERY_OK expected={expected} mapped={mapped} heartbeats={heartbeats}")
+except GateError as exc:
+    print(f"CUTOVER_DELIVERY_FAIL reason={exc.reason}")
+    raise SystemExit(1)
+PY
+}
+write_delivery_pair() {
+  dest=$1
+  expected=$2
+  mapped=$3
+  heartbeat_ok=$4
+  share_backend=${5:-0}
+  python3 - "$dest" "$expected" "$mapped" "$heartbeat_ok" "$share_backend" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+dest = Path(sys.argv[1])
+expected = int(sys.argv[2])
+mapped = int(sys.argv[3])
+heartbeat_ok = sys.argv[4] == "1"
+share_backend = sys.argv[5] == "1"
+ids = [
+    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+][:expected]
+backends = [
+    "be-aaaa1111bbbb2222cccc3333dddd4444",
+    "be-eeee5555ffff6666aaaa7777bbbb8888",
+    "be-9999cccc0000dddd1111eeee2222ffff",
+]
+if share_backend and expected >= 2:
+    backends[1] = backends[0]
+witness = ids[-1]
+snapshot = {
+    "schemaVersion": 1,
+    "kind": "pre-cutover-snapshot",
+    "cameraCount": expected,
+    "cameras": [
+        {
+            "localId": camera_id,
+            "class": "expected-witness" if camera_id == witness else "expected",
+        }
+        for camera_id in ids
+    ],
+    "designatedWitnessLocalId": witness,
+}
+cameras = []
+for index, camera_id in enumerate(ids):
+    backend = backends[index] if index < mapped else ""
+    cameras.append(
+        {
+            "localId": camera_id,
+            "backendCameraId": backend,
+            "mappingPending": False,
+            "externalHeartbeat": {
+                "ok": heartbeat_ok if index < mapped else False,
+                "fresh": True,
+            },
+        }
+    )
+delivery = {
+    "schemaVersion": 1,
+    "kind": "cutover-delivery-readout",
+    "enrollment": {"ok": True, "authenticated": True},
+    "cameras": cameras,
+    "sse": {
+        "authenticated": True,
+        "establishedAt": "2026-08-11T00:00:00Z",
+        "establishedBeforeWitnessProcessing": True,
+    },
+    "witness": {
+        "localId": witness,
+        "processingEnabledAt": "2026-08-11T00:00:02Z",
+        "eventFabricated": False,
+        "realEvent": True,
+        "edgeEventId": "evt-aaaabbbbccccddddeeeeffff00001111",
+        "clipAuthenticated": True,
+        "vercelReadSideAuthenticated": True,
+    },
+}
+dest.mkdir(parents=True, exist_ok=True)
+(dest / "snapshot.json").write_text(json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+(dest / "delivery.json").write_text(json.dumps(delivery, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+}
+run_delivery_case() {
+  dest=$1
+  SNAPSHOT=$dest/snapshot.json
+  DELIVERY=$dest/delivery.json
+  SNAPSHOT_SHA256=$(sha256_file "$SNAPSHOT")
+  DELIVERY_SHA256=$(sha256_file "$DELIVERY")
+  check_delivery_gate
+}
 fixture() {
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/cloud-enrollment-smoke.XXXXXX")
   trap 'rm -rf "$tmp"' EXIT HUP INT TERM
@@ -238,6 +542,27 @@ PY
   if (check_readback) >/dev/null 2>&1; then fail 'stale post-restart state passed'; fi
   KNOWN_HOST_FINGERPRINT=SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
   if (check_host_inputs) >/dev/null 2>&1; then fail 'spoofed known_hosts fingerprint passed'; fi
+  write_delivery_pair "$tmp/delivery-all" 3 3 1
+  run_delivery_case "$tmp/delivery-all" >/dev/null
+  printf '%s\n' 'EDGE_DELIVERY_ALL_MAPPED_OK'
+  write_delivery_pair "$tmp/delivery-unmapped" 3 2 1
+  if (run_delivery_case "$tmp/delivery-unmapped") >/dev/null 2>&1; then fail 'unmapped camera passed'; fi
+  printf '%s\n' 'EDGE_DELIVERY_UNMAPPED_REJECTION_OK'
+  write_delivery_pair "$tmp/delivery-missed" 3 3 0
+  if (run_delivery_case "$tmp/delivery-missed") >/dev/null 2>&1; then fail 'missed heartbeat passed'; fi
+  printf '%s\n' 'EDGE_DELIVERY_MISSED_HEARTBEAT_REJECTION_OK'
+  write_delivery_pair "$tmp/delivery-duplicate" 2 2 1 1
+  if (run_delivery_case "$tmp/delivery-duplicate") >/dev/null 2>&1; then fail 'duplicate backend mapping passed'; fi
+  printf '%s\n' 'EDGE_DELIVERY_DUPLICATE_MAPPING_REJECTION_OK'
+  if (sh "$0" --print-checklist --delivery-gate) >/dev/null 2>&1; then fail 'combined checklist and delivery-gate passed'; fi
+  printf '%s\n' 'EDGE_CHECKLIST_DELIVERY_EXCLUSIVE_OK'
+  checklist=$(print_checklist)
+  printf '%s\n' "$checklist" | grep -F 'item=edge-render-gid-matches-renderD128-owner' >/dev/null
+  printf '%s\n' "$checklist" | grep -F 'EDGE_RENDER_GID' >/dev/null
+  printf '%s\n' "$checklist" | grep -F 'renderD128' >/dev/null
+  printf '%s\n' "$checklist" | grep -E '(^|[^0-9])104([^0-9]|$)' >/dev/null && fail 'checklist still cites 104' || true
+  printf '%s\n' "$checklist" | grep -E '(^|[^0-9])44([^0-9]|$)' >/dev/null && fail 'checklist still cites 44' || true
+  printf '%s\n' 'CUTOVER_CHECKLIST_GID_CONTRACT_OK'
   printf '%s\n' 'CLOUD_ENROLLMENT_SMOKE_FIXTURE_OK'
 }
 
@@ -245,6 +570,10 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --fixture) MODE=fixture; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
+    --print-checklist) PRINT_CHECKLIST=true; shift ;;
+    --delivery-gate) DELIVERY_GATE=true; shift ;;
+    --snapshot) [ "$#" -ge 2 ] || usage; SNAPSHOT=$2; shift 2 ;;
+    --delivery) [ "$#" -ge 2 ] || usage; DELIVERY=$2; shift 2 ;;
     --host) [ "$#" -ge 2 ] || usage; HOST=$2; shift 2 ;;
     --deploy) DEPLOY=true; shift ;;
     --restart-check) RESTART_CHECK=true; shift ;;
@@ -253,7 +582,12 @@ while [ "$#" -gt 0 ]; do
     *) usage ;;
   esac
 done
+if [ "$PRINT_CHECKLIST" = true ] && [ "$DELIVERY_GATE" = true ]; then
+  fail 'print-checklist and delivery-gate are mutually exclusive'
+fi
+[ "$PRINT_CHECKLIST" = true ] && { print_checklist; exit 0; }
 [ "$MODE" = fixture ] && { [ "$DRY_RUN" = true ] || usage; fixture; exit 0; }
+[ "$DELIVERY_GATE" = true ] && { check_delivery_gate; exit 0; }
 gate_artifacts
 check_host_inputs
 check_readback

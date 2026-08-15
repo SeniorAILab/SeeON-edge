@@ -23,6 +23,7 @@ from backend.app.features.cameras.router import (
 from backend.app.features.cameras.store import CameraRegistryStore
 from backend.app.features.clips.catalog import CatalogConflictError, get_catalog_store
 from backend.app.features.relay.auth import authorize_relay
+from backend.app.features.status.backend_heartbeat_relay import canonical_backend_camera_id
 from backend.app.features.status.heartbeat_store import get_heartbeat_store
 from backend.app.features.status.runtime_status_store import get_runtime_status_store
 from contracts import AlertEventType
@@ -423,9 +424,12 @@ def relay_alert(
     # resolved or the backend can't be reached, instead of the attempt
     # leaving no local trace at all when _camera_binding() 403s below.
     catalog_result = _record_catalog(request, payload)
-    binding = _camera_binding(request, payload.camera_id, payload.facility_id)
-    canonical_camera_id = str(binding.get("camera_id") or payload.camera_id)
-    client = _optional_backend_ingest_client(request, camera_id=canonical_camera_id)
+    _ = _camera_binding(request, payload.camera_id, payload.facility_id)
+    egress_camera_id = _egress_backend_camera_id(request, payload.camera_id)
+    if egress_camera_id is None:
+        # Registered locally, but no backend mapping yet. Do not guess an id.
+        return _alert_response({"status": "accepted"}, catalog_result)
+    client = _optional_backend_ingest_client(request, camera_id=egress_camera_id)
     if client is None:
         # Registry-bound local accept; cloud only when store built a client.
         return _alert_response({"status": "accepted"}, catalog_result)
@@ -504,11 +508,14 @@ def relay_heartbeat(
         config_version=payload.config_version,
     )
     _clear_never_connected_on_first_heartbeat(request, payload.camera_id)
-    binding = _camera_binding(request, payload.camera_id, payload.facility_id)
-    # Backend egress uses the canonical identity (explicit backend mapping when
-    # present); the backend only knows its own camera ids, not local registry ids.
-    canonical_camera_id = str(binding.get("camera_id") or payload.camera_id)
-    client = _optional_backend_ingest_client(request, camera_id=canonical_camera_id)
+    _ = _camera_binding(request, payload.camera_id, payload.facility_id)
+    # Backend egress uses the explicit backend mapping only. An unmapped local
+    # camera is accepted here (local liveness already stamped) but never sent
+    # under a guessed Hub identity.
+    egress_camera_id = _egress_backend_camera_id(request, payload.camera_id)
+    if egress_camera_id is None:
+        return {"status": "accepted"}
+    client = _optional_backend_ingest_client(request, camera_id=egress_camera_id)
     if client is None:
         return {"status": "accepted"}
     if not client.send_heartbeat():
@@ -708,9 +715,11 @@ def _camera_binding_from_registry(
         local_id = record.get("id")
         backend_id = record.get("backend_camera_id")
         if camera_id in {local_id, backend_id}:
-            canonical_id = backend_id or local_id
+            # Local admission only. Never put a local or blank id in camera_id:
+            # callers that egress must use canonical_backend_camera_id / the
+            # explicit backend mapping, not this fallback.
             return {
-                "camera_id": str(canonical_id),
+                "camera_id": None,
                 "facility_id": facility_id,
                 "resident_id": None,
             }
@@ -748,6 +757,23 @@ def _find_registry_record(store: CameraRegistryStore, camera_id: str) -> dict[st
         if camera_id in {record.get("id"), record.get("backend_camera_id")}:
             return record
     return None
+
+
+def _egress_backend_camera_id(request: Request, camera_id: str) -> str | None:
+    """Return the Hub camera id for egress, or None to keep the event local.
+
+    Local admission is already decided by ``_camera_binding``. This helper only
+    answers whether a non-empty backend mapping exists; a miss is a safe skip,
+    not an unknown-camera rejection and not a guessed local-id send.
+    """
+    registry = getattr(request.app.state, "camera_registry", None)
+    egress_camera_id = canonical_backend_camera_id(registry, camera_id)
+    if egress_camera_id is None:
+        logger.info(
+            "relay: skipping external egress for camera_id=%s, no backend mapping yet",
+            camera_id,
+        )
+    return egress_camera_id
 
 
 def _optional_backend_ingest_client(
