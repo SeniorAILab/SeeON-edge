@@ -20,6 +20,7 @@ ALLOWED_PATHS: Final = {
     "/api/v1/incidents",
     "/api/v1/incidents/{incident_id:path}",
     "/api/v1/incident-reviews/{incident_id:path}",
+    "/api/v1/events/{edge_event_id}/explanation",
     "/api/v1/models",
     "/api/v1/relay/alerts",
     "/api/v1/relay/capabilities",
@@ -89,6 +90,29 @@ FORBIDDEN_IMPORTS: Final = (
     "sources",
     "perception",
     "domains",
+)
+OPERATOR_EXPLANATION_PATH: Final = "/api/v1/events/{edge_event_id}/explanation"
+REQUIRED_EXISTING_ENV_IDENTITIES: Final = frozenset(
+    {
+        "/api/v1/auth/credentials",
+        "/api/v1/auth/session",
+        "/api/v1/health",
+        "/api/v1/incidents",
+        "/api/v1/incidents/{incident_id:path}",
+        "/api/v1/incident-reviews/{incident_id:path}",
+        "/api/v1/models",
+        "/api/v1/relay/alerts",
+        "/api/v1/status",
+        "/api/v1/system",
+    }
+)
+EXPLANATION_SIBLING_PATHS: Final = (
+    "/api/v1/events/{edge_event_id}",
+    "/api/v1/events/{edge_event_id}/explanation/config",
+    "/api/v1/events/{edge_event_id}/explanation/admin",
+    "/api/v1/events/{edge_event_id}/explanation/write",
+    "/api/v1/events/config",
+    "/api/v1/events/admin",
 )
 
 
@@ -173,3 +197,26 @@ def test_serving_import_allows_api_owned_backend_ingest_client_but_not_ml_runtim
     )
 
     assert probe.returncode == 0, probe.stdout
+
+
+def test_serving_allowlist_includes_required_env_identities_and_operator_explanation() -> None:
+    # Given the documented serving-boundary allowlist and the committed operator API
+    app = create_app(lifespan=no_lifespan)
+    exposed_paths = {
+        route.path for route in app.routes if isinstance(route, (APIRoute, Route, Mount))
+    }
+    spec_paths = app.openapi()["paths"]
+
+    # When the current env-name identities and operator explanation prefix are inspected
+    # Then existing required env identities remain and the operator GET is allowlisted
+    assert REQUIRED_EXISTING_ENV_IDENTITIES <= ALLOWED_PATHS
+    assert REQUIRED_EXISTING_ENV_IDENTITIES <= exposed_paths
+    assert OPERATOR_EXPLANATION_PATH in ALLOWED_PATHS
+    assert OPERATOR_EXPLANATION_PATH in exposed_paths
+    assert OPERATOR_EXPLANATION_PATH in spec_paths
+    assert set(spec_paths[OPERATOR_EXPLANATION_PATH]) == {"get"}
+    assert all(path not in ALLOWED_PATHS for path in EXPLANATION_SIBLING_PATHS)
+    assert all(path not in exposed_paths for path in EXPLANATION_SIBLING_PATHS)
+    assert all(path not in spec_paths for path in EXPLANATION_SIBLING_PATHS)
+    assert "/api/v1/events/config" not in ALLOWED_PATHS
+    assert "/api/v1/events/admin" not in ALLOWED_PATHS
