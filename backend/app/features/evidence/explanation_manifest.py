@@ -80,6 +80,13 @@ def project_runtime_manifest(
             manifest_sha_reason=manifest_sha_reason,
         )
 
+    if not isinstance(canonical_json, str):
+        return _missing_projection(
+            RuntimeManifestMissingReason.MANIFEST_MALFORMED,
+            manifest_sha=manifest_sha,
+            manifest_sha_reason=manifest_sha_reason,
+        )
+
     content = _parse_current_manifest(canonical_json)
     if isinstance(content, RuntimeManifestMissingReason):
         return _missing_projection(

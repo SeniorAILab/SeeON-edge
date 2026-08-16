@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Literal, TypeAlias, TypeGuard
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -19,11 +19,14 @@ from backend.app.features.evidence.explanation_schemas import (
     EventExplanationDelivery,
     EventExplanationMedia,
     HttpStatusFact,
+    MediaMissingReason,
+    OutboxState,
     OutboxStateFact,
 )
 from shared.edge_db.connection import RuntimeActor, open_runtime_database
 
 _EDGE_EVENT_ID_MAX_LENGTH = 256
+_TerminalDeliveryState: TypeAlias = Literal["PERMANENT", "COMPATIBILITY"]
 
 
 class AlertCorrelationExport(BaseModel):
@@ -93,8 +96,10 @@ def _project_delivery(row: sqlite3.Row | tuple[object, ...]) -> EventExplanation
     )
 
 
-def _projected_outbox_state(outbox_state: str, delivery_state: str) -> str | None:
-    if delivery_state in {"ACKED", "PERMANENT", "COMPATIBILITY"}:
+def _projected_outbox_state(outbox_state: str, delivery_state: str) -> OutboxState | None:
+    if delivery_state == "ACKED":
+        return "ACKED"
+    if _is_terminal_delivery_state(delivery_state):
         return delivery_state
     if outbox_state == "ACKED":
         return "ACKED"
@@ -104,7 +109,7 @@ def _projected_outbox_state(outbox_state: str, delivery_state: str) -> str | Non
 
 
 def _exact_disposition(delivery_state: str, attempt_count: int) -> DeliveryDispositionFact:
-    if delivery_state in {"PERMANENT", "COMPATIBILITY"}:
+    if _is_terminal_delivery_state(delivery_state):
         return DeliveryDispositionFact(value=delivery_state)
     if attempt_count == 0:
         return DeliveryDispositionFact(missing_reason="delivery_never_attempted")
@@ -134,7 +139,7 @@ def _project_media(row: sqlite3.Row | tuple[object, ...]) -> EventExplanationMed
         local_state=clip_local_state,
         publish_state=clip_publish_state,
     )
-    reasons: list[str] = []
+    reasons: list[MediaMissingReason] = []
     if snapshot.state != "AVAILABLE" and snapshot.missing_reason is not None:
         reasons.append(snapshot.missing_reason)
     if clip.state != "AVAILABLE" and clip.missing_reason is not None:
@@ -163,7 +168,7 @@ def _artifact(
     state: str | None,
     *,
     recorded_reason: str | None,
-    absent_reason: str,
+    absent_reason: MediaMissingReason,
 ) -> EventExplanationArtifact:
     del recorded_reason
     if state == "AVAILABLE":
@@ -247,6 +252,10 @@ def _unresolved_media() -> EventExplanationMedia:
         ),
         clip=EventExplanationArtifact(state="NOT_RECORDED", missing_reason="clip_not_recorded"),
     )
+
+
+def _is_terminal_delivery_state(value: str) -> TypeGuard[_TerminalDeliveryState]:
+    return value in {"PERMANENT", "COMPATIBILITY"}
 
 
 def _require_edge_event_id(edge_event_id: str) -> None:

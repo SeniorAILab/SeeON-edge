@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TypedDict, TypeGuard, overload
 
 from pydantic import ValidationError
 
@@ -17,27 +18,41 @@ from backend.app.features.evidence.explanation_neighborhood import (
     NeighborhoodCoverage,
 )
 from backend.app.features.evidence.explanation_schemas import (
+    AnalysisMissingReason,
     BedIdFact,
     ConfigVersionFact,
+    DecisionProvenance,
+    DecisionProvenanceReason,
+    DecisionReason,
     DecisionReasonFact,
+    DecisionState,
     DecisionStateFact,
     DecisionTraceIdFact,
+    DecisionTraceMissingReason,
+    DecisionValueMissingReason,
+    DecisionValueName,
     DetectorVersionFact,
+    EventDomain,
     EventExplanationDecisionValue,
     EventExplanationMissingValue,
     EventExplanationNeighborhood,
     EventExplanationResponse,
     EventExplanationReview,
+    EventType,
     FacilityIdFact,
     FrameSeqFact,
     ModelFact,
+    NeighborhoodMissingReason,
     PolicyQualifiedIdFact,
     ProbabilityFact,
     ReviewDispositionFact,
+    ReviewDispositionToken,
     RuntimeManifestSha256Fact,
+    RuntimeMissingReason,
     SourceRevisionFact,
     StreamEpochFact,
     ThresholdFact,
+    TrackBedMissingReason,
     TrackIdFact,
     TriggeredFact,
     WorkerBootIdFact,
@@ -53,9 +68,11 @@ from backend.app.features.evidence.explanation_store import (
 )
 from shared.edge_db.connection import RuntimeActor, open_runtime_database
 
-_REVIEW_DISPOSITIONS = frozenset({"TRUE_POSITIVE", "FALSE_POSITIVE"})
+_REVIEW_DISPOSITIONS: frozenset[ReviewDispositionToken] = frozenset(
+    {"TRUE_POSITIVE", "FALSE_POSITIVE"}
+)
 
-_DECISION_REASONS = frozenset(
+_DECISION_REASONS: frozenset[DecisionReason] = frozenset(
     {
         "trace-unavailable",
         "outside-detection-window",
@@ -77,7 +94,7 @@ _DECISION_REASONS = frozenset(
         "person-observation-missing",
     }
 )
-_DECISION_STATES = frozenset(
+_DECISION_STATES: frozenset[DecisionState] = frozenset(
     {
         "unknown",
         "not-evaluated",
@@ -92,7 +109,7 @@ _DECISION_STATES = frozenset(
         "other-bed",
     }
 )
-_VALUE_NAMES = frozenset(
+_VALUE_NAMES: frozenset[DecisionValueName] = frozenset(
     {
         "operating_threshold",
         "window_frames",
@@ -109,7 +126,7 @@ _VALUE_NAMES = frozenset(
         "decision_state",
     }
 )
-_VALUE_REASONS = frozenset(
+_VALUE_REASONS: frozenset[DecisionValueMissingReason] = frozenset(
     {
         "domain_inapplicable",
         "value_not_persisted",
@@ -123,7 +140,7 @@ _VALUE_REASONS = frozenset(
         "no_observed_person",
     }
 )
-_TRACK_BED_REASONS = frozenset(
+_TRACK_BED_REASONS: frozenset[TrackBedMissingReason] = frozenset(
     {
         "domain_inapplicable",
         "track_not_persisted",
@@ -135,7 +152,7 @@ _TRACK_BED_REASONS = frozenset(
         "no_observed_person",
     }
 )
-_NEIGHBORHOOD_REASONS: dict[CoverageReason, str] = {
+_NEIGHBORHOOD_REASONS: dict[CoverageReason, NeighborhoodMissingReason] = {
     "NEIGHBORHOOD_PRUNED": "retention_loss",
     "NEIGHBORHOOD_EPOCH_PREFIX_SHORT": "prefix_shorter_than_window",
     "NEIGHBORHOOD_GAP_UNEXPLAINED": "sequence_gap",
@@ -191,7 +208,7 @@ class EventExplanationService:
                 field_reason="decision_trace_unresolved",
                 analysis_reason="analysis_trace_unresolved",
             )
-        reasons: list[str] = []
+        reasons: list[DecisionProvenanceReason] = []
         if facts.runtime is None:
             reasons.append("analysis_trace_unresolved")
         projection = _project_manifest(self.database_path, facts.decision)
@@ -231,10 +248,10 @@ def _compose(
     decision: EventExplanationDecision | None,
     runtime: EventExplanationRuntime | None,
     review: EventExplanationCurrentReview | None,
-    provenance: str,
-    provenance_reasons: tuple[str, ...],
-    field_reason: str,
-    analysis_reason: str,
+    provenance: DecisionProvenance,
+    provenance_reasons: tuple[DecisionProvenanceReason, ...],
+    field_reason: DecisionTraceMissingReason,
+    analysis_reason: AnalysisMissingReason,
     projection: RuntimeManifestProjection | None = None,
 ) -> EventExplanationResponse:
     sections = project_explanation_sections(database_path, identity.edge_event_id)
@@ -310,32 +327,38 @@ def _compose(
             "bed_not_persisted",
         ),
         config_version=ConfigVersionFact(
-            **_runtime_payload(projection.config_version, projection.config_version_missing_reason)
+            **_runtime_int_payload(
+                projection.config_version,
+                projection.config_version_missing_reason,
+            )
         ),
         policy_qualified_id=_policy_fact(decision, projection),
         model=ModelFact(
-            **_runtime_payload(projection.model_version, projection.model_version_missing_reason)
+            **_runtime_text_payload(
+                projection.model_version,
+                projection.model_version_missing_reason,
+            )
         ),
         detector_version=DetectorVersionFact(
-            **_runtime_payload(
+            **_runtime_text_payload(
                 projection.detector_version,
                 projection.detector_version_missing_reason,
             )
         ),
         runtime_manifest_sha256=RuntimeManifestSha256Fact(
-            **_runtime_payload(
+            **_runtime_text_payload(
                 projection.runtime_manifest_sha256,
                 projection.runtime_manifest_sha256_missing_reason,
             )
         ),
         worker_build_revision=SourceRevisionFact(
-            **_runtime_payload(
+            **_runtime_text_payload(
                 projection.worker_build_revision,
                 projection.worker_build_revision_missing_reason,
             )
         ),
         image_revision=SourceRevisionFact(
-            **_runtime_payload(
+            **_runtime_text_payload(
                 projection.image_revision,
                 projection.image_revision_missing_reason,
             )
@@ -445,7 +468,7 @@ def _neighborhood_from_coverage(coverage: NeighborhoodCoverage) -> EventExplanat
             neighborhood_pruned=False,
             retained_frame_count=coverage.retained_frames,
         )
-    reason = "neighborhood_pruned"
+    reason: NeighborhoodMissingReason = "neighborhood_pruned"
     if coverage.coverage_reason is not None:
         reason = _NEIGHBORHOOD_REASONS[coverage.coverage_reason]
     status = "UNAVAILABLE" if coverage.status == "MISSING_TRIGGER" else "PARTIAL"
@@ -459,17 +482,17 @@ def _neighborhood_from_coverage(coverage: NeighborhoodCoverage) -> EventExplanat
 
 def _decision_values(
     decision: EventExplanationDecision | None,
-    domain: str,
+    domain: EventDomain,
 ) -> tuple[
     ProbabilityFact,
     ThresholdFact,
     list[EventExplanationDecisionValue],
     list[EventExplanationMissingValue],
 ]:
-    by_name: dict[str, tuple[float | None, str | None]] = {}
+    by_name: dict[DecisionValueName, tuple[float | None, str | None]] = {}
     if decision is not None:
         for item in decision.values:
-            if item.name in _VALUE_NAMES:
+            if _is_value_name(item.name):
                 by_name[item.name] = (item.numeric_value, item.missing_reason)
     values: list[EventExplanationDecisionValue] = []
     missing: list[EventExplanationMissingValue] = []
@@ -491,10 +514,26 @@ def _decision_values(
     )
 
 
+@overload
+def _named_scalar(
+    fact_cls: type[ProbabilityFact],
+    stored: tuple[float | None, str | None] | None,
+    domain: EventDomain,
+) -> ProbabilityFact: ...
+
+
+@overload
+def _named_scalar(
+    fact_cls: type[ThresholdFact],
+    stored: tuple[float | None, str | None] | None,
+    domain: EventDomain,
+) -> ThresholdFact: ...
+
+
 def _named_scalar(
     fact_cls: type[ProbabilityFact] | type[ThresholdFact],
     stored: tuple[float | None, str | None] | None,
-    domain: str,
+    domain: EventDomain,
 ) -> ProbabilityFact | ThresholdFact:
     if stored is None:
         return fact_cls(missing_reason=_value_reason(None, domain))
@@ -504,25 +543,46 @@ def _named_scalar(
     return fact_cls(missing_reason=_value_reason(stored_reason, domain))
 
 
-def _value_reason(stored: str | None, domain: str) -> str:
+def _value_reason(
+    stored: str | None,
+    domain: EventDomain,
+) -> DecisionValueMissingReason:
     mapped = _map_reason(stored)
-    if mapped in _VALUE_REASONS:
+    if _is_value_reason(mapped):
         return mapped
     if domain == "other":
         return "domain_inapplicable"
     return "value_not_persisted"
 
 
+@overload
+def _track_or_bed(
+    fact_cls: type[TrackIdFact],
+    value: int | None,
+    stored_reason: str | None,
+    absent_reason: TrackBedMissingReason,
+) -> TrackIdFact: ...
+
+
+@overload
+def _track_or_bed(
+    fact_cls: type[BedIdFact],
+    value: int | None,
+    stored_reason: str | None,
+    absent_reason: TrackBedMissingReason,
+) -> BedIdFact: ...
+
+
 def _track_or_bed(
     fact_cls: type[TrackIdFact] | type[BedIdFact],
     value: int | None,
     stored_reason: str | None,
-    absent_reason: str,
+    absent_reason: TrackBedMissingReason,
 ) -> TrackIdFact | BedIdFact:
     if value is not None:
         return fact_cls(value=value)
     mapped = _map_reason(stored_reason)
-    if mapped in _TRACK_BED_REASONS:
+    if _is_track_bed_reason(mapped):
         return fact_cls(missing_reason=mapped)
     return fact_cls(missing_reason=absent_reason)
 
@@ -535,17 +595,44 @@ def _map_reason(stored: str | None) -> str | None:
     return stored.replace("-", "_")
 
 
+def _is_value_name(value: str) -> TypeGuard[DecisionValueName]:
+    return value in _VALUE_NAMES
+
+
+def _is_value_reason(value: str | None) -> TypeGuard[DecisionValueMissingReason]:
+    return value in _VALUE_REASONS
+
+
+def _is_track_bed_reason(value: str | None) -> TypeGuard[TrackBedMissingReason]:
+    return value in _TRACK_BED_REASONS
+
+
+def _is_decision_reason(value: str) -> TypeGuard[DecisionReason]:
+    return value in _DECISION_REASONS
+
+
+def _is_decision_state(value: str | None) -> TypeGuard[DecisionState]:
+    return value in _DECISION_STATES
+
+
+def _is_review_disposition(value: str) -> TypeGuard[ReviewDispositionToken]:
+    return value in _REVIEW_DISPOSITIONS
+
+
 def _decision_reason(
     decision: EventExplanationDecision | None,
-    field_reason: str,
+    field_reason: DecisionTraceMissingReason,
 ) -> DecisionReasonFact:
-    if decision is not None and decision.reason in _DECISION_REASONS:
+    if decision is not None and _is_decision_reason(decision.reason):
         return DecisionReasonFact(value=decision.reason)
     return DecisionReasonFact(missing_reason=field_reason)
 
 
-def _decision_state(value: str | None, field_reason: str) -> DecisionStateFact:
-    if value in _DECISION_STATES:
+def _decision_state(
+    value: str | None,
+    field_reason: DecisionTraceMissingReason,
+) -> DecisionStateFact:
+    if _is_decision_state(value):
         return DecisionStateFact(value=value)
     return DecisionStateFact(missing_reason=field_reason)
 
@@ -560,20 +647,44 @@ def _policy_fact(
         except ValidationError:
             return PolicyQualifiedIdFact(missing_reason="persisted_value_invalid")
     return PolicyQualifiedIdFact(
-        **_runtime_payload(projection.policy_version, projection.policy_version_missing_reason)
+        **_runtime_text_payload(
+            projection.policy_version,
+            projection.policy_version_missing_reason,
+        )
     )
 
 
-def _runtime_payload(
-    value: int | str | None,
+class _RuntimeIntPayload(TypedDict):
+    value: int | None
+    missing_reason: RuntimeMissingReason | None
+
+
+class _RuntimeTextPayload(TypedDict):
+    value: str | None
+    missing_reason: RuntimeMissingReason | None
+
+
+def _runtime_int_payload(
+    value: int | None,
     reason: RuntimeManifestMissingReason | None,
-) -> dict[str, int | str | None]:
+) -> _RuntimeIntPayload:
     if value is not None:
         return {"value": value, "missing_reason": None}
     return {"value": None, "missing_reason": _runtime_reason(reason)}
 
 
-def _runtime_reason(reason: RuntimeManifestMissingReason | None) -> str:
+def _runtime_text_payload(
+    value: str | None,
+    reason: RuntimeManifestMissingReason | None,
+) -> _RuntimeTextPayload:
+    if value is not None:
+        return {"value": value, "missing_reason": None}
+    return {"value": None, "missing_reason": _runtime_reason(reason)}
+
+
+def _runtime_reason(
+    reason: RuntimeManifestMissingReason | None,
+) -> RuntimeMissingReason:
     if reason is RuntimeManifestMissingReason.LEGACY_MANIFEST:
         return "legacy_manifest_field"
     if reason is RuntimeManifestMissingReason.FIELD_UNAVAILABLE:
@@ -583,25 +694,37 @@ def _runtime_reason(reason: RuntimeManifestMissingReason | None) -> str:
     return "runtime_manifest_unresolved"
 
 
-def _optional_text(fact_cls: type, value: str | None, missing_reason: str):
+def _optional_text(
+    fact_cls: type,
+    value: str | None,
+    missing_reason: AnalysisMissingReason | DecisionTraceMissingReason,
+):
     if value is not None:
         return fact_cls(value=value)
     return fact_cls(missing_reason=missing_reason)
 
 
-def _optional_int(fact_cls: type, value: int | None, missing_reason: str):
+def _optional_int(
+    fact_cls: type,
+    value: int | None,
+    missing_reason: AnalysisMissingReason,
+):
     if value is not None:
         return fact_cls(value=value)
     return fact_cls(missing_reason=missing_reason)
 
 
-def _optional_bool(fact_cls: type, value: bool | None, missing_reason: str):
+def _optional_bool(
+    fact_cls: type,
+    value: bool | None,
+    missing_reason: DecisionTraceMissingReason,
+):
     if value is not None:
         return fact_cls(value=value)
     return fact_cls(missing_reason=missing_reason)
 
 
-def _domain_and_type(event_type: str | None) -> tuple[str, str]:
+def _domain_and_type(event_type: str | None) -> tuple[EventDomain, EventType]:
     if event_type == "fall":
         return "fall", "fall"
     if event_type == "bed-exit":
@@ -618,7 +741,7 @@ def project_current_review(
             reasons=["review_not_recorded"],
             disposition=ReviewDispositionFact(missing_reason="review_not_recorded"),
         )
-    if review.disposition not in _REVIEW_DISPOSITIONS:
+    if not _is_review_disposition(review.disposition):
         return EventExplanationReview(
             status="UNAVAILABLE",
             reasons=["persisted_value_invalid"],

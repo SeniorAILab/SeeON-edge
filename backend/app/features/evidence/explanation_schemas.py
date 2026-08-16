@@ -147,7 +147,14 @@ class _ExplanationModel(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
 
 
-class _ValueReasonPair(_ExplanationModel):
+ValueT = TypeVar("ValueT")
+MissingReasonT = TypeVar("MissingReasonT")
+
+
+class _ValueReasonPair(_ExplanationModel, Generic[ValueT, MissingReasonT]):
+    value: ValueT | None = None
+    missing_reason: MissingReasonT | None = None
+
     @model_validator(mode="after")
     def require_value_xor_missing_reason(self) -> Self:
         has_value = self.value is not None
@@ -157,72 +164,72 @@ class _ValueReasonPair(_ExplanationModel):
         return self
 
 
-class FacilityIdFact(_ValueReasonPair):
+class FacilityIdFact(_ValueReasonPair[str, FacilityMissingReason]):
     value: str | None = Field(default=None, min_length=1)
     missing_reason: FacilityMissingReason | None = None
 
 
-class WorkerBootIdFact(_ValueReasonPair):
+class WorkerBootIdFact(_ValueReasonPair[str, AnalysisMissingReason]):
     value: str | None = Field(default=None, min_length=1)
     missing_reason: AnalysisMissingReason | None = None
 
 
-class StreamEpochFact(_ValueReasonPair):
+class StreamEpochFact(_ValueReasonPair[int, AnalysisMissingReason]):
     value: int | None = Field(default=None, ge=0)
     missing_reason: AnalysisMissingReason | None = None
 
 
-class FrameSeqFact(_ValueReasonPair):
+class FrameSeqFact(_ValueReasonPair[int, AnalysisMissingReason]):
     value: int | None = Field(default=None, ge=0)
     missing_reason: AnalysisMissingReason | None = None
 
 
-class DecisionTraceIdFact(_ValueReasonPair):
+class DecisionTraceIdFact(_ValueReasonPair[str, DecisionTraceMissingReason]):
     value: str | None = Field(default=None, min_length=64, max_length=64)
     missing_reason: DecisionTraceMissingReason | None = None
 
 
-class DecisionReasonFact(_ValueReasonPair):
+class DecisionReasonFact(_ValueReasonPair[DecisionReason, DecisionTraceMissingReason]):
     value: DecisionReason | None = None
     missing_reason: DecisionTraceMissingReason | None = None
 
 
-class DecisionStateFact(_ValueReasonPair):
+class DecisionStateFact(_ValueReasonPair[DecisionState, DecisionTraceMissingReason]):
     value: DecisionState | None = None
     missing_reason: DecisionTraceMissingReason | None = None
 
 
-class TriggeredFact(_ValueReasonPair):
+class TriggeredFact(_ValueReasonPair[bool, DecisionTraceMissingReason]):
     value: bool | None = None
     missing_reason: DecisionTraceMissingReason | None = None
 
 
-class ProbabilityFact(_ValueReasonPair):
+class ProbabilityFact(_ValueReasonPair[float, DecisionValueMissingReason]):
     value: float | None = None
     missing_reason: DecisionValueMissingReason | None = None
 
 
-class ThresholdFact(_ValueReasonPair):
+class ThresholdFact(_ValueReasonPair[float, DecisionValueMissingReason]):
     value: float | None = None
     missing_reason: DecisionValueMissingReason | None = None
 
 
-class TrackIdFact(_ValueReasonPair):
+class TrackIdFact(_ValueReasonPair[int, TrackBedMissingReason]):
     value: int | None = None
     missing_reason: TrackBedMissingReason | None = None
 
 
-class BedIdFact(_ValueReasonPair):
+class BedIdFact(_ValueReasonPair[int, TrackBedMissingReason]):
     value: int | None = None
     missing_reason: TrackBedMissingReason | None = None
 
 
-class ConfigVersionFact(_ValueReasonPair):
+class ConfigVersionFact(_ValueReasonPair[int, RuntimeMissingReason]):
     value: int | None = Field(default=None, ge=0)
     missing_reason: RuntimeMissingReason | None = None
 
 
-class PolicyQualifiedIdFact(_ValueReasonPair):
+class PolicyQualifiedIdFact(_ValueReasonPair[str, RuntimeMissingReason]):
     value: str | None = Field(default=None, min_length=1, max_length=64)
     missing_reason: RuntimeMissingReason | None = None
 
@@ -236,57 +243,59 @@ class PolicyQualifiedIdFact(_ValueReasonPair):
         return value
 
 
-class ModelFact(_ValueReasonPair):
+class ModelFact(_ValueReasonPair[str, RuntimeMissingReason]):
     value: str | None = Field(default=None, min_length=1)
     missing_reason: RuntimeMissingReason | None = None
 
 
-class DetectorVersionFact(_ValueReasonPair):
+class DetectorVersionFact(_ValueReasonPair[str, RuntimeMissingReason]):
     value: str | None = Field(default=None, min_length=1)
     missing_reason: RuntimeMissingReason | None = None
 
 
-class RuntimeManifestSha256Fact(_ValueReasonPair):
+class RuntimeManifestSha256Fact(_ValueReasonPair[str, RuntimeMissingReason]):
     value: str | None = Field(default=None, min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
     missing_reason: RuntimeMissingReason | None = None
 
 
-class SourceRevisionFact(_ValueReasonPair):
+class SourceRevisionFact(_ValueReasonPair[str, RuntimeMissingReason]):
     value: str | None = Field(default=None, min_length=40, max_length=40, pattern=r"^[0-9a-f]{40}$")
     missing_reason: RuntimeMissingReason | None = None
 
 
-class OutboxStateFact(_ValueReasonPair):
+class OutboxStateFact(_ValueReasonPair[OutboxState, DeliveryMissingReason]):
     value: OutboxState | None = None
     missing_reason: DeliveryMissingReason | None = None
 
 
-class AttemptCountFact(_ValueReasonPair):
+class AttemptCountFact(_ValueReasonPair[int, DeliveryMissingReason]):
     value: int | None = Field(default=None, ge=0)
     missing_reason: DeliveryMissingReason | None = None
 
 
-class DeliveryDispositionFact(_ValueReasonPair):
+class DeliveryDispositionFact(
+    _ValueReasonPair[DeliveryDispositionToken, DeliveryMissingReason]
+):
     value: DeliveryDispositionToken | None = None
     missing_reason: DeliveryMissingReason | None = None
 
 
-class HttpStatusFact(_ValueReasonPair):
+class HttpStatusFact(_ValueReasonPair[int, DeliveryMissingReason]):
     value: int | None = Field(default=None, ge=100, le=599)
     missing_reason: DeliveryMissingReason | None = None
 
 
-class BackendEventIdFact(_ValueReasonPair):
+class BackendEventIdFact(_ValueReasonPair[str, DeliveryMissingReason]):
     value: str | None = Field(default=None, min_length=1)
     missing_reason: DeliveryMissingReason | None = None
 
 
-class ReviewDispositionFact(_ValueReasonPair):
+class ReviewDispositionFact(_ValueReasonPair[ReviewDispositionToken, ReviewMissingReason]):
     value: ReviewDispositionToken | None = None
     missing_reason: ReviewMissingReason | None = None
 
 
-class AlertIdFact(_ValueReasonPair):
+class AlertIdFact(_ValueReasonPair[str, CorrelationMissingReason]):
     value: str | None = Field(default=None, min_length=1)
     missing_reason: CorrelationMissingReason | None = None
 

@@ -170,7 +170,7 @@ def _classify(
         if (
             str(row[0]) != trigger.worker_boot_id
             or str(row[1]) != trigger.camera_id
-            or int(row[2]) != trigger.stream_epoch
+            or _sqlite_int(row[2]) != trigger.stream_epoch
         ):
             return NeighborhoodCoverage(
                 neighborhood_pruned=True,
@@ -186,7 +186,7 @@ def _classify(
             )
 
     expected = _expected_nonneg_seqs(trigger.frame_seq)
-    retained_seqs = tuple(int(row[3]) for row in rows)
+    retained_seqs = tuple(_sqlite_int(row[3]) for row in rows)
     retained = frozenset(retained_seqs)
     missing = tuple(seq for seq in expected if seq not in retained)
     first_missing = None if not missing else missing[0]
@@ -240,6 +240,12 @@ def _classify(
         trigger,
         cursor,
     )
+
+
+def _sqlite_int(value: object) -> int:
+    if isinstance(value, (int, float, str, bytes, bytearray)):
+        return int(value)
+    raise TypeError("stored SQLite integer is invalid")
 
 
 def _retention_loss(cursor: NeighborhoodCursor | None, oldest_expected: int) -> bool:
