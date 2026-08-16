@@ -14,6 +14,7 @@ from shared.edge_db.event_neighborhood import (
     coverage_for_decision,
 )
 from worker.fp_attribution.cohort import (
+    FalsePositiveCohort,
     FalsePositiveCohortExclusion,
     FalsePositiveCohortMember,
     FalsePositiveCohortQuery,
@@ -175,14 +176,31 @@ class AttributionEvidenceQuery:
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
 
-    def extract(self) -> AttributionEvidence:
-        cohort = FalsePositiveCohortQuery(self.database_path).load()
-        connection = open_query_only_connection(self.database_path)
-        try:
-            records = tuple(_record_for(connection, member) for member in cohort.members)
-        finally:
-            connection.close()
-        return AttributionEvidence(records=records, exclusions=cohort.exclusions)
+    def extract(
+        self,
+        connection: sqlite3.Connection | None = None,
+        *,
+        cohort: FalsePositiveCohort | None = None,
+    ) -> AttributionEvidence:
+        if connection is None:
+            loaded = (
+                cohort
+                if cohort is not None
+                else FalsePositiveCohortQuery(self.database_path).load()
+            )
+            owned = open_query_only_connection(self.database_path)
+            try:
+                records = tuple(_record_for(owned, member) for member in loaded.members)
+            finally:
+                owned.close()
+            return AttributionEvidence(records=records, exclusions=loaded.exclusions)
+        loaded = (
+            cohort
+            if cohort is not None
+            else FalsePositiveCohortQuery(self.database_path).load(connection)
+        )
+        records = tuple(_record_for(connection, member) for member in loaded.members)
+        return AttributionEvidence(records=records, exclusions=loaded.exclusions)
 
 
 def _record_for(

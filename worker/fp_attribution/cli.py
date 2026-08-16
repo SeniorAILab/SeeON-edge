@@ -95,20 +95,22 @@ def _run(
     correlation_path: Path | None,
     alert_path: Path | None,
 ) -> int:
-    from worker.fp_attribution.attribution import classify_record
     from worker.fp_attribution.cohort import FalsePositiveCohortQuery
     from worker.fp_attribution.evidence import AttributionEvidenceQuery
-    from worker.fp_attribution.metrics import (
-        metric_event_from_record,
-        metrics_machine_bytes,
-        summarize_attribution_metrics,
-    )
+    from worker.fp_attribution.snapshot import open_read_snapshot
 
     proofs = None if correlation_path is None else _load_correlation(correlation_path)
     alerts = None if alert_path is None else _load_alerts(alert_path)
     try:
-        cohort = FalsePositiveCohortQuery(database_path).load()
-        evidence = AttributionEvidenceQuery(database_path).extract()
+        with open_read_snapshot(database_path) as connection:
+            cohort = FalsePositiveCohortQuery(database_path).load(connection)
+            evidence = AttributionEvidenceQuery(database_path).extract(
+                connection,
+                cohort=cohort,
+            )
+            return _write_report(cohort, evidence, proofs, alerts)
+    except _ExportError:
+        raise
     except ValueError as exc:
         token = DB_SCHEMA_INVALID if _schema_failure(exc) else DB_UNAVAILABLE
         _emit(token)
@@ -124,6 +126,26 @@ def _run(
         _emit(DB_UNAVAILABLE)
         return DB_UNAVAILABLE_EXIT_CODE
 
+
+def _write_report(
+    cohort: object,
+    evidence: object,
+    proofs: dict[str, dict[str, object]] | None,
+    alerts: tuple[Mapping[str, str], ...] | None,
+) -> int:
+    from worker.fp_attribution.attribution import classify_record
+    from worker.fp_attribution.cohort import FalsePositiveCohort
+    from worker.fp_attribution.evidence import AttributionEvidence
+    from worker.fp_attribution.metrics import (
+        metric_event_from_record,
+        metrics_machine_bytes,
+        summarize_attribution_metrics,
+    )
+
+    if not isinstance(cohort, FalsePositiveCohort):
+        raise TypeError("attribution cohort is invalid")
+    if not isinstance(evidence, AttributionEvidence):
+        raise TypeError("attribution evidence is invalid")
     metric_events = []
     records = []
     for record in evidence.records:

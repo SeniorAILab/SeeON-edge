@@ -83,12 +83,14 @@ class FalsePositiveCohortQuery:
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
 
-    def load(self) -> FalsePositiveCohort:
-        connection = open_query_only_connection(self.database_path)
-        try:
+    def load(self, connection: sqlite3.Connection | None = None) -> FalsePositiveCohort:
+        if connection is not None:
             return _load_cohort(connection)
+        owned = open_query_only_connection(self.database_path)
+        try:
+            return _load_cohort(owned)
         finally:
-            connection.close()
+            owned.close()
 
 
 def open_query_only_connection(database_path: Path) -> sqlite3.Connection:
