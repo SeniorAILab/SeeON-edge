@@ -569,3 +569,63 @@ def test_unsupported_plan_categories_are_never_emitted() -> None:
     assert decision.category == "UNCATEGORIZED"
     for token in ("IDLE_STATIC", "MODEL_OR_THRESHOLD", "ANNOTATION_ERROR"):
         assert token not in rendered
+
+
+def test_extracted_domain_evidence_does_not_change_terminal_categories(
+    tmp_path: Path,
+) -> None:
+    """R5 domain facts stay orthogonal to the current classifier vocabulary.
+
+    Given an extracted COMPLETE fall record that now carries typed latch/gap facts
+    When classify_record runs without a correlation export
+    Then the terminal category remains UNCATEGORIZED.
+    """
+
+    from test_fp_attribution_evidence import _pose_components
+
+    database = _migrated(tmp_path)
+    seqs = _complete_seqs()
+    with _connect(database) as connection:
+        edge_event_id = _seed_fp_event(
+            connection,
+            suffix="classify-domain",
+            seqs=seqs,
+            analysis_track_by_seq={seq: None if seq >= 36 else 7 for seq in seqs},
+            components_by_seq={
+                seq: _pose_components("not-scheduled" if seq in {20, 21} else "observed")
+                for seq in seqs
+            },
+            neighborhood_decisions=(
+                {
+                    "seq": 30,
+                    "reason": "fall-onset",
+                    "previous_state": "clear",
+                    "current_state": "fall",
+                    "triggered": 1,
+                    "track_id": 7,
+                    "module_qualified_id": "fall.v1",
+                    "policy_qualified_id": "fall.policy.v1",
+                    "values": (("fall_probability", 0.88, None),),
+                },
+                {
+                    "seq": 33,
+                    "reason": "below-threshold",
+                    "previous_state": "fall",
+                    "current_state": "clear",
+                    "triggered": 0,
+                    "track_id": 7,
+                    "module_qualified_id": "fall.v1",
+                    "policy_qualified_id": "fall.policy.v1",
+                    "values": (("fall_probability", 0.12, None),),
+                },
+            ),
+        )
+        connection.commit()
+
+    record = _record_for(_extract(database), edge_event_id)
+    decision = _classify(record)
+
+    assert record.person_presence.status == "PERSON_GAP"
+    assert record.fall_latch.status == "AVAILABLE"
+    assert decision.category == "UNCATEGORIZED"
+    assert decision.evidence_status == "COMPLETE"

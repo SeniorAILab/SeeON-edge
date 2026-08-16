@@ -687,3 +687,96 @@ def test_hostile_selected_reason_and_state_text_stays_unknown_on_cli(
     with pytest.raises(AssertionError):
         assert leaked["decision_reason"] is None
         assert record["decision_reason"] is None
+
+
+def test_cli_serializes_typed_domain_evidence_without_raw_db_payload(
+    tmp_path: Path,
+) -> None:
+    """CLI JSON must emit stable domain facts and never the raw DB payload.
+
+    Given an aligned fall-latch fixture with person-gap and non-due pose rows
+    When the standalone module runs
+    Then typed domain evidence appears with stable machine fields, category is
+    unchanged, and payload/notes/path/geometry never appear.
+    """
+
+    from test_fp_attribution_evidence import _pose_components
+
+    database = _migrated(tmp_path)
+    seqs = _complete_seqs()
+    with _connect(database) as connection:
+        edge_event_id = _seed_fp_event(
+            connection,
+            suffix="cli-domain",
+            seqs=seqs,
+            analysis_track_by_seq={seq: None if seq >= 36 else 7 for seq in seqs},
+            components_by_seq={
+                seq: _pose_components("not-scheduled" if seq in {20, 21} else "observed")
+                for seq in seqs
+            },
+            neighborhood_decisions=(
+                {
+                    "seq": 30,
+                    "reason": "fall-onset",
+                    "previous_state": "clear",
+                    "current_state": "fall",
+                    "triggered": 1,
+                    "track_id": 7,
+                    "module_qualified_id": "fall.v1",
+                    "policy_qualified_id": "fall.policy.v1",
+                    "values": (("fall_probability", 0.88, None),),
+                },
+                {
+                    "seq": 33,
+                    "reason": "below-threshold",
+                    "previous_state": "fall",
+                    "current_state": "clear",
+                    "triggered": 0,
+                    "track_id": 7,
+                    "module_qualified_id": "fall.v1",
+                    "policy_qualified_id": "fall.policy.v1",
+                    "values": (("fall_probability", 0.12, None),),
+                },
+            ),
+        )
+        connection.commit()
+    before = _digest(database)
+
+    result = _run("--edge-db", str(database))
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    record = next(
+        item for item in payload["records"] if item["edge_event_id"] == edge_event_id
+    )
+    assert record["category"] == "UNCATEGORIZED"
+    assert record["person_presence"] == {
+        "duration_frames": 4,
+        "missing_reason": None,
+        "status": "PERSON_GAP",
+    }
+    assert record["due_signal"] == {
+        "missing_reason": None,
+        "not_scheduled_frames": 2,
+        "status": "NOT_DUE",
+    }
+    assert record["fall_latch"] == {
+        "missing_reason": None,
+        "rearm_frames": 7,
+        "rise_before_rearm": True,
+        "same_domain": True,
+        "same_track": True,
+        "status": "AVAILABLE",
+    }
+    assert record["bed_state"]["status"] == "NOT_APPLICABLE"
+    assert record["track_staleness"]["last_seen_offset_frames"] == 4
+    assert record["domain_alignment"]["domain"] == "fall"
+    assert record["domain_alignment"]["status"] == "ALIGNED"
+    assert record["boot_changed"] is False
+    assert record["epoch_changed"] is False
+    assert "payload_json" not in record
+    assert "payload_json" not in result.stdout
+    for token in _FORBIDDEN_OUTPUT_TOKENS:
+        assert token not in result.stdout
+        assert token not in result.stderr
+    assert _digest(database) == before
