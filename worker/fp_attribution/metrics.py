@@ -292,7 +292,10 @@ def _transport(
         distinct_backend_event_id_count=len(backend_ids),
         proof_backed_duplicate_count=proof_duplicate,
         proof_backed_retry_count=proof_retry,
-        unique_alert_id=_alert_metric(alert_export),
+        unique_alert_id=_alert_metric(
+            alert_export,
+            cohort_event_ids=frozenset(row.edge_event_id for row in rows),
+        ),
     )
 
 
@@ -307,7 +310,11 @@ def _proof_kind(row: AttributionMetricEvent) -> str | None:
     return None
 
 
-def _alert_metric(export: object | None) -> AlertIdMetric:
+def _alert_metric(
+    export: object | None,
+    *,
+    cohort_event_ids: frozenset[str],
+) -> AlertIdMetric:
     if export is None:
         return _unavailable_alert()
     if export == ():
@@ -319,11 +326,13 @@ def _alert_metric(export: object | None) -> AlertIdMetric:
         parsed = _parse_alert_row(item)
         if parsed is None:
             return _unavailable_alert()
-        alert_ids.add(parsed)
+        event_id, alert_id = parsed
+        if event_id in cohort_event_ids:
+            alert_ids.add(alert_id)
     return AlertIdMetric(status="AVAILABLE", value=len(alert_ids), missing_reason=None)
 
 
-def _parse_alert_row(item: object) -> str | None:
+def _parse_alert_row(item: object) -> tuple[str, str] | None:
     if not isinstance(item, Mapping) or set(item) != _ALERT_KEYS:
         return None
     event_id = item.get("edge_event_id")
@@ -332,7 +341,7 @@ def _parse_alert_row(item: object) -> str | None:
         return None
     if not isinstance(alert_id, str) or not alert_id:
         return None
-    return alert_id
+    return event_id, alert_id
 
 
 def _unavailable_alert() -> AlertIdMetric:

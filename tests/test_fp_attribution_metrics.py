@@ -627,3 +627,111 @@ def test_duplicate_export_proof_stays_orthogonal_to_detection_ratio() -> None:
     assert summary.category_counts[0].ratio == _defined_ratio(numerator=1, denominator=1)
     assert summary.transport.proof_backed_duplicate_count == 1
     assert summary.transport.proof_backed_retry_count == 0
+
+
+def test_foreign_export_alert_is_not_counted_against_analyzed_cohort() -> None:
+    """Alert rows for events outside the analyzed cohort are not correlation.
+
+    Given one analyzed cohort event plus export rows for that event and a foreign event
+    When summarize_attribution_metrics runs
+    Then unique_alert_id counts only the cohort alert, never the foreign alert.
+    """
+
+    summary = _summarize(
+        (_classified(_stale_record(event_id="event:cohort")),),
+        alert_correlation_export=(
+            {"edge_event_id": "event:cohort", "alert_id": "alert:cohort"},
+            {"edge_event_id": "event:not-in-cohort", "alert_id": "alert:foreign"},
+        ),
+    )
+
+    assert summary.transport.unique_edge_event_count == 1
+    assert summary.transport.unique_alert_id.status == "AVAILABLE"
+    assert summary.transport.unique_alert_id.value == 1
+    assert summary.transport.unique_alert_id.missing_reason is None
+    assert summary.attribution_rate.denominator == 1
+
+
+def test_all_foreign_alert_export_is_available_zero_not_a_cohort_correlation() -> None:
+    """An export that only names foreign events is not cohort correlation.
+
+    Given one analyzed cohort event and a valid export whose only row is foreign
+    When summarize_attribution_metrics runs
+    Then unique_alert_id is available zero, never a counted foreign correlation.
+    """
+
+    from worker.fp_attribution import metrics_machine_bytes
+
+    summary = _summarize(
+        (_classified(_stale_record(event_id="event:cohort")),),
+        alert_correlation_export=(
+            {"edge_event_id": "event:not-in-cohort", "alert_id": "alert:foreign"},
+        ),
+    )
+    payload = metrics_machine_bytes(summary)
+
+    assert summary.transport.unique_edge_event_count == 1
+    assert summary.transport.unique_alert_id.status == "AVAILABLE"
+    assert summary.transport.unique_alert_id.value == 0
+    assert summary.transport.unique_alert_id.missing_reason is None
+    assert summary.transport.unique_alert_id.value != 1
+    assert b"event:not-in-cohort" not in payload
+    assert b"alert:foreign" not in payload
+
+
+def test_duplicate_retry_alert_rows_count_distinct_cohort_ids_only() -> None:
+    """Duplicate or retry export rows stay one distinct cohort alert ID.
+
+    Given one analyzed event, two identical cohort alert rows, and one foreign row
+    When summarize_attribution_metrics runs
+    Then unique_alert_id is 1 and unique_edge_event_count stays 1.
+    """
+
+    summary = _summarize(
+        (_classified(_complete_record(edge_event_id="event:cohort", attempt_count=3)),),
+        alert_correlation_export=(
+            {"edge_event_id": "event:cohort", "alert_id": "alert:cohort"},
+            {"edge_event_id": "event:cohort", "alert_id": "alert:cohort"},
+            {"edge_event_id": "event:not-in-cohort", "alert_id": "alert:retry-foreign"},
+        ),
+    )
+
+    assert summary.transport.unique_edge_event_count == 1
+    assert summary.transport.total_attempts == 3
+    assert summary.transport.unique_alert_id.status == "AVAILABLE"
+    assert summary.transport.unique_alert_id.value == 1
+    assert summary.transport.unique_alert_id.missing_reason is None
+
+
+def test_malformed_event_id_keeps_alert_metric_unavailable_without_raw_text() -> None:
+    """Empty or non-string event IDs cannot become an available alert count.
+
+    Given one analyzed event and exports with an empty or non-string event ID
+    When summarize_attribution_metrics runs
+    Then unique_alert_id stays UNAVAILABLE and machine bytes omit the raw values.
+    """
+
+    from worker.fp_attribution import metrics_machine_bytes
+
+    empty_id = _summarize(
+        (_classified(_stale_record(event_id="event:cohort")),),
+        alert_correlation_export=(
+            {"edge_event_id": "", "alert_id": "alert:empty-event"},
+        ),
+    )
+    non_string = _summarize(
+        (_classified(_stale_record(event_id="event:cohort")),),
+        alert_correlation_export=(
+            {"edge_event_id": 17, "alert_id": "alert:typed-event"},
+        ),
+    )
+
+    assert empty_id.transport.unique_alert_id.status == "UNAVAILABLE"
+    assert empty_id.transport.unique_alert_id.value is None
+    assert empty_id.transport.unique_alert_id.missing_reason == _ALERT_EXPORT_MISSING
+    assert non_string.transport.unique_alert_id.status == "UNAVAILABLE"
+    assert non_string.transport.unique_alert_id.value is None
+    assert non_string.transport.unique_alert_id.missing_reason == _ALERT_EXPORT_MISSING
+    assert b"alert:empty-event" not in metrics_machine_bytes(empty_id)
+    assert b"alert:typed-event" not in metrics_machine_bytes(non_string)
+    assert b"17" not in metrics_machine_bytes(non_string)
