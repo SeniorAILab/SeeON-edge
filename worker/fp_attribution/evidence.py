@@ -32,6 +32,7 @@ _FACT_NOT_APPLICABLE = "not_applicable"
 _FACT_AMBIGUOUS = "identity_or_domain_ambiguous"
 _FACT_STATE_MISSING = "observation_state_missing"
 _FACT_STATE_NOT_APPLICABLE = "observation_state_not_applicable"
+_FACT_NOT_OBSERVABLE_IN_WINDOW = "not_observable_within_identity_window"
 _FALL_DOMAIN = "fall"
 _BED_DOMAIN = "bed_exit"
 _POSE_COMPONENT_PREFIXES = ("pose.", "person.")
@@ -821,9 +822,20 @@ def _identity_change(
     *,
     coverage_complete: bool,
 ) -> tuple[bool | None, str | None, bool | None, str | None]:
+    """Boot/epoch change facts are unobservable from inside a same-identity window.
+
+    The window is built with an exact worker_boot_id/camera_id/stream_epoch
+    prefilter (see ``coverage_for_decision``), so a COMPLETE window's rows are
+    guaranteed to share one identity by construction: whether an identity change
+    happened is not a question this window's persisted candidates can answer,
+    honestly or otherwise. A COMPLETE window can only ever "confirm" no change
+    because it was built to exclude any other outcome, so asserting that as a
+    checked fact would itself be dishonest. Report the fact as unavailable
+    (never as a hardcoded False) with an explicit closed reason instead.
+    """
     if trigger is None or not coverage_complete:
         return None, _FACT_NOT_PERSISTED, None, _FACT_NOT_PERSISTED
-    return False, None, False, None
+    return None, _FACT_NOT_OBSERVABLE_IN_WINDOW, None, _FACT_NOT_OBSERVABLE_IN_WINDOW
 
 
 def _score_threshold_required(

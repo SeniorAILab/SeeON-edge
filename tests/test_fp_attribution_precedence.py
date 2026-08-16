@@ -291,6 +291,58 @@ def test_fall_latch_rearm_wins_episode_collision() -> None:
     assert decision.annotations.matched_predicate == "FALL_LATCH_REARM"
 
 
+def test_fall_latch_rearm_matches_when_boot_epoch_change_is_unobserved() -> None:
+    """None (unobservable) boot/epoch facts must not block an otherwise-aligned match.
+
+    Given COMPLETE fall-onset evidence where boot_changed/epoch_changed are the
+    honest None a same-identity window actually produces (see
+    evidence._identity_change)
+    When classify_record runs
+    Then the category is still FALL_LATCH_REARM: "not proven changed" is not a
+    reason to withhold an otherwise-aligned attribution.
+    """
+
+    record = _complete_record(
+        decision_reason="fall-onset",
+        previous_state="clear",
+        current_state="fall",
+        fall_latch=FallLatchEvidence("AVAILABLE", True, True, True, 4, None),
+        boot_changed=None,
+        boot_changed_missing_reason="not_observable_within_identity_window",
+        epoch_changed=None,
+        epoch_changed_missing_reason="not_observable_within_identity_window",
+    )
+
+    decision = _classify(record)
+
+    assert decision.category == "FALL_LATCH_REARM"
+    assert decision.annotations.matched_predicate == "FALL_LATCH_REARM"
+
+
+def test_fall_latch_rearm_is_withheld_when_boot_changed_is_observed_true() -> None:
+    """A genuinely observed boot change must defeat an otherwise-matching predicate.
+
+    Given COMPLETE fall-onset evidence that would otherwise match FALL_LATCH_REARM,
+    except boot_changed is observed True
+    When classify_record runs
+    Then the category is not FALL_LATCH_REARM: boot_changed is a real gate, not
+    an inert field.
+    """
+
+    record = _complete_record(
+        decision_reason="fall-onset",
+        previous_state="clear",
+        current_state="fall",
+        fall_latch=FallLatchEvidence("AVAILABLE", True, True, True, 4, None),
+        boot_changed=True,
+        boot_changed_missing_reason=None,
+    )
+
+    decision = _classify(record)
+
+    assert decision.category != "FALL_LATCH_REARM"
+
+
 def test_episode_fragmentation_wins_tracker_collision() -> None:
     """Explicit siblings that are not a fall rearm stay fragmentation.
 

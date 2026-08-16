@@ -755,8 +755,13 @@ def test_exact_30_complete_member_is_an_allowlisted_attributable_record(
     assert record.bed_changed is False
     assert record.worker_boot_id == BOOT_ID
     assert record.stream_epoch == EPOCH
-    assert record.boot_changed is False
-    assert record.epoch_changed is False
+    # COMPLETE windows are built with an exact worker_boot_id/camera_id/
+    # stream_epoch prefilter, so whether identity changed is not observable
+    # from inside the window: report unavailable, never a hardcoded False.
+    assert record.boot_changed is None
+    assert record.epoch_changed is None
+    assert record.boot_changed_missing_reason == "not_observable_within_identity_window"
+    assert record.epoch_changed_missing_reason == "not_observable_within_identity_window"
     assert record.associated_sibling_event_ids == ()
     assert record.attempt_count == 3
     assert record.backend_event_ids == ("backend:one",)
@@ -1359,10 +1364,11 @@ def test_aligned_fall_latch_and_person_gap_facts_are_projected(tmp_path: Path) -
     assert record.bed_state.status == "NOT_APPLICABLE"
     assert record.track_staleness.last_seen_offset_frames == 4
     assert record.track_staleness.missing_reason is None
-    assert record.boot_changed is False
-    assert record.epoch_changed is False
-    assert record.boot_changed_missing_reason is None
-    assert record.epoch_changed_missing_reason is None
+    # Unobservable from inside a same-identity COMPLETE window, never False.
+    assert record.boot_changed is None
+    assert record.epoch_changed is None
+    assert record.boot_changed_missing_reason == "not_observable_within_identity_window"
+    assert record.epoch_changed_missing_reason == "not_observable_within_identity_window"
 
 
 def test_aligned_bed_stale_track_sequence_is_projected(tmp_path: Path) -> None:
@@ -1747,10 +1753,11 @@ def test_person_gap_covers_leading_middle_and_trailing_null_tracks(
     assert record.person_presence.status == "PERSON_GAP"
     assert record.person_presence.duration_frames == 9
     assert record.person_presence.missing_reason is None
-    assert record.boot_changed is False
-    assert record.epoch_changed is False
-    assert record.boot_changed_missing_reason is None
-    assert record.epoch_changed_missing_reason is None
+    # Unobservable from inside a same-identity COMPLETE window, never False.
+    assert record.boot_changed is None
+    assert record.epoch_changed is None
+    assert record.boot_changed_missing_reason == "not_observable_within_identity_window"
+    assert record.epoch_changed_missing_reason == "not_observable_within_identity_window"
 
 
 def test_absent_and_unparseable_domain_facts_stay_unknown_capable(tmp_path: Path) -> None:

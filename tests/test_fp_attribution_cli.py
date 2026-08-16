@@ -777,8 +777,13 @@ def test_cli_serializes_typed_domain_evidence_without_raw_db_payload(
     assert record["track_staleness"]["last_seen_offset_frames"] == 4
     assert record["domain_alignment"]["domain"] == "fall"
     assert record["domain_alignment"]["status"] == "ALIGNED"
-    assert record["boot_changed"] is False
-    assert record["epoch_changed"] is False
+    # COMPLETE windows are built with an exact worker_boot_id/camera_id/
+    # stream_epoch prefilter, so identity change is not observable from
+    # inside the window: honest unavailable, never a hardcoded False.
+    assert record["boot_changed"] is None
+    assert record["epoch_changed"] is None
+    assert record["boot_changed_missing_reason"] == "not_observable_within_identity_window"
+    assert record["epoch_changed_missing_reason"] == "not_observable_within_identity_window"
     assert "payload_json" not in record
     assert "payload_json" not in result.stdout
     for token in _FORBIDDEN_OUTPUT_TOKENS:

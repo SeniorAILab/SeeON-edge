@@ -234,14 +234,21 @@ def _rejected(reason: str) -> _Correlation:
 
 
 def _aligned(record: AttributionEvidenceRecord) -> bool:
+    # boot_changed/epoch_changed are never derivable to a definite False: a
+    # COMPLETE window is built from an exact worker_boot_id/camera_id/stream_epoch
+    # prefilter, so it structurally cannot observe whether an identity change
+    # happened (see evidence._identity_change). They report None, not False,
+    # whenever coverage is COMPLETE. "Not proven changed" is the honest gate
+    # here; requiring a literal False would make alignment permanently
+    # unreachable. same_camera_boot_epoch remains the genuinely-derived check.
     alignment = record.domain_alignment
     return (
         alignment.status == "ALIGNED"
         and alignment.same_track is True
         and alignment.same_domain is True
         and alignment.same_camera_boot_epoch is True
-        and record.boot_changed is False
-        and record.epoch_changed is False
+        and record.boot_changed is not True
+        and record.epoch_changed is not True
     )
 
 
