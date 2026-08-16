@@ -15,8 +15,12 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
-from backend.app.features.evidence.explanation_schemas import EventExplanationResponse
+from backend.app.features.evidence.explanation_schemas import (
+    EventExplanationResponse,
+    PolicyQualifiedIdFact,
+)
 from backend.app.features.evidence.explanation_service import EventExplanationService
 from backend.app.features.evidence.record_store import CentralEvidenceQuery
 from backend.app.main import create_app, no_lifespan
@@ -67,6 +71,19 @@ KEYPOINT_X_SENTINEL = 424242
 KEYPOINT_Y_SENTINEL = 434343
 BED_X1_SENTINEL = 515151
 BED_Y1_SENTINEL = 525252
+ABS_PATH_POLICY_SENTINEL = "/private/policy-path-sentinel-privacy.bin"
+TOKEN_LIKE_POLICY_SENTINEL = "ghp_" + ("A" * 36)
+OVERLENGTH_POLICY_SENTINEL = "a" * 257
+CONTROL_POLICY_SENTINEL = "fall.policy\x07.v1"
+CONFUSABLE_POLICY_SENTINEL = "f\u0430ll.policy.v1"
+HOSTILE_POLICY_SENTINELS: Final = (
+    RTSP_SENTINEL,
+    ABS_PATH_POLICY_SENTINEL,
+    TOKEN_LIKE_POLICY_SENTINEL,
+    OVERLENGTH_POLICY_SENTINEL,
+    CONTROL_POLICY_SENTINEL,
+    CONFUSABLE_POLICY_SENTINEL,
+)
 
 PRIVACY_SENTINELS: Final = (
     PAYLOAD_SENTINEL,
@@ -621,6 +638,28 @@ def _is_canonical_uuid4(value: str) -> bool:
     return parsed.version == 4 and str(parsed) == value
 
 
+def test_policy_qualified_id_contract_rejects_hostile_selected_identifiers() -> None:
+    # Given the five hostile selected-identifier classes plus credentialed RTSP
+    assert "://" in RTSP_SENTINEL
+    assert ABS_PATH_POLICY_SENTINEL.startswith("/")
+    assert TOKEN_LIKE_POLICY_SENTINEL.isalnum() is False
+    assert len(OVERLENGTH_POLICY_SENTINEL) > 64
+    assert "\x07" in CONTROL_POLICY_SENTINEL
+    assert CONFUSABLE_POLICY_SENTINEL != "fall.policy.v1"
+
+    # When each sentinel is inserted into the API policy identifier contract
+    # Then validation fails closed instead of serializing the secret
+    for secret in HOSTILE_POLICY_SENTINELS:
+        with pytest.raises(ValidationError):
+            PolicyQualifiedIdFact(value=secret)
+    for legitimate in ("fall.policy.v1", "bed_exit.policy.v1", "mobility.policy.v1"):
+        accepted = PolicyQualifiedIdFact(value=legitimate)
+        assert accepted.value == legitimate
+    rejected_opaque = PolicyQualifiedIdFact.model_validate
+    with pytest.raises(ValidationError):
+        rejected_opaque({"value": "onnxruntime", "missing_reason": None})
+
+
 def test_privacy_assertion_fails_when_runtime_rtsp_sentinel_is_captured() -> None:
     # Given the runtime-composed credentialed RTSP sentinel
     assert "://" in RTSP_SENTINEL
@@ -809,3 +848,83 @@ def test_unauthorized_unknown_malformed_and_internal_error_paths_leak_no_sentine
     assert ACTOR_SENTINEL not in logs
     assert RTSP_SENTINEL not in logs
     assert CREDENTIAL_SENTINEL not in logs
+
+
+def _poison_selected_policy_text(database: Path, *, policy_qualified_id: str) -> None:
+    connection = _connect(database)
+    try:
+        updated = connection.execute(
+            "UPDATE evidence_decision_traces SET policy_qualified_id = ?",
+            (policy_qualified_id,),
+        ).rowcount
+        assert updated >= 1
+        stored = connection.execute(
+            "SELECT policy_qualified_id FROM evidence_decision_traces"
+        ).fetchone()
+        assert stored is not None
+        assert stored[0] == policy_qualified_id
+        connection.commit()
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize(
+    "label,secret",
+    (
+        ("rtsp_credentialed", RTSP_SENTINEL),
+        ("absolute_path", ABS_PATH_POLICY_SENTINEL),
+        ("token_like", TOKEN_LIKE_POLICY_SENTINEL),
+        ("overlength", OVERLENGTH_POLICY_SENTINEL),
+        ("control_chars", CONTROL_POLICY_SENTINEL),
+        ("unicode_confusable", CONFUSABLE_POLICY_SENTINEL),
+    ),
+    ids=(
+        "rtsp_credentialed",
+        "absolute_path",
+        "token_like",
+        "overlength",
+        "control_chars",
+        "unicode_confusable",
+    ),
+)
+def test_schema_valid_selected_policy_text_never_crosses_api_privacy_boundary(
+    tmp_path: Path,
+    caplog,
+    label: str,
+    secret: str,
+) -> None:
+    # Given a complete event whose selected policy_qualified_id is a schema-valid
+    # hostile identifier from one of the five verifier classes
+    del label
+    database = _seed_event_graph(
+        tmp_path,
+        edge_event_id=COMPLETE_EVENT_ID,
+        neighborhood=True,
+        pending_attempt=True,
+    )
+    _poison_selected_policy_text(database, policy_qualified_id=secret)
+    caplog.set_level(logging.DEBUG)
+
+    with _explanation_client(database) as client:
+        _login(client)
+        # When the real authenticated explanation route is requested
+        response = client.get(_explanation_path(COMPLETE_EVENT_ID))
+
+    # Then the persisted-but-invalid identifier is typed unavailable and never echoed
+    assert response.status_code == 200
+    body = response.json()
+    parsed = EventExplanationResponse.model_validate(body)
+    assert parsed.model_dump(mode="json") == body
+    assert body["edge_event_id"] == COMPLETE_EVENT_ID
+    assert body["decision_provenance"] == "COMPLETE"
+    policy = body["policy_qualified_id"]
+    assert policy["value"] is None
+    assert policy["missing_reason"] == "persisted_value_invalid"
+    logs = _rendered_logs(caplog)
+    _assert_privacy_safe(response.text, logs, parsed=body)
+    assert secret not in response.text
+    assert secret not in logs
+    leaked = {"policy_qualified_id": {"value": secret}}
+    with pytest.raises(AssertionError):
+        assert leaked["policy_qualified_id"]["value"] is None
+        assert policy["value"] is None

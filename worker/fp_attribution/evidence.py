@@ -19,6 +19,7 @@ from worker.fp_attribution.cohort import (
     FalsePositiveCohortQuery,
     open_query_only_connection,
 )
+from worker.types.trace import DecisionTraceReason, DecisionTraceState
 
 _SCORE_NAME = "fall_probability"
 _THRESHOLD_NAME = "operating_threshold"
@@ -97,10 +98,16 @@ def _record_for(
     bed_id = None if decision is None else decision[5]
     trigger = coverage.trigger
     track_changed, bed_changed = _change_facts(connection, trigger, track_id, bed_id)
+    reason = None if decision is None else _closed_reason(decision[0])
+    previous_state = None if decision is None else _closed_state(decision[1])
+    current_state = None if decision is None else _closed_state(decision[2])
+    decision_tokens_trusted = decision is None or (
+        reason is not None and previous_state is not None and current_state is not None
+    )
     if coverage.neighborhood_pruned:
         status: EvidenceStatus = "PRUNED"
         eligible = False
-    elif score is None or threshold is None:
+    elif score is None or threshold is None or not decision_tokens_trusted:
         status = "UNKNOWN"
         eligible = False
     else:
@@ -108,9 +115,9 @@ def _record_for(
         eligible = coverage.prevented_eligible
     return AttributionEvidenceRecord(
         edge_event_id=member.edge_event_id,
-        decision_reason=None if decision is None else decision[0],
-        previous_state=None if decision is None else decision[1],
-        current_state=None if decision is None else decision[2],
+        decision_reason=reason,
+        previous_state=previous_state,
+        current_state=current_state,
         score=score,
         threshold=threshold,
         score_missing_reason=score_reason,
@@ -337,6 +344,22 @@ def _optional_float(value: object) -> float | None:
 
 def _text(value: object) -> str | None:
     return None if value is None else _required_text(value)
+
+
+_CLOSED_REASONS = frozenset(item.value for item in DecisionTraceReason)
+_CLOSED_STATES = frozenset(item.value for item in DecisionTraceState)
+
+
+def _closed_reason(value: str) -> str | None:
+    if value in _CLOSED_REASONS:
+        return value
+    return None
+
+
+def _closed_state(value: str) -> str | None:
+    if value in _CLOSED_STATES:
+        return value
+    return None
 
 
 __all__ = [

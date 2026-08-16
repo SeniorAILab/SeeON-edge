@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import logging
 import sqlite3
 from dataclasses import asdict, fields
@@ -1042,3 +1043,118 @@ def test_evidence_projection_never_exposes_notes_payload_path_or_geometry(
     assert "SELECT" in source.upper()
     assert "payload_json" not in source
     assert "notes" not in source
+
+
+def _selected_rtsp_sentinel() -> str:
+    return "".join(
+        (
+            "rtsp",
+            "://",
+            "user",
+            ":",
+            "EVIDENCE_pass_9e44",
+            "@",
+            "10.255.255.3",
+            "/stream",
+        )
+    )
+
+
+def test_schema_valid_selected_decision_text_is_closed_or_unknown(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from worker.fp_attribution import classify_record
+    from worker.fp_attribution import evidence as evidence_module
+
+    # Given a current FP whose selected reason/state columns are schema-valid RTSP text
+    secret = _selected_rtsp_sentinel()
+    database = _migrated(tmp_path)
+    with _connect(database) as connection:
+        edge_event_id = _seed_fp_event(connection, suffix="poisoned-text", seqs=_complete_seqs())
+        updated = connection.execute(
+            "UPDATE evidence_decision_traces "
+            "SET reason = ?, previous_state = ?, current_state = ?",
+            (secret, secret, secret),
+        ).rowcount
+        assert updated == 1
+        connection.commit()
+
+    with caplog.at_level(logging.DEBUG):
+        result = _extract(database)
+    record = _record_for(result, edge_event_id)
+    decision = classify_record(record)
+    captured = capsys.readouterr()
+    rendered = repr(asdict(record)) + repr(decision)
+    source = Path(evidence_module.__file__).read_text(encoding="utf-8")
+
+    # Then invalid selected text becomes typed unavailable and cannot influence attribution
+    assert record.decision_reason is None
+    assert record.previous_state is None
+    assert record.current_state is None
+    assert record.evidence_status == "UNKNOWN"
+    assert record.neighborhood_pruned is False
+    _assert_ineligible(record)
+    assert decision.category is None
+    assert decision.evidence_status == "UNKNOWN"
+    assert secret not in rendered
+    assert secret not in caplog.text
+    assert secret not in captured.out
+    assert secret not in captured.err
+    assert secret not in source
+    leaked = json.dumps({"decision_reason": secret, "previous_state": secret})
+    with pytest.raises(AssertionError):
+        assert secret not in leaked
+        assert secret not in rendered
+
+
+@pytest.mark.parametrize(
+    "secret",
+    (
+        "/private/evidence-reason-path.bin",
+        "ghp_" + ("D" * 36),
+        "q" * 257,
+        "clear\x07",
+        "f\u0430ll",
+    ),
+    ids=(
+        "absolute_path",
+        "token_like",
+        "overlength",
+        "control_chars",
+        "unicode_confusable",
+    ),
+)
+def test_hostile_selected_decision_text_stays_unknown(
+    tmp_path: Path,
+    secret: str,
+) -> None:
+    from worker.fp_attribution import classify_record
+
+    database = _migrated(tmp_path)
+    with _connect(database) as connection:
+        edge_event_id = _seed_fp_event(
+            connection,
+            suffix="hostile-text",
+            seqs=_complete_seqs(),
+        )
+        updated = connection.execute(
+            "UPDATE evidence_decision_traces "
+            "SET reason = ?, previous_state = ?, current_state = ?",
+            (secret, secret, secret),
+        ).rowcount
+        assert updated == 1
+        connection.commit()
+
+    record = _record_for(_extract(database), edge_event_id)
+    decision = classify_record(record)
+    rendered = repr(asdict(record)) + repr(decision)
+
+    assert record.decision_reason is None
+    assert record.previous_state is None
+    assert record.current_state is None
+    assert record.evidence_status == "UNKNOWN"
+    _assert_ineligible(record)
+    assert decision.category is None
+    assert secret not in rendered

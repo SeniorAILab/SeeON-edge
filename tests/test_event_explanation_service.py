@@ -857,3 +857,101 @@ def test_service_never_leaks_raw_payload_path_or_geometry(tmp_path: Path) -> Non
     assert GEOMETRY_SENTINEL not in rendered
     assert "payload_json" not in rendered
     assert "canonical_json" not in rendered
+
+
+def _selected_rtsp_sentinel() -> str:
+    return "".join(
+        (
+            "rtsp",
+            "://",
+            "user",
+            ":",
+            "SERVICE_pass_9e44",
+            "@",
+            "10.255.255.2",
+            "/stream",
+        )
+    )
+
+
+def test_service_malformed_selected_policy_id_is_typed_unavailable(
+    tmp_path: Path,
+) -> None:
+    # Given a complete event whose selected policy_qualified_id is untrusted RTSP text
+    secret = _selected_rtsp_sentinel()
+    database = _seed_event_graph(
+        tmp_path,
+        edge_event_id="event:poisoned-policy",
+        neighborhood=True,
+    )
+    connection = _connect(database)
+    try:
+        updated = connection.execute(
+            "UPDATE evidence_decision_traces SET policy_qualified_id = ?",
+            (secret,),
+        ).rowcount
+        assert updated == 1
+        connection.commit()
+    finally:
+        connection.close()
+
+    # When the service composes an explanation
+    response = _explain(database, "event:poisoned-policy")
+    dumped = _dump(response)
+    rendered = _serialized(response) + repr(response)
+
+    # Then the identifier is typed unavailable and the exact secret is never echoed
+    assert dumped["policy_qualified_id"]["value"] is None
+    assert dumped["policy_qualified_id"]["missing_reason"] == "persisted_value_invalid"
+    assert dumped["decision_provenance"] == "COMPLETE"
+    assert secret not in rendered
+    leaked = {"policy_qualified_id": {"value": secret}}
+    with pytest.raises(AssertionError):
+        assert leaked["policy_qualified_id"]["value"] is None
+        assert dumped["policy_qualified_id"]["value"] is None
+
+
+def test_service_hostile_selected_policy_ids_are_typed_unavailable(
+    tmp_path: Path,
+) -> None:
+    # Given complete events whose selected policy IDs are residual hostile classes
+    secrets = (
+        "/private/service-policy-path.bin",
+        "ghp_" + ("B" * 36),
+        "z" * 257,
+        "fall.policy\x07.v1",
+        "f\u0430ll.policy.v1",
+    )
+    for index, secret in enumerate(secrets):
+        edge_event_id = f"event:hostile-policy-{index}"
+        database = _seed_event_graph(
+            tmp_path / edge_event_id,
+            edge_event_id=edge_event_id,
+            neighborhood=True,
+        )
+        connection = _connect(database)
+        try:
+            updated = connection.execute(
+                "UPDATE evidence_decision_traces SET policy_qualified_id = ?",
+                (secret,),
+            ).rowcount
+            assert updated == 1
+            stored = connection.execute(
+                "SELECT policy_qualified_id FROM evidence_decision_traces"
+            ).fetchone()
+            assert stored is not None
+            assert stored[0] == secret
+            connection.commit()
+        finally:
+            connection.close()
+
+        response = _explain(database, edge_event_id)
+        dumped = _dump(response)
+        rendered = _serialized(response) + repr(response)
+
+        assert dumped["policy_qualified_id"]["value"] is None
+        assert dumped["policy_qualified_id"]["missing_reason"] == (
+            "persisted_value_invalid"
+        )
+        assert dumped["decision_provenance"] == "COMPLETE"
+        assert secret not in rendered

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from backend.app.features.evidence.explanation_manifest import (
     RuntimeManifestMissingReason,
     RuntimeManifestProjection,
@@ -542,8 +544,11 @@ def _policy_fact(
     decision: EventExplanationDecision | None,
     projection: RuntimeManifestProjection,
 ) -> PolicyQualifiedIdFact:
-    if decision is not None and decision.policy_qualified_id:
-        return PolicyQualifiedIdFact(value=decision.policy_qualified_id)
+    if decision is not None:
+        try:
+            return PolicyQualifiedIdFact(value=decision.policy_qualified_id)
+        except ValidationError:
+            return PolicyQualifiedIdFact(missing_reason="persisted_value_invalid")
     return PolicyQualifiedIdFact(
         **_runtime_payload(projection.policy_version, projection.policy_version_missing_reason)
     )

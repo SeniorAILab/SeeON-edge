@@ -549,3 +549,141 @@ def test_unreadable_schema_uses_stable_schema_token(tmp_path: Path) -> None:
     assert DB_SCHEMA_INVALID in result.stderr
     assert "Traceback" not in result.stderr
     assert database.is_file()
+
+
+def _selected_rtsp_sentinel() -> str:
+    return "".join(
+        (
+            "rtsp",
+            "://",
+            "user",
+            ":",
+            "CLI_pass_9e44",
+            "@",
+            "10.255.255.4",
+            "/stream",
+        )
+    )
+
+
+def test_schema_valid_selected_reason_and_state_text_never_crosses_cli(
+    tmp_path: Path,
+) -> None:
+    """Schema-valid selected decision text must not leak through CLI JSON/streams.
+
+    Given a current FP whose reason/previous_state/current_state are a
+    runtime-composed credentialed RTSP value
+    When the standalone module runs
+    Then the exact secret never appears in JSON, stdout, or stderr, and the
+    record stays typed unavailable rather than classified from untrusted text.
+    """
+
+    secret = _selected_rtsp_sentinel()
+    database = _migrated(tmp_path)
+    with _connect(database) as connection:
+        edge_event_id = _seed_fp_event(
+            connection,
+            suffix="cli-poisoned",
+            seqs=_complete_seqs(),
+        )
+        updated = connection.execute(
+            "UPDATE evidence_decision_traces "
+            "SET reason = ?, previous_state = ?, current_state = ?",
+            (secret, secret, secret),
+        ).rowcount
+        assert updated == 1
+        connection.commit()
+    before = _digest(database)
+
+    result = _run("--edge-db", str(database))
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    records = {
+        item["edge_event_id"]: item for item in payload["records"]
+    }
+    record = records[edge_event_id]
+    assert record["decision_reason"] is None
+    assert record["previous_state"] is None
+    assert record["current_state"] is None
+    assert record["evidence_status"] == "UNKNOWN"
+    assert record["category"] is None
+    assert record["neighborhood_pruned"] is False
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+    for token in _FORBIDDEN_OUTPUT_TOKENS:
+        assert token not in result.stdout
+        assert token not in result.stderr
+    assert _digest(database) == before
+    leaked = json.dumps({"decision_reason": secret, "previous_state": secret})
+    with pytest.raises(AssertionError):
+        assert secret not in leaked
+        assert secret not in result.stdout
+
+
+@pytest.mark.parametrize(
+    "secret",
+    (
+        "/private/cli-reason-path.bin",
+        "ghp_" + ("C" * 36),
+        "w" * 257,
+        "fall-onset\x07",
+        "f\u0430ll-onset",
+    ),
+    ids=(
+        "absolute_path",
+        "token_like",
+        "overlength",
+        "control_chars",
+        "unicode_confusable",
+    ),
+)
+def test_hostile_selected_reason_and_state_text_stays_unknown_on_cli(
+    tmp_path: Path,
+    secret: str,
+) -> None:
+    """Residual hostile selected reason/state values stay typed unavailable.
+
+    Given a current FP whose selected reason/state columns are schema-valid
+    hostile text from the verifier residual classes
+    When the standalone module runs
+    Then the exact secret never appears and the record stays UNKNOWN.
+    """
+
+    database = _migrated(tmp_path)
+    with _connect(database) as connection:
+        edge_event_id = _seed_fp_event(
+            connection,
+            suffix="cli-hostile",
+            seqs=_complete_seqs(),
+        )
+        updated = connection.execute(
+            "UPDATE evidence_decision_traces "
+            "SET reason = ?, previous_state = ?, current_state = ?",
+            (secret, secret, secret),
+        ).rowcount
+        assert updated == 1
+        connection.commit()
+    before = _digest(database)
+
+    result = _run("--edge-db", str(database))
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    record = next(
+        item for item in payload["records"] if item["edge_event_id"] == edge_event_id
+    )
+    assert record["decision_reason"] is None
+    assert record["previous_state"] is None
+    assert record["current_state"] is None
+    assert record["evidence_status"] == "UNKNOWN"
+    assert record["category"] is None
+    assert record["neighborhood_pruned"] is False
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+    assert result.stderr == ""
+    assert _digest(database) == before
+    leaked = {"decision_reason": secret}
+    with pytest.raises(AssertionError):
+        assert leaked["decision_reason"] is None
+        assert record["decision_reason"] is None

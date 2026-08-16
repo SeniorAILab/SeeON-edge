@@ -6,9 +6,10 @@ This module defines the wire contract only: no worker import and no payload pars
 
 from __future__ import annotations
 
+import re
 from typing import ClassVar, Generic, Literal, Self, TypeAlias, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 DecisionProvenance: TypeAlias = Literal["COMPLETE", "PARTIAL", "UNAVAILABLE"]
 SectionStatus: TypeAlias = Literal["COMPLETE", "PARTIAL", "UNAVAILABLE"]
@@ -98,6 +99,7 @@ RuntimeMissingReason: TypeAlias = Literal[
     "runtime_manifest_unresolved",
     "legacy_manifest_field",
     "field_not_persisted",
+    "persisted_value_invalid",
 ]
 OutboxState: TypeAlias = Literal["PENDING", "ACKED", "PERMANENT", "COMPATIBILITY"]
 DeliveryDispositionToken: TypeAlias = Literal["RETRY", "PERMANENT", "COMPATIBILITY"]
@@ -218,8 +220,17 @@ class ConfigVersionFact(_ValueReasonPair):
 
 
 class PolicyQualifiedIdFact(_ValueReasonPair):
-    value: str | None = Field(default=None, min_length=1)
+    value: str | None = Field(default=None, min_length=1, max_length=64)
     missing_reason: RuntimeMissingReason | None = None
+
+    @field_validator("value")
+    @classmethod
+    def require_versioned_policy_identity(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not _is_versioned_policy_identity(value):
+            raise ValueError("policy_qualified_id is not a versioned policy identity")
+        return value
 
 
 class ModelFact(_ValueReasonPair):
@@ -404,6 +415,16 @@ class EventExplanationResponse(_ExplanationModel):
         return self
 
 
+_VERSIONED_POLICY_IDENTITY = re.compile(
+    r"\A[a-z][a-z0-9_]{0,31}\.policy\.v[1-9][0-9]{0,2}\Z"
+)
+
+
+def _is_versioned_policy_identity(value: str) -> bool:
+    return _VERSIONED_POLICY_IDENTITY.fullmatch(value) is not None
+
+
 __all__ = [
     "EventExplanationResponse",
+    "PolicyQualifiedIdFact",
 ]
