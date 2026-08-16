@@ -22,9 +22,8 @@ _CATEGORY_VOCABULARY = (
     "ZERO_OR_MISSING_POSE",
     "BED_GEOMETRY_OR_ASSIGNMENT",
     "CAMERA_LIGHTING_OR_DECODE",
-    "INSUFFICIENT_EVIDENCE",
-    "TRANSPORT_ONLY",
-    "UNCATEGORIZED",
+    "MODEL_OR_THRESHOLD",
+    "ANNOTATION_ERROR",
 )
 _ALERT_KEYS = frozenset({"edge_event_id", "alert_id"})
 AlertAvailability = Literal["AVAILABLE", "UNAVAILABLE"]
@@ -34,7 +33,7 @@ AlertAvailability = Literal["AVAILABLE", "UNAVAILABLE"]
 class MetricRatio:
     value: float | None
     numerator: int
-    denominator: int | None
+    denominator: int
     missing_reason: str | None
 
 
@@ -84,9 +83,9 @@ class AttributionMetrics:
     unknown_count: int
     legacy_excluded_count: int
     legacy_excluded_census: dict[str, int]
-    attribution_rate: MetricRatio
     retention_coverage: MetricRatio
     attribution_coverage: MetricRatio
+    attribution_rate_among_evaluable: MetricRatio
     category_counts: tuple[CategoryShare, ...]
     transport: TransportMetrics
 
@@ -136,15 +135,19 @@ def summarize_attribution_metrics(
         unknown_count=unknown,
         legacy_excluded_count=sum(census.values()),
         legacy_excluded_census=census,
-        attribution_rate=_ratio(attributable, len(rows), zero_reason="cohort_total_zero"),
         retention_coverage=_ratio(
-            unknown + attributable,
+            len(rows) - pruned,
             len(rows),
             zero_reason="cohort_total_zero",
         ),
         attribution_coverage=_ratio(
             attributable,
-            unknown + attributable,
+            len(rows),
+            zero_reason="cohort_total_zero",
+        ),
+        attribution_rate_among_evaluable=_ratio(
+            attributable,
+            len(rows) - pruned,
             zero_reason="evaluable_total_zero",
         ),
         category_counts=category_counts,
@@ -300,12 +303,11 @@ def _transport(
 
 
 def _proof_kind(row: AttributionMetricEvent) -> str | None:
-    if row.correlation_status == "accepted" and row.correlation_kind in {
-        "BACKEND_OR_UI_DUPLICATE",
-        "DELIVERY_RETRY",
-    }:
-        return row.correlation_kind
-    if row.category in {"BACKEND_OR_UI_DUPLICATE", "DELIVERY_RETRY"}:
+    if (
+        row.correlation_status == "accepted"
+        and row.correlation_kind == row.category
+        and row.category in {"BACKEND_OR_UI_DUPLICATE", "DELIVERY_RETRY"}
+    ):
         return row.category
     return None
 
@@ -357,7 +359,7 @@ def _ratio(numerator: int, denominator: int, *, zero_reason: str) -> MetricRatio
         return MetricRatio(
             value=None,
             numerator=numerator,
-            denominator=None,
+            denominator=denominator,
             missing_reason=zero_reason,
         )
     return MetricRatio(
@@ -372,7 +374,9 @@ def _payload(summary: AttributionMetrics) -> dict[str, object]:
     return {
         "attributable_count": summary.attributable_count,
         "attribution_coverage": _ratio_payload(summary.attribution_coverage),
-        "attribution_rate": _ratio_payload(summary.attribution_rate),
+        "attribution_rate_among_evaluable": _ratio_payload(
+            summary.attribution_rate_among_evaluable
+        ),
         "category_counts": [
             {
                 "category": item.category,

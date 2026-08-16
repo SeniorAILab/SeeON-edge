@@ -61,6 +61,8 @@ _FORBIDDEN_OUTPUT_TOKENS = (
     "rtsp://",
     "Traceback",
     "IDLE_STATIC",
+    "INSUFFICIENT_EVIDENCE",
+    "UNCATEGORIZED",
     "canonical",
     "polygon",
 )
@@ -184,7 +186,7 @@ def test_todo10_13_seams_remain_the_cli_composition_inputs(tmp_path: Path) -> No
     assert {item.reason for item in cohort.exclusions} == {"TRUE_POSITIVE"}
     assert record.category is None
     assert record.evidence_status == "COMPLETE"
-    assert classified.category == "UNCATEGORIZED"
+    assert classified.category == "MODEL_OR_THRESHOLD"
     assert classified.annotations.attempt_count == 1
     assert summary.cohort_total == 1
     assert summary.transport.unique_alert_id.status == "UNAVAILABLE"
@@ -299,7 +301,7 @@ def test_happy_nonempty_cohort_emits_one_allowlisted_json_document(tmp_path: Pat
     assert record_ids == sorted(record_ids)
     by_id = {item["edge_event_id"]: item for item in payload["records"]}
     assert by_id[complete]["evidence_status"] == "COMPLETE"
-    assert by_id[complete]["category"] == "UNCATEGORIZED"
+    assert by_id[complete]["category"] == "MODEL_OR_THRESHOLD"
     assert by_id[pruned]["neighborhood_pruned"] is True
     assert by_id[pruned]["category"] is None
     assert by_id[unknown]["evidence_status"] == "UNKNOWN"
@@ -308,8 +310,9 @@ def test_happy_nonempty_cohort_emits_one_allowlisted_json_document(tmp_path: Pat
     assert payload["metrics"]["attributable_count"] == 1
     assert payload["metrics"]["pruned_count"] == 1
     assert payload["metrics"]["unknown_count"] == 1
-    assert payload["metrics"]["attribution_rate"]["numerator"] == 1
-    assert payload["metrics"]["attribution_rate"]["denominator"] == 3
+    assert payload["metrics"]["attribution_coverage"]["numerator"] == 1
+    assert payload["metrics"]["attribution_coverage"]["denominator"] == 3
+    assert payload["metrics"]["attribution_rate_among_evaluable"]["denominator"] == 2
     assert payload["metrics"]["transport"]["unique_edge_event_count"] == 3
     assert payload["metrics"]["transport"]["total_attempts"] == 5
     assert payload["correlation"]["proof_export"] == "absent"
@@ -341,9 +344,11 @@ def test_empty_cohort_emits_zero_counts_and_unavailable_ratios(tmp_path: Path) -
     assert payload["cohort"]["exclusion_census"] == {}
     assert payload["records"] == []
     assert payload["metrics"]["cohort_total"] == 0
-    assert payload["metrics"]["attribution_rate"]["value"] is None
-    assert payload["metrics"]["attribution_rate"]["missing_reason"] == "cohort_total_zero"
-    assert payload["metrics"]["attribution_coverage"]["missing_reason"] == "evaluable_total_zero"
+    assert payload["metrics"]["attribution_coverage"]["value"] is None
+    assert payload["metrics"]["attribution_coverage"]["missing_reason"] == "cohort_total_zero"
+    assert payload["metrics"]["attribution_rate_among_evaluable"]["missing_reason"] == (
+        "evaluable_total_zero"
+    )
     assert payload["correlation"]["alert_ids"]["status"] == "UNAVAILABLE"
     assert payload["correlation"]["alert_ids"]["value"] is None
 
@@ -749,7 +754,7 @@ def test_cli_serializes_typed_domain_evidence_without_raw_db_payload(
     record = next(
         item for item in payload["records"] if item["edge_event_id"] == edge_event_id
     )
-    assert record["category"] == "UNCATEGORIZED"
+    assert record["category"] == "FALL_LATCH_REARM"
     assert record["person_presence"] == {
         "duration_frames": 4,
         "missing_reason": None,

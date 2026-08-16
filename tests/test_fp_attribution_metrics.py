@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from test_fp_attribution_precedence import _complete_record, _duplicate_export, _retry_export
 
 from worker.fp_attribution import (
@@ -10,6 +12,7 @@ from worker.fp_attribution import (
     classify_record,
     metric_event_from_record,
 )
+from worker.fp_attribution.evidence import TrackStalenessEvidence
 
 _CATEGORY_VOCABULARY = (
     "BACKEND_OR_UI_DUPLICATE",
@@ -21,9 +24,8 @@ _CATEGORY_VOCABULARY = (
     "ZERO_OR_MISSING_POSE",
     "BED_GEOMETRY_OR_ASSIGNMENT",
     "CAMERA_LIGHTING_OR_DECODE",
-    "INSUFFICIENT_EVIDENCE",
-    "TRANSPORT_ONLY",
-    "UNCATEGORIZED",
+    "MODEL_OR_THRESHOLD",
+    "ANNOTATION_ERROR",
 )
 _ALERT_EXPORT_MISSING = "alert_correlation_export_not_supplied"
 
@@ -44,7 +46,7 @@ def _summarize(
     return summarize_attribution_metrics(events, **kwargs)
 
 
-def _ratio(*, value: float | None, numerator: int, denominator: int | None, reason: str | None):
+def _ratio(*, value: float | None, numerator: int, denominator: int, reason: str | None):
     from worker.fp_attribution import MetricRatio
 
     return MetricRatio(
@@ -56,7 +58,7 @@ def _ratio(*, value: float | None, numerator: int, denominator: int | None, reas
 
 
 def _unavailable_ratio(*, numerator: int, reason: str):
-    return _ratio(value=None, numerator=numerator, denominator=None, reason=reason)
+    return _ratio(value=None, numerator=numerator, denominator=0, reason=reason)
 
 
 def _defined_ratio(*, numerator: int, denominator: int):
@@ -117,6 +119,7 @@ def _stale_record(*, event_id: str = "event:stale") -> AttributionEvidenceRecord
         current_state="triggered",
         attempt_count=1,
         backend_event_ids=("backend:stale",),
+        track_staleness=TrackStalenessEvidence(2, True, None),
     )
 
 
@@ -195,7 +198,7 @@ def test_todo10_12_result_shapes_remain_the_metric_inputs() -> None:
     assert pruned.category is None
     assert unknown.evidence_status == "UNKNOWN"
     assert unknown.category is None
-    assert classified.category == "UNCATEGORIZED"
+    assert classified.category == "MODEL_OR_THRESHOLD"
     assert classified.annotations.attempt_count == 9
     assert classified.annotations.backend_event_ids == ("backend:one",)
 
@@ -223,13 +226,15 @@ def test_mixed_cohort_emits_exact_counts_ratios_and_transport() -> None:
         "OPERATOR_ONLY_LEFTOVER": 1,
         "UNMAPPABLE_LEGACY": 1,
     }
-    assert summary.attribution_rate == _defined_ratio(numerator=3, denominator=5)
     assert summary.retention_coverage == _defined_ratio(numerator=4, denominator=5)
-    assert summary.attribution_coverage == _defined_ratio(numerator=3, denominator=4)
+    assert summary.attribution_coverage == _defined_ratio(numerator=3, denominator=5)
+    assert summary.attribution_rate_among_evaluable == _defined_ratio(
+        numerator=3, denominator=4
+    )
     assert [item.category for item in summary.category_counts] == [
         "BED_STALE_TRACK",
         "TRACKER_OR_IDENTITY",
-        "UNCATEGORIZED",
+        "MODEL_OR_THRESHOLD",
     ]
     assert [item.count for item in summary.category_counts] == [1, 1, 1]
     assert all(item.ratio.denominator == 3 for item in summary.category_counts)
@@ -259,15 +264,15 @@ def test_empty_cohort_keeps_zero_counts_and_null_ratio_boundaries() -> None:
     _assert_partition(summary, attributable=0, pruned=0, unknown=0)
     assert summary.legacy_excluded_count == 0
     assert summary.legacy_excluded_census == {}
-    assert summary.attribution_rate == _unavailable_ratio(
-        numerator=0,
-        reason="cohort_total_zero",
-    )
     assert summary.retention_coverage == _unavailable_ratio(
         numerator=0,
         reason="cohort_total_zero",
     )
     assert summary.attribution_coverage == _unavailable_ratio(
+        numerator=0,
+        reason="cohort_total_zero",
+    )
+    assert summary.attribution_rate_among_evaluable == _unavailable_ratio(
         numerator=0,
         reason="evaluable_total_zero",
     )
@@ -290,9 +295,9 @@ def test_all_pruned_cohort_has_null_attribution_rate_among_evaluable() -> None:
     summary = _summarize((_pruned_record(event_id="event:a"), _pruned_record(event_id="event:b")))
 
     _assert_partition(summary, attributable=0, pruned=2, unknown=0)
-    assert summary.attribution_rate == _defined_ratio(numerator=0, denominator=2)
     assert summary.retention_coverage == _defined_ratio(numerator=0, denominator=2)
-    assert summary.attribution_coverage == _unavailable_ratio(
+    assert summary.attribution_coverage == _defined_ratio(numerator=0, denominator=2)
+    assert summary.attribution_rate_among_evaluable == _unavailable_ratio(
         numerator=0,
         reason="evaluable_total_zero",
     )
@@ -312,7 +317,7 @@ def test_all_unknown_cohort_keeps_category_ratios_unavailable() -> None:
     summary = _summarize((_unknown_record(event_id="event:a"), _unknown_record(event_id="event:b")))
 
     _assert_partition(summary, attributable=0, pruned=0, unknown=2)
-    assert summary.attribution_rate == _defined_ratio(numerator=0, denominator=2)
+    assert summary.attribution_rate_among_evaluable == _defined_ratio(numerator=0, denominator=2)
     assert summary.retention_coverage == _defined_ratio(numerator=2, denominator=2)
     assert summary.attribution_coverage == _defined_ratio(numerator=0, denominator=2)
     assert summary.category_counts == ()
@@ -334,7 +339,7 @@ def test_all_attributable_cohort_uses_attributable_denominator_for_shares() -> N
     )
 
     _assert_partition(summary, attributable=2, pruned=0, unknown=0)
-    assert summary.attribution_rate == _defined_ratio(numerator=2, denominator=2)
+    assert summary.attribution_rate_among_evaluable == _defined_ratio(numerator=2, denominator=2)
     assert [item.category for item in summary.category_counts] == [
         "BED_STALE_TRACK",
         "TRACKER_OR_IDENTITY",
@@ -362,8 +367,10 @@ def test_zero_attributable_keeps_category_ratio_null_even_with_legacy_census() -
     assert summary.legacy_excluded_count == 1
     assert summary.legacy_excluded_census == {"UNMAPPABLE_LEGACY": 1}
     assert summary.category_counts == ()
-    assert summary.attribution_rate.denominator == 1
-    assert summary.attribution_coverage.missing_reason == "evaluable_total_zero"
+    assert summary.attribution_coverage == _defined_ratio(numerator=0, denominator=1)
+    assert summary.attribution_rate_among_evaluable == _unavailable_ratio(
+        numerator=0, reason="evaluable_total_zero"
+    )
 
 
 def test_duplicate_event_input_is_rejected() -> None:
@@ -441,7 +448,7 @@ def test_missing_backend_ids_do_not_fabricate_availability() -> None:
     assert summary.transport.unique_edge_event_count == 1
     assert summary.transport.backend_event_id_available_count == 0
     assert summary.transport.distinct_backend_event_id_count == 0
-    assert summary.attribution_rate.denominator == 1
+    assert summary.attribution_rate_among_evaluable.denominator == 1
 
 
 def test_missing_alert_export_is_typed_unavailable_never_zero() -> None:
@@ -526,7 +533,7 @@ def test_proof_backed_transport_does_not_change_unique_event_or_ratio() -> None:
     assert summary.transport.proof_backed_duplicate_count == 0
     assert unproven.transport.proof_backed_retry_count == 0
     assert summary.category_counts[0].category == "DELIVERY_RETRY"
-    assert unproven.category_counts[0].category == "UNCATEGORIZED"
+    assert unproven.category_counts[0].category == "MODEL_OR_THRESHOLD"
 
 
 def test_untrusted_alert_export_cannot_become_available_zero() -> None:
@@ -572,7 +579,7 @@ def test_deterministic_order_and_serialization() -> None:
     assert [item.category for item in left.category_counts] == [
         "BED_STALE_TRACK",
         "TRACKER_OR_IDENTITY",
-        "UNCATEGORIZED",
+        "MODEL_OR_THRESHOLD",
     ]
     assert [item.category for item in left.category_counts] == [
         item.category for item in right.category_counts
@@ -607,7 +614,7 @@ def test_supplied_alert_ids_count_distinct_values_without_changing_events() -> N
     assert summary.transport.unique_edge_event_count == 2
     assert summary.transport.unique_alert_id.status == "AVAILABLE"
     assert summary.transport.unique_alert_id.value == 2
-    assert summary.attribution_rate.denominator == 2
+    assert summary.attribution_rate_among_evaluable.denominator == 2
 
 
 def test_duplicate_export_proof_stays_orthogonal_to_detection_ratio() -> None:
@@ -618,7 +625,10 @@ def test_duplicate_export_proof_stays_orthogonal_to_detection_ratio() -> None:
     Then category share stays 1/1 and proof-backed duplicate count is 1.
     """
 
-    record = _stale_record()
+    record = replace(
+        _stale_record(),
+        backend_event_ids=("backend:one", "backend:two"),
+    )
     export = _duplicate_export(edge_event_id=record.edge_event_id)
     summary = _summarize((_classified(record, export),))
 
@@ -649,7 +659,7 @@ def test_foreign_export_alert_is_not_counted_against_analyzed_cohort() -> None:
     assert summary.transport.unique_alert_id.status == "AVAILABLE"
     assert summary.transport.unique_alert_id.value == 1
     assert summary.transport.unique_alert_id.missing_reason is None
-    assert summary.attribution_rate.denominator == 1
+    assert summary.attribution_rate_among_evaluable.denominator == 1
 
 
 def test_all_foreign_alert_export_is_available_zero_not_a_cohort_correlation() -> None:

@@ -1,4 +1,4 @@
-"""Explicit first-match attribution over allowlisted Todo 11 evidence."""
+"""Approved first-positive-match causal attribution over retained evidence."""
 
 from __future__ import annotations
 
@@ -15,10 +15,7 @@ from worker.types.trace import DecisionTraceMissingReason, DecisionTraceReason, 
 _CORRELATION_SCHEMA = "fp-correlation-v1"
 _FAULT_TOKEN = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _STALE_REASONS = frozenset(
-    {
-        DecisionTraceReason.STALE_TRACK_EXIT.value,
-        DecisionTraceReason.STALE_TRACK_CLEAR.value,
-    }
+    {DecisionTraceReason.STALE_TRACK_EXIT.value, DecisionTraceReason.STALE_TRACK_CLEAR.value}
 )
 _POSE_REASONS = frozenset(
     {
@@ -48,8 +45,13 @@ _KIND_KEYS = {
     "BACKEND_OR_UI_DUPLICATE": frozenset(
         {"schema", "edge_event_id", "kind", "user_visible_delivery_count"}
     ),
-    "DELIVERY_RETRY": frozenset({"schema", "edge_event_id", "kind", "user_visible_delivery_count"}),
-    "TRANSPORT_ONLY": frozenset({"schema", "edge_event_id", "kind", "user_visible_delivery_count"}),
+    "DELIVERY_RETRY": frozenset(
+        {"schema", "edge_event_id", "kind", "user_visible_delivery_count"}
+    ),
+    # Transport remains an annotation/export kind, never a causal category.
+    "TRANSPORT_ONLY": frozenset(
+        {"schema", "edge_event_id", "kind", "user_visible_delivery_count"}
+    ),
     "CAMERA_LIGHTING_OR_DECODE": frozenset(
         {"schema", "edge_event_id", "kind", "typed_fault_code"}
     ),
@@ -65,11 +67,11 @@ AttributionCategory = Literal[
     "ZERO_OR_MISSING_POSE",
     "BED_GEOMETRY_OR_ASSIGNMENT",
     "CAMERA_LIGHTING_OR_DECODE",
-    "INSUFFICIENT_EVIDENCE",
-    "TRANSPORT_ONLY",
-    "UNCATEGORIZED",
+    "MODEL_OR_THRESHOLD",
+    "ANNOTATION_ERROR",
 ]
 CorrelationStatus = Literal["absent", "accepted", "rejected"]
+RESERVED_MECHANISMS: tuple[str, ...] = ("IDLE_STATIC",)
 
 
 class PredicateVerdict(StrEnum):
@@ -133,15 +135,24 @@ def classify_record(
         or record.neighborhood_pruned
         or not record.prevented_eligible
     ):
-        return _decision(record, None, None, correlation)
+        return _decision(record, None, None, correlation, record.evidence_status)
+
+    # Supplied but rejected correlation is an applicable, unevaluable claim;
+    # accepted single-delivery transport is annotation only. Neither may fall
+    # through to a weaker positive category.
+    if correlation.status == "rejected" or (
+        correlation.status == "accepted" and correlation.kind == "TRANSPORT_ONLY"
+    ):
+        return _decision(record, None, None, correlation, "UNKNOWN")
+
     context = _Context(record=record, correlation=correlation)
     for spec in PREDICATE_REGISTRY:
         verdict = spec.evaluate(context)
         if verdict is PredicateVerdict.MATCH:
-            return _decision(record, spec.category, spec.category, correlation)
+            return _decision(record, spec.category, spec.category, correlation, "COMPLETE")
         if verdict is PredicateVerdict.INSUFFICIENT:
-            return _decision(record, "INSUFFICIENT_EVIDENCE", "INSUFFICIENT_EVIDENCE", correlation)
-    return _decision(record, "UNCATEGORIZED", "UNCATEGORIZED", correlation)
+            return _decision(record, None, None, correlation, "UNKNOWN")
+    return _decision(record, None, None, correlation, "UNKNOWN")
 
 
 def machine_bytes(decision: AttributionDecision) -> bytes:
@@ -169,10 +180,11 @@ def _decision(
     category: AttributionCategory | None,
     matched: str | None,
     correlation: _Correlation,
+    evidence_status: str,
 ) -> AttributionDecision:
     return AttributionDecision(
         category=category,
-        evidence_status=record.evidence_status,
+        evidence_status=evidence_status,
         annotations=AttributionAnnotations(
             matched_predicate=matched,
             coverage_status=record.coverage_status,
@@ -221,87 +233,168 @@ def _rejected(reason: str) -> _Correlation:
     return _Correlation("rejected", None, reason, None, None)
 
 
+def _aligned(record: AttributionEvidenceRecord) -> bool:
+    alignment = record.domain_alignment
+    return (
+        alignment.status == "ALIGNED"
+        and alignment.same_track is True
+        and alignment.same_domain is True
+        and alignment.same_camera_boot_epoch is True
+        and record.boot_changed is False
+        and record.epoch_changed is False
+    )
+
+
 def _backend_or_ui_duplicate(context: _Context) -> PredicateVerdict:
-    return _match_kind(context, "BACKEND_OR_UI_DUPLICATE")
+    correlation = context.correlation
+    if correlation.status != "accepted" or correlation.kind != "BACKEND_OR_UI_DUPLICATE":
+        return PredicateVerdict.SKIP
+    if (
+        correlation.delivery_count is not None
+        and correlation.delivery_count >= 2
+        and len(set(context.record.backend_event_ids)) >= 2
+    ):
+        return PredicateVerdict.MATCH
+    return PredicateVerdict.INSUFFICIENT
 
 
 def _delivery_retry(context: _Context) -> PredicateVerdict:
-    return _match_kind(context, "DELIVERY_RETRY")
+    correlation = context.correlation
+    if correlation.status != "accepted" or correlation.kind != "DELIVERY_RETRY":
+        return PredicateVerdict.SKIP
+    if (
+        correlation.delivery_count is not None
+        and correlation.delivery_count >= 2
+        and context.record.attempt_count >= 2
+    ):
+        return PredicateVerdict.MATCH
+    return PredicateVerdict.INSUFFICIENT
 
 
 def _bed_stale_track(context: _Context) -> PredicateVerdict:
-    reason = context.record.decision_reason
-    if reason is None:
-        return PredicateVerdict.INSUFFICIENT
-    if reason in _STALE_REASONS:
+    record = context.record
+    if record.decision_reason not in _STALE_REASONS:
+        return PredicateVerdict.SKIP
+    stale = record.track_staleness
+    if (
+        _aligned(record)
+        and stale.same_track is True
+        and stale.last_seen_offset_frames is not None
+        and stale.last_seen_offset_frames > 0
+    ):
         return PredicateVerdict.MATCH
-    return PredicateVerdict.SKIP
+    return PredicateVerdict.INSUFFICIENT
 
 
 def _fall_latch_rearm(context: _Context) -> PredicateVerdict:
     record = context.record
     if record.decision_reason != DecisionTraceReason.FALL_ONSET.value:
         return PredicateVerdict.SKIP
-    if record.previous_state is None or record.current_state is None:
-        return PredicateVerdict.INSUFFICIENT
+    latch = record.fall_latch
+    if latch.status != "AVAILABLE" and not record.associated_sibling_event_ids:
+        return PredicateVerdict.SKIP
     if (
         record.previous_state == DecisionTraceState.CLEAR.value
         and record.current_state == DecisionTraceState.FALL.value
-        and record.associated_sibling_event_ids
+        and _aligned(record)
+        and latch.status == "AVAILABLE"
+        and latch.same_track is True
+        and latch.same_domain is True
+        and latch.rise_before_rearm is True
+        and latch.rearm_frames is not None
+        and latch.rearm_frames >= 0
     ):
         return PredicateVerdict.MATCH
-    return PredicateVerdict.SKIP
+    return PredicateVerdict.INSUFFICIENT
 
 
 def _episode_fragmentation(context: _Context) -> PredicateVerdict:
-    if context.record.associated_sibling_event_ids:
+    record = context.record
+    if not record.associated_sibling_event_ids:
+        return PredicateVerdict.SKIP
+    distinct_ids = {record.edge_event_id, *record.associated_sibling_event_ids}
+    latch = record.fall_latch
+    latch_explains = (
+        latch.status == "AVAILABLE"
+        and latch.same_track is True
+        and latch.same_domain is True
+        and latch.rise_before_rearm is True
+    )
+    if len(distinct_ids) >= 2 and _aligned(record) and not latch_explains:
         return PredicateVerdict.MATCH
-    return PredicateVerdict.SKIP
+    return PredicateVerdict.INSUFFICIENT
 
 
 def _tracker_or_identity(context: _Context) -> PredicateVerdict:
-    if context.record.track_changed:
+    record = context.record
+    if not record.track_changed:
+        return PredicateVerdict.SKIP
+    # The immediate prior-frame same-track fact plus aligned neighborhood churn
+    # is the available positive consecutive-eligible-frame proof. The summary
+    # boolean alone never matches.
+    stale = record.track_staleness
+    if _aligned(record) and stale.same_track is True and stale.last_seen_offset_frames == 0:
         return PredicateVerdict.MATCH
-    return PredicateVerdict.SKIP
+    return PredicateVerdict.INSUFFICIENT
 
 
 def _zero_or_missing_pose(context: _Context) -> PredicateVerdict:
     record = context.record
-    if (
-        record.decision_reason in _POSE_REASONS
+    applicable = (
+        record.person_presence.status == "PERSON_GAP"
+        or record.decision_reason in _POSE_REASONS
         or record.track_missing_reason in _POSE_MISSING
         or record.score_missing_reason in _POSE_MISSING
+    )
+    if not applicable:
+        return PredicateVerdict.SKIP
+    presence = record.person_presence
+    if (
+        _aligned(record)
+        and presence.status == "PERSON_GAP"
+        and presence.duration_frames is not None
+        and presence.duration_frames >= 30
+        and record.due_signal.status is not None
     ):
         return PredicateVerdict.MATCH
-    return PredicateVerdict.SKIP
+    return PredicateVerdict.INSUFFICIENT
 
 
 def _bed_geometry_or_assignment(context: _Context) -> PredicateVerdict:
     record = context.record
-    if record.bed_changed or record.decision_reason in _GEOMETRY_REASONS:
+    if not (record.bed_changed or record.decision_reason in _GEOMETRY_REASONS):
+        return PredicateVerdict.SKIP
+    bed = record.bed_state
+    if (
+        _aligned(record)
+        and bed.status == "AVAILABLE"
+        and bed.sequence is not None
+        and len(bed.sequence) >= 2
+        and bed.durations_frames is not None
+        and len(bed.sequence) == len(bed.durations_frames)
+        and bed.same_track is True
+        and bed.same_domain is True
+    ):
         return PredicateVerdict.MATCH
-    return PredicateVerdict.SKIP
+    return PredicateVerdict.INSUFFICIENT
 
 
 def _camera_lighting_or_decode(context: _Context) -> PredicateVerdict:
-    return _match_kind(context, "CAMERA_LIGHTING_OR_DECODE")
-
-
-def _insufficient_evidence(_context: _Context) -> PredicateVerdict:
+    correlation = context.correlation
+    if correlation.status == "accepted" and correlation.kind == "CAMERA_LIGHTING_OR_DECODE":
+        return PredicateVerdict.MATCH
     return PredicateVerdict.SKIP
 
 
-def _transport_only(context: _Context) -> PredicateVerdict:
-    return _match_kind(context, "TRANSPORT_ONLY")
-
-
-def _uncategorized(_context: _Context) -> PredicateVerdict:
-    return PredicateVerdict.MATCH
-
-
-def _match_kind(context: _Context, kind: str) -> PredicateVerdict:
-    if context.correlation.status == "accepted" and context.correlation.kind == kind:
+def _model_or_threshold(context: _Context) -> PredicateVerdict:
+    record = context.record
+    if record.score is not None and record.threshold is not None:
         return PredicateVerdict.MATCH
+    return PredicateVerdict.INSUFFICIENT
+
+
+def _annotation_error(_context: _Context) -> PredicateVerdict:
+    # No independent adjudication export is available in the current seam.
     return PredicateVerdict.SKIP
 
 
@@ -315,9 +408,8 @@ PREDICATE_REGISTRY: tuple[PredicateSpec, ...] = (
     PredicateSpec("ZERO_OR_MISSING_POSE", _zero_or_missing_pose),
     PredicateSpec("BED_GEOMETRY_OR_ASSIGNMENT", _bed_geometry_or_assignment),
     PredicateSpec("CAMERA_LIGHTING_OR_DECODE", _camera_lighting_or_decode),
-    PredicateSpec("INSUFFICIENT_EVIDENCE", _insufficient_evidence),
-    PredicateSpec("TRANSPORT_ONLY", _transport_only),
-    PredicateSpec("UNCATEGORIZED", _uncategorized),
+    PredicateSpec("MODEL_OR_THRESHOLD", _model_or_threshold),
+    PredicateSpec("ANNOTATION_ERROR", _annotation_error),
 )
 
 __all__ = [
@@ -326,6 +418,7 @@ __all__ = [
     "AttributionDecision",
     "PREDICATE_REGISTRY",
     "PredicateSpec",
+    "RESERVED_MECHANISMS",
     "classify_record",
     "machine_bytes",
 ]

@@ -12,6 +12,14 @@ from test_fp_attribution_evidence import (
 )
 
 from worker.fp_attribution import AttributionEvidenceRecord
+from worker.fp_attribution.evidence import (
+    BedStateEvidence,
+    DomainAlignmentEvidence,
+    DueSignalEvidence,
+    FallLatchEvidence,
+    PersonPresenceEvidence,
+    TrackStalenessEvidence,
+)
 
 NOW_BOOT = "boot:one"
 NOW_EPOCH = 3
@@ -20,9 +28,9 @@ NOW_EPOCH = 3
 def _complete_record(**overrides: object) -> AttributionEvidenceRecord:
     payload: dict[str, object] = {
         "edge_event_id": "event:complete",
-        "decision_reason": "fall-onset",
-        "previous_state": "clear",
-        "current_state": "fall",
+        "decision_reason": "below-threshold",
+        "previous_state": "fall",
+        "current_state": "clear",
         "score": 0.91,
         "threshold": 0.5,
         "score_missing_reason": None,
@@ -35,8 +43,6 @@ def _complete_record(**overrides: object) -> AttributionEvidenceRecord:
         "bed_changed": False,
         "worker_boot_id": NOW_BOOT,
         "stream_epoch": NOW_EPOCH,
-        "boot_changed": False,
-        "epoch_changed": False,
         "associated_sibling_event_ids": (),
         "attempt_count": 1,
         "backend_event_ids": ("backend:one",),
@@ -48,6 +54,22 @@ def _complete_record(**overrides: object) -> AttributionEvidenceRecord:
         "evidence_status": "COMPLETE",
         "category": None,
         "prevented_eligible": True,
+        "person_presence": PersonPresenceEvidence("PERSON_FOUND", 0, None),
+        "due_signal": DueSignalEvidence("DUE", 0, None),
+        "fall_latch": FallLatchEvidence(
+            "NOT_APPLICABLE", None, None, None, None, "not_applicable"
+        ),
+        "bed_state": BedStateEvidence(
+            "NOT_APPLICABLE", None, None, None, None, "not_applicable"
+        ),
+        "track_staleness": TrackStalenessEvidence(0, True, None),
+        "domain_alignment": DomainAlignmentEvidence(
+            "ALIGNED", "fall", True, True, True, None
+        ),
+        "boot_changed": False,
+        "boot_changed_missing_reason": None,
+        "epoch_changed": False,
+        "epoch_changed_missing_reason": None,
     }
     payload.update(overrides)
     return AttributionEvidenceRecord(**payload)
@@ -173,9 +195,8 @@ def test_predicate_registry_is_an_explicit_ordered_table() -> None:
         "ZERO_OR_MISSING_POSE",
         "BED_GEOMETRY_OR_ASSIGNMENT",
         "CAMERA_LIGHTING_OR_DECODE",
-        "INSUFFICIENT_EVIDENCE",
-        "TRANSPORT_ONLY",
-        "UNCATEGORIZED",
+        "MODEL_OR_THRESHOLD",
+        "ANNOTATION_ERROR",
     )
     assert not isinstance(PREDICATE_REGISTRY, dict)
 
@@ -237,6 +258,7 @@ def test_bed_stale_track_wins_tracker_collision() -> None:
         track_changed=True,
         bed_id=2,
         bed_missing_reason=None,
+        track_staleness=TrackStalenessEvidence(2, True, None),
     )
 
     decision = _classify(record)
@@ -260,6 +282,7 @@ def test_fall_latch_rearm_wins_episode_collision() -> None:
         current_state="fall",
         associated_sibling_event_ids=("event:sibling",),
         track_changed=True,
+        fall_latch=FallLatchEvidence("AVAILABLE", True, True, True, 4, None),
     )
 
     decision = _classify(record)
@@ -307,6 +330,8 @@ def test_zero_or_missing_pose_wins_geometry_collision() -> None:
         bed_changed=True,
         bed_id=1,
         bed_missing_reason=None,
+        person_presence=PersonPresenceEvidence("PERSON_GAP", 30, None),
+        due_signal=DueSignalEvidence("DUE", 0, None),
     )
 
     decision = _classify(record)
@@ -338,12 +363,13 @@ def test_camera_lighting_or_decode_requires_typed_fault_fact() -> None:
     )
 
     assert coded.category == "CAMERA_LIGHTING_OR_DECODE"
-    assert absent.category == "UNCATEGORIZED"
-    assert prose.category == "UNCATEGORIZED"
+    assert absent.category == "MODEL_OR_THRESHOLD"
+    assert prose.category is None
+    assert prose.evidence_status == "UNKNOWN"
     assert prose.annotations.correlation_status == "rejected"
 
 
-def test_insufficient_evidence_does_not_fall_through_to_uncategorized() -> None:
+def test_insufficient_evidence_stops_at_unknown_with_null_category() -> None:
     """A higher applicable but unevaluable predicate stops classification.
 
     Given COMPLETE fall-onset evidence whose previous_state is missing
@@ -351,16 +377,23 @@ def test_insufficient_evidence_does_not_fall_through_to_uncategorized() -> None:
     Then the category is INSUFFICIENT_EVIDENCE, not UNCATEGORIZED.
     """
 
-    insufficient = _complete_record(previous_state=None)
-    uncategorized = _complete_record()
+    insufficient = _complete_record(
+        decision_reason="fall-onset",
+        previous_state=None,
+        current_state="fall",
+        associated_sibling_event_ids=("event:sibling",),
+        fall_latch=FallLatchEvidence(None, None, None, None, None, "value_not_persisted"),
+    )
+    model = _complete_record()
 
     stopped = _classify(insufficient)
-    fallback = _classify(uncategorized)
+    fallback = _classify(model)
 
-    assert stopped.category == "INSUFFICIENT_EVIDENCE"
-    assert stopped.annotations.matched_predicate == "INSUFFICIENT_EVIDENCE"
-    assert fallback.category == "UNCATEGORIZED"
-    assert fallback.annotations.matched_predicate == "UNCATEGORIZED"
+    assert stopped.category is None
+    assert stopped.evidence_status == "UNKNOWN"
+    assert stopped.annotations.matched_predicate is None
+    assert fallback.category == "MODEL_OR_THRESHOLD"
+    assert fallback.annotations.matched_predicate == "MODEL_OR_THRESHOLD"
 
 
 def test_transport_only_requires_typed_transport_proof() -> None:
@@ -375,9 +408,11 @@ def test_transport_only_requires_typed_transport_proof() -> None:
 
     decision = _classify(record, _transport_export())
 
-    assert decision.category == "TRANSPORT_ONLY"
+    assert decision.category is None
+    assert decision.evidence_status == "UNKNOWN"
     assert decision.annotations.attempt_count == 4
-    assert decision.annotations.matched_predicate == "TRANSPORT_ONLY"
+    assert decision.annotations.correlation_kind == "TRANSPORT_ONLY"
+    assert decision.annotations.matched_predicate is None
 
 
 def test_backend_or_ui_duplicate_requires_repeated_user_visible_proof() -> None:
@@ -392,6 +427,7 @@ def test_backend_or_ui_duplicate_requires_repeated_user_visible_proof() -> None:
         decision_reason="stale-track-exit",
         previous_state="live-grace",
         current_state="triggered",
+        backend_event_ids=("backend:one", "backend:two"),
     )
 
     decision = _classify(record, _duplicate_export(count=2))
@@ -434,6 +470,7 @@ def test_high_attempt_count_without_correlation_stays_detection_or_uncategorized
         current_state="retired",
         attempt_count=9,
         backend_event_ids=("backend:one", "backend:two"),
+        track_staleness=TrackStalenessEvidence(2, True, None),
     )
     bare = _complete_record(attempt_count=9, backend_event_ids=("backend:one",))
 
@@ -441,7 +478,7 @@ def test_high_attempt_count_without_correlation_stays_detection_or_uncategorized
     bare_decision = _classify(bare)
 
     assert stale_decision.category == "BED_STALE_TRACK"
-    assert bare_decision.category == "UNCATEGORIZED"
+    assert bare_decision.category == "MODEL_OR_THRESHOLD"
     assert stale_decision.annotations.attempt_count == 9
     assert bare_decision.annotations.attempt_count == 9
     assert stale_decision.annotations.backend_event_ids == ("backend:one", "backend:two")
@@ -497,10 +534,89 @@ def test_false_and_malformed_correlation_exports_are_rejected() -> None:
 
     for payload in rejected_payloads:
         decision = _classify(record, payload)
-        assert decision.category == "UNCATEGORIZED"
+        assert decision.category is None
+        assert decision.evidence_status == "UNKNOWN"
         assert decision.annotations.correlation_status == "rejected"
         assert decision.annotations.correlation_kind is None
         assert decision.annotations.correlation_rejection_reason is not None
+
+
+def test_strengthened_predicates_stop_at_unknown_when_proof_is_insufficient() -> None:
+    """Applicable mechanisms never fall through to MODEL_OR_THRESHOLD."""
+
+    cases = (
+        _classify(_complete_record(), _duplicate_export(count=2)),
+        _classify(_complete_record(attempt_count=1), _retry_export(count=2)),
+        _classify(
+            _complete_record(
+                decision_reason="stale-track-exit",
+                track_staleness=TrackStalenessEvidence(None, None, "value_not_persisted"),
+            )
+        ),
+        _classify(
+            _complete_record(
+                decision_reason="fall-onset",
+                previous_state="clear",
+                current_state="fall",
+                associated_sibling_event_ids=("event:sibling",),
+                fall_latch=FallLatchEvidence(
+                    None, None, None, None, None, "value_not_persisted"
+                ),
+            )
+        ),
+        _classify(
+            _complete_record(
+                associated_sibling_event_ids=("event:sibling",),
+                domain_alignment=DomainAlignmentEvidence(
+                    None, "fall", None, None, None, "identity_or_domain_ambiguous"
+                ),
+            )
+        ),
+        _classify(
+            _complete_record(
+                track_changed=True,
+                track_staleness=TrackStalenessEvidence(
+                    None, None, "value_not_persisted"
+                ),
+            )
+        ),
+        _classify(
+            _complete_record(
+                decision_reason="person-observation-missing",
+                person_presence=PersonPresenceEvidence("PERSON_GAP", 29, None),
+            )
+        ),
+        _classify(
+            _complete_record(
+                decision_reason="contained-in-other-bed",
+                bed_changed=True,
+                bed_state=BedStateEvidence(
+                    None, None, None, None, None, "value_not_persisted"
+                ),
+            )
+        ),
+        _classify(_complete_record(score=None, score_missing_reason="value_not_persisted")),
+    )
+
+    assert all(decision.category is None for decision in cases)
+    assert all(decision.evidence_status == "UNKNOWN" for decision in cases)
+    assert all(decision.annotations.matched_predicate is None for decision in cases)
+
+
+def test_removed_terminal_strings_never_serialize_as_category() -> None:
+    from worker.fp_attribution import machine_bytes
+
+    decisions = (
+        _classify(_complete_record(score=None, score_missing_reason="value_not_persisted")),
+        _classify(_complete_record(), _transport_export()),
+    )
+
+    for decision in decisions:
+        payload = machine_bytes(decision)
+        assert decision.category is None
+        assert b'"category":null' in payload
+        assert b"INSUFFICIENT_EVIDENCE" not in payload
+        assert b"UNCATEGORIZED" not in payload
 
 
 def test_same_input_repeated_is_byte_identical() -> None:
@@ -544,16 +660,19 @@ def test_tracker_pose_geometry_and_uncategorized_positive_matches() -> None:
             bed_id=2,
             bed_missing_reason=None,
             bed_changed=True,
+            bed_state=BedStateEvidence(
+                "AVAILABLE", ("contained", "other-bed"), (4, 1), True, True, None
+            ),
         )
     )
     bare = _classify(_complete_record())
 
     assert tracker.category == "TRACKER_OR_IDENTITY"
     assert geometry.category == "BED_GEOMETRY_OR_ASSIGNMENT"
-    assert bare.category == "UNCATEGORIZED"
+    assert bare.category == "MODEL_OR_THRESHOLD"
 
 
-def test_unsupported_plan_categories_are_never_emitted() -> None:
+def test_reserved_idle_static_is_never_emitted() -> None:
     """Idle/model/annotation tokens stay outside the public vocabulary.
 
     Given the public registry and a bare COMPLETE record
@@ -566,9 +685,9 @@ def test_unsupported_plan_categories_are_never_emitted() -> None:
     decision = _classify(_complete_record())
     rendered = repr(decision) + "".join(spec.category for spec in PREDICATE_REGISTRY)
 
-    assert decision.category == "UNCATEGORIZED"
-    for token in ("IDLE_STATIC", "MODEL_OR_THRESHOLD", "ANNOTATION_ERROR"):
-        assert token not in rendered
+    assert decision.category == "MODEL_OR_THRESHOLD"
+    assert "IDLE_STATIC" not in rendered
+    assert "ANNOTATION_ERROR" in rendered
 
 
 def test_extracted_domain_evidence_does_not_change_terminal_categories(
@@ -578,7 +697,7 @@ def test_extracted_domain_evidence_does_not_change_terminal_categories(
 
     Given an extracted COMPLETE fall record that now carries typed latch/gap facts
     When classify_record runs without a correlation export
-    Then the terminal category remains UNCATEGORIZED.
+    Then the terminal category is decided by the approved predicates alone.
     """
 
     from test_fp_attribution_evidence import _pose_components
@@ -627,5 +746,5 @@ def test_extracted_domain_evidence_does_not_change_terminal_categories(
 
     assert record.person_presence.status == "PERSON_GAP"
     assert record.fall_latch.status == "AVAILABLE"
-    assert decision.category == "UNCATEGORIZED"
+    assert decision.category == "FALL_LATCH_REARM"
     assert decision.evidence_status == "COMPLETE"

@@ -303,7 +303,7 @@ def _record_payload(record: object, decision: object) -> dict[str, object]:
         "edge_event_id": record.edge_event_id,
         "epoch_changed": record.epoch_changed,
         "epoch_changed_missing_reason": record.epoch_changed_missing_reason,
-        "evidence_status": record.evidence_status,
+        "evidence_status": decision.evidence_status,
         "expected_frames": record.expected_frames,
         "fall_latch": record.machine_fields()["fall_latch"],
         "matched_predicate": decision.annotations.matched_predicate,
