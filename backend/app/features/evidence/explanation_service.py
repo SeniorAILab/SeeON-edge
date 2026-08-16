@@ -1,4 +1,4 @@
-"""Compose one Event Explanation response from committed Foundation seams."""
+"""Compose one Event Explanation response from persisted evidence."""
 
 from __future__ import annotations
 

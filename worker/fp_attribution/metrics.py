@@ -1,4 +1,4 @@
-"""Exact attribution and transport metrics over Todo 10-12 outputs."""
+"""Exact attribution and transport metrics over retained evidence."""
 
 from __future__ import annotations
 

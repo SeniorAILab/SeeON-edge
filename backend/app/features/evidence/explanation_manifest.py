@@ -72,15 +72,16 @@ def project_runtime_manifest(
 ) -> RuntimeManifestProjection:
     """Project event-relevant scalar identities without exposing manifest structure."""
     manifest_sha, manifest_sha_reason = _sha256_fact(runtime_manifest_sha256)
-    unavailable = _manifest_unavailability(canonical_json, manifest_sha)
-    if unavailable is not None:
+    if canonical_json is None:
         return _missing_projection(
-            unavailable,
+            RuntimeManifestMissingReason.MANIFEST_UNAVAILABLE,
             manifest_sha=manifest_sha,
             manifest_sha_reason=manifest_sha_reason,
         )
-
-    if not isinstance(canonical_json, str):
+    if (
+        manifest_sha is not None
+        and hashlib.sha256(canonical_json.encode()).hexdigest() != manifest_sha
+    ):
         return _missing_projection(
             RuntimeManifestMissingReason.MANIFEST_MALFORMED,
             manifest_sha=manifest_sha,
@@ -124,21 +125,6 @@ def project_runtime_manifest(
         image_revision=image_revision,
         image_revision_missing_reason=image_reason,
     )
-
-
-def _manifest_unavailability(
-    canonical_json: object,
-    manifest_sha: str | None,
-) -> RuntimeManifestMissingReason | None:
-    if canonical_json is None:
-        return RuntimeManifestMissingReason.MANIFEST_UNAVAILABLE
-    if not isinstance(canonical_json, str):
-        return RuntimeManifestMissingReason.MANIFEST_MALFORMED
-    if manifest_sha is not None:
-        actual_sha = hashlib.sha256(canonical_json.encode()).hexdigest()
-        if actual_sha != manifest_sha:
-            return RuntimeManifestMissingReason.MANIFEST_MALFORMED
-    return None
 
 
 def _parse_current_manifest(

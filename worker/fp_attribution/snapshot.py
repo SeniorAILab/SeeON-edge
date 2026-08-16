@@ -23,13 +23,8 @@ def open_read_snapshot(database_path: Path) -> Iterator[sqlite3.Connection]:
     try:
         connection.isolation_level = None
         connection.execute("BEGIN")
-        # SQLite's BEGIN is DEFERRED: it does not actually acquire the WAL
-        # read snapshot until the first real table access. A constant-only
-        # SELECT 1 touches no table and pins nothing, so a concurrent
-        # committer would still be visible to every later read on this
-        # connection. Reading sqlite_schema (always present, real table
-        # access) starts the read transaction and pins the snapshot before
-        # this connection is handed to cohort/evidence/classification/metrics.
+        # BEGIN is deferred, so pin the WAL snapshot with a real table read
+        # before handing the connection to the analysis stages.
         connection.execute("SELECT 1 FROM sqlite_schema LIMIT 1").fetchone()
         yield connection
     finally:

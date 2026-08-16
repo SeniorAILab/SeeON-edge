@@ -1787,4 +1787,3 @@ def test_absent_and_unparseable_domain_facts_stay_unknown_capable(tmp_path: Path
     assert PAYLOAD_SENTINEL not in rendered
     assert NOTE_SENTINEL not in rendered
     assert PATH_SENTINEL not in rendered
-
