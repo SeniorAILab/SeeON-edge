@@ -10,6 +10,33 @@ import pytest
 from backend.app.features.connection.store import ConnectionSettingsStore
 from backend.app.shared.dashboard_credentials import DashboardCredentialsStore
 from shared.edge_db.migrator import migrate_database
+from shared.rtsp_url_policy import ALLOW_LOCAL_RTSP_ENV
+
+_REAL_STACK_LOCAL_RTSP_PATCH = pytest.StashKey[pytest.MonkeyPatch]()
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """Admit loopback RTSP only for ``real_stack`` before its fixtures start.
+
+    Local MediaMTX fixtures publish ``rtsp://127.0.0.1:<ephemeral>/...``. Worker
+    ingest refuses that destination unless ``ML_RTSP_ALLOW_LOCAL_DESTINATIONS=1``.
+    Scope the allowance to the marked test and restore afterward so default-deny
+    policy tests still observe the variable unset.
+    """
+
+    if item.get_closest_marker("real_stack") is None:
+        return
+    patch = pytest.MonkeyPatch()
+    patch.setenv(ALLOW_LOCAL_RTSP_ENV, "1")
+    item.stash[_REAL_STACK_LOCAL_RTSP_PATCH] = patch
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_runtest_teardown(item: pytest.Item) -> None:
+    patch = item.stash.get(_REAL_STACK_LOCAL_RTSP_PATCH, None)
+    if patch is not None:
+        patch.undo()
 
 
 @pytest.fixture(autouse=True)
