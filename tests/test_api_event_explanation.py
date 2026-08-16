@@ -9,6 +9,7 @@ import sqlite3
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -29,6 +30,8 @@ TRIGGER_SEQ = 40
 PRECEDING_FRAMES = 29
 PRIVACY_SENTINEL = "PRIVACY_SENTINEL_api_8f21c9de"
 NOTES_SENTINEL = "OPERATOR_NOTES_api_8f21c9de"
+ACTOR_SENTINEL = "actor:sentinel-api-7c21e9aa"
+HISTORY_SENTINEL = "HISTORY_SENTINEL_api_revision_text_44e1"
 PATH_SENTINEL = "/private/media-path-sentinel.mp4"
 GEOMETRY_SENTINEL = "[[987654,123456]]"
 COMPLETE_EVENT_ID = str(uuid4())
@@ -40,9 +43,12 @@ FORBIDDEN_TOKENS = (
     "payload_json",
     PRIVACY_SENTINEL,
     NOTES_SENTINEL,
+    ACTOR_SENTINEL,
+    HISTORY_SENTINEL,
     PATH_SENTINEL,
     GEOMETRY_SENTINEL,
     "canonical_json",
+    "actor_id",
 )
 COMPLETENESS_LEAK_TOKENS = (
     "decision_provenance",
@@ -241,6 +247,67 @@ def _insert_ref(
     )
 
 
+def _insert_current_review(
+    connection: sqlite3.Connection,
+    *,
+    incident_id: str,
+    clip_id: str,
+    disposition: str,
+    actor_id: str = ACTOR_SENTINEL,
+    notes: str | None = NOTES_SENTINEL,
+    history_notes: str | None = HISTORY_SENTINEL,
+) -> None:
+    connection.execute(
+        "INSERT INTO evidence_clips (clip_id, local_state, state_version) "
+        "VALUES (?, 'VERIFIED', 1)",
+        (clip_id,),
+    )
+    connection.execute(
+        """
+        INSERT INTO evidence_primary_clips (
+            incident_id, clip_id, source_packet_preserved, source_missing_reason,
+            truncation_json, unavailable_reason, created_at
+        ) VALUES (?, ?, 0, 'NOT_RECORDED', '[]', 'MISSING', ?)
+        """,
+        (incident_id, clip_id, NOW),
+    )
+    connection.execute(
+        """
+        INSERT INTO control_evidence_review_revisions (
+            review_id, incident_id, clip_id, review_version, actor_id,
+            reviewed_at, disposition, notes
+        ) VALUES (?, ?, ?, 1, ?, ?, 'TRUE_POSITIVE', ?)
+        """,
+        (f"review:{incident_id}:1", incident_id, clip_id, actor_id, NOW, history_notes),
+    )
+    connection.execute(
+        "INSERT INTO control_evidence_review_state "
+        "(incident_id, clip_id, current_version) VALUES (?, ?, 1)",
+        (incident_id, clip_id),
+    )
+    connection.execute(
+        """
+        INSERT INTO control_evidence_review_revisions (
+            review_id, incident_id, clip_id, review_version, actor_id,
+            reviewed_at, disposition, notes
+        ) VALUES (?, ?, ?, 2, ?, ?, ?, ?)
+        """,
+        (
+            f"review:{incident_id}:2",
+            incident_id,
+            clip_id,
+            actor_id,
+            NOW,
+            disposition,
+            notes,
+        ),
+    )
+    connection.execute(
+        "UPDATE control_evidence_review_state SET current_version = 2 WHERE incident_id = ?",
+        (incident_id,),
+    )
+
+
 def _analysis_id_for_seq(seq: int) -> str:
     return hashlib.sha256(f"analysis:{seq}".encode()).hexdigest()
 
@@ -433,6 +500,129 @@ def test_authenticated_complete_explanation_returns_200_with_pending_delivery(
     assert body["neighborhood"]["status"] == "COMPLETE"
     assert "payload_json" not in response.text
     assert PRIVACY_SENTINEL not in response.text
+    assert body["review"]["status"] == "UNAVAILABLE"
+    assert body["review"]["disposition"]["missing_reason"] == "review_not_recorded"
+
+
+def test_authenticated_reviewed_event_reports_current_disposition(
+    tmp_path: Path, caplog
+) -> None:
+    # Given a schema-v16 current FALSE_POSITIVE review on an existing event
+    database = _seed_event_graph(
+        tmp_path,
+        edge_event_id=COMPLETE_EVENT_ID,
+        neighborhood=True,
+        pending_attempt=True,
+    )
+    connection = _connect(database)
+    try:
+        _insert_current_review(
+            connection,
+            incident_id=f"incident:{COMPLETE_EVENT_ID}",
+            clip_id=f"clip:{COMPLETE_EVENT_ID}",
+            disposition="FALSE_POSITIVE",
+        )
+        persisted = connection.execute(
+            """
+            SELECT review.disposition, review_state.current_version
+            FROM control_evidence_review_state AS review_state
+            JOIN control_evidence_review_revisions AS review
+              ON review.incident_id = review_state.incident_id
+             AND review.clip_id = review_state.clip_id
+             AND review.review_version = review_state.current_version
+            WHERE review_state.incident_id = ?
+            """,
+            (f"incident:{COMPLETE_EVENT_ID}",),
+        ).fetchone()
+        assert persisted == ("FALSE_POSITIVE", 2)
+        connection.commit()
+    finally:
+        connection.close()
+    caplog.set_level(logging.DEBUG)
+
+    with _explanation_client(database) as client:
+        _login(client)
+        # When the authenticated explanation route is requested
+        response = client.get(_explanation_path(COMPLETE_EVENT_ID))
+
+    # Then the current review is reported truthfully without private fields
+    assert response.status_code == 200
+    body = EventExplanationResponse.model_validate(response.json()).model_dump(mode="json")
+    assert body["decision_provenance"] == "COMPLETE"
+    assert body["review"]["status"] == "COMPLETE"
+    assert body["review"]["reasons"] == []
+    assert body["review"]["disposition"]["value"] == "FALSE_POSITIVE"
+    assert body["review"]["disposition"]["missing_reason"] is None
+    haystack = response.text + caplog.text
+    for token in (PRIVACY_SENTINEL, NOTES_SENTINEL, ACTOR_SENTINEL, HISTORY_SENTINEL):
+        assert token not in haystack
+    assert "payload_json" not in response.text
+    assert "actor_id" not in response.text
+    assert NOTES_SENTINEL not in response.text
+    assert ACTOR_SENTINEL not in response.text
+    assert HISTORY_SENTINEL not in response.text
+    leaked = {"review": {"disposition": {"value": NOTES_SENTINEL}}}
+    with pytest.raises(AssertionError):
+        assert leaked["review"]["disposition"]["value"] is None
+        assert body["review"]["disposition"]["value"] is None
+
+
+def test_authenticated_reviewed_partial_event_keeps_review_truth(
+    tmp_path: Path,
+) -> None:
+    # Given a reviewed event whose required analysis row is absent
+    database = _seed_event_graph(
+        tmp_path,
+        edge_event_id=PARTIAL_EVENT_ID,
+        drop_analysis=True,
+    )
+    connection = _connect(database)
+    try:
+        _insert_current_review(
+            connection,
+            incident_id=f"incident:{PARTIAL_EVENT_ID}",
+            clip_id=f"clip:{PARTIAL_EVENT_ID}",
+            disposition="TRUE_POSITIVE",
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with _explanation_client(database) as client:
+        _login(client)
+        response = client.get(_explanation_path(PARTIAL_EVENT_ID))
+
+    # Then review availability stays independent from decision completeness
+    assert response.status_code == 200
+    body = EventExplanationResponse.model_validate(response.json()).model_dump(mode="json")
+    assert body["decision_provenance"] == "PARTIAL"
+    assert body["review"]["status"] == "COMPLETE"
+    assert body["review"]["disposition"]["value"] == "TRUE_POSITIVE"
+    assert NOTES_SENTINEL not in response.text
+    assert ACTOR_SENTINEL not in response.text
+
+
+def test_authenticated_unreviewed_event_reports_review_not_recorded(
+    tmp_path: Path,
+) -> None:
+    # Given an existing event with no current review state
+    _seed_event_graph(
+        tmp_path,
+        edge_event_id=UNAVAILABLE_EVENT_ID,
+        include_trace=False,
+    )
+
+    with _explanation_client(tmp_path / "edge.sqlite3") as client:
+        _login(client)
+        response = client.get(_explanation_path(UNAVAILABLE_EVENT_ID))
+
+    # Then the unreviewed event remains typed UNAVAILABLE with review_not_recorded
+    assert response.status_code == 200
+    body = EventExplanationResponse.model_validate(response.json()).model_dump(mode="json")
+    assert body["decision_provenance"] == "UNAVAILABLE"
+    assert body["review"]["status"] == "UNAVAILABLE"
+    assert body["review"]["reasons"] == ["review_not_recorded"]
+    assert body["review"]["disposition"]["missing_reason"] == "review_not_recorded"
 
 
 def test_authenticated_partial_explanation_returns_200(tmp_path: Path) -> None:

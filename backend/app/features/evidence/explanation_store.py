@@ -56,10 +56,17 @@ class EventExplanationRuntime:
 
 
 @dataclass(frozen=True, slots=True)
+class EventExplanationCurrentReview:
+    disposition: str
+    current_version: int
+
+
+@dataclass(frozen=True, slots=True)
 class EventExplanationFacts:
     identity: EventExplanationIdentity
     decision: EventExplanationDecision | None
     runtime: EventExplanationRuntime | None
+    review: EventExplanationCurrentReview | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,13 +112,28 @@ class EventExplanationQuery:
             resolved_trace_id = (
                 incident_trace_id if incident_trace_id is not None else ref_trace_id
             )
+            review = _load_review(connection, identity.edge_event_id)
             if resolved_trace_id is None:
-                return EventExplanationFacts(identity=identity, decision=None, runtime=None)
+                return EventExplanationFacts(
+                    identity=identity,
+                    decision=None,
+                    runtime=None,
+                    review=review,
+                )
             return EventExplanationFacts(
                 identity=identity,
                 decision=_load_decision(connection, resolved_trace_id),
                 runtime=_load_runtime(connection, resolved_trace_id),
+                review=review,
             )
+        finally:
+            connection.close()
+
+    def current_review(self, edge_event_id: str) -> EventExplanationCurrentReview | None:
+        _validate_edge_event_id(edge_event_id)
+        connection = open_runtime_database(self.database_path, actor=RuntimeActor.API)
+        try:
+            return _load_review(connection, edge_event_id)
         finally:
             connection.close()
 
@@ -147,6 +169,19 @@ def _load_decision(
             )
             for value in values
         ),
+    )
+
+
+def _load_review(
+    connection: sqlite3.Connection,
+    edge_event_id: str,
+) -> EventExplanationCurrentReview | None:
+    row = connection.execute(_REVIEW_SELECT, (edge_event_id,)).fetchone()
+    if row is None:
+        return None
+    return EventExplanationCurrentReview(
+        disposition=_required_text(row[0]),
+        current_version=_required_int(row[1]),
     )
 
 
@@ -248,7 +283,22 @@ JOIN runtime_analysis_traces AS analysis
 WHERE trace.trace_id = ?
 """
 
+_REVIEW_SELECT = """
+SELECT review.disposition, review_state.current_version
+FROM evidence_events AS event
+JOIN evidence_incidents AS incident
+  ON incident.edge_event_id = event.edge_event_id
+JOIN control_evidence_review_state AS review_state
+  ON review_state.incident_id = incident.incident_id
+JOIN control_evidence_review_revisions AS review
+  ON review.incident_id = review_state.incident_id
+ AND review.clip_id = review_state.clip_id
+ AND review.review_version = review_state.current_version
+WHERE event.edge_event_id = ?
+"""
+
 __all__ = [
+    "EventExplanationCurrentReview",
     "EventExplanationDecision",
     "EventExplanationDecisionValue",
     "EventExplanationFacts",

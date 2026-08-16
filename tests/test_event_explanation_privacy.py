@@ -44,6 +44,7 @@ OPERATOR_EXPLANATION_PATH = "/api/v1/events/{edge_event_id}/explanation"
 PAYLOAD_SENTINEL = "PAYLOAD_SENTINEL_privacy_9f3c21ab"
 NOTES_SENTINEL = "NOTES_SENTINEL_privacy_2ab17c21"
 ACTOR_SENTINEL = "actor:sentinel-privacy-7c21e9aa"
+HISTORY_SENTINEL = "HISTORY_SENTINEL_privacy_revision_text_44e1"
 CREDENTIAL_SENTINEL = "CREDENTIAL_SENTINEL_privacy_token_44e1"
 RTSP_SENTINEL = "".join(
     (
@@ -89,6 +90,7 @@ PRIVACY_SENTINELS: Final = (
     PAYLOAD_SENTINEL,
     NOTES_SENTINEL,
     ACTOR_SENTINEL,
+    HISTORY_SENTINEL,
     CREDENTIAL_SENTINEL,
     RTSP_SENTINEL,
     MEDIA_ABS_PATH_SENTINEL,
@@ -431,14 +433,27 @@ def _insert_private_sources(
         INSERT INTO control_evidence_review_revisions (
             review_id, incident_id, clip_id, review_version, actor_id,
             reviewed_at, disposition, notes
-        ) VALUES (?, ?, ?, 1, ?, ?, 'FALSE_POSITIVE', ?)
+        ) VALUES (?, ?, ?, 1, ?, ?, 'TRUE_POSITIVE', ?)
         """,
-        (f"review:{incident_id}", incident_id, clip_id, ACTOR_SENTINEL, NOW, NOTES_SENTINEL),
+        (f"review:{incident_id}:1", incident_id, clip_id, ACTOR_SENTINEL, NOW, HISTORY_SENTINEL),
     )
     connection.execute(
         "INSERT INTO control_evidence_review_state "
         "(incident_id, clip_id, current_version) VALUES (?, ?, 1)",
         (incident_id, clip_id),
+    )
+    connection.execute(
+        """
+        INSERT INTO control_evidence_review_revisions (
+            review_id, incident_id, clip_id, review_version, actor_id,
+            reviewed_at, disposition, notes
+        ) VALUES (?, ?, ?, 2, ?, ?, 'FALSE_POSITIVE', ?)
+        """,
+        (f"review:{incident_id}:2", incident_id, clip_id, ACTOR_SENTINEL, NOW, NOTES_SENTINEL),
+    )
+    connection.execute(
+        "UPDATE control_evidence_review_state SET current_version = 2 WHERE incident_id = ?",
+        (incident_id,),
     )
     connection.execute(
         "UPDATE evidence_events SET last_error_code = ? WHERE edge_event_id = ?",
@@ -658,6 +673,61 @@ def test_policy_qualified_id_contract_rejects_hostile_selected_identifiers() -> 
     rejected_opaque = PolicyQualifiedIdFact.model_validate
     with pytest.raises(ValidationError):
         rejected_opaque({"value": "onnxruntime", "missing_reason": None})
+
+
+def test_privacy_assertion_fails_when_review_actor_note_or_history_is_captured() -> None:
+    # Given actor, note, and history review sentinels already used in the fixture
+    assert ACTOR_SENTINEL.startswith("actor:")
+    assert NOTES_SENTINEL.startswith("NOTES_SENTINEL")
+    assert HISTORY_SENTINEL.startswith("HISTORY_SENTINEL")
+
+    # When those sentinels are inserted into a captured response or rendered log
+    # Then the existing privacy assertion still fails closed
+    with pytest.raises(AssertionError):
+        _assert_privacy_safe(ACTOR_SENTINEL, "")
+    with pytest.raises(AssertionError):
+        _assert_privacy_safe(NOTES_SENTINEL, "")
+    with pytest.raises(AssertionError):
+        _assert_privacy_safe("", HISTORY_SENTINEL)
+
+
+def test_authenticated_reviewed_event_never_leaks_actor_note_or_history(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    # Given a complete event whose current review stores actor, notes, and history text
+    database = _seed_event_graph(
+        tmp_path,
+        edge_event_id=COMPLETE_EVENT_ID,
+        neighborhood=True,
+        pending_attempt=True,
+    )
+    caplog.set_level(logging.DEBUG)
+
+    with _explanation_client(database) as client:
+        _login(client)
+        # When the authenticated explanation route is requested
+        response = client.get(_explanation_path(COMPLETE_EVENT_ID))
+
+    # Then current review is reported without private actor/note/history fields
+    assert response.status_code == 200
+    body = response.json()
+    parsed = EventExplanationResponse.model_validate(body)
+    assert parsed.model_dump(mode="json") == body
+    assert body["review"]["status"] == "COMPLETE"
+    assert body["review"]["disposition"]["value"] == "FALSE_POSITIVE"
+    logs = _rendered_logs(caplog)
+    _assert_privacy_safe(response.text, logs, parsed=body)
+    assert ACTOR_SENTINEL not in response.text
+    assert NOTES_SENTINEL not in response.text
+    assert HISTORY_SENTINEL not in response.text
+    assert ACTOR_SENTINEL not in logs
+    assert NOTES_SENTINEL not in logs
+    assert HISTORY_SENTINEL not in logs
+    leaked = {"review": {"disposition": {"value": ACTOR_SENTINEL}}}
+    with pytest.raises(AssertionError):
+        assert leaked["review"]["disposition"]["value"] is None
+        assert body["review"]["disposition"]["value"] is None
 
 
 def test_privacy_assertion_fails_when_runtime_rtsp_sentinel_is_captured() -> None:

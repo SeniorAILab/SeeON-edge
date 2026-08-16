@@ -39,6 +39,9 @@ PRECEDING_FRAMES = 29
 PRIVACY_SENTINEL = "PRIVACY_SENTINEL_service_9f3c21ab"
 PATH_SENTINEL = "/private/media-path-sentinel.mp4"
 GEOMETRY_SENTINEL = "[[987654,123456]]"
+ACTOR_SENTINEL = "actor:sentinel-service-7c21e9aa"
+NOTES_SENTINEL = "NOTES_SENTINEL_service_2ab17c21"
+HISTORY_SENTINEL = "HISTORY_SENTINEL_service_revision_text_44e1"
 
 
 def _canonical(content: object) -> tuple[str, str]:
@@ -217,6 +220,67 @@ def _insert_ref(
     connection.execute(
         "INSERT INTO evidence_event_trace_refs VALUES (?,?)",
         (edge_event_id, decision_trace_id),
+    )
+
+
+def _insert_current_review(
+    connection: sqlite3.Connection,
+    *,
+    incident_id: str,
+    clip_id: str,
+    disposition: str,
+    actor_id: str = ACTOR_SENTINEL,
+    notes: str | None = NOTES_SENTINEL,
+    history_notes: str | None = HISTORY_SENTINEL,
+) -> None:
+    connection.execute(
+        "INSERT INTO evidence_clips (clip_id, local_state, state_version) "
+        "VALUES (?, 'VERIFIED', 1)",
+        (clip_id,),
+    )
+    connection.execute(
+        """
+        INSERT INTO evidence_primary_clips (
+            incident_id, clip_id, source_packet_preserved, source_missing_reason,
+            truncation_json, unavailable_reason, created_at
+        ) VALUES (?, ?, 0, 'NOT_RECORDED', '[]', 'MISSING', ?)
+        """,
+        (incident_id, clip_id, NOW),
+    )
+    connection.execute(
+        """
+        INSERT INTO control_evidence_review_revisions (
+            review_id, incident_id, clip_id, review_version, actor_id,
+            reviewed_at, disposition, notes
+        ) VALUES (?, ?, ?, 1, ?, ?, 'TRUE_POSITIVE', ?)
+        """,
+        (f"review:{incident_id}:1", incident_id, clip_id, actor_id, NOW, history_notes),
+    )
+    connection.execute(
+        "INSERT INTO control_evidence_review_state "
+        "(incident_id, clip_id, current_version) VALUES (?, ?, 1)",
+        (incident_id, clip_id),
+    )
+    connection.execute(
+        """
+        INSERT INTO control_evidence_review_revisions (
+            review_id, incident_id, clip_id, review_version, actor_id,
+            reviewed_at, disposition, notes
+        ) VALUES (?, ?, ?, 2, ?, ?, ?, ?)
+        """,
+        (
+            f"review:{incident_id}:2",
+            incident_id,
+            clip_id,
+            actor_id,
+            NOW,
+            disposition,
+            notes,
+        ),
+    )
+    connection.execute(
+        "UPDATE control_evidence_review_state SET current_version = 2 WHERE incident_id = ?",
+        (incident_id,),
     )
 
 
@@ -780,6 +844,104 @@ def test_service_absent_alert_and_snapshot_do_not_downgrade_complete(
     )
     assert dumped["review"]["status"] == "UNAVAILABLE"
     assert dumped["review"]["disposition"]["missing_reason"] == "review_not_recorded"
+
+
+def test_service_current_review_is_independent_of_decision_completeness(
+    tmp_path: Path,
+) -> None:
+    # Given a reviewed event whose decision trace is incomplete
+    database = _seed_event_graph(
+        tmp_path,
+        edge_event_id="event:reviewed-partial",
+        drop_analysis=True,
+    )
+    connection = _connect(database)
+    try:
+        _insert_current_review(
+            connection,
+            incident_id="incident:event:reviewed-partial",
+            clip_id="clip:reviewed-partial",
+            disposition="FALSE_POSITIVE",
+        )
+        persisted = connection.execute(
+            """
+            SELECT review.disposition, review_state.current_version
+            FROM control_evidence_review_state AS review_state
+            JOIN control_evidence_review_revisions AS review
+              ON review.incident_id = review_state.incident_id
+             AND review.clip_id = review_state.clip_id
+             AND review.review_version = review_state.current_version
+            WHERE review_state.incident_id = ?
+            """,
+            ("incident:event:reviewed-partial",),
+        ).fetchone()
+        assert persisted == ("FALSE_POSITIVE", 2)
+        connection.commit()
+    finally:
+        connection.close()
+
+    # When the service composes an explanation
+    dumped = _dump(_explain(database, "event:reviewed-partial"))
+    rendered = json.dumps(dumped, separators=(",", ":"))
+
+    # Then review truth stays COMPLETE while decision provenance stays PARTIAL
+    assert dumped["decision_provenance"] == "PARTIAL"
+    assert dumped["decision_provenance_reasons"] == ["analysis_trace_unresolved"]
+    assert dumped["review"]["status"] == "COMPLETE"
+    assert dumped["review"]["reasons"] == []
+    assert dumped["review"]["disposition"]["value"] == "FALSE_POSITIVE"
+    assert dumped["review"]["disposition"]["missing_reason"] is None
+    assert ACTOR_SENTINEL not in rendered
+    assert NOTES_SENTINEL not in rendered
+    assert HISTORY_SENTINEL not in rendered
+    assert "actor_id" not in rendered
+    assert '"notes"' not in rendered
+
+
+def test_service_unreviewed_event_keeps_typed_review_not_recorded(
+    tmp_path: Path,
+) -> None:
+    # Given a uniquely resolved event with no current review state
+    database = _seed_event_graph(
+        tmp_path,
+        edge_event_id="event:unreviewed",
+        neighborhood=True,
+    )
+
+    # When the service composes an explanation
+    dumped = _dump(_explain(database, "event:unreviewed"))
+
+    # Then the review section remains typed UNAVAILABLE with review_not_recorded
+    assert dumped["decision_provenance"] == "COMPLETE"
+    assert dumped["review"]["status"] == "UNAVAILABLE"
+    assert dumped["review"]["reasons"] == ["review_not_recorded"]
+    assert dumped["review"]["disposition"]["value"] is None
+    assert dumped["review"]["disposition"]["missing_reason"] == "review_not_recorded"
+
+
+def test_service_malformed_persisted_review_disposition_fails_closed() -> None:
+    from backend.app.features.evidence.explanation_service import project_current_review
+    from backend.app.features.evidence.explanation_store import EventExplanationCurrentReview
+
+    # Given a current-review projection whose disposition is not an approved token.
+    # Schema v16 CHECK already forbids storing that text; the composer must still
+    # fail closed if an unapproved value is ever projected.
+    review = EventExplanationCurrentReview(
+        disposition="NOT_A_DISPOSITION",
+        current_version=2,
+    )
+
+    # When that projection is mapped onto the public review section
+    section = project_current_review(review)
+    dumped = section.model_dump(mode="json")
+    rendered = json.dumps(dumped, separators=(",", ":"))
+
+    # Then the raw disposition is never echoed and the section fails closed
+    assert dumped["status"] == "UNAVAILABLE"
+    assert dumped["reasons"] == ["persisted_value_invalid"]
+    assert dumped["disposition"]["value"] is None
+    assert dumped["disposition"]["missing_reason"] == "persisted_value_invalid"
+    assert "NOT_A_DISPOSITION" not in rendered
 
 
 def test_service_domain_inapplicable_values_keep_complete(tmp_path: Path) -> None:

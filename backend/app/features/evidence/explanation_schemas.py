@@ -123,7 +123,10 @@ MediaMissingReason: TypeAlias = Literal[
     "artifact_unavailable",
 ]
 ReviewDispositionToken: TypeAlias = Literal["TRUE_POSITIVE", "FALSE_POSITIVE"]
-ReviewMissingReason: TypeAlias = Literal["review_not_recorded"]
+ReviewMissingReason: TypeAlias = Literal[
+    "review_not_recorded",
+    "persisted_value_invalid",
+]
 NeighborhoodMissingReason: TypeAlias = Literal[
     "neighborhood_pruned",
     "prefix_shorter_than_window",

@@ -44,6 +44,7 @@ from backend.app.features.evidence.explanation_schemas import (
 )
 from backend.app.features.evidence.explanation_sections import project_explanation_sections
 from backend.app.features.evidence.explanation_store import (
+    EventExplanationCurrentReview,
     EventExplanationDecision,
     EventExplanationIdentity,
     EventExplanationQuery,
@@ -51,6 +52,8 @@ from backend.app.features.evidence.explanation_store import (
     TraceRefConflict,
 )
 from shared.edge_db.connection import RuntimeActor, open_runtime_database
+
+_REVIEW_DISPOSITIONS = frozenset({"TRUE_POSITIVE", "FALSE_POSITIVE"})
 
 _DECISION_REASONS = frozenset(
     {
@@ -168,6 +171,9 @@ class EventExplanationService:
                 identity=identity,
                 decision=None,
                 runtime=None,
+                review=EventExplanationQuery(self.database_path).current_review(
+                    facts.edge_event_id
+                ),
                 provenance="UNAVAILABLE",
                 provenance_reasons=("trace_ref_conflict",),
                 field_reason="trace_ref_conflict",
@@ -179,6 +185,7 @@ class EventExplanationService:
                 identity=facts.identity,
                 decision=None,
                 runtime=None,
+                review=facts.review,
                 provenance="UNAVAILABLE",
                 provenance_reasons=("decision_trace_unresolved",),
                 field_reason="decision_trace_unresolved",
@@ -196,6 +203,7 @@ class EventExplanationService:
                 identity=facts.identity,
                 decision=facts.decision,
                 runtime=facts.runtime,
+                review=facts.review,
                 provenance="PARTIAL",
                 provenance_reasons=tuple(reasons),
                 field_reason="decision_trace_unresolved",
@@ -207,6 +215,7 @@ class EventExplanationService:
             identity=facts.identity,
             decision=facts.decision,
             runtime=facts.runtime,
+            review=facts.review,
             provenance="COMPLETE",
             provenance_reasons=(),
             field_reason="decision_trace_unresolved",
@@ -221,6 +230,7 @@ def _compose(
     identity: EventExplanationIdentity,
     decision: EventExplanationDecision | None,
     runtime: EventExplanationRuntime | None,
+    review: EventExplanationCurrentReview | None,
     provenance: str,
     provenance_reasons: tuple[str, ...],
     field_reason: str,
@@ -332,7 +342,7 @@ def _compose(
         ),
         delivery=sections.delivery,
         media=sections.media,
-        review=_unrecorded_review(),
+        review=project_current_review(review),
         neighborhood=neighborhood,
         correlation=sections.correlation,
     )
@@ -599,15 +609,30 @@ def _domain_and_type(event_type: str | None) -> tuple[str, str]:
     return "other", "other"
 
 
-def _unrecorded_review() -> EventExplanationReview:
+def project_current_review(
+    review: EventExplanationCurrentReview | None,
+) -> EventExplanationReview:
+    if review is None:
+        return EventExplanationReview(
+            status="UNAVAILABLE",
+            reasons=["review_not_recorded"],
+            disposition=ReviewDispositionFact(missing_reason="review_not_recorded"),
+        )
+    if review.disposition not in _REVIEW_DISPOSITIONS:
+        return EventExplanationReview(
+            status="UNAVAILABLE",
+            reasons=["persisted_value_invalid"],
+            disposition=ReviewDispositionFact(missing_reason="persisted_value_invalid"),
+        )
     return EventExplanationReview(
-        status="UNAVAILABLE",
-        reasons=["review_not_recorded"],
-        disposition=ReviewDispositionFact(missing_reason="review_not_recorded"),
+        status="COMPLETE",
+        reasons=[],
+        disposition=ReviewDispositionFact(value=review.disposition),
     )
 
 
 __all__ = [
     "EventExplanationNotFound",
     "EventExplanationService",
+    "project_current_review",
 ]

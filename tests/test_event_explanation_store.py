@@ -13,6 +13,9 @@ from shared.edge_db.schema import SCHEMA_VERSION
 
 NOW = "2026-08-13T00:00:00Z"
 PRIVACY_SENTINEL = "PRIVACY_SENTINEL_event_payload_9f3c21ab"
+ACTOR_SENTINEL = "actor:sentinel-store-7c21e9aa"
+NOTES_SENTINEL = "NOTES_SENTINEL_store_2ab17c21"
+HISTORY_SENTINEL = "HISTORY_SENTINEL_store_revision_text_44e1"
 MANIFEST_ID = "a" * 64
 POLICY_ID = "b" * 64
 ANALYSIS_A = hashlib.sha256(b"analysis-a").hexdigest()
@@ -149,6 +152,125 @@ def _seed_ref(
     connection.execute(
         "INSERT INTO evidence_event_trace_refs VALUES (?,?)",
         (edge_event_id, decision_trace_id),
+    )
+
+
+def _seed_clip(connection: sqlite3.Connection, clip_id: str) -> None:
+    connection.execute(
+        "INSERT INTO evidence_clips (clip_id, local_state, state_version) "
+        "VALUES (?, 'VERIFIED', 1)",
+        (clip_id,),
+    )
+
+
+def _seed_primary(
+    connection: sqlite3.Connection,
+    *,
+    incident_id: str,
+    clip_id: str,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO evidence_primary_clips (
+            incident_id, clip_id, source_packet_preserved, source_missing_reason,
+            truncation_json, unavailable_reason, created_at
+        ) VALUES (?, ?, 0, 'NOT_RECORDED', '[]', 'MISSING', ?)
+        """,
+        (incident_id, clip_id, NOW),
+    )
+
+
+def _seed_review_revision(
+    connection: sqlite3.Connection,
+    *,
+    review_id: str,
+    incident_id: str,
+    clip_id: str,
+    version: int,
+    disposition: str,
+    actor_id: str,
+    notes: str | None,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO control_evidence_review_revisions (
+            review_id, incident_id, clip_id, review_version, actor_id,
+            reviewed_at, disposition, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (review_id, incident_id, clip_id, version, actor_id, NOW, disposition, notes),
+    )
+
+
+def _seed_review_state(
+    connection: sqlite3.Connection,
+    *,
+    incident_id: str,
+    clip_id: str,
+    current_version: int,
+) -> None:
+    existing = connection.execute(
+        "SELECT current_version FROM control_evidence_review_state WHERE incident_id = ?",
+        (incident_id,),
+    ).fetchone()
+    if existing is None:
+        connection.execute(
+            "INSERT INTO control_evidence_review_state "
+            "(incident_id, clip_id, current_version) VALUES (?, ?, ?)",
+            (incident_id, clip_id, current_version),
+        )
+        return
+    connection.execute(
+        "UPDATE control_evidence_review_state SET current_version = ? WHERE incident_id = ?",
+        (current_version, incident_id),
+    )
+
+
+def _seed_current_review(
+    connection: sqlite3.Connection,
+    *,
+    incident_id: str,
+    clip_id: str,
+    disposition: str,
+    actor_id: str = ACTOR_SENTINEL,
+    notes: str | None = NOTES_SENTINEL,
+    history_notes: str | None = HISTORY_SENTINEL,
+) -> None:
+    _seed_clip(connection, clip_id)
+    _seed_primary(connection, incident_id=incident_id, clip_id=clip_id)
+    _seed_review_revision(
+        connection,
+        review_id=f"review:{incident_id}:1",
+        incident_id=incident_id,
+        clip_id=clip_id,
+        version=1,
+        disposition="TRUE_POSITIVE",
+        actor_id=actor_id,
+        notes=history_notes,
+    )
+    _seed_review_state(
+        connection,
+        incident_id=incident_id,
+        clip_id=clip_id,
+        current_version=1,
+    )
+    if disposition == "TRUE_POSITIVE" and history_notes is None:
+        return
+    _seed_review_revision(
+        connection,
+        review_id=f"review:{incident_id}:2",
+        incident_id=incident_id,
+        clip_id=clip_id,
+        version=2,
+        disposition=disposition,
+        actor_id=actor_id,
+        notes=notes,
+    )
+    _seed_review_state(
+        connection,
+        incident_id=incident_id,
+        clip_id=clip_id,
+        current_version=2,
     )
 
 
@@ -490,3 +612,103 @@ def test_explanation_query_privacy_sentinel_never_appears_in_results_or_logs(
     assert "payload_json" not in source
     assert "facility_id" not in source
     assert "COALESCE" not in source.upper()
+
+
+def test_explanation_query_projects_current_review_disposition_without_private_fields(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from backend.app.features.evidence import explanation_store
+    from backend.app.features.evidence.explanation_store import EventExplanationFacts
+
+    # Given a schema-v16 event whose current review revision is FALSE_POSITIVE
+    assert SCHEMA_VERSION == 16
+    database = _migrated(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        _seed_manifest(connection)
+        _seed_analysis(connection, analysis_id=ANALYSIS_A, frame_seq=6)
+        _seed_decision(connection, trace_id=TRACE_A, analysis_id=ANALYSIS_A)
+        _seed_event(connection, edge_event_id="event:reviewed")
+        _seed_incident(
+            connection,
+            incident_id="incident:reviewed",
+            edge_event_id="event:reviewed",
+            decision_trace_id=TRACE_A,
+        )
+        _seed_ref(connection, edge_event_id="event:reviewed", decision_trace_id=TRACE_A)
+        _seed_current_review(
+            connection,
+            incident_id="incident:reviewed",
+            clip_id="clip:reviewed",
+            disposition="FALSE_POSITIVE",
+        )
+        persisted = connection.execute(
+            """
+            SELECT review.disposition, review.review_version
+            FROM control_evidence_review_state AS review_state
+            JOIN control_evidence_review_revisions AS review
+              ON review.incident_id = review_state.incident_id
+             AND review.clip_id = review_state.clip_id
+             AND review.review_version = review_state.current_version
+            WHERE review_state.incident_id = ?
+            """,
+            ("incident:reviewed",),
+        ).fetchone()
+        assert persisted == ("FALSE_POSITIVE", 2)
+        connection.commit()
+
+    # When the explanation query projects that edge_event_id
+    with caplog.at_level(logging.DEBUG):
+        result = explanation_store.EventExplanationQuery(database).get("event:reviewed")
+
+    captured = capsys.readouterr()
+    rendered = repr(result)
+    source = Path(explanation_store.__file__).read_text(encoding="utf-8")
+
+    # Then only the current closed disposition and revision identity are projected
+    assert isinstance(result, EventExplanationFacts)
+    assert result.review is not None
+    assert result.review.disposition == "FALSE_POSITIVE"
+    assert result.review.current_version == 2
+    assert not hasattr(result.review, "actor_id")
+    assert not hasattr(result.review, "notes")
+    assert not hasattr(result.review, "reviewed_at")
+    assert not hasattr(result.review, "review_id")
+    assert ACTOR_SENTINEL not in rendered
+    assert NOTES_SENTINEL not in rendered
+    assert HISTORY_SENTINEL not in rendered
+    assert ACTOR_SENTINEL not in caplog.text
+    assert NOTES_SENTINEL not in caplog.text
+    assert HISTORY_SENTINEL not in captured.out
+    assert HISTORY_SENTINEL not in captured.err
+    for forbidden in ("actor_id", "notes", "reviewed_at", "payload_json"):
+        assert forbidden not in source
+
+
+def test_explanation_query_returns_no_review_for_unreviewed_event(tmp_path: Path) -> None:
+    from backend.app.features.evidence.explanation_store import EventExplanationFacts
+
+    # Given a schema-v16 event with no current review state
+    database = _migrated(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        _seed_manifest(connection)
+        _seed_analysis(connection, analysis_id=ANALYSIS_A, frame_seq=7)
+        _seed_decision(connection, trace_id=TRACE_A, analysis_id=ANALYSIS_A)
+        _seed_event(connection, edge_event_id="event:unreviewed")
+        _seed_incident(
+            connection,
+            incident_id="incident:unreviewed",
+            edge_event_id="event:unreviewed",
+            decision_trace_id=TRACE_A,
+        )
+        connection.commit()
+
+    # When the explanation query projects that event
+    result = _query()(database).get("event:unreviewed")
+
+    # Then current review remains absent rather than fabricated
+    assert isinstance(result, EventExplanationFacts)
+    assert result.review is None
