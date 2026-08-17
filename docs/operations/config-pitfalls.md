@@ -58,8 +58,8 @@ are no longer supported.
 
 `API_ALLOW_LEGACY_DASHBOARD_AUTH` has been retired. Dashboard routes accept only
 the server-issued HttpOnly session cookie; worker relay credentials are never
-operator credentials, even when the retired variable is present in a stale
-deployment environment.
+operator credentials. Backend startup rejects the retired variable; remove it
+from stale deployment environments before upgrading.
 
 The one-shot `SYSTEM_TEST` operator CLI action, its `ML_WORKER_SYSTEM_TEST_GATE`
 environment gate, and its dedicated relay HTTP routes are retired and removed;

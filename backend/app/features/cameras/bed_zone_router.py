@@ -10,9 +10,9 @@ worker as the authoritative bed region (see
 ``cameras.router.worker_config_snapshot``).
 
 This is a dashboard-only action (an operator manually triggering
-recognition), so it uses the same lightweight bearer/session ``_authorize``
-shape as ``streams_router.py`` rather than the worker-relay-token-eligible
-auth used by the camera CRUD routes in ``cameras/router.py``.
+recognition), so it requires the same server-issued dashboard session as the
+camera CRUD routes. Only the server-side proxy forwards the worker relay token
+upstream; browser-supplied relay credentials are never operator authority.
 
 Response contract:
 - worker success -> 200 ``{"bed_zone": {...}}`` (and the polygon is persisted)
