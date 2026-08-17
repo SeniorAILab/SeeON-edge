@@ -524,10 +524,21 @@ def relay_heartbeat(
     )
     _clear_never_connected_on_first_heartbeat(request, payload.camera_id)
     binding = _camera_binding(request, payload.camera_id, payload.facility_id)
-    # Backend egress uses the canonical identity (explicit backend mapping when
-    # present); the backend only knows its own camera ids, not local registry ids.
-    canonical_camera_id = str(binding.get("camera_id") or payload.camera_id)
-    client = _optional_backend_ingest_client(request, camera_id=canonical_camera_id)
+    # Same Hub-boundary rule as relay_alert above: only a Hub-issued id may address
+    # the upstream ingest API. The backend only knows its own camera ids, and an id
+    # it never issued comes back as FACILITY_BINDING_MISMATCH, surfacing on the edge
+    # as an opaque 502 that reads like an auth failure (issue #308). All local
+    # bookkeeping above -- liveness, policy ack, never_connected -- has already run,
+    # so skipping the push costs no local state. This also matches the periodic tick
+    # in backend_heartbeat_relay, which likewise refuses to send under an unmapped id.
+    bound_camera_id = binding.get("backend_camera_id")
+    if not isinstance(bound_camera_id, str) or not bound_camera_id.strip():
+        _LOGGER.warning(
+            "relay heartbeat: skipping backend ingest, camera has no Hub mapping yet",
+            extra={"local_camera_id": payload.camera_id},
+        )
+        return {"status": "accepted"}
+    client = _optional_backend_ingest_client(request, camera_id=bound_camera_id)
     if client is None:
         return {"status": "accepted"}
     if not client.send_heartbeat():
