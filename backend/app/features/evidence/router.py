@@ -146,8 +146,21 @@ def capabilities(
     _authorize(request, relay_token)
     if not _enabled(request):
         return CapabilityResponse(event_idempotency=1, clip_export=0)
-    client = _backend_client(request, camera_id)
-    result = client.probe_capabilities(camera_id)
+    # Fourth Hub egress path. The worker supplies camera_id straight off the query
+    # string, so without this the edge-local id addressed the backend even for a
+    # mapped camera (issue #308). Resolve to the Hub-issued id, and when there is
+    # none fall back to the same conservative answer the disabled path returns
+    # rather than probing under an id the Hub never issued.
+    binding = _camera_binding(request, camera_id, "")
+    bound_camera_id = binding.get("backend_camera_id")
+    if not isinstance(bound_camera_id, str) or not bound_camera_id.strip():
+        _LOGGER.warning(
+            "capabilities probe skipped: camera %s has no Hub mapping yet",
+            camera_id,
+        )
+        return CapabilityResponse(event_idempotency=1, clip_export=0)
+    client = _backend_client(request, bound_camera_id)
+    result = client.probe_capabilities(bound_camera_id)
     if isinstance(result, DeliveryFailure):
         if result.disposition is DeliveryDisposition.COMPATIBILITY:
             return CapabilityResponse(event_idempotency=1, clip_export=0)
