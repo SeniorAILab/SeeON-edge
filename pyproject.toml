@@ -98,11 +98,9 @@ exclude = ["^\\.scratch/", "^\\.venv/"]
 module = ["contracts.*"]
 strict = true
 
-# shared/ is strict too, minus three pre-existing offenders carried as an
-# explicit baseline (11 errors: shared/events/edge_ingest_client.py,
-# shared/events/evidence_http_transport.py, shared/detection_policies.py).
-# They sit on the fall-alert ingest path, so they are fixed under their own
-# goal rather than rushed in alongside a boundary change.
+# shared/ is strict with no exemptions. It started at 11 errors across
+# edge_ingest_client, evidence_http_transport, and detection_policies; all were
+# fixed rather than baselined, so there is nothing here to carve out.
 [[tool.mypy.overrides]]
 module = ["shared.*"]
 strict = true
