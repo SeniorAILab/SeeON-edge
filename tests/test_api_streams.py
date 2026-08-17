@@ -392,8 +392,6 @@ def test_stream_proxy_closes_upstream_via_background_when_never_iterated(
         response = await streams_router.camera_stream(
             "cam_sp_201",
             request=cast(Request, object()),
-            authorization=None,
-            token=None,
         )
 
         assert response.background is not None

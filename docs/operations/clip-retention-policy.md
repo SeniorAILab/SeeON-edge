@@ -148,15 +148,10 @@
   practice today)"하다 — `dashboard_sessions()`가 `None`을 반환하는 경우가
   현재 없기 때문이다. 이 분기는 향후 내장 기본값을 옵트아웃할 수 있게 될 때를
   대비해 남겨둔 것이다.
-- 마찬가지로 `backend/app/features/clips/router.py`의 `_authorize()`에서
-  `actor != "legacy-dashboard"`가 거짓이 되는 경우(즉 `"operator"`/`"bearer"`
-  제네릭 문자열로 대체되는 분기)도 위 이유로 현재는 도달하지 않는 죽은 코드다.
-- **결론**: 현재 배포 조건에서는 감사 로그의 `actor` 필드가 항상 실제 대시보드
-  세션 사용자명(또는 라벨링 시 명시적으로 지정된 `reviewer`)이며, 제네릭
-  `"operator"`/`"bearer"`/`"legacy-dashboard"` 값으로 뭉개지는 사례는 없다.
-  이 노트는 그 죽은 코드 경로를 "고쳐야 할 버그"로 오인해 재작업하지 않도록
-  기록해 둔 것이다 — 실제로 손볼 필요가 생기는 시점은 대시보드 세션 스토어
-  해석 자체가 옵트아웃 가능해지는 때뿐이다.
+- **결론**: 감사 로그의 `actor` 필드는 실제 대시보드 세션 사용자명(또는
+  라벨링 시 명시적으로 지정된 `reviewer`)이다. 과거의 relay-token 호환
+  분기와 `"operator"`/`"bearer"`/`"legacy-dashboard"` 제네릭 actor는
+  제거되었다.
 
 ## 관련 문서
 
