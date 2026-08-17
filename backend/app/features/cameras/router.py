@@ -737,7 +737,9 @@ def worker_config_snapshot(
         canonical_id = str(record.get("backend_camera_id") or record.get("id", ""))
         if _hub_canonical_id(record) is None:
             _LOGGER.warning(
-                "worker-config emitting camera without a Hub mapping",
+                "worker-config emitting camera %s without a Hub mapping (state=%s)",
+                record.get("id"),
+                _mapping_state(record),
                 extra={
                     "local_camera_id": record.get("id"),
                     "mapping_state": _mapping_state(record),

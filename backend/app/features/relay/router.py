@@ -439,7 +439,8 @@ def relay_alert(
         # record was already written above. Only the guaranteed-reject upstream
         # push is skipped, and the reason is named instead of arriving as a 502.
         _LOGGER.warning(
-            "relay alert: skipping backend ingest, camera has no Hub mapping yet",
+            "relay alert: skipping backend ingest, camera %s has no Hub mapping yet",
+            payload.camera_id,
             extra={"local_camera_id": payload.camera_id},
         )
         return _alert_response({"status": "accepted"}, catalog_result)
@@ -534,7 +535,8 @@ def relay_heartbeat(
     bound_camera_id = binding.get("backend_camera_id")
     if not isinstance(bound_camera_id, str) or not bound_camera_id.strip():
         _LOGGER.warning(
-            "relay heartbeat: skipping backend ingest, camera has no Hub mapping yet",
+            "relay heartbeat: skipping backend ingest, camera %s has no Hub mapping yet",
+            payload.camera_id,
             extra={"local_camera_id": payload.camera_id},
         )
         return {"status": "accepted"}

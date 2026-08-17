@@ -107,17 +107,6 @@ strict = true
 module = ["shared.*"]
 strict = true
 
-[[tool.mypy.overrides]]
-module = [
-    "shared.events.edge_ingest_client",
-    "shared.events.evidence_http_transport",
-    "shared.detection_policies",
-]
-# Explicit baseline, not a blanket exemption: 11 pre-existing [arg-type] errors
-# on the fall-alert ingest path. Enumerated by module so a NEW file is never
-# silently exempt. Removing these three lines is the follow-up goal's exit test.
-ignore_errors = true
-
 [tool.ruff]
 line-length = 100
 target-version = "py311"

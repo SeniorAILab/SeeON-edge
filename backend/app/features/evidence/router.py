@@ -191,7 +191,9 @@ def export_clip(
     bound_camera_id = binding.get("backend_camera_id")
     if not isinstance(bound_camera_id, str) or not bound_camera_id.strip():
         _LOGGER.warning(
-            "clip export refused: camera has no Hub mapping yet",
+            "clip export refused: camera %s has no Hub mapping yet (clip %s)",
+            payload.camera_id,
+            clip_id,
             extra={"local_camera_id": payload.camera_id, "clip_id": clip_id},
         )
         raise HTTPException(

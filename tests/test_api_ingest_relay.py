@@ -508,7 +508,7 @@ def test_relay_alert_egresses_canonical_backend_id_for_mapped_local_camera(tmp_p
     assert fake.egress_camera_ids == ["backend-camera-1"]
 
 
-def test_relay_heartbeat_egresses_local_id_when_camera_is_unmapped(tmp_path) -> None:
+def test_relay_heartbeat_never_egresses_local_id_when_camera_is_unmapped(tmp_path) -> None:
     """An unmapped camera does NOT forward its local id to the Hub.
 
     This test previously asserted the opposite, on the reasoning that forwarding
