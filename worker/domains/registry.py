@@ -39,15 +39,18 @@ from worker.domains.module_definition import (
 from worker.interfaces.decision import Decider
 from worker.pipeline.analytics.merge import result_merger_names
 from worker.pipeline.perception import GreedyIouTracker
+from worker.types import CURRENT_TEMPORAL_PROFILE
 
 AVAILABLE_OBSERVATION_CHANNELS = frozenset({"person_boxes", "poses", "track_ids", "bed_regions"})
+# person/bed identities are the official ultralytics/assets release v8.4.0
+# artifacts `yolo26n.pt` and `yolo26m-seg.pt`; re-derive with sha256sum.
 # Concrete compiled expectations; runtime provisioning resolves and verifies
 # the applied identity before any camera graph can activate.
 _COMPONENT_ARTIFACT_DIGESTS = MappingProxyType(
     {
         "pose": "eb3bb8268828aeaf515cec23a4bfafd793944a86fe9af94ba7823609c14522a9",
-        "person": "d93329542e34d60c78a4aabe0fd610ea2ca28c3ef21495272a83c6a3a393d347",
-        "bed": "ab96d997347ecd772d54e2a36e760fb71354cba046369cedcd0595761b9a2d09",
+        "person": "9b09cc8bf347f0fc8a5f7657480587f25db09b34bf33b0652110fb03a8ad4fef",
+        "bed": "16b636f04e8fb6a325b3370f22dc5e5535ff473e384f4d041fd28d788f6ee9f5",
         "fall-classifier": "889075695884742475b9713e3b86ba67085bb96979b64c51756ea3fd715ab57a",
     }
 )
@@ -321,7 +324,7 @@ _BED_EXIT_V1 = DetectionModuleDefinition(
     schedule_rules=(
         ScheduleRule("pose", "camera-frame-stride"),
         ScheduleRule("person", "camera-frame-stride"),
-        ScheduleRule("bed", "fixed", interval=30, skip_when_flag="persisted-bed-region"),
+        ScheduleRule("bed", "temporal-profile", skip_when_flag="persisted-bed-region"),
     ),
     policy_schema=PolicySchemaIdentity("bed_exit.policy", 1),
     camera_state_factory=_bed_exit_state,
@@ -342,6 +345,7 @@ DETECTION_MODULE_REGISTRY = compile_detection_module_registry(
     DETECTION_MODULE_DEFINITIONS,
     available_observation_channels=AVAILABLE_OBSERVATION_CHANNELS,
     output_adapter_ids=result_merger_names(),
+    temporal_profile=CURRENT_TEMPORAL_PROFILE,
 )
 # Temporary source-compatible view while external callers move to the compiled registry.
 DOMAIN_REGISTRY: Mapping[str, DomainRegistration] = MappingProxyType(

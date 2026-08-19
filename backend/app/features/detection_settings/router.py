@@ -21,9 +21,9 @@ default: no configured window means 24/7 detection).
 from __future__ import annotations
 
 import re
-from typing import Annotated, ClassVar, Literal
+from typing import ClassVar, Literal
 
-from fastapi import APIRouter, FastAPI, Header, HTTPException, Request, status
+from fastapi import APIRouter, FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from backend.app.features.cameras.store import CameraRegistryStore
@@ -47,6 +47,20 @@ from shared.detection_policies import POLICY_DEFINITIONS
 router = APIRouter(tags=["detection-settings"])
 
 _HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def _backend_camera_id(record: object) -> str:
+    """Return the Hub-issued canonical id, or "" when the record is unmapped.
+
+    Never falls back to the edge-local registry id: the Hub rejects ids it did
+    not issue with FACILITY_BINDING_MISMATCH (issue #308).
+    """
+    if not isinstance(record, dict):
+        return ""
+    backend_camera_id = record.get("backend_camera_id")
+    if isinstance(backend_camera_id, str) and backend_camera_id.strip():
+        return backend_camera_id
+    return ""
 
 
 class DomainSettingPayload(BaseModel):
@@ -124,9 +138,8 @@ class DetectionPolicyRollbackRequest(BaseModel):
 @router.get("/detection-settings", response_model=DetectionSettingsResponse)
 def get_detection_settings(
     request: Request,
-    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
 ) -> dict[str, object]:
-    _authorize(request, authorization)
+    _authorize(request)
     return {"domains": current_settings_snapshot(request.app)}
 
 
@@ -134,13 +147,9 @@ def get_detection_settings(
 def put_detection_settings(
     payload: DetectionSettingsPayload,
     request: Request,
-    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
 ) -> dict[str, object]:
-    _authorize(request, authorization)
-    settings = {
-        domain: _to_domain_setting(getattr(payload.domains, domain))
-        for domain in DOMAINS
-    }
+    _authorize(request)
+    settings = {domain: _to_domain_setting(getattr(payload.domains, domain)) for domain in DOMAINS}
     _store(request.app).replace_all(settings)
     return {"domains": {domain: setting.as_dict() for domain, setting in settings.items()}}
 
@@ -148,14 +157,18 @@ def put_detection_settings(
 @router.get("/detection-policies")
 def get_detection_policies(
     request: Request,
-    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
 ) -> dict[str, object]:
-    _authorize(request, authorization)
+    _authorize(request)
     facility_id = _require_enrolled_facility(request.app)
     store = _policy_store(request.app)
     registry = getattr(request.app.state, "camera_registry", None)
     if not isinstance(registry, CameraRegistryStore):
         registry = CameraRegistryStore.from_env()
+    # Kept as-is on purpose. Omitting unmapped cameras here drops them from the
+    # resolved policy bundle, which pairs with the worker-config projection that
+    # still serves them; a camera the worker watches but has no policy for is a
+    # second failure mode, not a fix. The issue #308 Hub-boundary fix belongs at
+    # the relay/report path -- tracked as a review blocker on this goal.
     camera_ids = tuple(
         PolicyCameraIdentity(str(record.get("backend_camera_id") or record["id"]))
         for record in registry.snapshot()["cameras"]
@@ -186,9 +199,8 @@ def get_detection_policies(
 def diff_detection_policy(
     payload: DetectionPolicyChangeRequest,
     request: Request,
-    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
 ) -> dict[str, object]:
-    _authorize(request, authorization)
+    _authorize(request)
     facility_id = _require_enrolled_facility(request.app)
     _require_policy_camera(request.app, payload.camera_id)
     if payload.values is None and payload.camera_id is None:
@@ -220,9 +232,8 @@ def diff_detection_policy(
 def apply_detection_policy(
     payload: DetectionPolicyChangeRequest,
     request: Request,
-    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
 ) -> dict[str, object]:
-    _authorize(request, authorization)
+    _authorize(request)
     facility_id = _require_enrolled_facility(request.app)
     _require_policy_camera(request.app, payload.camera_id)
     if payload.expected_revision_id is None:
@@ -254,9 +265,8 @@ def apply_detection_policy(
 def rollback_detection_policy(
     payload: DetectionPolicyRollbackRequest,
     request: Request,
-    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
 ) -> dict[str, object]:
-    _authorize(request, authorization)
+    _authorize(request)
     facility_id = _require_enrolled_facility(request.app)
     _require_policy_camera(request.app, payload.camera_id)
     try:
@@ -363,14 +373,8 @@ def _require_policy_camera(app: FastAPI, camera_id: str | None) -> None:
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="camera not found")
 
 
-def _authorize(request: Request, authorization: str | None) -> None:
-    authorize_dashboard(request, legacy_token=_bearer_token(authorization))
-
-
-def _bearer_token(value: str | None) -> str | None:
-    if value is None or not value.startswith("Bearer "):
-        return None
-    return value.removeprefix("Bearer ").strip() or None
+def _authorize(request: Request) -> None:
+    authorize_dashboard(request)
 
 
 __all__ = ["router", "DetectionSettingsResponse", "current_settings_snapshot"]
