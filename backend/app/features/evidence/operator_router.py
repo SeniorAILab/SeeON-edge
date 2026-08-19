@@ -4,10 +4,16 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Annotated, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.app.features.evidence.explanation_schemas import EventExplanationResponse
+from backend.app.features.evidence.explanation_service import (
+    EventExplanationNotFound,
+    EventExplanationService,
+)
 from backend.app.features.evidence.record_store import (
     CentralEvidenceQuery,
     CentralEvidenceReviewStore,
@@ -37,6 +43,36 @@ class IncidentListQuery(BaseModel):
 
     limit: int = Field(default=_DEFAULT_INCIDENT_LIMIT, ge=1, le=_MAX_INCIDENT_LIMIT)
     cursor: str | None = Field(default=None, min_length=1, max_length=384)
+
+
+@router.get(
+    "/events/{edge_event_id}/explanation",
+    response_model=EventExplanationResponse,
+)
+def get_event_explanation(
+    edge_event_id: str,
+    request: Request,
+) -> EventExplanationResponse:
+    _authorize(request)
+    try:
+        parsed = UUID(edge_event_id)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="invalid edge_event_id",
+        ) from error
+    if parsed.version != 4 or str(parsed) != edge_event_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="invalid edge_event_id",
+        )
+    try:
+        return _explanations(request).explain(edge_event_id)
+    except EventExplanationNotFound as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="event not found",
+        ) from error
 
 
 @router.get("/incidents")
@@ -147,6 +183,16 @@ def _reviews(request: Request) -> CentralEvidenceReviewStore:
     if isinstance(store, CentralEvidenceReviewStore):
         return store
     return CentralEvidenceReviewStore(EDGE_DATABASE_PATH)
+
+
+def _explanations(request: Request) -> EventExplanationService:
+    service = getattr(request.app.state, "event_explanation_service", None)
+    if isinstance(service, EventExplanationService):
+        return service
+    query = getattr(request.app.state, "central_evidence_query", None)
+    if isinstance(query, CentralEvidenceQuery):
+        return EventExplanationService(query.database_path)
+    return EventExplanationService(EDGE_DATABASE_PATH)
 
 
 def _authorize(request: Request) -> str:
