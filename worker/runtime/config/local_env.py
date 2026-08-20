@@ -100,15 +100,14 @@ _DEFAULT_ARCHITECTURE: Final = "arch.json"
 # ML_WORKER_FALL_MODEL_ARTIFACT_DIR is unset. Sidecars (arch.json,
 # metadata.yaml) are tracked in git at this path; model.pt is fetched
 # separately via scripts/fetch-models.sh since weights stay gitignored.
-# Values mirror worker/ml-worker.example.yaml's models.fall block and the
-# upstream Berom0227/eldercare-fall-models lstm/metadata.json this artifact
-# was derived from (operating_threshold in particular is not a placeholder).
+# Values mirror the 71641 15fps LSTM sidecars in models/fall/lstm
+# (schema 2). LE2I remains the Hugging Face `lstm/` rollback fetch.
 _DEFAULT_ARTIFACT_DIR: Final = "models/fall/lstm"
 _DEFAULT_WINDOW: Final = 30
 _DEFAULT_STRIDE: Final = 5
-_DEFAULT_OPERATING_THRESHOLD: Final = 0.0007872396381571889
-_DEFAULT_SCHEMA_VERSION: Final = 1
-_DEFAULT_PREPROCESSING_IDENTITY: Final = "legacy-coco17-xyc-frame-normalized-zero-fill-v1"
+_DEFAULT_OPERATING_THRESHOLD: Final = 0.98
+_DEFAULT_SCHEMA_VERSION: Final = 2
+_DEFAULT_PREPROCESSING_IDENTITY: Final = "coco17-xyc-frame-normalized-zero-fill-v1"
 _FETCH_MODELS_HINT: Final = (
     "run scripts/fetch-models.sh to download the packaged default LSTM model "
     "weights (or set ML_WORKER_FALL_MODEL_ARTIFACT_DIR to point at an "
@@ -287,8 +286,8 @@ def fall_model_config_from_environment(
         # ever read when ARTIFACT_DIR was also set, so an operator-set
         # ML_WORKER_FALL_MODEL_OPERATING_THRESHOLD was silently discarded on
         # the packaged-default path (the only path the shipped edge topology
-        # actually takes) and the field default (0.0007872396381571889, an
-        # upstream le2i operating point -- see the module docstring above)
+        # actually takes) and the field default (0.98, the 71641 15fps
+        # provisional operating point -- see the module docstring above)
         # was used instead. An explicit env value now wins outright per
         # field; env silence falls back to the packaged manifest default,
         # same "explicit wins outright, silence defers" precedence used

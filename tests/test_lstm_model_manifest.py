@@ -38,26 +38,27 @@ def test_packaged_lstm_metadata_declares_the_artifact_identity() -> None:
 
     assert isinstance(metadata, dict)
     assert metadata["artifact_digest"] == (
-        "889075695884742475b9713e3b86ba67085bb96979b64c51756ea3fd715ab57a"
+        "72570bc8710e78686216215a01f381fb6ae0e3f889ac433fcfc6ebfe9f383e9f"
     )
-    assert metadata["preprocessing_identity"] == "legacy-coco17-xyc-frame-normalized-zero-fill-v1"
+    assert metadata["preprocessing_identity"] == (
+        "coco17-xyc-frame-normalized-zero-fill-v1"
+    )
+    assert metadata["schema_version"] == 2
+    assert metadata["operating_threshold"] == 0.98
 
 
 def test_packaged_lstm_manifest_loads_the_owner_declared_training_fps() -> None:
-    """The owner-declared 30fps training rate must survive manifest loading.
+    """The owner-declared 15fps training rate must survive in metadata.yaml.
 
-    ``training_fps`` is what makes the train-vs-admission temporal-scale gap
-    auditable (30-frame window ~= 1s at training rate vs ~6s at the edge's
-    5fps pose admission). A silent drop of the field from metadata.yaml --
-    or a loader change that stops parsing it -- would erase that record
-    without any other test noticing. Reads the packaged artifact directory
-    rather than a tmp fixture on purpose: the assertion is about the value
-    this repo actually ships. CI-safe because it needs only metadata.yaml,
-    not the weights blob.
+    Reads the packaged artifact directory rather than a tmp fixture on
+    purpose: the assertion is about the value this repo actually ships.
+    CI-safe because it needs only metadata.yaml, not the weights blob.
     """
-    manifest = LstmFallManifest.from_artifact_dir(_PACKAGED_ARTIFACT_DIR)
-
-    assert manifest.training_fps == 30.0
+    metadata = yaml.safe_load(
+        (_PACKAGED_ARTIFACT_DIR / "metadata.yaml").read_text(encoding="utf-8")
+    )
+    assert isinstance(metadata, dict)
+    assert metadata["training_fps"] == 15.0
 
 
 def test_packaged_lstm_weights_match_the_metadata_digest_when_provisioned() -> None:

@@ -50,10 +50,10 @@ def test_packaged_default_sidecars_are_tracked_and_parseable() -> None:
     assert metadata["window"] == 30
     assert metadata["stride"] == 5
     assert metadata["input_shape"] == [30, 51]
-    assert metadata["schema_version"] == 1
+    assert metadata["schema_version"] == 2
     assert (
         metadata["preprocessing_identity"]
-        == "legacy-coco17-xyc-frame-normalized-zero-fill-v1"
+        == "coco17-xyc-frame-normalized-zero-fill-v1"
     )
 
 
@@ -66,9 +66,9 @@ def test_default_env_resolves_packaged_lstm_config() -> None:
     assert config.window == 30
     assert config.stride == 5
     assert config.input_shape == (30, 51)
-    assert config.schema_version == 1
+    assert config.schema_version == 2
     assert (
-        config.preprocessing_identity == "legacy-coco17-xyc-frame-normalized-zero-fill-v1"
+        config.preprocessing_identity == "coco17-xyc-frame-normalized-zero-fill-v1"
     )
 
 
@@ -125,7 +125,7 @@ def test_default_env_with_no_overrides_resolves_packaged_manifest_defaults(
 
     assert config.window == 30
     assert config.stride == 5
-    assert config.operating_threshold == pytest.approx(0.0007872396381571889)
+    assert config.operating_threshold == pytest.approx(0.98)
 
 
 def test_model_policy_environment_keys_are_retired_explicitly() -> None:

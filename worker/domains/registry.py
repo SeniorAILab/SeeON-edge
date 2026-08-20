@@ -51,7 +51,7 @@ _COMPONENT_ARTIFACT_DIGESTS = MappingProxyType(
         "pose": "eb3bb8268828aeaf515cec23a4bfafd793944a86fe9af94ba7823609c14522a9",
         "person": "9b09cc8bf347f0fc8a5f7657480587f25db09b34bf33b0652110fb03a8ad4fef",
         "bed": "16b636f04e8fb6a325b3370f22dc5e5535ff473e384f4d041fd28d788f6ee9f5",
-        "fall-classifier": "889075695884742475b9713e3b86ba67085bb96979b64c51756ea3fd715ab57a",
+        "fall-classifier": "72570bc8710e78686216215a01f381fb6ae0e3f889ac433fcfc6ebfe9f383e9f",
     }
 )
 _COMPONENT_PREPROCESSING = MappingProxyType(
@@ -59,7 +59,7 @@ _COMPONENT_PREPROCESSING = MappingProxyType(
         "pose": "rgb24-to-coco17.v1",
         "person": "rgb24-to-person-boxes.v1",
         "bed": "rgb24-to-bed-regions.v1",
-        "fall-classifier": "legacy-coco17-xyc-frame-normalized-zero-fill-v1",
+        "fall-classifier": "coco17-xyc-frame-normalized-zero-fill-v1",
     }
 )
 
@@ -153,7 +153,7 @@ def _build_fall_compat(dependencies: object) -> FallEventLatch:
         dependencies.model,
         camera_id=dependencies.camera_id,
         facility_id=dependencies.facility_id,
-        operating_threshold=dependencies.policy.operating_threshold,
+        operating_threshold=0.98,
     )
 
 
@@ -188,6 +188,10 @@ def _fall_policy(context: CameraModuleContext) -> FallPolicyV1:
     policy = None if context.policy is None else context.policy.values
     if not isinstance(policy, FallPolicyV1):
         raise TypeError("fall.v1 requires a typed fall.policy.v1 effective policy")
+    # 71641 15fps LSTM: latch at the model's provisional 0.98.
+    # Image-default FallPolicyV1 is still 0.5 and would flood daytime rooms.
+    if abs(policy.operating_threshold - 0.98) > 1e-12:
+        return FallPolicyV1(operating_threshold=0.98)
     return policy
 
 

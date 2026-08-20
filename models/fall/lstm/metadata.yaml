@@ -1,19 +1,3 @@
-# Packaged default LSTM fall-detector artifact manifest (issue #133).
-#
-# Weights (model.pt) are NOT checked into git (gitignored per .gitignore) --
-# fetch them with `scripts/fetch-models.sh` before first boot. This sidecar
-# (metadata.yaml) and arch.json ARE tracked so the worker's env-less default
-# fall model config has a manifest to validate against as soon as the weights
-# land on disk.
-#
-# Provenance: downloaded from the public Hugging Face repo
-# Berom0227/eldercare-fall-models at revision
-# d67887844bfd2e4b1ca3f3275f770b0b05e23aba (lstm/model.pt, lstm/metadata.json).
-# `hidden`/`layers` in arch.json were derived by inspecting the actual
-# state_dict tensor shapes (lstm.weight_ih_l0: [512, 51] => 4*hidden=512,
-# input_size=51; lstm.weight_ih_l1: [512, 128] confirms a second LSTM layer
-# with hidden=128), not fabricated -- see the PR description for the
-# verification transcript.
 type: lstm
 framework: pytorch
 mode: sequence
@@ -23,14 +7,329 @@ architecture: arch.json
 metadata: metadata.yaml
 window: 30
 stride: 5
-training_fps: 30  # owner-declared 2026-08-18 (pipeline rate; not recorded in upstream provenance, which documented LE2I nominal 25fps as a fallback only). Edge admits pose at 5fps -> 30-frame window ~1s (train) vs ~6s (admission); temporal-scale gap accepted by owner, not a deploy blocker.
-input_shape: [30, 51]
-# From upstream lstm/metadata.json's operating_threshold (dataset le2i,
-# version poc) -- not a placeholder.
-operating_threshold: 0.0007872396381571889
-schema_version: 1
-preprocessing_identity: legacy-coco17-xyc-frame-normalized-zero-fill-v1
-# SHA-256 of the fetched model.pt, so a corrupted or unexpectedly swapped
-# weights file fails closed at load time (worker.adapters.model.artifact
-# .verify_artifact_digest) instead of silently loading.
-artifact_digest: "889075695884742475b9713e3b86ba67085bb96979b64c51756ea3fd715ab57a"
+input_shape:
+- 30
+- 51
+operating_threshold: 0.98
+schema_version: 2
+preprocessing_identity: coco17-xyc-frame-normalized-zero-fill-v1
+training_fps: 15.0
+artifact_digest: 72570bc8710e78686216215a01f381fb6ae0e3f889ac433fcfc6ebfe9f383e9f
+dataset: AI-Hub 71641 Validation subset
+dataset_source: AI-Hub dataset 71641 (낙상사고 위험동작 영상-센서 쌍), Validation split only. Not
+  trained on AI-Hub 167.
+fps: 15.0
+window_duration_sec: 2.0
+seed: 42
+split:
+  kind: label-anchored actor-component packing
+  test_actors:
+  - A
+  - E
+  - F
+  - H
+  - Q
+  - S
+  train_actors:
+  - B
+  - C
+  - D
+  - G
+  - I
+  - J
+  - K
+  - L
+  - M
+  - N
+  - O
+  - P
+  - R
+  - T
+  - U
+  - V
+  - X
+  - Y
+  val_carve_actors:
+  - G
+  - L
+  - R
+  - X
+  n_train: 1696
+  n_test: 576
+  seed: 42
+threshold_status: provisional
+threshold_selected_on: contaminated_validation_carve
+threshold_use: shadow_evaluation_only
+validated_production_alert_threshold: false
+meets_side_fall_event_recall_floor: false
+side_fall_event_recall_floor: 0.9
+real_threshold_selection: todo 14 from REAL shadow traces, not another staged-clip
+  sweep
+threshold_selection:
+  shipped: 0.98
+  status: provisional
+  use: shadow_evaluation_only
+  validated_operating_point: false
+  rule: highest grid threshold with per-event recall >= 0.90 on the contaminated train-actor
+    val carve; ties break toward fewer FA/night then higher t. NOT re-selected on
+    test.
+  selected_on: contaminated validation carve of train actors G,L,R,X (model had already
+    fit those windows)
+  not_selected_on: held-out test actors
+  val_carve_contaminated: true
+  val_carve_actors:
+  - G
+  - L
+  - R
+  - X
+  rejected_test_peek: 0.99
+  why_not_0_99: '0.99 was chosen by peeking at held-out test performance, which moved
+    contamination from val to test rather than removing it. It is methodologically
+    invalid AND less safe: 측면낙상 0.885 -> 0.844 (four extra missed side-fall clips);
+    overall misses 22/440 -> 33/440. Bought 113.66 -> 48.71 staged FA/camera/8h (-64.95).
+    Neither point meets the 0.90 side-fall floor.'
+  no_point_meets_side_fall_floor: true
+  side_fall_event_recall_at_0_98: 0.8854166666666666
+  side_fall_event_recall_at_0_99: 0.84375
+held_out_metrics:
+  split: test
+  actors:
+  - A
+  - E
+  - F
+  - H
+  - Q
+  - S
+  threshold: 0.98
+  note: Reported at the provisional 0.98 field. This is a shadow-evaluation readout,
+    not a licensed operating point.
+  per_event_recall: 0.95
+  n_caught: 418
+  n_fall_events: 440
+  n_missed: 22
+  n_false_alarms: 42
+  false_alarms_per_night: 113.65572538210971
+  window_precision: 0.8846317581949766
+  window_recall: 0.7464080459770115
+  window_f1: 0.8096629651276057
+  window_pr_auc: 0.9054884120285037
+  true_first_alarm_latency_sec:
+    n: 418
+    mean: 1.1626794258373205
+    min: 0.26666666666666666
+    p25: 0.9333333333333333
+    median: 1.1333333333333333
+    p75: 1.3333333333333333
+    p90: 1.6
+    max: 3.933333333333333
+  by_scene_cat_name:
+    비낙상:
+      per_event_recall: 0.0
+      n_fall_events: 0
+      n_caught: 0
+      n_missed: 0
+      n_false_alarms: 28
+      false_alarms_per_night: 296.3543708349667
+    전면낙상:
+      per_event_recall: 0.9545454545454546
+      n_fall_events: 176
+      n_caught: 168
+      n_missed: 8
+      n_false_alarms: 5
+      false_alarms_per_night: 45.43160020191824
+    측면낙상:
+      per_event_recall: 0.8854166666666666
+      n_fall_events: 96
+      n_caught: 85
+      n_missed: 11
+      n_false_alarms: 0
+      false_alarms_per_night: 0.0
+    후면낙상:
+      per_event_recall: 0.9821428571428571
+      n_fall_events: 168
+      n_caught: 165
+      n_missed: 3
+      n_false_alarms: 9
+      false_alarms_per_night: 85.71428571428571
+  by_scene_loc:
+    노인정 또는 요양병원:
+      per_event_recall: 0.98125
+      n_fall_events: 160
+      n_caught: 157
+      n_missed: 3
+      n_false_alarms: 25
+      false_alarms_per_night: 179.9760031995734
+    병원:
+      per_event_recall: 0.90625
+      n_fall_events: 192
+      n_caught: 174
+      n_missed: 18
+      n_false_alarms: 9
+      false_alarms_per_night: 54.71124620060792
+    집:
+      per_event_recall: 0.9886363636363636
+      n_fall_events: 88
+      n_caught: 87
+      n_missed: 1
+      n_false_alarms: 8
+      false_alarms_per_night: 120.97451694203302
+  by_scene_pos:
+    거실:
+      per_event_recall: 0.9886363636363636
+      n_fall_events: 88
+      n_caught: 87
+      n_missed: 1
+      n_false_alarms: 8
+      false_alarms_per_night: 120.97451694203302
+    병실:
+      per_event_recall: 0.9393939393939394
+      n_fall_events: 264
+      n_caught: 248
+      n_missed: 16
+      n_false_alarms: 32
+      false_alarms_per_night: 152.7581329561528
+    복도:
+      per_event_recall: 0.9431818181818182
+      n_fall_events: 88
+      n_caught: 83
+      n_missed: 5
+      n_false_alarms: 2
+      false_alarms_per_night: 24.150268336314856
+    평지:
+      per_event_recall: 0.0
+      n_fall_events: 0
+      n_caught: 0
+      n_missed: 0
+      n_false_alarms: 0
+      false_alarms_per_night: 0.0
+  side_fall_event_recall: 0.8854166666666666
+  side_fall_below_floor: true
+  hospital_event_recall: 0.90625
+  room_event_recall: 0.9393939393939394
+  worst_false_alarm_scene_pos: 병실
+  room_false_alarms_per_night: 152.7581329561528
+  nursing_home_or_care_hospital_false_alarms_per_night: 179.9760031995734
+rejected_alternative_threshold_0_99_test_peek:
+  operating_threshold: 0.99
+  label: rejected test-peek — methodologically invalid AND less safe; NOT shipped
+  selected_by_peeking_at_test: true
+  test_per_event_recall: 0.925
+  test_n_caught: 407
+  test_n_fall_events: 440
+  test_n_missed: 33
+  test_n_false_alarms: 18
+  test_false_alarms_per_night: 48.70959659233272
+  staged_fa_per_night_delta_vs_0_98: -64.94612878977699
+  by_scene_cat_name:
+    비낙상:
+      per_event_recall: 0.0
+      n_fall_events: 0
+      n_caught: 0
+      n_missed: 0
+      n_false_alarms: 16
+    전면낙상:
+      per_event_recall: 0.9261363636363636
+      n_fall_events: 176
+      n_caught: 163
+      n_missed: 13
+      n_false_alarms: 1
+    측면낙상:
+      per_event_recall: 0.84375
+      n_fall_events: 96
+      n_caught: 81
+      n_missed: 15
+      n_false_alarms: 0
+    후면낙상:
+      per_event_recall: 0.9702380952380952
+      n_fall_events: 168
+      n_caught: 163
+      n_missed: 5
+      n_false_alarms: 1
+  by_scene_loc:
+    병원:
+      per_event_recall: 0.8645833333333334
+      n_fall_events: 192
+      n_caught: 166
+      n_missed: 26
+    노인정 또는 요양병원:
+      per_event_recall: 0.9625
+      n_fall_events: 160
+      n_caught: 154
+      n_missed: 6
+      false_alarms_per_night: 64.79136115184643
+    집:
+      per_event_recall: 0.9886363636363636
+      n_fall_events: 88
+      n_caught: 87
+      n_missed: 1
+  by_scene_pos:
+    병실:
+      per_event_recall: 0.9015151515151515
+      n_fall_events: 264
+      n_caught: 238
+      n_missed: 26
+      false_alarms_per_night: 66.83168316831684
+  side_fall_event_recall: 0.84375
+  hospital_event_recall: 0.8645833333333334
+  room_event_recall: 0.9015151515151515
+  extra_missed_side_fall_clip_ids:
+  - 00001_H_A_SY_C1
+  - 00053_H_A_SY_C4
+  - 00053_H_A_SY_C6
+  - 00053_H_A_SY_C7
+  trade_vs_0_98:
+    side_fall_event_recall: 0.885 (11/96 missed) -> 0.844 (15/96 missed)
+    overall_misses: 22/440 -> 33/440
+    병원_event_recall: 0.906 -> 0.865
+    병실_event_recall: 0.939 -> 0.902
+    staged_fa_per_camera_per_8h: 113.66 -> 48.71 (-64.95)
+    verdict: Trading 4 real missed side falls for 65 staged pages is not a defensible
+      bargain in a nursing home.
+  true_first_alarm_latency_sec:
+    n: 407
+    mean: 1.2455364455364455
+    min: 0.4666666666666667
+    median: 1.2
+    p90: 1.6666666666666667
+    max: 3.933333333333333
+cleared_for_production_alarms: false
+primary_head: true
+companion:
+  role: occlusion
+  path: ml/models/fall/71641-15fps/bbox-lstm
+  operating_threshold: 0.95
+  input_shape:
+  - 30
+  - 6
+  primary: false
+caveats:
+- NOT cleared to emit production alarms. Shadow-mode only.
+- operating_threshold=0.98 is PROVISIONAL and was selected on a CONTAMINATED validation
+  carve (train actors G,L,R,X the model had already fit). It is for SHADOW EVALUATION
+  ONLY and is NOT a validated production alert threshold. The loader contract requires
+  the field, so 0.98 is present; it is not a licensed operating point.
+- No threshold on this model currently meets the 0.90 side-fall event-recall floor
+  (0.885 at 0.98, 0.844 at 0.99). The real threshold must be selected in todo 14 from
+  REAL shadow traces, not from another staged-clip sweep.
+- '0.99 is recorded only as a rejected alternative. It was chosen by peeking at test
+  performance, which moved contamination from val to test rather than removing it.
+  It is methodologically invalid AND less safe: 측면낙상 event recall fell 0.885 (11/96
+  missed) -> 0.844 (15/96 missed). Overall misses 22/440 -> 33/440. 병원 0.906 -> 0.865;
+  병실 0.939 -> 0.902. The four extra missed side-fall clips are 00001_H_A_SY_C1, 00053_H_A_SY_C4,
+  00053_H_A_SY_C6, 00053_H_A_SY_C7. Bought: 113.66 -> 48.71 staged FA/camera/8h (-64.95).
+  That is a staged-clip number, not a measured night. Trading 4 real missed side falls
+  for 65 staged pages is not a defensible bargain in a nursing home.'
+- 'FA/night is a linear extrapolation of unmatched rising-edges on ~20 s staged clips
+  onto one camera x 8 h. It is NOT a measured night and is NOT an upper bound: the
+  staged clips contain no blankets, no IR/night imaging, no caregiver lean-over, and
+  no toilet transfer — all common nursing-home confounders. 병실 is the WORST scene_pos
+  for false alarms at 0.98 (152.76/night); 노인정/요양병원 is 179.98/night.'
+- Reported median latency 0.0 s in the todo-11 eval_report is an accounting artefact
+  (latency forced to 0 when the streak's window START precedes labelled onset; that
+  happens for most catches because a 2 s window overlapping a 2 s fall must have started
+  earlier). The runtime alarm fires AFTER onset for every catch. True first-alarm
+  latency is recorded under true_first_alarm_latency_sec.
+- 측면낙상 (side-fall) event recall is below the 0.90 floor the evaluation claimed to
+  protect; the aggregate hides it. See held_out_metrics.by_scene_cat_name. window_duration_sec
+  = window / training_fps = 30/15 = 2.0.
+weights_sha256: 72570bc8710e78686216215a01f381fb6ae0e3f889ac433fcfc6ebfe9f383e9f
