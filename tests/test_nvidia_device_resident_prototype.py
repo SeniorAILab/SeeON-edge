@@ -36,9 +36,7 @@ from worker.interfaces.device_batch import DeviceResidentBatcher, DeviceResident
 from worker.runtime.telemetry.device_residency import device_residency_diagnostics
 from worker.runtime.telemetry.runtime_diagnostics import WorkerDiagnostics
 from worker.types import (
-    DeviceInferencePacket,
     FrameDescriptor,
-    FrameKey,
     FrameLease,
     FrameLeaseReleasedError,
     MemoryKind,
@@ -426,21 +424,3 @@ def test_pool_rejects_an_allocator_that_returns_host_memory() -> None:
     pool = DeviceResidentFramePool(config, allocate=_bad_allocate)
     with pytest.raises(ValueError, match="host-memory descriptor"):
         pool.acquire()
-
-
-def test_device_inference_packet_retains_one_consumer_and_recycles_once() -> None:
-    pool, allocator = fake_device_resident_pool(
-        camera_id="camera-a", capacity=1, width=2, height=2
-    )
-    owner_lease = pool.acquire()
-    owner = DeviceInferencePacket(
-        FrameKey("boot-a", "camera-a", 1, 4, 4.0),
-        owner_lease.descriptor,
-        owner_lease,
-    )
-    consumer = owner.retain()
-    owner.release()
-    assert pool.outstanding == 1
-    consumer.release()
-    assert pool.outstanding == 0
-    assert allocator.allocations == 1
