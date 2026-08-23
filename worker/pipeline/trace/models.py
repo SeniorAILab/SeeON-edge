@@ -22,6 +22,10 @@ class TracePersistenceError(RuntimeError):
     pass
 
 
+class TraceStorageError(TracePersistenceError):
+    """A trace could not be durably stored before its event was emitted."""
+
+
 @dataclass(frozen=True, slots=True)
 class OptionalNumber:
     value: int | float | None

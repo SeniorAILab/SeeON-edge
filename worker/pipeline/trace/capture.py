@@ -17,6 +17,7 @@ from worker.pipeline.trace.models import (
     TraceKeypoint,
     TracePersistenceError,
     TracePerson,
+    TraceStorageError,
     content_id,
     require_component_qualified,
     require_qualified,
@@ -126,11 +127,14 @@ class TraceCapture:
         require_persisted: bool = False,
     ) -> tuple[BusinessEvent, ...] | bool:
         frame = self.build(packet, result, events)
-        persisted = writer.submit(frame, require_persisted=require_persisted)
+        try:
+            persisted = writer.submit(frame, require_persisted=require_persisted)
+        except TracePersistenceError as exc:
+            raise TraceStorageError(str(exc)) from exc
         if not events:
             return persisted
         if not persisted:
-            raise TracePersistenceError(
+            raise TraceStorageError(
                 "admitted event trace could not enter the bounded persistence handoff"
             )
         return tuple(_attach_trace(event, frame.decisions, self.identities) for event in events)

@@ -26,6 +26,7 @@ from worker.pipeline.analytics import CompositeExtractor
 from worker.pipeline.decision import EventAggregator
 from worker.pipeline.inference_coordinator import InferenceResultSlot
 from worker.pipeline.trace import BoundedTraceWriter, TraceCapture
+from worker.pipeline.trace.models import TraceStorageError
 from worker.types import BusinessEvent, FramePacket, ModuleResult
 
 LOGGER: Final = logging.getLogger(__name__)
@@ -165,13 +166,22 @@ class CameraPipelinePump:
         if self._diagnostics is not None:
             self._diagnostics.record_detection_completed(self._camera_id)
         if self._trace_capture is not None and self._trace_writer is not None:
-            traced = self._trace_capture.capture(
-                self._trace_writer,
-                packet,
-                result,
-                events,
-                require_persisted=bool(events),
-            )
+            try:
+                traced = self._trace_capture.capture(
+                    self._trace_writer,
+                    packet,
+                    result,
+                    events,
+                    require_persisted=bool(events),
+                )
+            except TraceStorageError:
+                if not events:
+                    raise
+                LOGGER.exception(
+                    "admitted event emitted without persisted traces: camera_id=%s",
+                    self._camera_id,
+                )
+                traced = events
             if events:
                 if isinstance(traced, bool):  # pragma: no cover - capture contract
                     raise RuntimeError("event trace capture returned no traced events")

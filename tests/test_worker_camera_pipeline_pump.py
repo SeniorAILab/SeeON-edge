@@ -27,6 +27,7 @@ from worker.pipeline.decision import EventAggregator, IncidentManager
 from worker.pipeline.inference_coordinator import CoordinatedInference, InferenceResultSlot
 from worker.pipeline.ingest.lifecycle import IngestSupervisor
 from worker.pipeline.perception import GreedyIouTracker, SceneState
+from worker.pipeline.trace.models import TracePersistenceError, TraceStorageError
 from worker.types import BusinessEvent, DecisionInput, FramePacket, ModuleResult
 
 
@@ -320,3 +321,114 @@ def test_supervisor_stop_joins_real_pump_threads() -> None:
     supervisor.stop(join_timeout_sec=2.0)
 
     assert not started_thread.is_alive()
+
+
+@final
+class _FailingTraceCapture:
+    def capture(
+        self,
+        writer: object,
+        packet: FramePacket,
+        result: object,
+        events: tuple[BusinessEvent, ...],
+        *,
+        require_persisted: bool = False,
+    ) -> tuple[BusinessEvent, ...]:
+        del writer, packet, result, events, require_persisted
+        raise TraceStorageError(
+            "trace camera is absent from the runtime manifest boot"
+        )
+
+
+@final
+class _DummyTraceWriter:
+    pass
+
+
+@final
+class _FailingTraceAssociationCapture:
+    def capture(
+        self,
+        writer: object,
+        packet: FramePacket,
+        result: object,
+        events: tuple[BusinessEvent, ...],
+        *,
+        require_persisted: bool = False,
+    ) -> tuple[BusinessEvent, ...]:
+        del writer, packet, result, events, require_persisted
+        raise TracePersistenceError(
+            "admitted event does not resolve to exactly one decision trace"
+        )
+
+
+def test_admitted_event_still_emits_when_trace_persist_fails() -> None:
+    results = InferenceResultSlot()
+    sink = _RecordingSink()
+    decision = EventAggregator(
+        deciders=(_FrameEchoDecider("camera-a"),),
+        incidents=IncidentManager(),
+    )
+    pump = CameraPipelinePump(
+        "camera-a",
+        results,
+        _blank_analytics("camera-a"),
+        decision,
+        sink,
+        poll_timeout_sec=0.02,
+        max_frames=1,
+        trace_capture=_FailingTraceCapture(),  # type: ignore[arg-type]
+        trace_writer=_DummyTraceWriter(),  # type: ignore[arg-type]
+    )
+    _deliver(results, _packet("camera-a", 1))
+    pump.run()
+
+    assert pump.failure_count == 0
+    assert len(sink.events) == 1
+    assert sink.events[0].camera_id == "camera-a"
+
+
+def test_trace_association_failure_does_not_emit_an_untraced_event() -> None:
+    results = InferenceResultSlot()
+    sink = _RecordingSink()
+    decision = EventAggregator(
+        deciders=(_FrameEchoDecider("camera-a"),),
+        incidents=IncidentManager(),
+    )
+    pump = CameraPipelinePump(
+        "camera-a",
+        results,
+        _blank_analytics("camera-a"),
+        decision,
+        sink,
+        poll_timeout_sec=0.02,
+        max_frames=1,
+        trace_capture=_FailingTraceAssociationCapture(),  # type: ignore[arg-type]
+        trace_writer=_DummyTraceWriter(),  # type: ignore[arg-type]
+    )
+    _deliver(results, _packet("camera-a", 1))
+    pump.run()
+
+    assert pump.failure_count == 1
+    assert sink.events == []
+
+
+def test_non_event_trace_persist_failure_remains_a_pipeline_failure() -> None:
+    results = InferenceResultSlot()
+    sink = _RecordingSink()
+    pump = CameraPipelinePump(
+        "camera-a",
+        results,
+        _blank_analytics("camera-a"),
+        EventAggregator(deciders=(), incidents=IncidentManager()),
+        sink,
+        poll_timeout_sec=0.02,
+        max_frames=1,
+        trace_capture=_FailingTraceCapture(),  # type: ignore[arg-type]
+        trace_writer=_DummyTraceWriter(),  # type: ignore[arg-type]
+    )
+    _deliver(results, _packet("camera-a", 1))
+    pump.run()
+
+    assert pump.failure_count == 1
+    assert sink.events == []
