@@ -14,7 +14,7 @@ has not been delivered.
 
    ```
    local/fall-ml-worker:fa3811a-boundary
-   local/fall-ml-api:fa3811a-boundary
+   local/fall-ml-api:fa3811a-boundary  # gitleaks:allow
    ```
 
    Both were smoke-checked: the worker boots `python -m worker --check-config`
