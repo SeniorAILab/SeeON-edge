@@ -103,7 +103,7 @@ def spawn_child(config: ChildConfig) -> ChildTransport:
                 ),
             )
         )
-    except BaseException:
+    except BaseException:  # noqa: BLE001  # noqa: BROAD_EXCEPT_OK - resource boundary
         _close_sockets(sockets)
         _close_fds(descriptors)
         raise

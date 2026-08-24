@@ -70,11 +70,17 @@ class LatestMetadataSlot:
         self._high_water: dict[tuple[str, int, int], tuple[int, int, int]] = {}
         self._counters = MetadataCounters()
 
-    def register_source(self, binding: SourceBinding) -> None:
+    def register_source(self, binding: SourceBinding) -> AcceptanceToken:
         with self._condition:
             self._expected[binding.camera_id] = binding
             _ = self._latest.pop(binding.camera_id, None)
+            self._high_water = {
+                key: high_water
+                for key, high_water in self._high_water.items()
+                if key[0] != binding.camera_id
+            }
             self._condition.notify_all()
+            return AcceptanceToken(binding, 0)
 
     def remove_source(self, camera_id: str) -> None:
         with self._condition:
@@ -90,10 +96,6 @@ class LatestMetadataSlot:
     def expected_binding(self, camera_id: str) -> SourceBinding | None:
         with self._lock:
             return self._expected.get(camera_id)
-
-    def is_registered(self, camera_id: str) -> bool:
-        with self._lock:
-            return camera_id in self._expected
 
     def subscribe(self, binding: SourceBinding) -> AcceptanceToken:
         with self._lock:

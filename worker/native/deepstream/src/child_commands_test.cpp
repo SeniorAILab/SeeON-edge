@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <mutex>
 #include <string>
 
 namespace {
@@ -39,10 +40,19 @@ int main() {
         "initial source add failed");
   check(result.reply.header.stream_epoch == 1, "initial epoch mismatch");
 
-  auto emit = request(options, seeon::ipc::Kind::kEmitMetadata, 1);
-  result = seeon::handle_command(state, emit);
-  check(result.reply.header.kind == static_cast<std::uint8_t>(seeon::ipc::Kind::kError),
-        "synthetic metadata was accepted outside QA mode");
+  const seeon::ipc::Kind qa_commands[] = {
+      seeon::ipc::Kind::kEmitMetadata,
+      seeon::ipc::Kind::kWaitPublish,
+      seeon::ipc::Kind::kInjectSourceEos,
+  };
+  for (const auto command : qa_commands) {
+    result = seeon::handle_command(state, request(options, command, 1));
+    check(result.reply.header.kind == static_cast<std::uint8_t>(seeon::ipc::Kind::kError),
+          "QA command was accepted outside QA mode");
+    check(std::string{result.reply.payload.begin(), result.reply.payload.end()} ==
+              "qa_command_disabled",
+          "QA command refusal was not explicit");
+  }
 
   auto remove = request(options, seeon::ipc::Kind::kRemoveSource, 1);
   result = seeon::handle_command(state, remove);
@@ -56,6 +66,14 @@ int main() {
   auto rebuild = request(options, seeon::ipc::Kind::kSourceFailure, 2, "eos");
   result = seeon::handle_command(state, rebuild);
   check(result.reply.header.stream_epoch == 2, "reconnect did not advance epoch");
+  {
+    std::lock_guard lock{state.slot_mutex};
+    const auto found = state.sources.find("camera-a");
+    check(found != state.sources.end() && found->second.latest.has_value(),
+          "replacement pipeline did not publish an early frame");
+    check(found->second.latest->header.stream_epoch == 2,
+          "replacement pipeline early frame carried the old epoch");
+  }
 
   result = seeon::handle_command(state, remove);
   check(result.reply.header.kind == static_cast<std::uint8_t>(seeon::ipc::Kind::kAck),

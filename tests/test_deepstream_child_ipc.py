@@ -94,7 +94,7 @@ def test_oversized_control_frame_is_refused_before_socket_send() -> None:
 def test_latest_frame_wins_when_consumer_pauses() -> None:
     # Given
     slot = metadata.LatestMetadataSlot()
-    slot.register_source(_binding())
+    _ = slot.register_source(_binding())
 
     # When
     assert slot.publish(_frame(seq=1))
@@ -110,7 +110,7 @@ def test_latest_frame_wins_when_consumer_pauses() -> None:
 def test_stale_unknown_and_epoch_mismatch_metadata_are_dropped() -> None:
     # Given
     slot = metadata.LatestMetadataSlot()
-    slot.register_source(_binding())
+    _ = slot.register_source(_binding())
     assert slot.publish(_frame(seq=4))
     assert slot.take("camera-a") is not None
 
@@ -134,7 +134,7 @@ def test_stale_unknown_and_epoch_mismatch_metadata_are_dropped() -> None:
 def test_boot_child_transform_and_each_high_water_are_enforced() -> None:
     # Given
     slot = metadata.LatestMetadataSlot()
-    slot.register_source(_binding())
+    _ = slot.register_source(_binding())
     accepted = _frame(seq=10)
     assert slot.publish(accepted)
     assert slot.take("camera-a") is not None
@@ -175,14 +175,11 @@ def test_metadata_datagram_receiver_uses_inherited_socketpair() -> None:
     # Given
     sender, wake_receiver = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
     slot = metadata.LatestMetadataSlot()
-    slot.register_source(_binding())
+    _ = slot.register_source(_binding())
 
     class Puller:
         def pull_latest(self, camera_id: str) -> ipc.MetadataFrame:
             return _frame(camera=camera_id, seq=8)
-
-        def source_binding(self, camera_id: str) -> metadata.SourceBinding:
-            return _binding(camera=camera_id)
 
     token = slot.subscribe(_binding())
 

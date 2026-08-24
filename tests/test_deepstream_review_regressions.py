@@ -5,7 +5,6 @@ from __future__ import annotations
 import socket
 import threading
 import uuid
-from collections.abc import Callable
 from pathlib import Path
 from typing import override
 
@@ -65,15 +64,6 @@ def _frame(
 
 
 class _NoopReceiver:
-    def __init__(self) -> None:
-        self.handler: Callable[[SourceBinding, MetadataFrame], None] | None = None
-
-    def set_binding_handler(
-        self,
-        handler: Callable[[SourceBinding, MetadataFrame], None],
-    ) -> None:
-        self.handler = handler
-
     def pull_now(self, camera_id: str) -> MetadataFrame | None:
         del camera_id
         return None
@@ -83,9 +73,6 @@ class _RecoveringPuller:
     def __init__(self) -> None:
         self.calls: int = 0
         self.first_pull: threading.Event = threading.Event()
-
-    def source_binding(self, camera_id: str) -> SourceBinding:
-        return _binding(camera_id)
 
     def pull_latest(self, camera_id: str) -> MetadataFrame | None:
         self.calls += 1
@@ -98,7 +85,7 @@ class _RecoveringPuller:
 def test_metadata_receiver_recovers_after_one_pull_failure() -> None:
     # Given
     slot = LatestMetadataSlot()
-    slot.register_source(_binding("camera-a"))
+    _ = slot.register_source(_binding("camera-a"))
     sender, wake_receiver = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
     puller = _RecoveringPuller()
     token = slot.subscribe(_binding("camera-a"))
@@ -121,15 +108,12 @@ def test_metadata_receiver_recovers_after_one_pull_failure() -> None:
 def test_empty_metadata_datagram_is_rejected_without_stopping_receiver() -> None:
     # Given
     slot = LatestMetadataSlot()
-    slot.register_source(_binding("camera-a"))
+    _ = slot.register_source(_binding("camera-a"))
     sender, wake_receiver = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
 
     class Puller:
         def pull_latest(self, camera_id: str) -> MetadataFrame | None:
             return _frame(camera_id)
-
-        def source_binding(self, camera_id: str) -> SourceBinding:
-            return _binding(camera_id)
 
     # When
     token = slot.subscribe(_binding("camera-a"))
@@ -173,8 +157,8 @@ def test_synthetic_metadata_cannot_establish_source_ready() -> None:
 def test_readiness_wait_is_scoped_to_camera_and_binding() -> None:
     # Given
     slot = LatestMetadataSlot()
-    slot.register_source(_binding("camera-a"))
-    slot.register_source(_binding("camera-b"))
+    _ = slot.register_source(_binding("camera-a"))
+    _ = slot.register_source(_binding("camera-b"))
     token = slot.subscribe(_binding("camera-a"))
 
     # When
@@ -188,7 +172,7 @@ def test_readiness_wait_is_scoped_to_camera_and_binding() -> None:
 def test_latest_selection_uses_native_publish_high_water_after_pause() -> None:
     # Given
     slot = LatestMetadataSlot()
-    slot.register_source(_binding("camera-a"))
+    _ = slot.register_source(_binding("camera-a"))
     for sequence in range(1, 65):
         assert slot.publish(_frame("camera-a", sequence=sequence))
 

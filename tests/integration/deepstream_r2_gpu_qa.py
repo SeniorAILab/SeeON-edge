@@ -11,9 +11,11 @@ from pathlib import Path
 import torch
 
 from worker.native.deepstream.control import ControlIdentity, DeepStreamControlClient
-from worker.native.deepstream.metadata import SourceBinding
+from worker.native.deepstream.ipc import MetadataFrame
+from worker.native.deepstream.metadata import AcceptanceToken, SourceBinding
 from worker.runtime.deepstream import ChildConfig
 from worker.runtime.deepstream.readiness import wait_for_ready
+from worker.runtime.deepstream.source_control import DarkSourceController, SourceReadinessError
 from worker.runtime.deepstream.supervisor import DeepStreamChildSupervisor
 from worker.runtime.deepstream.transport import spawn_child
 
@@ -91,26 +93,70 @@ def main() -> int:
     binding_b = supervisor.metadata.expected_binding("camera-b")
     if binding_a is None or binding_b is None:
         raise RuntimeError("source binding absent after readiness")
-    epoch_two = SourceBinding(
-        binding_a.worker_boot_id,
-        binding_a.child_instance_id,
-        binding_a.camera_id,
-        binding_a.source_generation,
-        2,
-        binding_a.transform_id,
-    )
-    rebuilt_token = supervisor.metadata.subscribe(epoch_two)
-    healthy_token = supervisor.metadata.subscribe(binding_b)
-    supervisor.control.inject_source_eos("camera-a")
-    rebuilt = supervisor.metadata.wait_accepted(rebuilt_token, timeout_sec=10.0)
-    healthy = supervisor.metadata.wait_accepted(healthy_token, timeout_sec=10.0)
+    rebuilt: MetadataFrame | None = None
+    healthy: MetadataFrame | None = None
+    for target_epoch in range(2, 7):
+        target = SourceBinding(
+            binding_a.worker_boot_id,
+            binding_a.child_instance_id,
+            binding_a.camera_id,
+            binding_a.source_generation,
+            target_epoch,
+            binding_a.transform_id,
+        )
+        rebuilt_token = AcceptanceToken(target, 0)
+        healthy_token = supervisor.metadata.subscribe(binding_b)
+        supervisor.control.inject_source_eos("camera-a")
+        rebuilt = supervisor.metadata.wait_accepted(rebuilt_token, timeout_sec=10.0)
+        healthy = supervisor.metadata.wait_accepted(healthy_token, timeout_sec=10.0)
+        if supervisor.sources.snapshot("camera-a").stream_epoch != target_epoch:
+            raise RuntimeError(f"EOS rebuild did not reach READY at epoch {target_epoch}")
+
+    class TimeoutOnceAdmission:
+        def __init__(self) -> None:
+            self.timed_out: bool = False
+
+        def register_source(self, binding: SourceBinding) -> AcceptanceToken:
+            return supervisor.metadata.register_source(binding)
+
+        def remove_source(self, camera_id: str) -> None:
+            supervisor.metadata.remove_source(camera_id)
+
+        def wait_accepted(
+            self,
+            token: AcceptanceToken,
+            *,
+            timeout_sec: float,
+        ) -> MetadataFrame:
+            if not self.timed_out:
+                self.timed_out = True
+                raise TimeoutError("injected readiness timeout")
+            return supervisor.metadata.wait_accepted(token, timeout_sec=timeout_sec)
+
+    class PullNow:
+        def pull_now(self, camera_id: str) -> MetadataFrame | None:
+            return supervisor.control.pull_latest(camera_id)
+
+    timeout_admission = TimeoutOnceAdmission()
+    timeout_sources = DarkSourceController(supervisor.control, timeout_admission, PullNow())
+    try:
+        _ = timeout_sources.add("camera-timeout", "loopback://camera-timeout")
+    except SourceReadinessError:
+        pass
+    else:
+        raise RuntimeError("injected add readiness timeout was not contained")
+    timeout_readded = timeout_sources.add("camera-timeout", "loopback://camera-timeout")
+    if timeout_readded.source_generation != 2:
+        raise RuntimeError("add-timeout rollback did not permit a generation-2 re-add")
+    _ = timeout_sources.remove("camera-timeout")
+
     snapshot_a = supervisor.sources.snapshot("camera-a")
     snapshot_b = supervisor.sources.snapshot("camera-b")
     supervisor.stop()
     supervisor.stop()
-    if rebuilt.identity.stream_epoch != 2 or snapshot_a.stream_epoch != 2:
-        raise RuntimeError("EOS source did not rebuild to epoch 2")
-    if healthy.identity.stream_epoch != 1 or snapshot_b.stream_epoch != 1:
+    if rebuilt is None or rebuilt.identity.stream_epoch != 6 or snapshot_a.stream_epoch != 6:
+        raise RuntimeError("EOS source did not complete five rebuilds")
+    if healthy is None or healthy.identity.stream_epoch != 1 or snapshot_b.stream_epoch != 1:
         raise RuntimeError("healthy source did not keep flowing at epoch 1")
     if (root / "eos" / "first-fault.json").exists():
         raise RuntimeError("clean EOS rebuild persisted a fatal fault")
@@ -127,6 +173,8 @@ def main() -> int:
                 "python_cuda_initialized": torch.cuda.is_initialized(),
                 "raw_readd_generation": readded.source_generation,
                 "raw_reconnect_epoch": reconnected.stream_epoch,
+                "readd_after_timeout_generation": timeout_readded.source_generation,
+                "rebuild_iterations": 5,
                 "rebuilt_epoch": snapshot_a.stream_epoch,
                 "status": "ok",
                 "two_source_ready": [ready_a.state, ready_b.state],

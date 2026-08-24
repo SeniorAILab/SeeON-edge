@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import socket
 import threading
-from collections.abc import Callable
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Final, Protocol, final, override
 
 from worker.native.deepstream.ipc import MetadataFrame
-from worker.native.deepstream.metadata_slot import LatestMetadataSlot, SourceBinding
+from worker.native.deepstream.metadata_slot import LatestMetadataSlot
 
 _MAX_DATAGRAM: Final = 512
+
+
+def _require_socket(endpoint: object) -> socket.socket:
+    if not isinstance(endpoint, socket.socket):
+        raise TypeError("inherited datagram wake socket required")
+    return endpoint
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,7 +35,6 @@ class MetadataPullStopped(Exception):
 
 class MetadataPuller(Protocol):
     def pull_latest(self, camera_id: str) -> MetadataFrame | None: ...
-    def source_binding(self, camera_id: str) -> SourceBinding: ...
 
 
 @final
@@ -39,20 +43,17 @@ class MetadataReceiver:
 
     def __init__(
         self,
-        endpoint: object,
+        endpoint: socket.socket,
         slot: LatestMetadataSlot,
         puller: MetadataPuller,
     ) -> None:
-        if not isinstance(endpoint, socket.socket):
-            raise TypeError("inherited datagram wake socket required")
-        self._endpoint = endpoint
+        self._endpoint = _require_socket(endpoint)
         self._slot = slot
         self._puller = puller
         self._socket: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stopping = threading.Event()
         self._fatal = threading.Event()
-        self._binding_handler: Callable[[SourceBinding, MetadataFrame], None] | None = None
 
     @property
     def fatal_event(self) -> threading.Event:
@@ -63,12 +64,6 @@ class MetadataReceiver:
         self._thread = threading.Thread(target=self._run, name="deepstream-metadata", daemon=True)
         self._thread.start()
         return self
-
-    def set_binding_handler(
-        self,
-        handler: Callable[[SourceBinding, MetadataFrame], None],
-    ) -> None:
-        self._binding_handler = handler
 
     def pull_now(self, camera_id: str) -> MetadataFrame | None:
         if camera_id == "":
@@ -84,19 +79,7 @@ class MetadataReceiver:
             raise
         if metadata is None:
             return None
-        expected = self._slot.expected_binding(camera_id)
-        advanced = expected is not None and metadata.identity.stream_epoch > expected.stream_epoch
-        binding: SourceBinding | None = None
-        if advanced:
-            try:
-                binding = self._puller.source_binding(camera_id)
-            except MetadataPullFailure:
-                self._slot.mark_pull_failure()
-                return None
-            self._slot.register_source(binding)
-        accepted = self._slot.publish(metadata)
-        if binding is not None and accepted and self._binding_handler is not None:
-            self._binding_handler(binding, metadata)
+        _ = self._slot.publish(metadata)
         return metadata
 
     def _run(self) -> None:
@@ -124,16 +107,23 @@ class MetadataReceiver:
                     _ = self.pull_now(camera_id)
                 except MetadataPullStopped:
                     return
+
     def close(self) -> None:
         self._stopping.set()
-        receiver = self._socket
+        receiver, self._socket = self._socket, None
         if receiver is not None:
-            receiver.shutdown(socket.SHUT_RD)
+            try:
+                receiver.shutdown(socket.SHUT_RD)
+            except OSError:
+                pass
         if self._thread is not None:
             self._thread.join(timeout=1.0)
+            self._thread = None
         if receiver is not None:
-            receiver.close()
-        self._socket = None
+            try:
+                receiver.close()
+            except OSError:
+                pass
 
     def __exit__(
         self,

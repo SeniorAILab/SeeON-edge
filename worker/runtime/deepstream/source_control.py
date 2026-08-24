@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, final, override
@@ -50,9 +49,8 @@ class SourceControl(Protocol):
 
 
 class MetadataAdmission(Protocol):
-    def register_source(self, binding: SourceBinding) -> None: ...
+    def register_source(self, binding: SourceBinding) -> AcceptanceToken: ...
     def remove_source(self, camera_id: str) -> None: ...
-    def subscribe(self, binding: SourceBinding) -> AcceptanceToken: ...
     def wait_accepted(
         self,
         token: AcceptanceToken,
@@ -63,10 +61,6 @@ class MetadataAdmission(Protocol):
 
 class FrameReceiver(Protocol):
     def pull_now(self, camera_id: str) -> MetadataFrame | None: ...
-    def set_binding_handler(
-        self,
-        handler: Callable[[SourceBinding, MetadataFrame], None],
-    ) -> None: ...
 
 
 @final
@@ -83,9 +77,9 @@ class DarkSourceController:
         self._slot = slot
         self._receiver = receiver
         self._state_lock = threading.Lock()
-        self._lifecycle = threading.Lock()
+        self._lifecycle = threading.Condition()
+        self._lifecycle_active = False
         self._states: dict[str, SourceSnapshot] = {}
-        self._receiver.set_binding_handler(self._on_epoch_frame)
 
     def snapshot(self, camera_id: str) -> SourceSnapshot:
         with self._state_lock:
@@ -95,19 +89,23 @@ class DarkSourceController:
             )
 
     def _await_ready(self, binding: SourceBinding) -> SourceSnapshot:
-        self._slot.register_source(binding)
-        token = self._slot.subscribe(binding)
+        token = self._slot.register_source(binding)
         _ = self._receiver.pull_now(binding.camera_id)
         try:
             _ = self._slot.wait_accepted(token, timeout_sec=2.0)
         except TimeoutError as error:
             raise SourceReadinessError("source_ready_timeout", binding.camera_id) from error
         ready = _snapshot(binding, SourceState.SOURCE_READY)
-        self._set(ready)
+        with self._state_lock:
+            current = self._states.get(binding.camera_id)
+            if current != _snapshot(binding, SourceState.STARTING):
+                raise SourceReadinessError("source_binding_changed", binding.camera_id)
+            self._states[binding.camera_id] = ready
         return ready
 
     def add(self, camera_id: str, uri: str) -> SourceSnapshot:
-        with self._lifecycle:
+        self._begin_lifecycle()
+        try:
             current = self.snapshot(camera_id)
             self._set(_transition(current, SourceState.ADDING))
             try:
@@ -127,9 +125,12 @@ class DarkSourceController:
                         "source_rollback_failed", camera_id
                     ) from rollback_error
                 raise
+        finally:
+            self._end_lifecycle()
 
     def rebuild(self, camera_id: str, category: str) -> SourceSnapshot:
-        with self._lifecycle:
+        self._begin_lifecycle()
+        try:
             current = self.snapshot(camera_id)
             self._set(_transition(current, SourceState.REBUILDING))
             try:
@@ -148,9 +149,12 @@ class DarkSourceController:
                         "source_rollback_failed", camera_id
                     ) from rollback_error
                 raise
+        finally:
+            self._end_lifecycle()
 
     def remove(self, camera_id: str) -> SourceSnapshot:
-        with self._lifecycle:
+        self._begin_lifecycle()
+        try:
             current = self.snapshot(camera_id)
             self._set(_transition(current, SourceState.REMOVING))
             self._control.remove_source(camera_id)
@@ -158,6 +162,8 @@ class DarkSourceController:
             removed = _transition(current, SourceState.TOMBSTONED)
             self._set(removed)
             return removed
+        finally:
+            self._end_lifecycle()
 
     def _rollback_native(self, camera_id: str) -> ChildControlError | None:
         try:
@@ -168,17 +174,15 @@ class DarkSourceController:
             self._slot.remove_source(camera_id)
         return None
 
-    def _on_epoch_frame(self, binding: SourceBinding, metadata: MetadataFrame) -> None:
-        if metadata.native_publish_sequence <= 0:
-            return
+    def _begin_lifecycle(self) -> None:
         with self._lifecycle:
-            current = self.snapshot(binding.camera_id)
-            if (
-                current.state is SourceState.STARTING
-                and current.source_generation == binding.source_generation
-                and current.stream_epoch == binding.stream_epoch
-            ):
-                self._set(_snapshot(binding, SourceState.SOURCE_READY))
+            _ = self._lifecycle.wait_for(lambda: not self._lifecycle_active)
+            self._lifecycle_active = True
+
+    def _end_lifecycle(self) -> None:
+        with self._lifecycle:
+            self._lifecycle_active = False
+            self._lifecycle.notify()
 
     def _set(self, snapshot: SourceSnapshot) -> None:
         with self._state_lock:

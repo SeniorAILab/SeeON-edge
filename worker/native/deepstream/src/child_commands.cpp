@@ -82,15 +82,18 @@ CommandResult handle_command(ServerState& state, const ipc::Message& request) {
           return {error_reply(request, "source_unknown")};
         }
       }
-      if (!state.runtime.rebuild(request.camera, &error)) {
-        return {error_reply(request, error)};
-      }
       std::uint64_t epoch = 0;
       {
         std::lock_guard lock{state.slot_mutex};
         const auto found = state.sources.find(request.camera);
         epoch = ++found->second.epoch;
         found->second.latest.reset();
+      }
+      if (!state.runtime.rebuild(request.camera, &error)) {
+        return {error_reply(request, error)};
+      }
+      {
+        std::lock_guard lock{state.slot_mutex};
         ++state.source_failures;
       }
       ipc::Message reply = ipc::reply(request, ipc::Kind::kEpochStarted);

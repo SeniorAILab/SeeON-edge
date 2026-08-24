@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import signal
 import stat
+import sys
 import textwrap
 import uuid
 from pathlib import Path
@@ -20,9 +21,9 @@ from worker.runtime.deepstream.fault import DarkFirstFault
 def _fake_child(tmp_path: Path) -> Path:
     executable = tmp_path / "fake-native-child.py"
     _ = executable.write_text(
-        textwrap.dedent(
+        f"#!{sys.executable}\n"
+        + textwrap.dedent(
             """\
-            #!/usr/bin/env python3
             import os, socket, struct, sys
             sys.path.insert(0, os.getcwd())
             from worker.native.deepstream.ipc import (

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from types import FrameType
 from typing import Final, Protocol
 
+from worker.native.deepstream.control import ChildControlError
 from worker.runtime.deepstream.config import ChildConfig
 from worker.runtime.deepstream.fault import persist_first_fault
 from worker.runtime.deepstream.source_control import SourceReadinessError
@@ -79,12 +80,12 @@ def run_dark_child(
             return supervisor.wait()
         except ChildFatalError:
             return FATAL_CHILD_EXIT_CODE
-    except (ChildStartupError, TimeoutError) as error:
+    except (ChildControlError, ChildStartupError, TimeoutError) as error:
         if graceful_stop.is_set():
             return CLEAN_EXIT_CODE
         category = (
             error.code
-            if isinstance(error, ChildStartupError | SourceReadinessError)
+            if isinstance(error, ChildControlError | ChildStartupError | SourceReadinessError)
             else "source_ready_timeout"
         )
         _ = persist_first_fault(

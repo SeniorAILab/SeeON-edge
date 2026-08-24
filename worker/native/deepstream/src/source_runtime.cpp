@@ -159,7 +159,10 @@ GstElement* build_pipeline(const std::string& camera, const std::string& uri,
     *error_code = "camera_id=" + camera + " element_unavailable";
     GstElement* elements[] = {source, convert, rgba, nvconvert, nvmm, transform, sink};
     for (GstElement* element : elements) {
-      if (element != nullptr) gst_object_unref(element);
+      if (element != nullptr) {
+        static_cast<void>(gst_object_ref_sink(element));
+        gst_object_unref(element);
+      }
     }
     if (pipeline != nullptr) gst_object_unref(pipeline);
     return nullptr;

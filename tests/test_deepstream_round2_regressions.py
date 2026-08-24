@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import threading
 import uuid
-from collections.abc import Callable
 from pathlib import Path
 from typing import override
 
@@ -25,14 +24,21 @@ def _binding(*, generation: int = 1, epoch: int = 1) -> SourceBinding:
     return SourceBinding(str(_BOOT), str(_CHILD), "camera-a", generation, epoch, _TRANSFORM)
 
 
-def _frame(*, epoch: int, pts: int, sequence: int, publish_sequence: int) -> MetadataFrame:
+def _frame(
+    *,
+    epoch: int,
+    pts: int,
+    sequence: int,
+    publish_sequence: int,
+    generation: int = 1,
+) -> MetadataFrame:
     return MetadataFrame.empty(
         ControlMessage(
             MessageKind.METADATA,
             _BOOT,
             _CHILD,
             "camera-a",
-            1,
+            generation,
             epoch,
             pts,
             sequence,
@@ -43,12 +49,35 @@ def _frame(*, epoch: int, pts: int, sequence: int, publish_sequence: int) -> Met
     )
 
 
+def test_rebind_registration_returns_zero_baseline_token_atomically() -> None:
+    slot = LatestMetadataSlot()
+    _ = slot.register_source(_binding(epoch=1))
+    assert slot.publish(_frame(epoch=1, pts=100, sequence=100, publish_sequence=100))
+
+    token = slot.register_source(_binding(epoch=2))
+
+    assert token == AcceptanceToken(_binding(epoch=2), 0)
+    assert slot.peek("camera-a") is None
+
+
+def test_generation_change_accepts_reset_pts_and_publish_sequence() -> None:
+    slot = LatestMetadataSlot()
+    _ = slot.register_source(_binding(generation=1, epoch=4))
+    assert slot.publish(_frame(epoch=4, pts=90_000, sequence=90, publish_sequence=90))
+
+    _ = slot.register_source(_binding(generation=2, epoch=1))
+
+    assert slot.publish(
+        _frame(epoch=1, pts=1_000, sequence=1, publish_sequence=1, generation=2)
+    )
+
+
 def test_new_epoch_accepts_reset_pts_with_higher_native_publish_sequence() -> None:
     slot = LatestMetadataSlot()
-    slot.register_source(_binding(epoch=1))
+    _ = slot.register_source(_binding(epoch=1))
     assert slot.publish(_frame(epoch=1, pts=90_000, sequence=90, publish_sequence=90))
 
-    slot.register_source(_binding(epoch=2))
+    _ = slot.register_source(_binding(epoch=2))
 
     assert slot.publish(_frame(epoch=2, pts=1_000, sequence=1, publish_sequence=91))
     assert slot.peek("camera-a") == _frame(epoch=2, pts=1_000, sequence=1, publish_sequence=91)
@@ -60,15 +89,13 @@ class _TimeoutThenReadySlot:
         self.registered: SourceBinding | None = None
         self.removed: list[str] = []
 
-    def register_source(self, binding: SourceBinding) -> None:
+    def register_source(self, binding: SourceBinding) -> AcceptanceToken:
         self.registered = binding
+        return AcceptanceToken(binding, 0)
 
     def remove_source(self, camera_id: str) -> None:
         self.registered = None
         self.removed.append(camera_id)
-
-    def subscribe(self, binding: SourceBinding) -> AcceptanceToken:
-        return AcceptanceToken(binding, 0)
 
     def wait_accepted(self, token: AcceptanceToken, *, timeout_sec: float) -> MetadataFrame:
         del token, timeout_sec
@@ -85,12 +112,6 @@ class _TimeoutThenReadySlot:
 
 
 class _NoopReceiver:
-    def set_binding_handler(
-        self,
-        handler: Callable[[SourceBinding, MetadataFrame], None],
-    ) -> None:
-        del handler
-
     def pull_now(self, camera_id: str) -> MetadataFrame | None:
         del camera_id
         return None
@@ -167,7 +188,9 @@ def test_add_and_rebuild_are_serialized_on_current_binding() -> None:
     add_waiting = threading.Event()
     release_add = threading.Event()
     rebuild_called = threading.Event()
+    rebuild_thread_started = threading.Event()
     operations_done = threading.Event()
+    release_observed = threading.Event()
 
     class Slot(_TimeoutThenReadySlot):
         waits: int
@@ -194,6 +217,7 @@ def test_add_and_rebuild_are_serialized_on_current_binding() -> None:
     class Control(_ReAddControl):
         @override
         def source_failure(self, camera_id: str, category: str) -> SourceBinding:
+            assert release_observed.is_set()
             rebuild_called.set()
             return super().source_failure(camera_id, category)
 
@@ -205,6 +229,7 @@ def test_add_and_rebuild_are_serialized_on_current_binding() -> None:
     )
 
     def rebuild() -> None:
+        rebuild_thread_started.set()
         _ = controller.rebuild("camera-a", "eos")
         operations_done.set()
 
@@ -212,7 +237,9 @@ def test_add_and_rebuild_are_serialized_on_current_binding() -> None:
     assert add_waiting.wait(timeout=1.0)
     rebuild_thread = threading.Thread(target=rebuild)
     rebuild_thread.start()
-    assert not rebuild_called.wait(timeout=0.05)
+    assert rebuild_thread_started.wait(timeout=1.0)
+    assert not rebuild_called.is_set()
+    release_observed.set()
     release_add.set()
     assert operations_done.wait(timeout=1.0)
     add_thread.join(timeout=1.0)

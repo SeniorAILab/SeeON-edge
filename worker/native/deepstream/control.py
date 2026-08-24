@@ -27,8 +27,13 @@ from worker.native.deepstream.metadata import (
 )
 
 _MAX_REPLY: Final = 65_535
-_DARK_CAPABILITIES: Final = frozenset({MessageKind.RECORD, MessageKind.SNAPSHOT})
 _MAX_SOURCES: Final = 64
+
+
+def _require_socket(endpoint: object) -> socket.socket:
+    if not isinstance(endpoint, socket.socket):
+        raise TypeError("inherited SOCK_SEQPACKET control socket required")
+    return endpoint
 
 
 @final
@@ -37,14 +42,12 @@ class DeepStreamControlClient:
 
     def __init__(
         self,
-        endpoint: object,
+        endpoint: socket.socket,
         identity: ControlIdentity,
         *,
         timeout_sec: float = 2.0,
     ) -> None:
-        if not isinstance(endpoint, socket.socket):
-            raise TypeError("inherited SOCK_SEQPACKET control socket required")
-        self._endpoint = endpoint
+        self._endpoint = _require_socket(endpoint)
         self._identity = identity
         self._timeout_sec = timeout_sec
         self._socket: socket.socket | None = None
@@ -138,24 +141,8 @@ class DeepStreamControlClient:
             transform_id=self._identity.transform_id,
         )
 
-    def source_binding(self, camera_id: str) -> SourceBinding:
-        reply = self.request(self._message(MessageKind.GET_SOURCE_STATE, camera_id))
-        if reply.kind is not MessageKind.EPOCH_STARTED:
-            raise MetadataPullFailure("source_state_reply")
-        return SourceBinding(
-            str(self._identity.worker_boot_id),
-            str(self._identity.child_instance_id),
-            camera_id,
-            reply.source_generation,
-            reply.stream_epoch,
-            self._identity.transform_id,
-        )
-
     def inject_source_eos(self, camera_id: str) -> None:
         _ = self.request(self._message(MessageKind.INJECT_SOURCE_EOS, camera_id))
-
-    def emit_metadata(self, camera_id: str) -> None:
-        _ = self.request(self._message(MessageKind.EMIT_METADATA, camera_id))
 
     def pull_latest(self, camera_id: str) -> MetadataFrame | None:
         try:
@@ -167,12 +154,6 @@ class DeepStreamControlClient:
         if reply.kind is MessageKind.CAPABILITY_INACTIVE:
             return None
         return decode_metadata(encode_message(reply))
-
-    def dark_capability(self, kind: MessageKind, camera_id: str) -> bool:
-        if kind not in _DARK_CAPABILITIES:
-            raise ChildControlError("not_dark_capability", kind.name)
-        reply = self.request(self._message(kind, camera_id))
-        return reply.kind is not MessageKind.CAPABILITY_INACTIVE
 
     def wait_for_publish(self, target: int) -> None:
         payload = target.to_bytes(8, "little")
