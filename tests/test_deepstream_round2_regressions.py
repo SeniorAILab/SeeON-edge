@@ -261,5 +261,3 @@ def test_runner_maps_source_readiness_timeout_to_typed_exit_four(tmp_path: Path)
 
     assert runner_module.run_dark_child(request, supervisor_factory=Supervisor) == 4
     assert b'"category":"source_ready_timeout"' in request.child.first_fault_path.read_bytes()
-
-
