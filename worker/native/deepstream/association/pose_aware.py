@@ -16,8 +16,11 @@ from __future__ import annotations
 
 from typing import Final, final
 
-from contracts.observation import BoundingBox
-from worker.native.deepstream.association.strategy import AssociationOutcome
+from worker.types.perception_frame import (
+    AssociationResult,
+    PerceptionFrameIdentity,
+    PersonBoxChannel,
+)
 
 POSE_AWARE_BBOX_IOU_V1: Final = "pose-aware-bbox-iou.v1"
 
@@ -43,8 +46,12 @@ class PoseAwareAssociationStrategy:
     def live_ids(self) -> frozenset[int]:
         raise PoseAwareStrategyDisabledError(self.identity)
 
-    def observe(self, boxes: tuple[BoundingBox, ...]) -> AssociationOutcome:
-        del boxes
+    def observe(
+        self,
+        identity: PerceptionFrameIdentity,
+        person_box: PersonBoxChannel,
+    ) -> AssociationResult:
+        del identity, person_box
         raise PoseAwareStrategyDisabledError(self.identity)
 
     def coast(self) -> None:

@@ -4,15 +4,22 @@ This is the executable specification the custom `GstBaseTransform` association
 stage implements. It targets the exact observable behavior of
 `worker/pipeline/perception/tracker.py`'s `GreedyIouTracker` -- same greedy
 descending-IoU match order, same tie rule (a tie keeps the lower existing-track
-index), same `inferred`/`inferred_empty` vs `skipped` split (`observe(())`
-still counts a miss; `coast()` never does), same eviction (`misses >
-max_misses` drops a track), and the same box-order-preserving return shape --
-but it is an INDEPENDENT implementation: it does not import
-`worker.pipeline.perception.features.geometry.greedy_match`, the exact
-matching routine the oracle's tracker calls. Sharing that routine would let an
-order/tie regression move both the oracle and this candidate together and
-leave `tests/test_native_association_parity.py`'s differential comparator
-green on a real drift.
+index), same `inferred`/`inferred_empty` vs `skipped` split (an empty
+person-box observation still counts a miss; `coast()` never does), same
+eviction (`misses > max_misses` drops a track), and the same box-order-
+preserving return shape -- but it is an INDEPENDENT implementation: it does
+not import `worker.pipeline.perception.features.geometry.greedy_match`, the
+exact matching routine the oracle's tracker calls. Sharing that routine would
+let an order/tie regression move both the oracle and this candidate together
+and leave the differential comparator green on a real drift.
+
+`observe()` takes the caller's `PerceptionFrameIdentity` plus a typed
+`PersonBoxChannel` and returns a real C1 `AssociationResult`
+(`worker/types/perception_frame.py`) bound to that identity, with
+`cue_source` fixed at `"person_box"` and `selected_cue_indexes` in
+person-box input order. There is no parameter shape a `BedRegionChannel` can
+satisfy here: bed regions are structurally unrepresentable at this boundary,
+so they cannot create, update, or evict a person track.
 
 Divergence from the documented behavior is a parity break, not an improvement
 -- see `worker/pipeline/perception/tracker.py` module docstring and the
@@ -24,7 +31,12 @@ from __future__ import annotations
 from typing import Final, final
 
 from contracts.observation import BoundingBox
-from worker.native.deepstream.association.strategy import AssociationOutcome
+from worker.types.perception_frame import (
+    AssociationResult,
+    PerceptionFrameIdentity,
+    PersonBox,
+    PersonBoxChannel,
+)
 
 LEGACY_GREEDY_BBOX_IOU_V1: Final = "legacy-greedy-bbox-iou.v1"
 DEFAULT_MIN_IOU: Final = 0.3
@@ -87,6 +99,11 @@ def _own_greedy_match(
     return tuple(matches)
 
 
+def _person_box_as_bounding_box(box: PersonBox) -> BoundingBox:
+    """Narrow the C1 `PersonBox` cue to the geometry the matcher needs."""
+    return BoundingBox(x1=box.x1, y1=box.y1, x2=box.x2, y2=box.y2, confidence=box.confidence)
+
+
 @final
 class _NativeTrack:
     __slots__: tuple[str, ...] = ("last_box", "misses", "track_id")
@@ -121,7 +138,21 @@ class LegacyGreedyBboxIouStrategy:
     def live_ids(self) -> frozenset[int]:
         return frozenset(track.track_id for track in self._tracks)
 
-    def observe(self, boxes: tuple[BoundingBox, ...]) -> AssociationOutcome:
+    def observe(
+        self,
+        identity: PerceptionFrameIdentity,
+        person_box: PersonBoxChannel,
+    ) -> AssociationResult:
+        """Associate one frame's person-box cues, returning a real `AssociationResult`.
+
+        `selected_cue_indexes` is every cue index in input order -- this
+        strategy uses (and can identify) every person-box cue it receives, so
+        the selection is simply `range(len(person_box.boxes))`. `track_ids` is
+        parallel to `selected_cue_indexes`, matching `AssociationResult`'s
+        contract (`worker/types/perception_frame.py::association_failure`).
+        """
+        cues = person_box.boxes
+        boxes = tuple(_person_box_as_bounding_box(cue) for cue in cues)
         existing = list(self._tracks)
         matches = _own_greedy_match(
             tuple(track.last_box for track in existing),
@@ -159,8 +190,14 @@ class LegacyGreedyBboxIouStrategy:
                 surviving_tracks.append(track)
 
         self._tracks = surviving_tracks + new_tracks
-        track_ids = tuple(box_to_track_id[box_index] for box_index in range(len(boxes)))
-        return AssociationOutcome(track_ids=track_ids, live_ids=self.live_ids)
+        selected_cue_indexes = tuple(range(len(cues)))
+        track_ids = tuple(box_to_track_id[box_index] for box_index in selected_cue_indexes)
+        return AssociationResult(
+            strategy=self.identity,
+            track_ids=track_ids,
+            selected_cue_indexes=selected_cue_indexes,
+            identity=identity,
+        )
 
     def coast(self) -> None:
         """Preserve all tracks when this frame carried no inference result."""

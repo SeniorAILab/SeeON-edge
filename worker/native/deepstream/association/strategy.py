@@ -1,28 +1,26 @@
 """``AssociationStrategy`` port: the seam every native strategy implements.
 
 The native `GstBaseTransform` calls exactly one strategy per camera through
-this narrow surface. `AssociationOutcome` carries only what
-`AssociationResult` (`worker/types/perception_frame.py`) needs: durable track
-ids in cue order, plus the `live_ids` snapshot the fall/bed-exit domains read
-through `DecisionInput.live_track_ids`. Bed masks never reach this port --
-callers pass person-box cues only (Task 4 guardrail: bed regions are scene
-context, never identity).
+this narrow surface. `observe` takes the caller's durable
+`PerceptionFrameIdentity` plus a typed `PersonBoxChannel` -- never an
+undifferentiated box tuple and never a `BedRegionChannel` -- and returns the
+real C1 `AssociationResult` (`worker/types/perception_frame.py`), bound to
+that identity, with `cue_source` fixed at `"person_box"` and
+`selected_cue_indexes` in person-box input order. Bed masks are structurally
+unrepresentable at this boundary: the port has no parameter a `BedRegionChannel`
+can satisfy, so bed regions cannot create, update, or evict a person track
+(Task 4 guardrail).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-from contracts.observation import BoundingBox
-
-
-@dataclass(frozen=True, slots=True)
-class AssociationOutcome:
-    """One frame's association result: durable ids in incoming cue order."""
-
-    track_ids: tuple[int, ...]
-    live_ids: frozenset[int]
+from worker.types.perception_frame import (
+    AssociationResult,
+    PerceptionFrameIdentity,
+    PersonBoxChannel,
+)
 
 
 @runtime_checkable
@@ -38,7 +36,11 @@ class AssociationStrategy(Protocol):
         """Every track id this strategy currently considers live."""
         ...
 
-    def observe(self, boxes: tuple[BoundingBox, ...]) -> AssociationOutcome:
+    def observe(
+        self,
+        identity: PerceptionFrameIdentity,
+        person_box: PersonBoxChannel,
+    ) -> AssociationResult:
         """Apply one actual inference observation, including an empty one."""
         ...
 
@@ -55,4 +57,4 @@ class AssociationStrategy(Protocol):
         ...
 
 
-__all__ = ["AssociationOutcome", "AssociationStrategy"]
+__all__ = ["AssociationStrategy"]

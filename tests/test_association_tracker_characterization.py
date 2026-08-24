@@ -13,6 +13,7 @@ event timelines the tracker's `track_ids` feed.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from contracts.observation import (
@@ -156,7 +157,7 @@ def test_oracle_reconnect_shaped_restart_is_a_fresh_instance_with_empty_state() 
 class _FallModelMetadata:
     window = 1
     stride = 1
-    mode = "sequence"
+    mode: Literal["features", "sequence"] = "sequence"
 
 
 class _FallModel:
