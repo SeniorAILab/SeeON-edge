@@ -23,6 +23,8 @@ enum class Kind : std::uint8_t {
   kGetLatest = 9,
   kShutdown = 10,
   kWaitPublish = 11,
+  kGetSourceState = 12,
+  kInjectSourceEos = 13,
   kAck = 64,
   kStatusReply = 65,
   kError = 66,

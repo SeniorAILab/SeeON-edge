@@ -3,72 +3,47 @@
 from __future__ import annotations
 
 import socket
-import struct
 import threading
-import uuid
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, final, override
+from typing import Final, final
 
+from worker.native.deepstream.control_reply import decode_status, validate_reply
+from worker.native.deepstream.control_types import (
+    ChildControlError,
+    ControlIdentity,
+    NativeStatus,
+    parse_source_uri,
+)
 from worker.native.deepstream.ipc import (
     ControlMessage,
-    IpcProtocolError,
     MessageKind,
     MetadataFrame,
-    decode_control_message,
     decode_metadata,
     encode_message,
 )
-from worker.native.deepstream.metadata import MetadataPullStopped, SourceBinding
+from worker.native.deepstream.metadata import (
+    MetadataPullFailure,
+    MetadataPullStopped,
+    SourceBinding,
+)
 
 _MAX_REPLY: Final = 65_535
-_STATUS: Final = struct.Struct("<QQQQQIB")
-_ACCEPTED_REPLIES: Final = frozenset(
-    {
-        MessageKind.ACK,
-        MessageKind.STATUS_REPLY,
-        MessageKind.EPOCH_STARTED,
-        MessageKind.CAPABILITY_INACTIVE,
-        MessageKind.METADATA,
-    }
-)
 _DARK_CAPABILITIES: Final = frozenset({MessageKind.RECORD, MessageKind.SNAPSHOT})
-
-
-@dataclass(frozen=True, slots=True)
-class ControlIdentity:
-    worker_boot_id: uuid.UUID
-    child_instance_id: uuid.UUID
-    transform_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class NativeStatus:
-    metadata_published: int
-    metadata_overwritten: int
-    wake_dropped: int
-    source_failures: int
-    malformed_frames: int
-    source_count: int
-    custom_transform_available: bool
-
-
-@dataclass(frozen=True, slots=True)
-class ChildControlError(Exception):
-    code: str
-    detail: str
-
-    @override
-    def __str__(self) -> str:
-        return f"{self.code}: {self.detail}"
+_MAX_SOURCES: Final = 64
 
 
 @final
 class DeepStreamControlClient:
     """One correlated SOCK_SEQPACKET session; mutation tracks source generations."""
 
-    def __init__(self, path: Path, identity: ControlIdentity, *, timeout_sec: float = 2.0) -> None:
-        self._path = path
+    def __init__(
+        self,
+        endpoint: Path | socket.socket,
+        identity: ControlIdentity,
+        *,
+        timeout_sec: float = 2.0,
+    ) -> None:
+        self._endpoint = endpoint
         self._identity = identity
         self._timeout_sec = timeout_sec
         self._socket: socket.socket | None = None
@@ -78,13 +53,18 @@ class DeepStreamControlClient:
         self._epochs: dict[str, int] = {}
 
     def connect(self) -> None:
-        client = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-        client.settimeout(self._timeout_sec)
-        try:
-            client.connect(str(self._path))
-        except OSError as error:
-            client.close()
-            raise ChildControlError("control_connect", str(error)) from error
+        match self._endpoint:
+            case Path() as path:
+                client = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+                client.settimeout(self._timeout_sec)
+                try:
+                    client.connect(str(path))
+                except OSError as error:
+                    client.close()
+                    raise ChildControlError("control_connect", "unavailable") from error
+            case socket.socket() as inherited:
+                client = inherited
+                client.settimeout(self._timeout_sec)
         self._socket = client
 
     def close(self) -> None:
@@ -113,53 +93,29 @@ class DeepStreamControlClient:
         with self._lock:
             client = self._socket
             if client is None:
-                raise ChildControlError("control_closed", str(self._path))
+                raise ChildControlError("control_closed", "closed")
             try:
                 client.sendall(encode_message(message))
                 raw = client.recv(_MAX_REPLY)
             except OSError as error:
                 raise ChildControlError("control_io", str(error)) from error
             if raw == b"":
-                raise ChildControlError("control_eof", str(self._path))
-            try:
-                reply = decode_control_message(raw)
-            except IpcProtocolError as error:
-                raise ChildControlError("invalid_reply", str(error)) from error
-            if reply.worker_boot_id != message.worker_boot_id:
-                raise ChildControlError("boot_mismatch", str(reply.worker_boot_id))
-            if reply.child_instance_id != message.child_instance_id:
-                raise ChildControlError("child_mismatch", str(reply.child_instance_id))
-            if reply.request_id != message.request_id:
-                raise ChildControlError("correlation_mismatch", str(reply.request_id))
-            if reply.kind in _ACCEPTED_REPLIES:
-                return reply
-            code = "native_error" if reply.kind is MessageKind.ERROR else "reply_kind"
-            detail = (
-                reply.payload.decode(errors="replace")
-                if reply.kind is MessageKind.ERROR
-                else reply.kind.name
-            )
-            raise ChildControlError(code, detail)
+                raise ChildControlError("control_eof", "eof")
+            return validate_reply(message, raw)
 
     def status(self) -> NativeStatus:
         reply = self.request(self._message(MessageKind.STATUS, "_worker"))
-        if len(reply.payload) != _STATUS.size:
-            raise ChildControlError("status_size", str(len(reply.payload)))
-        payload = reply.payload
-        return NativeStatus(
-            metadata_published=int.from_bytes(payload[0:8], "little"),
-            metadata_overwritten=int.from_bytes(payload[8:16], "little"),
-            wake_dropped=int.from_bytes(payload[16:24], "little"),
-            source_failures=int.from_bytes(payload[24:32], "little"),
-            malformed_frames=int.from_bytes(payload[32:40], "little"),
-            source_count=int.from_bytes(payload[40:44], "little"),
-            custom_transform_available=bool(payload[44]),
-        )
+        return decode_status(reply.payload)
 
     def add_source(self, camera_id: str, uri: str) -> SourceBinding:
+        if camera_id == "" or len(camera_id.encode()) > 128:
+            raise ChildControlError("camera_id_invalid", "bounds")
+        if camera_id not in self._generations and len(self._generations) >= _MAX_SOURCES:
+            raise ChildControlError("source_capacity", str(_MAX_SOURCES))
+        parsed_uri = parse_source_uri(uri)
         self._generations[camera_id] = self._generations.get(camera_id, 0) + 1
         self._epochs[camera_id] = 0
-        reply = self.request(self._message(MessageKind.ADD_SOURCE, camera_id, uri.encode()))
+        reply = self.request(self._message(MessageKind.ADD_SOURCE, camera_id, parsed_uri.encode()))
         if reply.kind is not MessageKind.EPOCH_STARTED:
             raise ChildControlError("source_not_started", reply.kind.name)
         self._epochs[camera_id] = reply.stream_epoch
@@ -192,6 +148,22 @@ class DeepStreamControlClient:
             transform_id=self._identity.transform_id,
         )
 
+    def source_binding(self, camera_id: str) -> SourceBinding:
+        reply = self.request(self._message(MessageKind.GET_SOURCE_STATE, camera_id))
+        if reply.kind is not MessageKind.EPOCH_STARTED:
+            raise MetadataPullFailure("source_state_reply")
+        return SourceBinding(
+            str(self._identity.worker_boot_id),
+            str(self._identity.child_instance_id),
+            camera_id,
+            reply.source_generation,
+            reply.stream_epoch,
+            self._identity.transform_id,
+        )
+
+    def inject_source_eos(self, camera_id: str) -> None:
+        _ = self.request(self._message(MessageKind.INJECT_SOURCE_EOS, camera_id))
+
     def emit_metadata(self, camera_id: str) -> None:
         _ = self.request(self._message(MessageKind.EMIT_METADATA, camera_id))
 
@@ -199,7 +171,9 @@ class DeepStreamControlClient:
         try:
             reply = self.request(self._message(MessageKind.GET_LATEST, camera_id))
         except ChildControlError as error:
-            raise MetadataPullStopped from error
+            if error.code in {"control_eof", "control_closed"}:
+                raise MetadataPullStopped from error
+            raise MetadataPullFailure(error.code) from error
         if reply.kind is MessageKind.CAPABILITY_INACTIVE:
             return None
         return decode_metadata(encode_message(reply))
@@ -226,4 +200,5 @@ __all__ = [
     "ControlIdentity",
     "DeepStreamControlClient",
     "NativeStatus",
+    "parse_source_uri",
 ]

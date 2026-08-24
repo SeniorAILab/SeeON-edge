@@ -2,18 +2,18 @@
 
 #include <array>
 #include <cstdint>
-#include <filesystem>
 #include <string>
 
 namespace seeon {
 struct ChildOptions {
-  std::filesystem::path control_socket;
-  std::filesystem::path metadata_socket;
+  int control_fd = -1;
+  int wake_fd = -1;
+  int failure_fd = -1;
+  int ready_fd = -1;
+  std::uint32_t parent_pid = 0;
   std::array<std::uint8_t, 16> worker_boot_id;
   std::array<std::uint8_t, 16> child_instance_id;
   std::string gpu_id;
-  std::filesystem::path first_fault;
-  int ready_fd;
 };
 
 class ChildServer {

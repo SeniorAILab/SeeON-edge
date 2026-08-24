@@ -1,7 +1,10 @@
 #include "ipc_protocol.hpp"
+#include "perception_wire.hpp"
 
 #include <cassert>
 #include <cstdint>
+#include <iomanip>
+#include <sstream>
 #include <vector>
 
 int main() {
@@ -34,5 +37,19 @@ int main() {
   std::vector<std::uint8_t> malformed = encoded;
   malformed[0] = 0;
   assert(!seeon::ipc::decode(malformed).has_value());
+
+  message.header.worker_boot_id = {0x12, 0x34, 0x56, 0x78, 0x12, 0x34, 0x56, 0x78,
+                                   0x12, 0x34, 0x56, 0x78, 0x12, 0x34, 0x56, 0x78};
+  message.header.stream_epoch = 7;
+  message.header.source_pts = 123456;
+  message.header.source_sequence = 11;
+  message.camera = "camera-a";
+  std::ostringstream golden;
+  for (const auto value : seeon::encode_empty_perception(message)) {
+    golden << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(value);
+  }
+  assert(golden.str() ==
+         "5046563112345678123456781234567812345678080063616d6572612d61"
+         "070000000000000040e20100000000000b0000000000000002020200000000000000");
   return 0;
 }

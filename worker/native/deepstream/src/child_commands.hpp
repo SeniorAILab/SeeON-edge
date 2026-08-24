@@ -6,6 +6,7 @@
 
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -21,16 +22,20 @@ struct SourceSlot {
 
 class ServerState {
  public:
-  explicit ServerState(const ChildOptions& options_value)
-      : options(options_value),
-        runtime([this](const std::string& camera, std::uint64_t pts) { on_frame(camera, pts); }) {}
+  explicit ServerState(const ChildOptions& options_value);
+  ~ServerState();
 
   void on_frame(const std::string& camera, std::uint64_t pts);
+  void on_failure(const NativeFailure& failure);
+  [[nodiscard]] std::deque<NativeFailure> take_failures();
 
   const ChildOptions& options;
   SourceRuntime runtime;
   std::mutex slot_mutex;
   std::condition_variable published_condition;
+  int failure_fd;
+  std::mutex failure_mutex;
+  std::deque<NativeFailure> failures;
   std::map<std::string, SourceSlot> sources;
   std::map<std::string, std::uint32_t> generation_high_water;
   std::uint64_t publish_sequence = 0;
@@ -47,4 +52,5 @@ struct CommandResult {
 };
 
 [[nodiscard]] CommandResult handle_command(ServerState& state, const ipc::Message& request);
+[[nodiscard]] int handle_runtime_failures(ServerState& state);
 }  // namespace seeon

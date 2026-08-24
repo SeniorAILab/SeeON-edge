@@ -15,8 +15,12 @@ add_executable(
   seeon-deepstream-child
   src/child.cpp
   src/child_commands.cpp
+  src/child_command_support.cpp
+  src/child_failures.cpp
   src/child_server.cpp
+  src/perception_wire.cpp
   src/source_runtime.cpp
+  src/source_uri.cpp
 )
 target_compile_features(seeon-deepstream-child PRIVATE cxx_std_20)
 target_compile_definitions(seeon-deepstream-child PRIVATE SEEON_HAS_GSTREAMER=1)
@@ -25,10 +29,23 @@ target_link_libraries(seeon-deepstream-child PRIVATE PkgConfig::GSTREAMER)
 
 include(CTest)
 if(BUILD_TESTING)
-  add_executable(seeon-deepstream-ipc-test src/ipc_protocol_test.cpp)
+  add_executable(
+    seeon-deepstream-ipc-test
+    src/ipc_protocol_test.cpp
+    src/perception_wire.cpp
+  )
   target_compile_features(seeon-deepstream-ipc-test PRIVATE cxx_std_20)
   target_compile_options(seeon-deepstream-ipc-test PRIVATE ${SEEON_WARNINGS})
   add_test(NAME seeon-deepstream-ipc-test COMMAND seeon-deepstream-ipc-test)
+  add_executable(
+    seeon-deepstream-source-runtime-test
+    src/source_runtime_test.cpp
+    src/source_runtime.cpp
+    src/source_uri.cpp
+  )
+  target_compile_features(seeon-deepstream-source-runtime-test PRIVATE cxx_std_20)
+  target_compile_options(seeon-deepstream-source-runtime-test PRIVATE ${SEEON_WARNINGS})
+  add_test(NAME seeon-deepstream-source-runtime-test COMMAND seeon-deepstream-source-runtime-test)
 endif()
 
 install(TARGETS seeon-deepstream-preflight seeon-deepstream-child RUNTIME DESTINATION bin)
