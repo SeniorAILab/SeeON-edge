@@ -2,11 +2,33 @@ cmake_minimum_required(VERSION 3.22)
 project(seeon_deepstream_preflight VERSION 1.0.0 LANGUAGES CXX)
 
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET gstreamer-1.0)
+pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET gstreamer-1.0 gstreamer-base-1.0)
+
+set(SEEON_WARNINGS -Wall -Wextra -Wpedantic -Werror)
 
 add_executable(seeon-deepstream-preflight src/main.cpp)
 target_compile_features(seeon-deepstream-preflight PRIVATE cxx_std_20)
-target_compile_options(seeon-deepstream-preflight PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_options(seeon-deepstream-preflight PRIVATE ${SEEON_WARNINGS})
 target_link_libraries(seeon-deepstream-preflight PRIVATE PkgConfig::GSTREAMER)
 
-install(TARGETS seeon-deepstream-preflight RUNTIME DESTINATION bin)
+add_executable(
+  seeon-deepstream-child
+  src/child.cpp
+  src/child_commands.cpp
+  src/child_server.cpp
+  src/source_runtime.cpp
+)
+target_compile_features(seeon-deepstream-child PRIVATE cxx_std_20)
+target_compile_definitions(seeon-deepstream-child PRIVATE SEEON_HAS_GSTREAMER=1)
+target_compile_options(seeon-deepstream-child PRIVATE ${SEEON_WARNINGS})
+target_link_libraries(seeon-deepstream-child PRIVATE PkgConfig::GSTREAMER)
+
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(seeon-deepstream-ipc-test src/ipc_protocol_test.cpp)
+  target_compile_features(seeon-deepstream-ipc-test PRIVATE cxx_std_20)
+  target_compile_options(seeon-deepstream-ipc-test PRIVATE ${SEEON_WARNINGS})
+  add_test(NAME seeon-deepstream-ipc-test COMMAND seeon-deepstream-ipc-test)
+endif()
+
+install(TARGETS seeon-deepstream-preflight seeon-deepstream-child RUNTIME DESTINATION bin)
