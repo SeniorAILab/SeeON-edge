@@ -42,6 +42,9 @@ class NativeFailureCoordinator:
             self.fatal("source_rebuild_failed")
 
     def fatal(self, category: str) -> None:
+        process = self._process()
+        if category == "failure_ipc" and process is not None and process.poll() is not None:
+            category = "child_exit"
         self._set_category(category)
         _ = persist_first_fault(
             self._config.first_fault_path,
@@ -51,7 +54,6 @@ class NativeFailureCoordinator:
             child_instance_id=self._config.child_instance_id,
         )
         self._fatal_received.set()
-        process = self._process()
         if process is not None and process.poll() is None:
             process.kill()
 

@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import struct
-from dataclasses import dataclass
-from typing import Final, cast, final
+from typing import Final, final
 
 MAGIC: Final = b"PFV1"
 MAX_ITEMS: Final = 256
@@ -13,10 +12,11 @@ _U16: Final = struct.Struct("<H")
 _F64: Final = struct.Struct("<d")
 
 
-@dataclass(frozen=True, slots=True)
 class PerceptionWireError(Exception):
-    code: str
-    detail: str
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(code, detail)
+        self.code: str = code
+        self.detail: str = detail
 
 
 @final
@@ -80,7 +80,9 @@ class Reader:
         return int.from_bytes(self.raw(4), "little", signed=True)
 
     def f64(self) -> float:
-        return cast(float, _F64.unpack(self.raw(_F64.size))[0])
+        unpacked: tuple[float] = _F64.unpack(self.raw(_F64.size))
+        value, = unpacked
+        return value
 
     def text(self) -> str:
         size = self.u16(maximum=MAX_TEXT)

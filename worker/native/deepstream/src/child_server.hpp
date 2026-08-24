@@ -11,9 +11,9 @@ struct ChildOptions {
   int failure_fd = -1;
   int ready_fd = -1;
   std::uint32_t parent_pid = 0;
+  bool qa_mode = false;
   std::array<std::uint8_t, 16> worker_boot_id;
   std::array<std::uint8_t, 16> child_instance_id;
-  std::string gpu_id;
 };
 
 class ChildServer {

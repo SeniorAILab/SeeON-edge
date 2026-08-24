@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from typing import override
 from urllib.parse import urlsplit
 
+_MAX_SOURCE_URI_BYTES = 4_096
+
 
 @dataclass(frozen=True, slots=True)
 class ControlIdentity:
@@ -37,7 +39,9 @@ class ChildControlError(Exception):
 
 
 def parse_source_uri(raw: str) -> str:
-    if raw == "" or any(ord(character) < 32 or ord(character) == 127 for character in raw):
+    if raw == "" or len(raw.encode()) > _MAX_SOURCE_URI_BYTES:
+        raise ChildControlError("source_uri_invalid", "bounds")
+    if any(ord(character) < 32 or ord(character) == 127 for character in raw):
         raise ChildControlError("source_uri_invalid", "control_character")
     parsed = urlsplit(raw)
     if parsed.scheme not in {"rtsp", "loopback"}:

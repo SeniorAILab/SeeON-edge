@@ -6,11 +6,20 @@ import socket
 import threading
 import uuid
 from collections.abc import Callable
-from typing import Final, final
+from typing import Final, Literal, assert_never, final
 
 from worker.native.deepstream.ipc import IpcProtocolError, MessageKind, decode_control_message
 
 _MAX_FAILURE: Final = 65_535
+FailureKind = Literal[MessageKind.SOURCE_FAILURE, MessageKind.FATAL]
+
+
+def _failure_kind(kind: MessageKind) -> FailureKind | None:
+    match kind:
+        case MessageKind.SOURCE_FAILURE | MessageKind.FATAL:
+            return kind
+        case _:
+            return None
 
 
 @final
@@ -38,7 +47,7 @@ class NativeFailureReceiver:
     def start(self) -> None:
         self._thread.start()
 
-    def stop(self) -> None:
+    def close(self) -> None:
         self._stopping.set()
         try:
             self._receiver.shutdown(socket.SHUT_RD)
@@ -51,9 +60,15 @@ class NativeFailureReceiver:
         while not self._stopping.is_set():
             try:
                 raw = self._receiver.recv(_MAX_FAILURE)
+            except InterruptedError:
+                continue
             except OSError:
+                if not self._stopping.is_set():
+                    self._on_fatal("failure_ipc")
                 return
             if raw == b"":
+                if not self._stopping.is_set():
+                    self._on_fatal("child_exit")
                 return
             try:
                 message = decode_control_message(raw)
@@ -67,14 +82,18 @@ class NativeFailureReceiver:
             ):
                 self._on_fatal("failure_identity")
                 return
-            if message.kind is MessageKind.SOURCE_FAILURE:
-                self._on_source(message.camera_id, category)
-            elif message.kind is MessageKind.FATAL:
-                self._on_fatal(category)
-                return
-            else:
+            kind = _failure_kind(message.kind)
+            if kind is None:
                 self._on_fatal("failure_kind")
                 return
+            match kind:
+                case MessageKind.SOURCE_FAILURE:
+                    self._on_source(message.camera_id, category)
+                    continue
+                case MessageKind.FATAL:
+                    self._on_fatal(category)
+                    return
+            assert_never(kind)
 
 
 __all__ = ["NativeFailureReceiver"]

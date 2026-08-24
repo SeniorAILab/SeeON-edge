@@ -17,6 +17,12 @@ using FrameCallback = std::function<void(const std::string&, std::uint64_t)>;
 using FailureCallback = std::function<void(const NativeFailure&)>;
 
 [[nodiscard]] bool valid_source_uri(const std::string& uri);
+[[nodiscard]] NativeFailure classify_bus_failure(
+    bool eos,
+    unsigned int error_domain,
+    int error_code,
+    const std::string& element_factory,
+    const std::string& camera);
 
 class SourceRuntime {
  public:

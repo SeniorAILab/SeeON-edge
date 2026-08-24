@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import signal
 import stat
 import textwrap
 import uuid
@@ -86,7 +88,6 @@ def _request(tmp_path: Path, executable: Path, *, fatal: str | None = None) -> D
     return DarkRunRequest(
         child=ChildConfig(
             executable=executable,
-            gpu_id="0",
             worker_boot_id=uuid.uuid4(),
             socket_dir=state / "ipc",
             first_fault_path=state / "deepstream-first-fault.json",
@@ -117,6 +118,44 @@ def test_dark_cli_keeps_installed_child_default_with_typed_namespace(
     # Then
     assert exit_code == 0
     assert captured[0].child.executable == Path("/usr/local/bin/seeon-deepstream-child")
+
+
+def test_graceful_sigterm_exits_zero_without_fault(tmp_path: Path) -> None:
+    # Given
+    class Sources:
+        def add(self, camera_id: str, uri: str) -> object:
+            del camera_id, uri
+            return object()
+
+    class GracefulSupervisor:
+        def __init__(self, config: ChildConfig) -> None:
+            del config
+            self.stopped: bool = False
+
+        @property
+        def sources(self) -> Sources:
+            return Sources()
+
+        def start(self) -> None:
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        def stop(self) -> None:
+            self.stopped = True
+
+        def fatal(self, category: str) -> None:
+            del category
+
+        def wait(self) -> int:
+            return 0
+
+    request = _request(tmp_path, tmp_path / "unused")
+
+    # When
+    exit_code = run_dark_child(request, supervisor_factory=GracefulSupervisor)
+
+    # Then
+    assert exit_code == 0
+    assert not request.child.first_fault_path.exists()
 
 
 def test_injected_fatal_makes_runner_exit_four_with_typed_durable_fault(

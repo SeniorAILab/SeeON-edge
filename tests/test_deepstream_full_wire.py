@@ -13,9 +13,9 @@ from worker.native.deepstream.ipc import (
     MessageKind,
     MetadataFrame,
     decode_metadata,
-    encode_metadata,
+    encode_message,
 )
-from worker.native.deepstream.perception_wire import encode_perception_frame
+from worker.native.deepstream.perception_wire import PerceptionWireError, encode_perception_frame
 from worker.types.perception_frame import (
     LEGACY_ASSOCIATION_STRATEGY,
     AssociationResult,
@@ -68,6 +68,26 @@ def _nonempty_metadata() -> MetadataFrame:
     )
 
 
+def _encode_for_test(metadata: MetadataFrame) -> bytes:
+    frame = metadata.frame
+    return encode_message(
+        ControlMessage(
+            MessageKind.METADATA,
+            uuid.UUID(frame.identity.worker_boot_id),
+            metadata.child_instance_id,
+            frame.identity.camera_id,
+            metadata.source_generation,
+            frame.identity.stream_epoch,
+            frame.identity.source_pts or 0,
+            frame.identity.seq,
+            metadata.native_publish_sequence,
+            0,
+            metadata.transform_id,
+            encode_perception_frame(frame),
+        )
+    )
+
+
 def test_empty_payload_matches_cross_language_golden_vector() -> None:
     # Given
     message = ControlMessage(
@@ -99,7 +119,7 @@ def test_complete_nonempty_perception_frame_round_trips() -> None:
     metadata = _nonempty_metadata()
 
     # When
-    encoded = encode_metadata(metadata)
+    encoded = _encode_for_test(metadata)
     decoded = decode_metadata(encoded)
 
     # Then
@@ -121,14 +141,14 @@ def test_wire_rejects_invalid_association_index() -> None:
     )
 
     # When / Then
-    with pytest.raises(IpcProtocolError) as failed:
-        _ = encode_metadata(invalid)
+    with pytest.raises(PerceptionWireError) as failed:
+        _ = _encode_for_test(invalid)
     assert failed.value.code == "invalid_perception_frame"
 
 
 def test_wire_rejects_malformed_payload_lengths_and_counts() -> None:
     # Given
-    encoded = bytearray(encode_metadata(_nonempty_metadata()))
+    encoded = bytearray(_encode_for_test(_nonempty_metadata()))
     encoded[-1] = 0xFF
 
     # When / Then
@@ -138,7 +158,7 @@ def test_wire_rejects_malformed_payload_lengths_and_counts() -> None:
 
 def test_wire_rejects_inner_identity_mismatch() -> None:
     # Given
-    encoded = bytearray(encode_metadata(_nonempty_metadata()))
+    encoded = bytearray(_encode_for_test(_nonempty_metadata()))
     payload_offset = 92 + len("camera-a") + len("seeon-perception-v1")
     encoded[payload_offset + 4] ^= 0x01
 

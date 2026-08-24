@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import signal
 import subprocess
+from contextlib import closing
 from dataclasses import dataclass
 
 from worker.native.deepstream.control import ChildControlError, DeepStreamControlClient
@@ -26,9 +27,11 @@ class ChildResources:
 
 def stop_child_resources(resources: ChildResources) -> None:
     if resources.failures is not None:
-        resources.failures.stop()
+        with closing(resources.failures):
+            pass
     if resources.metadata is not None:
-        resources.metadata.__exit__(None, None, None)
+        with closing(resources.metadata):
+            pass
     process = resources.process
     control = resources.control
     if process is not None and process.poll() is None:
@@ -45,11 +48,13 @@ def stop_child_resources(resources: ChildResources) -> None:
             if monitor is not None:
                 _ = monitor.exited.wait(resources.stop_timeout_sec)
     if control is not None:
-        control.close()
+        with closing(control):
+            pass
     if resources.monitor is not None:
         resources.monitor.join(resources.stop_timeout_sec)
     if resources.lease is not None:
-        resources.lease.close()
+        with closing(resources.lease):
+            pass
 
 
 __all__ = ["ChildResources", "stop_child_resources"]

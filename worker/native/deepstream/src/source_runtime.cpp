@@ -60,22 +60,16 @@ void on_decode_pad(GstElement*, GstPad* output, gpointer raw_convert) {
   gst_object_unref(input);
 }
 
-bool contains(const std::string& value, const std::string& token) {
-  return value.find(token) != std::string::npos;
-}
-
-bool contains_fatal_token(std::string value) {
-  std::ranges::transform(value, value.begin(),
-                         [](unsigned char character) { return std::tolower(character); });
-  return contains(value, "cuda") || contains(value, "xid") || contains(value, "context") ||
-         contains(value, "tensorrt") || contains(value, "out of memory") ||
-         contains(value, "glib");
+std::string message_factory(const GstMessage* message) {
+  if (!GST_IS_ELEMENT(GST_MESSAGE_SRC(message))) return {};
+  GstElementFactory* factory = gst_element_get_factory(GST_ELEMENT(GST_MESSAGE_SRC(message)));
+  return factory == nullptr ? std::string{} : std::string{gst_plugin_feature_get_name(factory)};
 }
 
 GstBusSyncReply on_bus(GstBus*, GstMessage* message, gpointer raw) {
   auto* context = static_cast<SourceContext*>(raw);
   if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS) {
-    context->failure_callback({context->camera, "eos", seeon::FailureScope::kSourceLocal});
+    context->failure_callback(seeon::classify_bus_failure(true, 0, 0, {}, context->camera));
     return GST_BUS_DROP;
   }
   if (GST_MESSAGE_TYPE(message) != GST_MESSAGE_ERROR) {
@@ -84,13 +78,12 @@ GstBusSyncReply on_bus(GstBus*, GstMessage* message, gpointer raw) {
   GError* error = nullptr;
   gchar* debug = nullptr;
   gst_message_parse_error(message, &error, &debug);
-  const std::string stable = error == nullptr ? "native_error" : error->message;
-  const bool fatal =
-      contains_fatal_token(stable) ||
-      contains(std::string{GST_OBJECT_NAME(GST_MESSAGE_SRC(message))}, "perception");
-  context->failure_callback({context->camera, fatal ? "shared_pipeline" : "decoder_source",
-                             fatal ? seeon::FailureScope::kFatal
-                                   : seeon::FailureScope::kSourceLocal});
+  context->failure_callback(seeon::classify_bus_failure(
+      false,
+      error == nullptr ? 0U : error->domain,
+      error == nullptr ? 0 : error->code,
+      message_factory(message),
+      context->camera));
   g_clear_error(&error);
   g_free(debug);
   return GST_BUS_DROP;
@@ -99,6 +92,22 @@ GstBusSyncReply on_bus(GstBus*, GstMessage* message, gpointer raw) {
 #endif
 
 namespace seeon {
+#ifdef SEEON_HAS_GSTREAMER
+NativeFailure classify_bus_failure(bool eos, unsigned int error_domain, int error_code,
+                                   const std::string& element_factory,
+                                   const std::string& camera) {
+  if (eos) return {camera, "eos", FailureScope::kSourceLocal};
+  const bool shared_factory = element_factory == "seeonperceptiontransform" ||
+                              element_factory.starts_with("nv");
+  const bool fatal_domain =
+      error_domain == GST_LIBRARY_ERROR ||
+      (error_domain == GST_CORE_ERROR && error_code != GST_CORE_ERROR_NEGOTIATION);
+  const bool fatal = shared_factory || fatal_domain;
+  return {camera, fatal ? "shared_pipeline" : "decoder_source",
+          fatal ? FailureScope::kFatal : FailureScope::kSourceLocal};
+}
+#endif
+
 class SourceRuntime::Impl {
  public:
 #ifdef SEEON_HAS_GSTREAMER
@@ -147,7 +156,11 @@ GstElement* build_pipeline(const std::string& camera, const std::string& uri,
   GstElement* sink = gst_element_factory_make("fakesink", nullptr);
   if (pipeline == nullptr || source == nullptr || convert == nullptr || rgba == nullptr ||
       nvconvert == nullptr || nvmm == nullptr || transform == nullptr || sink == nullptr) {
-    *error_code = "element_unavailable";
+    *error_code = "camera_id=" + camera + " element_unavailable";
+    GstElement* elements[] = {source, convert, rgba, nvconvert, nvmm, transform, sink};
+    for (GstElement* element : elements) {
+      if (element != nullptr) gst_object_unref(element);
+    }
     if (pipeline != nullptr) gst_object_unref(pipeline);
     return nullptr;
   }

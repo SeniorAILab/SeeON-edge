@@ -18,6 +18,12 @@ CommandResult handle_command(ServerState& state, const ipc::Message& request) {
     return {error_reply(request, "identity mismatch"), 4};
   }
   const auto kind = static_cast<ipc::Kind>(request.header.kind);
+  const bool debug_command = kind == ipc::Kind::kEmitMetadata ||
+                             kind == ipc::Kind::kWaitPublish ||
+                             kind == ipc::Kind::kInjectSourceEos;
+  if (debug_command && !state.options.qa_mode) {
+    return {error_reply(request, "qa_command_disabled")};
+  }
   std::string error;
   switch (kind) {
     case ipc::Kind::kAddSource: {

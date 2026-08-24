@@ -1,5 +1,6 @@
 #include "child_server.hpp"
 
+#include <fcntl.h>
 #include <unistd.h>
 
 #include <charconv>
@@ -49,8 +50,9 @@ std::optional<seeon::ChildOptions> parse_options(int argc, char** argv) {
       if (!parse_fd(value, &options.failure_fd)) return std::nullopt;
     } else if (flag == "--identity-fd") {
       if (!parse_fd(value, &identity_fd)) return std::nullopt;
-    } else if (flag == "--gpu-id") {
-      options.gpu_id = value;
+    } else if (flag == "--qa-mode") {
+      if (value != "0" && value != "1") return std::nullopt;
+      options.qa_mode = value == "1";
     } else if (flag == "--ready-fd") {
       if (!parse_fd(value, &options.ready_fd)) return std::nullopt;
     } else {
@@ -58,17 +60,26 @@ std::optional<seeon::ChildOptions> parse_options(int argc, char** argv) {
     }
   }
   if (options.control_fd < 0 || options.wake_fd < 0 || options.failure_fd < 0 ||
-      options.ready_fd < 0 || identity_fd < 0 || options.gpu_id != "0" ||
-      !read_identity(identity_fd, &options)) {
+      options.ready_fd < 0 || identity_fd < 0 || !read_identity(identity_fd, &options)) {
     return std::nullopt;
   }
   return options;
+}
+
+bool set_close_on_exec(const seeon::ChildOptions& options) {
+  const int descriptors[] = {
+      options.control_fd, options.wake_fd, options.failure_fd, options.ready_fd};
+  for (const int descriptor : descriptors) {
+    const int flags = fcntl(descriptor, F_GETFD);
+    if (flags < 0 || fcntl(descriptor, F_SETFD, flags | FD_CLOEXEC) < 0) return false;
+  }
+  return true;
 }
 }  // namespace
 
 int main(int argc, char** argv) {
   const auto options = parse_options(argc, argv);
-  if (!options.has_value()) {
+  if (!options.has_value() || !set_close_on_exec(*options)) {
     std::cerr << "invalid inherited DeepStream child launch\n";
     return 2;
   }

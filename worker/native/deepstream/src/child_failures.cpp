@@ -19,8 +19,14 @@ ServerState::~ServerState() { close(failure_fd); }
 
 void ServerState::on_failure(const NativeFailure& failure) {
   {
+    constexpr std::size_t kFailureCapacity = 64;
     std::lock_guard lock{failure_mutex};
-    failures.push_back(failure);
+    if (failures.size() >= kFailureCapacity) {
+      failures.clear();
+      failures.push_back({"_worker", "failure_overflow", FailureScope::kFatal});
+    } else {
+      failures.push_back(failure);
+    }
   }
   static_cast<void>(eventfd_write(failure_fd, 1));
 }

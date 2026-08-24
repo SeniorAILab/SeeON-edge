@@ -2,31 +2,17 @@
 
 from __future__ import annotations
 
-import importlib
 import socket
-import stat
 import uuid
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 
-
-def _ipc_module():
-    try:
-        return importlib.import_module("worker.native.deepstream.ipc")
-    except ModuleNotFoundError as error:
-        pytest.fail(f"C5 IPC boundary is absent: {error}")
+import worker.native.deepstream.ipc as ipc
+import worker.native.deepstream.metadata as metadata
 
 
-def _metadata_module():
-    try:
-        return importlib.import_module("worker.native.deepstream.metadata")
-    except ModuleNotFoundError as error:
-        pytest.fail(f"C5 metadata boundary is absent: {error}")
-
-
-def _frame(ipc, *, camera: str = "camera-a", generation: int = 3, epoch: int = 7, seq: int = 1):
+def _frame(*, camera: str = "camera-a", generation: int = 3, epoch: int = 7, seq: int = 1):
     return ipc.MetadataFrame.empty(
         ipc.ControlMessage(
             kind=ipc.MessageKind.METADATA,
@@ -44,7 +30,7 @@ def _frame(ipc, *, camera: str = "camera-a", generation: int = 3, epoch: int = 7
     )
 
 
-def _binding(metadata, *, camera: str = "camera-a", generation: int = 3, epoch: int = 7):
+def _binding(*, camera: str = "camera-a", generation: int = 3, epoch: int = 7):
     return metadata.SourceBinding(
         worker_boot_id="12345678-1234-5678-1234-567812345678",
         child_instance_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
@@ -57,7 +43,6 @@ def _binding(metadata, *, camera: str = "camera-a", generation: int = 3, epoch: 
 
 def test_binary_control_round_trip_when_message_has_full_identity() -> None:
     # Given
-    ipc = _ipc_module()
     message = ipc.ControlMessage(
         kind=ipc.MessageKind.ADD_SOURCE,
         worker_boot_id=uuid.UUID("12345678-1234-5678-1234-567812345678"),
@@ -85,7 +70,6 @@ def test_binary_control_round_trip_when_message_has_full_identity() -> None:
 
 def test_oversized_control_frame_is_refused_before_socket_send() -> None:
     # Given
-    ipc = _ipc_module()
     message = ipc.ControlMessage(
         kind=ipc.MessageKind.ADD_SOURCE,
         worker_boot_id=uuid.uuid4(),
@@ -103,20 +87,18 @@ def test_oversized_control_frame_is_refused_before_socket_send() -> None:
 
     # When / Then
     with pytest.raises(ipc.IpcProtocolError) as failed:
-        ipc.encode_message(message)
+        _ = ipc.encode_message(message)
     assert failed.value.code == "frame_too_large"
 
 
 def test_latest_frame_wins_when_consumer_pauses() -> None:
     # Given
-    ipc = _ipc_module()
-    metadata = _metadata_module()
     slot = metadata.LatestMetadataSlot()
-    slot.register_source(_binding(metadata))
+    slot.register_source(_binding())
 
     # When
-    assert slot.publish(_frame(ipc, seq=1))
-    assert slot.publish(_frame(ipc, seq=2))
+    assert slot.publish(_frame(seq=1))
+    assert slot.publish(_frame(seq=2))
     latest = slot.take("camera-a")
 
     # Then
@@ -127,19 +109,17 @@ def test_latest_frame_wins_when_consumer_pauses() -> None:
 
 def test_stale_unknown_and_epoch_mismatch_metadata_are_dropped() -> None:
     # Given
-    ipc = _ipc_module()
-    metadata = _metadata_module()
     slot = metadata.LatestMetadataSlot()
-    slot.register_source(_binding(metadata))
-    assert slot.publish(_frame(ipc, seq=4))
+    slot.register_source(_binding())
+    assert slot.publish(_frame(seq=4))
     assert slot.take("camera-a") is not None
 
     # When
     outcomes = (
-        slot.publish(_frame(ipc, seq=3)),
-        slot.publish(_frame(ipc, camera="unknown", seq=5)),
-        slot.publish(_frame(ipc, generation=2, seq=5)),
-        slot.publish(_frame(ipc, epoch=6, seq=5)),
+        slot.publish(_frame(seq=3)),
+        slot.publish(_frame(camera="unknown", seq=5)),
+        slot.publish(_frame(generation=2, seq=5)),
+        slot.publish(_frame(epoch=6, seq=5)),
     )
 
     # Then
@@ -153,11 +133,9 @@ def test_stale_unknown_and_epoch_mismatch_metadata_are_dropped() -> None:
 
 def test_boot_child_transform_and_each_high_water_are_enforced() -> None:
     # Given
-    ipc = _ipc_module()
-    metadata = _metadata_module()
     slot = metadata.LatestMetadataSlot()
-    slot.register_source(_binding(metadata))
-    accepted = _frame(ipc, seq=10)
+    slot.register_source(_binding())
+    accepted = _frame(seq=10)
     assert slot.publish(accepted)
     assert slot.take("camera-a") is not None
 
@@ -193,32 +171,30 @@ def test_boot_child_transform_and_each_high_water_are_enforced() -> None:
     assert counters.late == 1
 
 
-def test_metadata_datagram_receiver_keeps_socket_owner_only(tmp_path: Path) -> None:
+def test_metadata_datagram_receiver_uses_inherited_socketpair() -> None:
     # Given
-    ipc = _ipc_module()
-    metadata = _metadata_module()
-    path = tmp_path / "metadata.sock"
+    sender, wake_receiver = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
     slot = metadata.LatestMetadataSlot()
-    slot.register_source(_binding(metadata))
+    slot.register_source(_binding())
 
     class Puller:
-        def pull_latest(self, camera_id: str):
-            return _frame(ipc, camera=camera_id, seq=8)
+        def pull_latest(self, camera_id: str) -> ipc.MetadataFrame:
+            return _frame(camera=camera_id, seq=8)
+
+        def source_binding(self, camera_id: str) -> metadata.SourceBinding:
+            return _binding(camera=camera_id)
+
+    token = slot.subscribe(_binding())
 
     # When
-    with metadata.MetadataReceiver(path, slot, Puller()) as receiver:
-        sender = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-        received_subscription = receiver.subscription()
+    with metadata.MetadataReceiver(wake_receiver, slot, Puller()):
         try:
-            sender.sendto(b"camera-a", str(path))
-            receiver.wait_received(received_subscription, timeout_sec=1.0)
+            _ = sender.send(b"camera-a")
+            received = slot.wait_accepted(token, timeout_sec=1.0)
         finally:
             sender.close()
-        received = slot.take("camera-a")
-        mode = stat.S_IMODE(path.stat().st_mode)
 
     # Then
     assert received is not None
     assert received.identity.seq == 8
-    assert mode == 0o600
-    assert not path.exists()
+    assert wake_receiver.family == socket.AF_UNIX

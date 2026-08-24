@@ -1,4 +1,4 @@
-"""Inherited socketpair and identity-pipe spawn for one native child."""
+"""Leak-safe inherited socketpair and identity-pipe child spawn."""
 
 from __future__ import annotations
 
@@ -38,35 +38,58 @@ def spawn_process(request: SpawnRequest) -> subprocess.Popen[bytes]:
     )
 
 
+def _close_sockets(sockets: list[socket.socket]) -> None:
+    for endpoint in sockets:
+        endpoint.close()
+
+
+def _close_fds(descriptors: list[int]) -> None:
+    for descriptor in descriptors:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+
+
 def spawn_child(config: ChildConfig) -> ChildTransport:
-    control_parent, control_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-    wake_parent, wake_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
-    failure_parent, failure_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-    identity_read, identity_write = os.pipe()
-    ready_read, ready_write = os.pipe()
-    identity = config.worker_boot_id.bytes + config.child_instance_id.bytes + os.getpid().to_bytes(
-        4, "little"
-    )
-    _ = os.write(identity_write, identity)
-    os.close(identity_write)
-    command = (
-        str(config.executable),
-        "--control-fd",
-        str(control_child.fileno()),
-        "--wake-fd",
-        str(wake_child.fileno()),
-        "--failure-fd",
-        str(failure_child.fileno()),
-        "--identity-fd",
-        str(identity_read),
-        "--gpu-id",
-        config.gpu_id,
-        "--ready-fd",
-        str(ready_write),
-    )
-    child_env = dict(os.environ)
-    child_env["CUDA_VISIBLE_DEVICES"] = config.gpu_id
+    sockets: list[socket.socket] = []
+    descriptors: list[int] = []
     try:
+        control_parent, control_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        sockets.extend((control_parent, control_child))
+        wake_parent, wake_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+        sockets.extend((wake_parent, wake_child))
+        failure_parent, failure_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        sockets.extend((failure_parent, failure_child))
+        identity_read, identity_write = os.pipe()
+        descriptors.extend((identity_read, identity_write))
+        ready_read, ready_write = os.pipe()
+        descriptors.extend((ready_read, ready_write))
+        identity = (
+            config.worker_boot_id.bytes
+            + config.child_instance_id.bytes
+            + os.getpid().to_bytes(4, "little")
+        )
+        _ = os.write(identity_write, identity)
+        os.close(identity_write)
+        descriptors.remove(identity_write)
+        command = (
+            str(config.executable),
+            "--control-fd",
+            str(control_child.fileno()),
+            "--wake-fd",
+            str(wake_child.fileno()),
+            "--failure-fd",
+            str(failure_child.fileno()),
+            "--identity-fd",
+            str(identity_read),
+            "--ready-fd",
+            str(ready_write),
+            "--qa-mode",
+            "1" if config.qa_mode else "0",
+        )
+        child_env = dict(os.environ)
+        child_env["CUDA_VISIBLE_DEVICES"] = "0"
         process = spawn_process(
             SpawnRequest(
                 command,
@@ -80,18 +103,15 @@ def spawn_child(config: ChildConfig) -> ChildTransport:
                 ),
             )
         )
-    except OSError:
-        control_parent.close()
-        wake_parent.close()
-        failure_parent.close()
-        os.close(ready_read)
+    except BaseException:
+        _close_sockets(sockets)
+        _close_fds(descriptors)
         raise
-    finally:
-        control_child.close()
-        wake_child.close()
-        failure_child.close()
-        os.close(identity_read)
-        os.close(ready_write)
+    control_child.close()
+    wake_child.close()
+    failure_child.close()
+    os.close(identity_read)
+    os.close(ready_write)
     return ChildTransport(process, control_parent, wake_parent, failure_parent, ready_read)
 
 

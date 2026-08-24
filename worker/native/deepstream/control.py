@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import socket
 import threading
-from pathlib import Path
 from typing import Final, final
 
 from worker.native.deepstream.control_reply import decode_status, validate_reply
@@ -38,11 +37,13 @@ class DeepStreamControlClient:
 
     def __init__(
         self,
-        endpoint: Path | socket.socket,
+        endpoint: object,
         identity: ControlIdentity,
         *,
         timeout_sec: float = 2.0,
     ) -> None:
+        if not isinstance(endpoint, socket.socket):
+            raise TypeError("inherited SOCK_SEQPACKET control socket required")
         self._endpoint = endpoint
         self._identity = identity
         self._timeout_sec = timeout_sec
@@ -53,19 +54,8 @@ class DeepStreamControlClient:
         self._epochs: dict[str, int] = {}
 
     def connect(self) -> None:
-        match self._endpoint:
-            case Path() as path:
-                client = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-                client.settimeout(self._timeout_sec)
-                try:
-                    client.connect(str(path))
-                except OSError as error:
-                    client.close()
-                    raise ChildControlError("control_connect", "unavailable") from error
-            case socket.socket() as inherited:
-                client = inherited
-                client.settimeout(self._timeout_sec)
-        self._socket = client
+        self._endpoint.settimeout(self._timeout_sec)
+        self._socket = self._endpoint
 
     def close(self) -> None:
         client, self._socket = self._socket, None

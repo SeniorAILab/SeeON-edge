@@ -48,7 +48,6 @@ def main(argv: list[str] | None = None) -> int:
     request = DarkRunRequest(
         child=ChildConfig(
             executable=args.child,
-            gpu_id="0",
             worker_boot_id=uuid.uuid4(),
             socket_dir=state_dir / "ipc",
             first_fault_path=state_dir / "deepstream-first-fault.json",

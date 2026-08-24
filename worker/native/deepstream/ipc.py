@@ -16,7 +16,6 @@ from worker.native.deepstream.ipc_types import (
 from worker.native.deepstream.perception_wire import (
     PerceptionWireError,
     decode_perception_frame,
-    encode_perception_frame,
 )
 from worker.types.perception_frame import PerceptionFrameIdentity
 
@@ -103,30 +102,6 @@ def decode_control_message(data: bytes) -> ControlMessage:
     )
 
 
-def encode_metadata(metadata: MetadataFrame) -> bytes:
-    frame = metadata.frame
-    try:
-        payload = encode_perception_frame(frame)
-    except PerceptionWireError as error:
-        raise IpcProtocolError(error.code, error.detail) from error
-    return encode_message(
-        ControlMessage(
-            kind=MessageKind.METADATA,
-            worker_boot_id=uuid.UUID(frame.identity.worker_boot_id),
-            child_instance_id=metadata.child_instance_id,
-            camera_id=frame.identity.camera_id,
-            source_generation=metadata.source_generation,
-            stream_epoch=frame.identity.stream_epoch,
-            source_pts=frame.identity.source_pts or 0,
-            source_sequence=frame.identity.seq,
-            native_publish_sequence=metadata.native_publish_sequence,
-            request_id=0,
-            transform_id=metadata.transform_id,
-            payload=payload,
-        )
-    )
-
-
 def decode_metadata(data: bytes) -> MetadataFrame:
     message = decode_control_message(data)
     if message.kind is not MessageKind.METADATA:
@@ -161,5 +136,4 @@ __all__ = [
     "decode_control_message",
     "decode_metadata",
     "encode_message",
-    "encode_metadata",
 ]

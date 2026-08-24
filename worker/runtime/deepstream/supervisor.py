@@ -4,13 +4,9 @@ from __future__ import annotations
 
 import subprocess
 import threading
-from typing import Final, final
+from typing import Final
 
-from worker.native.deepstream.control import (
-    ChildControlError,
-    ControlIdentity,
-    DeepStreamControlClient,
-)
+from worker.native.deepstream.control import DeepStreamControlClient
 from worker.native.deepstream.metadata import LatestMetadataSlot, MetadataReceiver
 from worker.runtime.deepstream.child_monitor import ChildExitMonitor, monitor_metadata
 from worker.runtime.deepstream.cleanup import ChildResources, stop_child_resources
@@ -25,26 +21,23 @@ from worker.runtime.deepstream.failure_receiver import NativeFailureReceiver
 from worker.runtime.deepstream.fault import persist_child_fault
 from worker.runtime.deepstream.path_security import (
     PrivatePathError,
-    remove_stale_socket,
     validate_private_directory,
 )
-from worker.runtime.deepstream.readiness import wait_for_ready
 from worker.runtime.deepstream.source_control import DarkSourceController
+from worker.runtime.deepstream.startup import connect_session
 from worker.runtime.deepstream.transport import spawn_child
 from worker.runtime.lease import GpuLease
 
-_TRANSFORM_ID: Final = "seeon-perception-v1"
 FATAL_CHILD_EXIT_CODE: Final = 4
 
 
-@final
 class DeepStreamChildSupervisor:
     """Own one inherited-IPC child and persist fatal exit without caller participation."""
 
     def __init__(self, config: ChildConfig) -> None:
-        self._config = config
+        self._config: ChildConfig = config
         self._process: subprocess.Popen[bytes] | None = None
-        self._metadata = LatestMetadataSlot()
+        self._metadata: LatestMetadataSlot = LatestMetadataSlot()
         self._receiver: MetadataReceiver | None = None
         self._failure_receiver: NativeFailureReceiver | None = None
         self._control: DeepStreamControlClient | None = None
@@ -52,9 +45,9 @@ class DeepStreamChildSupervisor:
         self._lease: GpuLease | None = None
         self._monitor: ChildExitMonitor | None = None
         self._metadata_monitor: threading.Thread | None = None
-        self._stopping = threading.Event()
-        self._fatal_received = threading.Event()
-        self._fatal_category = "child_exit"
+        self._stopping: threading.Event = threading.Event()
+        self._fatal_received: threading.Event = threading.Event()
+        self._fatal_category: str = "child_exit"
 
     @property
     def pid(self) -> int | None:
@@ -68,19 +61,20 @@ class DeepStreamChildSupervisor:
     @property
     def control(self) -> DeepStreamControlClient:
         if self._control is None:
-            raise ChildStartupError("not_started", self._config.gpu_id)
+            raise ChildStartupError("not_started", "gpu-0")
         return self._control
 
     @property
     def sources(self) -> DarkSourceController:
         if self._sources is None:
-            raise ChildStartupError("not_started", self._config.gpu_id)
+            raise ChildStartupError("not_started", "gpu-0")
         return self._sources
 
     def start(self) -> None:
         if self.pid is not None:
-            raise ChildStartupError("already_started", self._config.gpu_id)
+            raise ChildStartupError("already_started", "gpu-0")
         try:
+            validate_private_directory(self._config.first_fault_path.parent)
             validate_private_directory(self._config.socket_dir)
         except PrivatePathError as error:
             raise ChildStartupError(error.code, error.detail) from error
@@ -91,11 +85,6 @@ class DeepStreamChildSupervisor:
             self.stop()
             raise ChildStartupError("spawn_failed", "unavailable") from error
         self._process = transport.process
-        control_socket, wake_socket, ready_read = (
-            transport.control,
-            transport.wake,
-            transport.ready_fd,
-        )
         self._monitor = ChildExitMonitor(
             transport.process,
             self._config,
@@ -104,34 +93,14 @@ class DeepStreamChildSupervisor:
             lambda: self._fatal_category,
         )
         self._monitor.start()
-        if not wait_for_ready(ready_read, transport.process, self._config.startup_timeout_sec):
-            control_socket.close()
-            wake_socket.close()
-            transport.failures.close()
-            self.stop()
-            raise ChildStartupError("ready_failed", self._config.gpu_id)
-        control = DeepStreamControlClient(
-            control_socket,
-            ControlIdentity(
-                self._config.worker_boot_id,
-                self._config.child_instance_id,
-                _TRANSFORM_ID,
-            ),
-        )
         try:
-            control.connect()
-            _ = control.status()
-            receiver = MetadataReceiver(wake_socket, self._metadata, control)
-            _ = receiver.__enter__()
-        except (ChildControlError, OSError) as error:
-            control.close()
-            wake_socket.close()
-            transport.failures.close()
+            session = connect_session(self._config, transport, self._metadata)
+        except ChildStartupError:
             self.stop()
-            raise ChildStartupError("handshake_failed", "control") from error
-        self._control = control
-        self._receiver = receiver
-        self._sources = DarkSourceController(control, self._metadata, receiver)
+            raise
+        self._control = session.control
+        self._receiver = session.receiver
+        self._sources = session.sources
         failures = NativeFailureCoordinator(
             self._config,
             lambda: self._sources,
@@ -149,7 +118,7 @@ class DeepStreamChildSupervisor:
         self._failure_receiver.start()
         self._metadata_monitor = threading.Thread(
             target=monitor_metadata,
-            args=(receiver, transport.process, self._stopping, self._mark_control_eof),
+            args=(session.receiver, transport.process, self._stopping, self._mark_control_eof),
             name="deepstream-metadata-fatal",
             daemon=True,
         )
@@ -171,12 +140,11 @@ class DeepStreamChildSupervisor:
     def wait(self) -> int:
         monitor = self._monitor
         if monitor is None:
-            raise ChildStartupError("not_started", self._config.gpu_id)
+            raise ChildStartupError("not_started", "gpu-0")
         _ = monitor.exited.wait()
         code = monitor.exit_code if monitor.exit_code is not None else FATAL_CHILD_EXIT_CODE
         if code != 0:
             raise ChildFatalError(
-                self._config.gpu_id,
                 FATAL_CHILD_EXIT_CODE,
                 self._fatal_category,
                 self._config.first_fault_path,
@@ -213,6 +181,5 @@ __all__ = [
     "FATAL_CHILD_EXIT_CODE",
     "configured_dark_supervisors",
     "PrivatePathError",
-    "remove_stale_socket",
     "validate_private_directory",
 ]

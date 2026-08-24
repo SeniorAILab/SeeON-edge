@@ -67,7 +67,7 @@ class LatestMetadataSlot:
         self._condition = threading.Condition(self._lock)
         self._expected: dict[str, SourceBinding] = {}
         self._latest: dict[str, MetadataFrame] = {}
-        self._high_water: dict[str, tuple[int, int, int]] = {}
+        self._high_water: dict[tuple[str, int, int], tuple[int, int, int]] = {}
         self._counters = MetadataCounters()
 
     def register_source(self, binding: SourceBinding) -> None:
@@ -80,6 +80,11 @@ class LatestMetadataSlot:
         with self._condition:
             _ = self._expected.pop(camera_id, None)
             _ = self._latest.pop(camera_id, None)
+            self._high_water = {
+                binding: high_water
+                for binding, high_water in self._high_water.items()
+                if binding[0] != camera_id
+            }
             self._condition.notify_all()
 
     def expected_binding(self, camera_id: str) -> SourceBinding | None:
@@ -131,7 +136,8 @@ class LatestMetadataSlot:
                 metadata.identity.seq,
                 metadata.native_publish_sequence,
             )
-            high_water = self._high_water.get(camera_id)
+            binding_key = (camera_id, metadata.source_generation, metadata.identity.stream_epoch)
+            high_water = self._high_water.get(binding_key)
             if high_water is not None and any(
                 current <= previous for current, previous in zip(identity, high_water, strict=True)
             ):
@@ -140,7 +146,7 @@ class LatestMetadataSlot:
             if camera_id in self._latest:
                 counters = _increment(counters, "overwritten")
             self._latest[camera_id] = metadata
-            self._high_water[camera_id] = identity
+            self._high_water[binding_key] = identity
             self._counters = _increment(counters, "accepted")
             self._condition.notify_all()
             return True

@@ -82,6 +82,7 @@ class _NoopReceiver:
 class _RecoveringPuller:
     def __init__(self) -> None:
         self.calls: int = 0
+        self.first_pull: threading.Event = threading.Event()
 
     def source_binding(self, camera_id: str) -> SourceBinding:
         return _binding(camera_id)
@@ -89,26 +90,26 @@ class _RecoveringPuller:
     def pull_latest(self, camera_id: str) -> MetadataFrame | None:
         self.calls += 1
         if self.calls == 1:
+            self.first_pull.set()
             raise MetadataPullFailure("temporary_pull")
         return _frame(camera_id, sequence=2)
 
 
-def test_metadata_receiver_recovers_after_one_pull_failure(tmp_path: Path) -> None:
+def test_metadata_receiver_recovers_after_one_pull_failure() -> None:
     # Given
     slot = LatestMetadataSlot()
     slot.register_source(_binding("camera-a"))
-    path = tmp_path / "metadata.sock"
+    sender, wake_receiver = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+    puller = _RecoveringPuller()
+    token = slot.subscribe(_binding("camera-a"))
 
     # When
-    with MetadataReceiver(path, slot, _RecoveringPuller()) as receiver:
-        sender = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    with MetadataReceiver(wake_receiver, slot, puller):
         try:
-            first = receiver.subscription()
-            _ = sender.sendto(b"camera-a", str(path))
-            receiver.wait_received(first, timeout_sec=1.0)
-            second = receiver.subscription()
-            _ = sender.sendto(b"camera-a", str(path))
-            receiver.wait_received(second, timeout_sec=1.0)
+            _ = sender.send(b"camera-a")
+            assert puller.first_pull.wait(timeout=1.0)
+            _ = sender.send(b"camera-a")
+            _ = slot.wait_accepted(token, timeout_sec=1.0)
         finally:
             sender.close()
 
@@ -117,11 +118,11 @@ def test_metadata_receiver_recovers_after_one_pull_failure(tmp_path: Path) -> No
     assert slot.counters().pull_failures == 1
 
 
-def test_empty_metadata_datagram_is_rejected_without_stopping_receiver(tmp_path: Path) -> None:
+def test_empty_metadata_datagram_is_rejected_without_stopping_receiver() -> None:
     # Given
     slot = LatestMetadataSlot()
     slot.register_source(_binding("camera-a"))
-    path = tmp_path / "metadata.sock"
+    sender, wake_receiver = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
 
     class Puller:
         def pull_latest(self, camera_id: str) -> MetadataFrame | None:
@@ -131,15 +132,12 @@ def test_empty_metadata_datagram_is_rejected_without_stopping_receiver(tmp_path:
             return _binding(camera_id)
 
     # When
-    with MetadataReceiver(path, slot, Puller()) as receiver:
-        sender = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    token = slot.subscribe(_binding("camera-a"))
+    with MetadataReceiver(wake_receiver, slot, Puller()):
         try:
-            first = receiver.subscription()
-            _ = sender.sendto(b"", str(path))
-            receiver.wait_received(first, timeout_sec=1.0)
-            second = receiver.subscription()
-            _ = sender.sendto(b"camera-a", str(path))
-            receiver.wait_received(second, timeout_sec=1.0)
+            _ = sender.send(b"")
+            _ = sender.send(b"camera-a")
+            _ = slot.wait_accepted(token, timeout_sec=1.0)
         finally:
             sender.close()
 
@@ -169,7 +167,7 @@ def test_synthetic_metadata_cannot_establish_source_ready() -> None:
     # When / Then
     with pytest.raises(TimeoutError):
         _ = controller.add("camera-a", "loopback://camera-a")
-    assert controller.snapshot("camera-a").state is SourceState.STARTING
+    assert controller.snapshot("camera-a").state is SourceState.TOMBSTONED
 
 
 def test_readiness_wait_is_scoped_to_camera_and_binding() -> None:
@@ -282,7 +280,6 @@ def test_control_supplies_inherited_ipc_and_keeps_secrets_off_argv(
     child = supervisor_module.DeepStreamChildSupervisor(
         ChildConfig(
             executable=tmp_path / "child",
-            gpu_id="0",
             worker_boot_id=_BOOT,
             socket_dir=tmp_path / "ipc",
             first_fault_path=tmp_path / "fault",
@@ -338,7 +335,7 @@ def test_reliable_failure_channel_delivers_source_and_fatal_events() -> None:
     assert source_received.wait(timeout=1.0)
     _ = sender.send(event(MessageKind.FATAL, b"cuda"))
     assert fatal_received.wait(timeout=1.0)
-    receiver.stop()
+    receiver.close()
     sender.close()
 
     # Then
@@ -354,12 +351,3 @@ def test_uri_boundary_rejects_file_scheme_and_preserves_rtsp_quotes() -> None:
         _ = parser("file:///tmp/injected ! filesink location=/tmp/pwned")
     parsed = parser("rtsp://user:p'ass@camera.example/live")
     assert parsed == "rtsp://user:p'ass@camera.example/live"
-
-
-def test_dark_runtime_exports_continuously_monitored_pid1_runner() -> None:
-    # Given / When
-    runner = dark_runtime.run_dark_child
-
-    # Then
-    assert callable(runner)
-    assert dark_runtime.FATAL_CHILD_EXIT_CODE == 4

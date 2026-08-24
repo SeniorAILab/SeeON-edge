@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import os
 import socket
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 from types import TracebackType
 from typing import Final, Protocol, final, override
 
@@ -41,19 +39,17 @@ class MetadataReceiver:
 
     def __init__(
         self,
-        endpoint: Path | socket.socket,
+        endpoint: object,
         slot: LatestMetadataSlot,
         puller: MetadataPuller,
     ) -> None:
+        if not isinstance(endpoint, socket.socket):
+            raise TypeError("inherited datagram wake socket required")
         self._endpoint = endpoint
         self._slot = slot
         self._puller = puller
         self._socket: socket.socket | None = None
         self._thread: threading.Thread | None = None
-        self._condition = threading.Condition()
-        self._received_count = 0
-        self._enabled = threading.Event()
-        self._enabled.set()
         self._stopping = threading.Event()
         self._fatal = threading.Event()
         self._binding_handler: Callable[[SourceBinding, MetadataFrame], None] | None = None
@@ -63,25 +59,10 @@ class MetadataReceiver:
         return self._fatal
 
     def __enter__(self) -> MetadataReceiver:
-        match self._endpoint:
-            case Path() as path:
-                path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                os.chmod(path.parent, 0o700)
-                path.unlink(missing_ok=True)
-                receiver = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-                receiver.bind(str(path))
-                os.chmod(path, 0o600)
-            case socket.socket() as inherited:
-                receiver = inherited
-        self._socket = receiver
+        self._socket = self._endpoint
         self._thread = threading.Thread(target=self._run, name="deepstream-metadata", daemon=True)
         self._thread.start()
         return self
-
-    def _record_cycle(self) -> None:
-        with self._condition:
-            self._received_count += 1
-            self._condition.notify_all()
 
     def set_binding_handler(
         self,
@@ -131,10 +112,8 @@ class MetadataReceiver:
                 return
             if self._stopping.is_set():
                 return
-            _ = self._enabled.wait()
             if data == b"":
                 self._slot.mark_malformed()
-                self._record_cycle()
                 continue
             try:
                 camera_id = data.decode()
@@ -145,26 +124,16 @@ class MetadataReceiver:
                     _ = self.pull_now(camera_id)
                 except MetadataPullStopped:
                     return
-            self._record_cycle()
-
-    def pause(self) -> None:
-        self._enabled.clear()
-
-    def resume(self) -> None:
-        self._enabled.set()
-
-    def subscription(self) -> int:
-        with self._condition:
-            return self._received_count
-
-    def wait_received(self, after: int, *, timeout_sec: float) -> None:
-        with self._condition:
-            received = self._condition.wait_for(
-                lambda: self._received_count > after,
-                timeout=timeout_sec,
-            )
-        if not received:
-            raise TimeoutError("metadata receive deadline elapsed")
+    def close(self) -> None:
+        self._stopping.set()
+        receiver = self._socket
+        if receiver is not None:
+            receiver.shutdown(socket.SHUT_RD)
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        if receiver is not None:
+            receiver.close()
+        self._socket = None
 
     def __exit__(
         self,
@@ -173,29 +142,7 @@ class MetadataReceiver:
         traceback: TracebackType | None,
     ) -> None:
         del exc_type, exc, traceback
-        self._stopping.set()
-        self._enabled.set()
-        receiver = self._socket
-        match self._endpoint:
-            case Path() as path:
-                sender = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-                try:
-                    _ = sender.sendto(b"\x00STOP", str(path))
-                finally:
-                    sender.close()
-            case socket.socket():
-                if receiver is not None:
-                    receiver.shutdown(socket.SHUT_RD)
-        if self._thread is not None:
-            self._thread.join(timeout=1.0)
-        if receiver is not None:
-            receiver.close()
-        match self._endpoint:
-            case Path() as path:
-                path.unlink(missing_ok=True)
-            case socket.socket():
-                pass
-        self._socket = None
+        self.close()
 
 
 __all__ = [

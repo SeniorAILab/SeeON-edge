@@ -19,14 +19,13 @@ class ChildStartupError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class ChildFatalError(Exception):
-    gpu_id: str
     exit_code: int
     category: str
     first_fault_path: Path
 
     @override
     def __str__(self) -> str:
-        return f"DeepStream child gpu={self.gpu_id} exited {self.exit_code}: {self.category}"
+        return f"DeepStream child exited {self.exit_code}: {self.category}"
 
 
 __all__ = ["ChildFatalError", "ChildStartupError"]
