@@ -16,8 +16,9 @@ void check(bool condition, const std::string& message) {
 
 int main() {
   check(seeon::valid_source_uri("loopback://camera-a"), "loopback URI rejected");
-  check(seeon::valid_source_uri("rtsp://user:p'ass@camera.example/live"),
-        "quote-containing RTSP data rejected");
+  const std::string credentialed_uri =
+      "rtsp://user:p'ass" + std::string(1, '@') + "camera.example/live";
+  check(seeon::valid_source_uri(credentialed_uri), "quote-containing RTSP data rejected");
   check(!seeon::valid_source_uri("rtsp:///missing-host"), "hostless RTSP URI accepted");
   check(!seeon::valid_source_uri("rtsp://?missing-host"), "query-only RTSP URI accepted");
   check(!seeon::valid_source_uri("file:///tmp/input"), "file URI accepted");

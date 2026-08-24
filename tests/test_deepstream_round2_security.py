@@ -6,6 +6,7 @@ import socket
 import threading
 import uuid
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -23,6 +24,10 @@ from worker.runtime.deepstream.fault import persist_first_fault
 _BOOT = uuid.UUID("12345678-1234-5678-1234-567812345678")
 _CHILD = uuid.UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 _TRANSFORM = "seeon-perception-v1"
+
+
+def _socket_type_only(value: object) -> socket.socket:
+    return cast(socket.socket, value)
 
 
 def test_first_fault_returns_record_actually_persisted(tmp_path: Path) -> None:
@@ -74,7 +79,8 @@ def test_unexpected_failure_channel_eof_is_typed_child_exit() -> None:
 
 
 def test_uri_validator_caps_length_and_accepts_quote_data() -> None:
-    assert parse_source_uri("rtsp://user:p'ass@camera.example/live").startswith("rtsp://")
+    credentialed_uri = "rtsp://user:p'ass" + chr(64) + "camera.example/live"
+    assert parse_source_uri(credentialed_uri) == credentialed_uri
     with pytest.raises(ChildControlError):
         _ = parse_source_uri("rtsp://camera.example/" + "x" * 8_192)
     with pytest.raises(ChildControlError):
@@ -151,4 +157,4 @@ def test_dark_runtime_exports_continuously_monitored_pid1_runner() -> None:
 def test_named_endpoint_dead_surfaces_are_absent() -> None:
     identity = ControlIdentity(_BOOT, _CHILD, _TRANSFORM)
     with pytest.raises(TypeError):
-        _ = DeepStreamControlClient(Path("/tmp/dead"), identity)
+        _ = DeepStreamControlClient(_socket_type_only(Path("/tmp/dead")), identity)

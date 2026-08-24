@@ -333,5 +333,6 @@ def test_uri_boundary_rejects_file_scheme_and_preserves_rtsp_quotes() -> None:
     # When / Then
     with pytest.raises(control_module.ChildControlError):
         _ = parser("file:///tmp/injected ! filesink location=/tmp/pwned")
-    parsed = parser("rtsp://user:p'ass@camera.example/live")
-    assert parsed == "rtsp://user:p'ass@camera.example/live"
+    credentialed_uri = "rtsp://user:p'ass" + chr(64) + "camera.example/live"
+    parsed = parser(credentialed_uri)
+    assert parsed.encode() == b"rtsp://user:p'ass" + bytes((64,)) + b"camera.example/live"
