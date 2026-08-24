@@ -24,17 +24,14 @@ _REQUIRED_TYPE_SYMBOLS = (
     "BedRegionChannel",
     "ChannelState",
     "HumanPoseChannel",
+    "Keypoint",
     "PerceptionFrameFailure",
     "PerceptionFrameIdentity",
     "PerceptionFrameV1",
     "PersonBoxChannel",
 )
 _REQUIRED_INTERFACE_SYMBOLS = (
-    "AssociationResult",
-    "BedRegionChannel",
-    "HumanPoseChannel",
     "PerceptionFrameAdapter",
-    "PersonBoxChannel",
 )
 
 
@@ -96,11 +93,16 @@ def test_perception_frame_symbols_live_on_worker_types_and_interfaces() -> None:
     assert types_pkg.ChannelState.INFERRED == "inferred"
     assert types_pkg.ChannelState.INFERRED_EMPTY == "inferred_empty"
     assert types_pkg.ChannelState.SKIPPED == "skipped"
-    assert inspect.isclass(interfaces_pkg.PersonBoxChannel)
-    assert inspect.isclass(interfaces_pkg.HumanPoseChannel)
-    assert inspect.isclass(interfaces_pkg.BedRegionChannel)
-    assert inspect.isclass(interfaces_pkg.AssociationResult)
+    assert inspect.isclass(types_pkg.PersonBoxChannel)
+    assert inspect.isclass(types_pkg.HumanPoseChannel)
+    assert inspect.isclass(types_pkg.BedRegionChannel)
+    assert inspect.isclass(types_pkg.AssociationResult)
+    assert inspect.isclass(types_pkg.Keypoint)
     assert inspect.isclass(interfaces_pkg.PerceptionFrameAdapter)
+    assert not hasattr(interfaces_pkg, "PersonBoxChannel")
+    assert not hasattr(interfaces_pkg, "HumanPoseChannel")
+    assert not hasattr(interfaces_pkg, "BedRegionChannel")
+    assert not hasattr(interfaces_pkg, "AssociationResult")
 
 
 def test_perception_frame_v1_identity_and_channel_states_are_exact() -> None:
@@ -274,8 +276,8 @@ def test_person_result_overwrites_pose_boxes_and_preserves_pose_row_order() -> N
     assert outcome.person_box.state == types.ChannelState.INFERRED
     assert outcome.person_box.boxes[0].x1 == 100
     assert outcome.person_box.boxes[1].x1 == 8
-    assert outcome.human_pose.poses[0][0] == (1, 2, 0.8)
-    assert outcome.human_pose.poses[1][0] == (20, 21, 0.8)
+    assert outcome.human_pose.poses[0][0] == types.Keypoint(x=1, y=2, score=0.8)
+    assert outcome.human_pose.poses[1][0] == types.Keypoint(x=20, y=21, score=0.8)
     assert outcome.association.track_ids == (2, 3)
 
 
@@ -286,6 +288,89 @@ def test_public_adapter_matches_perception_frame_adapter_protocol() -> None:
     assert isinstance(adapter.adapt, object)
     assert isinstance(adapter.parse, object)
     assert isinstance(adapter.diagnostic, object)
+
+
+def test_adapter_protocol_rejects_varargs_adapt_signature() -> None:
+    interfaces = _perception_interfaces()
+    protocol_params = inspect.signature(interfaces.PerceptionFrameAdapter.adapt).parameters
+
+    class VarargsOnly:
+        def adapt(self, *args: object, **kwargs: object) -> object:
+            raise AssertionError("varargs adapt should not be called")
+
+        def parse(self, payload: object) -> object:
+            raise AssertionError("varargs parse should not be called")
+
+        def diagnostic(self, frame: object) -> object:
+            raise AssertionError("varargs diagnostic should not be called")
+
+    required = tuple(name for name in protocol_params if name != "self")
+    assert required == (
+        "identity",
+        "pose",
+        "person",
+        "bed",
+        "track_ids",
+        "selected_cue_indexes",
+        "association_identity",
+        "association_strategy",
+        "association_cue_source",
+    )
+    assert all(
+        param.kind
+        not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        for param in protocol_params.values()
+    )
+    varargs_names = tuple(
+        name for name in inspect.signature(VarargsOnly.adapt).parameters if name != "self"
+    )
+    assert varargs_names != required
+
+
+def test_channel_and_association_names_are_unambiguous() -> None:
+    types_pkg = _require_module("worker.types")
+    interface_modules = (
+        _require_module("worker.interfaces"),
+        _require_module("worker.interfaces.perception"),
+    )
+    for name in (
+        "PersonBoxChannel",
+        "HumanPoseChannel",
+        "BedRegionChannel",
+        "AssociationResult",
+    ):
+        type_obj = _require_symbol(types_pkg, name)
+        for module in interface_modules:
+            if hasattr(module, name):
+                assert getattr(module, name) is type_obj, (
+                    f"{name} on {module.__name__} is a different object "
+                    f"than worker.types.{name}"
+                )
+
+
+def test_keypoints_expose_named_x_y_score_fields() -> None:
+    types = _require_module("worker.types")
+    keypoint_cls = _require_symbol(types, "Keypoint")
+    assert tuple(item.name for item in fields(keypoint_cls)) == ("x", "y", "score")
+    adapter = _adapter()
+    outcome = adapter.adapt(
+        identity=_identity(_perception_types()),
+        pose=pose_result(
+            poses=(((10.9, 20.1, 0.83), (4.2, 5.8, 0.4)),),
+            boxes=((1, 2, 3, 4, 0.9),),
+        ),
+    )
+    assert type(outcome).__name__ == "PerceptionFrameV1"
+    first, second = outcome.human_pose.poses[0]
+    assert type(first) is keypoint_cls
+    assert first.x == 10
+    assert first.y == 20
+    assert first.score == 0.83
+    assert second.x == 4
+    assert second.y == 5
+    assert second.score == 0.4
+    with pytest.raises(FrozenInstanceError):
+        first.x = 99  # type: ignore[misc]
 
 
 def test_diagnostic_round_trip_preserves_channel_states() -> None:

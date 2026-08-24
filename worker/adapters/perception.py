@@ -14,6 +14,7 @@ from worker.types.perception_frame import (
     BedRegionChannel,
     ChannelState,
     HumanPoseChannel,
+    Keypoint,
     PerceptionFrameFailure,
     PerceptionFrameFailureCode,
     PerceptionFrameIdentity,
@@ -42,18 +43,36 @@ def _person_box(row: Sequence[object]) -> PersonBox:
     )
 
 
-def _pose_row(row: Sequence[object]) -> tuple[tuple[int, int, float], ...]:
+def _keypoint(point: object) -> Keypoint:
+    if isinstance(point, Mapping):
+        return Keypoint(
+            x=int(point["x"]),  # type: ignore[arg-type]
+            y=int(point["y"]),  # type: ignore[arg-type]
+            score=float(point["score"]),  # type: ignore[arg-type]
+        )
+    values = cast(Sequence[object], point)
+    return Keypoint(
+        x=int(values[0]),  # type: ignore[arg-type]
+        y=int(values[1]),  # type: ignore[arg-type]
+        score=float(values[2]),  # type: ignore[arg-type]
+    )
+
+
+def _pose_row(row: Sequence[object]) -> tuple[Keypoint, ...]:
     if not row:
         return ()
     first = row[0]
     if isinstance(first, (int, float)):
         values = tuple(float(cast(float, value)) for value in row)
         return tuple(
-            (int(values[index]), int(values[index + 1]), float(values[index + 2]))
+            Keypoint(
+                x=int(values[index]),
+                y=int(values[index + 1]),
+                score=float(values[index + 2]),
+            )
             for index in range(0, len(values), 3)
         )
-    points = cast(Sequence[Sequence[object]], row)
-    return tuple((int(point[0]), int(point[1]), float(point[2])) for point in points)
+    return tuple(_keypoint(point) for point in row)
 
 
 def _bed_region(item: BedBoxOutput) -> BedRegion:
@@ -124,10 +143,10 @@ def _parse_boxes(payload: object) -> tuple[PersonBox, ...]:
     return tuple(boxes)
 
 
-def _parse_poses(payload: object) -> tuple[tuple[tuple[int, int, float], ...], ...]:
+def _parse_poses(payload: object) -> tuple[tuple[Keypoint, ...], ...]:
     if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes)):
         return ()
-    poses: list[tuple[tuple[int, int, float], ...]] = []
+    poses: list[tuple[Keypoint, ...]] = []
     for row in payload:
         if isinstance(row, Sequence) and not isinstance(row, (str, bytes)):
             poses.append(_pose_row(row))
@@ -297,7 +316,10 @@ class PythonInferencePerceptionAdapter:
             },
             "human_pose": {
                 "state": str(frame.human_pose.state),
-                "poses": [list(map(list, pose)) for pose in frame.human_pose.poses],
+                "poses": [
+                    [{"x": point.x, "y": point.y, "score": point.score} for point in pose]
+                    for pose in frame.human_pose.poses
+                ],
             },
             "bed_region": {
                 "state": str(frame.bed_region.state),

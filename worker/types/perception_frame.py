@@ -64,6 +64,13 @@ class BedRegion:
 
 
 @dataclass(frozen=True, slots=True)
+class Keypoint:
+    x: int
+    y: int
+    score: float
+
+
+@dataclass(frozen=True, slots=True)
 class PersonBoxChannel:
     state: ChannelState
     boxes: tuple[PersonBox, ...] = ()
@@ -72,7 +79,7 @@ class PersonBoxChannel:
 @dataclass(frozen=True, slots=True)
 class HumanPoseChannel:
     state: ChannelState
-    poses: tuple[tuple[tuple[int, int, float], ...], ...] = ()
+    poses: tuple[tuple[Keypoint, ...], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,6 +276,7 @@ __all__ = [
     "BedRegionChannel",
     "ChannelState",
     "HumanPoseChannel",
+    "Keypoint",
     "LEGACY_ASSOCIATION_STRATEGY",
     "PERSON_BOX_CUE_SOURCE",
     "PerceptionFrameFailure",

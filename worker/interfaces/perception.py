@@ -1,45 +1,25 @@
-"""Capability protocols for worker-internal PerceptionFrame channels."""
+"""Capability protocol for worker-internal PerceptionFrame adaptation.
+
+Channel payloads (`PersonBoxChannel`, `HumanPoseChannel`, `BedRegionChannel`,
+`AssociationResult`) live only as frozen dataclasses in
+``worker.types.perception_frame``. They are not re-declared as Protocols here:
+a second object with the same name would make imports ambiguous for C4, and
+``@runtime_checkable`` only checks attribute presence, not types.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Protocol, runtime_checkable
 
+from contracts.runner import BedRunnerResult, PersonRunnerResult, PoseRunnerResult
 from worker.types.perception_frame import (
-    BedRegion,
-    ChannelState,
+    LEGACY_ASSOCIATION_STRATEGY,
+    PERSON_BOX_CUE_SOURCE,
     PerceptionFrameFailure,
     PerceptionFrameIdentity,
     PerceptionFrameV1,
-    PersonBox,
 )
-
-
-@runtime_checkable
-class PersonBoxChannel(Protocol):
-    state: ChannelState
-    boxes: tuple[PersonBox, ...]
-
-
-@runtime_checkable
-class HumanPoseChannel(Protocol):
-    state: ChannelState
-    poses: tuple[tuple[tuple[int, int, float], ...], ...]
-
-
-@runtime_checkable
-class BedRegionChannel(Protocol):
-    state: ChannelState
-    regions: tuple[BedRegion, ...]
-
-
-@runtime_checkable
-class AssociationResult(Protocol):
-    strategy: str
-    track_ids: tuple[int, ...]
-    selected_cue_indexes: tuple[int, ...]
-    identity: PerceptionFrameIdentity
-    cue_source: str
 
 
 @runtime_checkable
@@ -48,8 +28,16 @@ class PerceptionFrameAdapter(Protocol):
 
     def adapt(
         self,
-        *args: object,
-        **kwargs: object,
+        *,
+        identity: PerceptionFrameIdentity,
+        pose: PoseRunnerResult | None = None,
+        person: PersonRunnerResult | None = None,
+        bed: BedRunnerResult | None = None,
+        track_ids: tuple[int, ...] | None = None,
+        selected_cue_indexes: tuple[int, ...] | None = None,
+        association_identity: PerceptionFrameIdentity | None = None,
+        association_strategy: str = LEGACY_ASSOCIATION_STRATEGY,
+        association_cue_source: str = PERSON_BOX_CUE_SOURCE,
     ) -> PerceptionFrameV1 | PerceptionFrameFailure: ...
 
     def parse(
@@ -61,9 +49,5 @@ class PerceptionFrameAdapter(Protocol):
 
 
 __all__ = [
-    "AssociationResult",
-    "BedRegionChannel",
-    "HumanPoseChannel",
     "PerceptionFrameAdapter",
-    "PersonBoxChannel",
 ]
