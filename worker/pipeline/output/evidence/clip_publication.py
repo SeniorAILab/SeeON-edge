@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -32,6 +33,11 @@ from worker.pipeline.output.evidence.evidence_manifest import (
     unavailable_manifest,
 )
 from worker.pipeline.output.evidence.evidence_outbox_types import EvidenceReasonCode
+from worker.pipeline.output.evidence.terminal_outcome import (
+    TerminalClipOutcome,
+    TerminalClipState,
+    commit_terminal_outcome,
+)
 
 LOGGER: Final = logging.getLogger(__name__)
 
@@ -100,6 +106,15 @@ class ClipPublisher:
             video_available=True,
         )
         manifest_path = self._publish_manifest(reservation, payload)
+        _ = commit_terminal_outcome(
+            reservation.final_dir,
+            TerminalClipOutcome(
+                str(reservation.clip_id),
+                tuple(str(value) for value in metadata.event_refs),
+                TerminalClipState.READY,
+                hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            ),
+        )
         self._cleanup_staging(reservation)
         return PublishedClip(reservation.clip_id, manifest, manifest_path, video_path)
 
@@ -129,6 +144,15 @@ class ClipPublisher:
             video_available=False,
         )
         manifest_path = self._publish_manifest(reservation, payload)
+        _ = commit_terminal_outcome(
+            reservation.final_dir,
+            TerminalClipOutcome(
+                str(reservation.clip_id),
+                tuple(str(value) for value in metadata.event_refs),
+                TerminalClipState.UNAVAILABLE,
+                hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            ),
+        )
         self._cleanup_staging(reservation)
         return PublishedClip(reservation.clip_id, manifest, manifest_path, None)
 
@@ -154,11 +178,19 @@ class ClipPublisher:
                 reservation.clip_id,
                 "staged derivative is missing",
             )
+        au_index = artifact_path.with_name("au-index.cbor")
+        if au_index.exists():
+            fsync_file(au_index)
         fsync_file(artifact_path)
         self._barrier(PublicationStage.MEDIA_FSYNCED, artifact_path)
         os.replace(artifact_path, destination)
+        if au_index.exists():
+            os.replace(au_index, reservation.final_dir / "au-index.cbor")
         self._barrier(PublicationStage.MEDIA_RENAMED, destination)
         fsync_file(destination)
+        final_au_index = reservation.final_dir / "au-index.cbor"
+        if final_au_index.exists():
+            fsync_file(final_au_index)
         fsync_directory(reservation.final_dir)
         return destination
 

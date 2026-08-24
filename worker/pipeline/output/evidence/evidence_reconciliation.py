@@ -8,6 +8,7 @@ import os
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import assert_never
 
 from worker.pipeline.output.evidence.durability import fsync_directory
 from worker.pipeline.output.evidence.evidence_manifest import (
@@ -30,6 +31,11 @@ from worker.pipeline.output.evidence.evidence_outbox_types import (
     MissingStagedEventError,
 )
 from worker.pipeline.output.evidence.snapshot_store import SnapshotStore
+from worker.pipeline.output.evidence.terminal_outcome import (
+    TerminalClipOutcome,
+    TerminalClipState,
+    commit_terminal_outcome,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +175,22 @@ def _reconcile_final_dir(
         _validate_clip_identity(manifest.clip_id, clip_id)
         event_ids = tuple(EdgeEventId(event_ref) for event_ref in manifest.event_refs)
         outbox.validate_recovery_manifest(manifest)
+        match manifest:
+            case ReadyClipManifest():
+                terminal_state = TerminalClipState.READY
+            case UnavailableClipManifest():
+                terminal_state = TerminalClipState.UNAVAILABLE
+            case unreachable:
+                assert_never(unreachable)
+        _ = commit_terminal_outcome(
+            clip_dir,
+            TerminalClipOutcome(
+                str(clip_id),
+                tuple(str(value) for value in event_ids),
+                terminal_state,
+                hashlib.sha256(manifest_content).hexdigest(),
+            ),
+        )
         match manifest:
             case ReadyClipManifest():
                 video_path = _validated_video_path(clip_dir)

@@ -33,10 +33,18 @@ class PacketRingRepository:
         self._rings = {
             camera_id: SourcePacketRing(camera_id, per_camera_limits) for camera_id in camera_ids
         }
+        self._per_camera_limits = per_camera_limits
         self._global_max_bytes = global_max_bytes
         self._lock = threading.RLock()
         self._closed = False
         self.metrics = PacketRepositoryMetrics()
+
+    def register_camera(self, camera_id: str) -> None:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("cannot register a closed packet repository")
+            if camera_id not in self._rings:
+                self._rings[camera_id] = SourcePacketRing(camera_id, self._per_camera_limits)
 
     def append(self, packet: SourcePacket) -> bool:
         with self._lock:

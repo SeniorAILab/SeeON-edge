@@ -1,5 +1,7 @@
 #include "source_runtime.hpp"
 
+#include "encoded_source_branch.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <map>
@@ -111,8 +113,9 @@ NativeFailure classify_bus_failure(bool eos, unsigned int error_domain, int erro
 class SourceRuntime::Impl {
  public:
 #ifdef SEEON_HAS_GSTREAMER
-  struct Source { std::string uri; GstElement* pipeline; };
+  struct Source { std::string uri; GstElement* pipeline; std::uint32_t preview_viewers; };
   std::map<std::string, Source> sources;
+  std::map<std::string, std::uint32_t> preview_demands;
   bool transform_available = false;
 #else
   std::map<std::string, std::string> sources;
@@ -120,9 +123,11 @@ class SourceRuntime::Impl {
 #endif
 };
 
-SourceRuntime::SourceRuntime(FrameCallback frame_callback, FailureCallback failure_callback)
+SourceRuntime::SourceRuntime(FrameCallback frame_callback, FailureCallback failure_callback,
+                             AccessUnitCallback access_unit_callback)
     : frame_callback_(std::move(frame_callback)),
       failure_callback_(std::move(failure_callback)),
+      access_unit_callback_(std::move(access_unit_callback)),
       impl_(std::make_unique<Impl>()) {
 #ifdef SEEON_HAS_GSTREAMER
   gst_init(nullptr, nullptr);
@@ -144,7 +149,10 @@ SourceRuntime::~SourceRuntime() {
 #ifdef SEEON_HAS_GSTREAMER
 GstElement* build_pipeline(const std::string& camera, const std::string& uri,
                            const FrameCallback& frames, const FailureCallback& failures,
-                           std::string* error_code) {
+                           const AccessUnitCallback& access_units, std::string* error_code) {
+  if (uri.starts_with("rtsp://")) {
+    return build_encoded_rtsp_pipeline(camera, uri, frames, failures, access_units, error_code);
+  }
   GstElement* pipeline = gst_pipeline_new(nullptr);
   GstElement* source = gst_element_factory_make(uri.starts_with("loopback://")
                                                     ? "videotestsrc" : "uridecodebin", nullptr);
@@ -209,9 +217,12 @@ bool SourceRuntime::add(const std::string& camera, const std::string& uri, std::
   if (!valid_source_uri(uri)) { *error_code = "source_uri_invalid"; return false; }
   if (impl_->sources.contains(camera)) { *error_code = "source_exists"; return false; }
 #ifdef SEEON_HAS_GSTREAMER
-  GstElement* pipeline = build_pipeline(camera, uri, frame_callback_, failure_callback_, error_code);
+  GstElement* pipeline = build_pipeline(camera, uri, frame_callback_, failure_callback_,
+                                        access_unit_callback_, error_code);
   if (pipeline == nullptr) return false;
-  impl_->sources.emplace(camera, Impl::Source{uri, pipeline});
+  const auto viewers = impl_->preview_demands[camera];
+  static_cast<void>(set_encoded_preview_viewers(pipeline, viewers));
+  impl_->sources.emplace(camera, Impl::Source{uri, pipeline, viewers});
 #else
   impl_->sources.emplace(camera, uri);
   frame_callback_(camera, 0);
@@ -235,8 +246,9 @@ bool SourceRuntime::rebuild(const std::string& camera, std::string* error_code) 
   if (found == impl_->sources.end()) { *error_code = "source_unknown"; return false; }
 #ifdef SEEON_HAS_GSTREAMER
   GstElement* replacement = build_pipeline(camera, found->second.uri, frame_callback_,
-                                            failure_callback_, error_code);
+                                            failure_callback_, access_unit_callback_, error_code);
   if (replacement == nullptr) return false;
+  static_cast<void>(set_encoded_preview_viewers(replacement, found->second.preview_viewers));
   gst_element_set_state(found->second.pipeline, GST_STATE_NULL);
   gst_object_unref(found->second.pipeline);
   found->second.pipeline = replacement;
@@ -256,6 +268,41 @@ bool SourceRuntime::inject_eos(const std::string& camera) {
   return impl_->sources.contains(camera);
 #endif
 }
+bool SourceRuntime::set_preview_viewers(const std::string& camera, std::uint32_t viewers) {
+#ifdef SEEON_HAS_GSTREAMER
+  impl_->preview_demands[camera] = viewers;
+  const auto found = impl_->sources.find(camera);
+  if (found == impl_->sources.end()) return true;
+  if (!set_encoded_preview_viewers(found->second.pipeline, viewers)) return false;
+  found->second.preview_viewers = viewers;
+  return true;
+#else
+  static_cast<void>(viewers);
+  return impl_->sources.contains(camera);
+#endif
+}
+
+bool SourceRuntime::wait_preview(const std::string& camera, std::uint64_t target) {
+#ifdef SEEON_HAS_GSTREAMER
+  const auto found = impl_->sources.find(camera);
+  return found != impl_->sources.end() && wait_encoded_preview(found->second.pipeline, target);
+#else
+  static_cast<void>(camera);
+  static_cast<void>(target);
+  return false;
+#endif
+}
+
+std::optional<PreviewStatus> SourceRuntime::preview_status(const std::string& camera) const {
+#ifdef SEEON_HAS_GSTREAMER
+  const auto found = impl_->sources.find(camera);
+  return found == impl_->sources.end() ? std::nullopt
+                                       : encoded_preview_status(found->second.pipeline);
+#else
+  return impl_->sources.contains(camera) ? std::optional{PreviewStatus{0, 0}} : std::nullopt;
+#endif
+}
+
 std::size_t SourceRuntime::count() const { return impl_->sources.size(); }
 bool SourceRuntime::custom_transform_available() const { return impl_->transform_available; }
 }  // namespace seeon

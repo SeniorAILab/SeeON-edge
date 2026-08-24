@@ -62,6 +62,7 @@ class RecordingCoordinator(Protocol):
         event: BusinessEvent,
         output_dir: Path | None = None,
         trigger_frame_key: FrameKey | None = None,
+        window_bounds: tuple[float, float] | None = None,
     ) -> ClipOutcome: ...
 
     def close(self, camera_id: str) -> None: ...
@@ -143,9 +144,30 @@ class ClipActor:
         camera_id = message.reservation.camera_id
         active = self._active_by_camera.get(camera_id)
         if active is not None and active.reservation.clip_id == message.reservation.clip_id:
-            if message.event_ref not in active.event_refs:
-                active.event_refs.append(message.event_ref)
-            return
+            if (
+                active.trigger_frame_key.worker_boot_id
+                != message.trigger_packet.worker_boot_id
+                or active.trigger_frame_key.stream_epoch
+                != message.trigger_packet.stream_epoch
+            ):
+                self._finalize(active, forced=True)
+            else:
+                event_time = (
+                    message.trigger_packet.frame.time_sec
+                    if message.trigger_packet.pts is None
+                    else message.trigger_packet.pts
+                )
+                active.start_time_sec = min(
+                    active.start_time_sec,
+                    event_time - self._config.pre_event_seconds,
+                )
+                active.cutoff_time_sec = max(
+                    active.cutoff_time_sec,
+                    event_time + self._config.post_event_seconds,
+                )
+                if message.event_ref not in active.event_refs:
+                    active.event_refs.append(message.event_ref)
+                return
         if active is not None:
             self._finalize(active, forced=True)
         if not message.allow_new_clip:
@@ -207,6 +229,7 @@ class ClipActor:
                 event=active.event,
                 output_dir=active.reservation.staging_dir,
                 trigger_frame_key=active.trigger_frame_key,
+                window_bounds=(active.start_time_sec, active.cutoff_time_sec),
             )
             match outcome:
                 case ClipReady(artifact=artifact):
@@ -310,6 +333,13 @@ class ClipActor:
                     f"{artifact.timestamp_translation_seconds.numerator}/"
                     f"{artifact.timestamp_translation_seconds.denominator}"
                 ),
+                "au_index": {
+                    "path": "au-index.cbor",
+                    "sha256": artifact.au_index_sha256,
+                    "size_bytes": artifact.au_index_size_bytes,
+                    "schema": artifact.au_index_schema,
+                    "count": artifact.au_index_count,
+                },
                 "streams": [
                     {
                         "index": stream.index,
@@ -326,6 +356,9 @@ class ClipActor:
                         "channels": stream.channels,
                         "packet_count": stream.packet_count,
                         "timestamp_translation_ticks": (stream.timestamp_translation_ticks),
+                        "input_framing": stream.input_framing,
+                        "output_framing": stream.output_framing,
+                        "normalizer_version": stream.normalizer_version,
                     }
                     for stream in artifact.streams
                 ],

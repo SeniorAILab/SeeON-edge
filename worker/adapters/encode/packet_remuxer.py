@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import struct
 from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from worker.types.source_packet import (
 )
 
 REMUX_METHOD = "pyav-packet-stream-copy"
+NORMALIZER_VERSION = "annexb-length-prefix.v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +73,10 @@ class PyAvPacketRemuxer:
             with suppress(OSError):
                 temporary.unlink(missing_ok=True)
             raise ClipRemuxError(f"source packet remux failed ({type(exc).__name__})") from exc
+        au_index_sha256, au_index_size = _write_au_index(
+            output_path.with_name("au-index.cbor"),
+            expected,
+        )
         first = packets[0]
         starts = [packet.presentation_time for packet in packets]
         duration = float(max(starts) - min(starts))
@@ -99,6 +105,10 @@ class PyAvPacketRemuxer:
             remux_version=av.__version__,
             timestamp_translation_seconds=translation_seconds,
             truncation_reasons=(INTERIOR_PACKET_LOSS,) if interior_loss else (),
+            au_index_sha256=au_index_sha256,
+            au_index_size_bytes=au_index_size,
+            au_index_schema=1,
+            au_index_count=len(expected),
         )
 
     def _write(
@@ -128,8 +138,7 @@ class PyAvPacketRemuxer:
                 output_stream.time_base = descriptor.time_base
                 output_streams[descriptor.index] = output_stream
             for source in packets:
-                reframed = _annexb_to_length_prefixed(source.payload)
-                packet = av.Packet(source.payload if reframed is None else reframed)
+                packet = av.Packet(_expected_mux_payload(source))
                 packet.pts = source.pts
                 packet.dts = source.dts
                 packet.duration = source.duration
@@ -229,7 +238,7 @@ _ANNEXB_START_3 = b"\x00\x00\x01"
 _ANNEXB_START_4 = b"\x00\x00\x00\x01"
 
 
-def _annexb_to_length_prefixed(payload: bytes) -> bytes | None:
+def _annexb_to_length_prefixed(payload: bytes, length_size: int) -> bytes | None:
     """Reframe Annex-B NAL units as 4-byte length-prefixed ones, or None.
 
     RTSP delivers H.264/HEVC as Annex-B: NAL units separated by 00 00 01 or
@@ -272,8 +281,28 @@ def _annexb_to_length_prefixed(payload: bytes) -> bytes | None:
         end = starts[position + 1][0] if position + 1 < len(starts) else limit
         unit = payload[begin:end]
         if unit:
-            units.append(len(unit).to_bytes(4, "big") + unit)
+            maximum = (1 << (length_size * 8)) - 1
+            if len(unit) > maximum:
+                raise ValueError("NAL unit exceeds configured length field")
+            units.append(len(unit).to_bytes(length_size, "big") + unit)
     return b"".join(units) if units else None
+
+
+def _expected_mux_payload(source: SourcePacket) -> bytes:
+    descriptor = source.stream
+    if descriptor.stream_format == "byte-stream":
+        if descriptor.nal_length_size is None:
+            raise ValueError("Annex-B stream lacks declared NAL length size")
+        normalized = _annexb_to_length_prefixed(source.payload, descriptor.nal_length_size)
+        if normalized is None:
+            raise ValueError("declared Annex-B AU has no start code")
+        return normalized
+    if descriptor.stream_format in {"avc", "avc3", "hvc1", "hev1"}:
+        return source.payload
+    # Legacy demux descriptors predate explicit parser framing. Preserve their
+    # behavior without allowing this compatibility branch into native streams.
+    normalized = _annexb_to_length_prefixed(source.payload, 4)
+    return source.payload if normalized is None else normalized
 
 
 def _validate_source_timeline(
@@ -322,7 +351,10 @@ def _verify_packet_facts(
         raise ValueError("remuxed packet count changed")
     translations: dict[int, int] = {}
     previous_dts: dict[int, int] = {}
-    normalized = set() if container_normalized_streams is None else container_normalized_streams
+    # Container configuration normalization never weakens AU verification. The
+    # only permitted payload rewrite is the deterministic Annex-B to AVCC
+    # conversion below; keyframe identity remains mandatory on every stream.
+    del container_normalized_streams
     for source, packet in zip(expected, actual, strict=True):
         if packet.pts is None or packet.dts is None or packet.duration is None:
             raise ValueError("remuxed packet timeline is incomplete")
@@ -362,26 +394,19 @@ def _verify_packet_facts(
             interior_loss.add(source.stream_index)
         if packet.time_base != source.stream.time_base:
             raise ValueError("remuxed packet time base changed")
-        if source.stream_index not in normalized:
-            # Losing a keyframe breaks seeking, so that still fails closed.
-            # Gaining one does not: once the NAL units are correctly framed the
-            # container parses their types instead of trusting the demuxer's
-            # packet flag, and it is right to. Measured here on a real source
-            # packet whose flag said False while its payload began 00 00 01 45
-            # -- NAL type 5, an IDR. The clip is more seekable than the flags
-            # claimed, which is the direction this guard exists to protect.
-            if (
-                source.stream.media_type == "video"
-                and source.is_keyframe
-                and not packet.is_keyframe
-            ):
-                raise ValueError("remuxed packet keyframe identity changed: keyframe lost")
-            if packet.payload != source.payload:
-                # The one legitimate rewrite: Annex-B start codes reframed as
-                # the length prefixes an MP4 sample description requires. Any
-                # other difference is still a corrupted copy.
-                if packet.payload != _annexb_to_length_prefixed(source.payload):
-                    raise ValueError("remuxed packet payload changed")
+        # Losing a keyframe breaks seeking. Gaining one is permitted because
+        # the parser can discover an IDR that the upstream packet flag missed.
+        if (
+            source.stream.media_type == "video"
+            and source.is_keyframe
+            and not packet.is_keyframe
+        ):
+            raise ValueError("remuxed packet keyframe identity changed: keyframe lost")
+        if packet.payload != source.payload:
+            # The one legitimate rewrite: Annex-B start codes reframed as the
+            # length prefixes an MP4 sample description requires.
+            if packet.payload != _expected_mux_payload(source):
+                raise ValueError("remuxed packet payload changed")
         pts_translation = packet.pts - source.pts
         dts_translation = packet.dts - source.dts
         if pts_translation != dts_translation:
@@ -404,6 +429,37 @@ def _verify_packet_facts(
     return translations, next(iter(translation_seconds))
 
 
+def _write_au_index(path: Path, packets: tuple[SourcePacket, ...]) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("xb") as output:
+        records = (b"SAUI1" + len(packets).to_bytes(4, "little"),)
+        for packet in packets:
+            configuration = bytes.fromhex(packet.configuration.configuration_id)
+            payload_hash = hashlib.sha256(packet.payload).digest()
+            records += (
+                struct.pack(
+                    "<QIq q q ? Q",
+                    packet.arrival_index,
+                    packet.stream_index,
+                    packet.pts,
+                    packet.dts,
+                    packet.duration,
+                    packet.is_keyframe,
+                    packet.epoch.stream_epoch,
+                )
+                + configuration
+                + payload_hash,
+            )
+        for record in records:
+            _ = output.write(record)
+            digest.update(record)
+            size += len(record)
+        output.flush()
+        os.fsync(output.fileno())
+    return digest.hexdigest(), size
+
+
 def _stream_fact(
     descriptor: SourceStreamDescriptor,
     packet_count: int,
@@ -422,6 +478,15 @@ def _stream_fact(
         channels=descriptor.channels,
         packet_count=packet_count,
         timestamp_translation_ticks=timestamp_translation_ticks,
+        input_framing=descriptor.stream_format,
+        output_framing=(
+            "length-prefixed"
+            if descriptor.stream_format == "byte-stream"
+            else descriptor.stream_format
+        ),
+        normalizer_version=(
+            NORMALIZER_VERSION if descriptor.stream_format == "byte-stream" else "none"
+        ),
     )
 
 

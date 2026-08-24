@@ -86,6 +86,22 @@ ipc::Message status_reply(const ServerState& state, const ipc::Message& request)
 }  // namespace seeon::command_support
 
 namespace seeon {
+void ServerState::on_access_unit(const std::string& camera, ParsedAccessUnit unit) {
+  std::uint32_t generation = 0;
+  std::uint64_t epoch = 0;
+  std::uint64_t sequence = 0;
+  {
+    std::lock_guard lock{slot_mutex};
+    const auto found = sources.find(camera);
+    if (found == sources.end()) return;
+    generation = found->second.generation;
+    epoch = found->second.epoch;
+    sequence = ++found->second.au_sequence;
+  }
+  static_cast<void>(au_sender.enqueue(
+      AuEnvelope{camera, generation, epoch, sequence, std::move(unit)}));
+}
+
 void ServerState::on_frame(const std::string& camera, std::uint64_t pts) {
   std::lock_guard lock{slot_mutex};
   const auto found = sources.find(camera);

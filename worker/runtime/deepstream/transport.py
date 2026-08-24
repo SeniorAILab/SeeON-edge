@@ -23,6 +23,7 @@ class ChildTransport:
     process: subprocess.Popen[bytes]
     control: socket.socket
     wake: socket.socket
+    access_units: socket.socket
     failures: socket.socket
     ready_fd: int
 
@@ -59,6 +60,8 @@ def spawn_child(config: ChildConfig) -> ChildTransport:
         sockets.extend((control_parent, control_child))
         wake_parent, wake_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
         sockets.extend((wake_parent, wake_child))
+        au_parent, au_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        sockets.extend((au_parent, au_child))
         failure_parent, failure_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         sockets.extend((failure_parent, failure_child))
         identity_read, identity_write = os.pipe()
@@ -79,6 +82,8 @@ def spawn_child(config: ChildConfig) -> ChildTransport:
             str(control_child.fileno()),
             "--wake-fd",
             str(wake_child.fileno()),
+            "--au-fd",
+            str(au_child.fileno()),
             "--failure-fd",
             str(failure_child.fileno()),
             "--identity-fd",
@@ -97,6 +102,7 @@ def spawn_child(config: ChildConfig) -> ChildTransport:
                 (
                     control_child.fileno(),
                     wake_child.fileno(),
+                    au_child.fileno(),
                     failure_child.fileno(),
                     identity_read,
                     ready_write,
@@ -109,10 +115,18 @@ def spawn_child(config: ChildConfig) -> ChildTransport:
         raise
     control_child.close()
     wake_child.close()
+    au_child.close()
     failure_child.close()
     os.close(identity_read)
     os.close(ready_write)
-    return ChildTransport(process, control_parent, wake_parent, failure_parent, ready_read)
+    return ChildTransport(
+        process,
+        control_parent,
+        wake_parent,
+        au_parent,
+        failure_parent,
+        ready_read,
+    )
 
 
 __all__ = ["ChildTransport", "SpawnRequest", "spawn_child", "spawn_process"]

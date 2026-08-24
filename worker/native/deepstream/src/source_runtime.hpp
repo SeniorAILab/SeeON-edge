@@ -4,10 +4,17 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
+
+#include "au_transport.hpp"
 
 namespace seeon {
 enum class FailureScope : std::uint8_t { kSourceLocal, kFatal };
+struct PreviewStatus {
+  std::uint64_t encoded;
+  std::uint64_t viewers;
+};
 struct NativeFailure {
   std::string camera;
   std::string category;
@@ -26,7 +33,8 @@ using FailureCallback = std::function<void(const NativeFailure&)>;
 
 class SourceRuntime {
  public:
-  SourceRuntime(FrameCallback frame_callback, FailureCallback failure_callback);
+  SourceRuntime(FrameCallback frame_callback, FailureCallback failure_callback,
+                AccessUnitCallback access_unit_callback = {});
   ~SourceRuntime();
   SourceRuntime(const SourceRuntime&) = delete;
   SourceRuntime& operator=(const SourceRuntime&) = delete;
@@ -35,6 +43,9 @@ class SourceRuntime {
   [[nodiscard]] bool remove(const std::string& camera);
   [[nodiscard]] bool rebuild(const std::string& camera, std::string* error_code);
   [[nodiscard]] bool inject_eos(const std::string& camera);
+  [[nodiscard]] bool set_preview_viewers(const std::string& camera, std::uint32_t viewers);
+  [[nodiscard]] std::optional<PreviewStatus> preview_status(const std::string& camera) const;
+  [[nodiscard]] bool wait_preview(const std::string& camera, std::uint64_t target);
   [[nodiscard]] std::size_t count() const;
   [[nodiscard]] bool custom_transform_available() const;
 
@@ -42,6 +53,7 @@ class SourceRuntime {
   class Impl;
   FrameCallback frame_callback_;
   FailureCallback failure_callback_;
+  AccessUnitCallback access_unit_callback_;
   std::unique_ptr<Impl> impl_;
 };
 }  // namespace seeon

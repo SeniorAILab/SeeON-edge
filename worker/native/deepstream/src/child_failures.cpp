@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace seeon {
@@ -12,7 +13,11 @@ ServerState::ServerState(const ChildOptions& options_value)
     : options(options_value),
       runtime(
           [this](const std::string& camera, std::uint64_t pts) { on_frame(camera, pts); },
-          [this](const NativeFailure& failure) { on_failure(failure); }),
+          [this](const NativeFailure& failure) { on_failure(failure); },
+          [this](const std::string& camera, ParsedAccessUnit unit) {
+            on_access_unit(camera, std::move(unit));
+          }),
+      au_sender(options_value.au_fd, 128, 64U * 1024U * 1024U),
       failure_fd(eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK)) {}
 
 ServerState::~ServerState() { close(failure_fd); }

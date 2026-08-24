@@ -123,8 +123,9 @@ class _Coordinator:
         event: BusinessEvent,
         output_dir: Path | None = None,
         trigger_frame_key: FrameKey | None = None,
+        window_bounds: tuple[float, float] | None = None,
     ) -> ClipOutcome:
-        del camera_id, clip_id, event_time_sec, event, output_dir
+        del camera_id, clip_id, event_time_sec, event, output_dir, window_bounds
         self.trigger_frame_keys.append(trigger_frame_key)
         return self.outcome
 
@@ -184,8 +185,9 @@ class _FailThenSucceedCoordinator:
         event: BusinessEvent,
         output_dir: Path | None = None,
         trigger_frame_key: FrameKey | None = None,
+        window_bounds: tuple[float, float] | None = None,
     ) -> ClipOutcome:
-        del camera_id, event_time_sec, event, output_dir
+        del camera_id, event_time_sec, event, output_dir, window_bounds
         self.trigger_frame_keys.append(trigger_frame_key)
         self.attempts += 1
         if self.attempts == 1:
@@ -384,7 +386,7 @@ def test_coalesced_refs_remain_ordered_and_unique(tmp_path: Path) -> None:
     assert publisher.unavailable[0][1].event_refs == ("event-1", "event-2")
 
 
-def test_coalesced_event_keeps_the_first_event_cutoff(tmp_path: Path) -> None:
+def test_coalesced_event_extends_the_union_cutoff(tmp_path: Path) -> None:
     reservation = _reservation(tmp_path)
     actor, _, _, publisher, _ = _actor(
         tmp_path,
@@ -395,7 +397,8 @@ def test_coalesced_event_keeps_the_first_event_cutoff(tmp_path: Path) -> None:
     first_cutoff = actor._active_by_camera["cam-1"].cutoff_time_sec
     actor.handle_event(_event_message(reservation, "event-2", time_sec=20.0))
 
-    assert actor._active_by_camera["cam-1"].cutoff_time_sec == first_cutoff == 12.0
+    assert first_cutoff == 12.0
+    assert actor._active_by_camera["cam-1"].cutoff_time_sec == 22.0
     actor.flush()
     assert publisher.unavailable[0][1].event_refs == ("event-1", "event-2")
 

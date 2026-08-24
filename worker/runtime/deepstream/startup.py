@@ -38,6 +38,7 @@ def connect_session(
     ):
         transport.control.close()
         transport.wake.close()
+        transport.access_units.close()
         transport.failures.close()
         raise ChildStartupError("ready_failed", "gpu-0")
     control = DeepStreamControlClient(
@@ -56,6 +57,7 @@ def connect_session(
     except (ChildControlError, OSError) as error:
         control.close()
         transport.wake.close()
+        transport.access_units.close()
         transport.failures.close()
         raise ChildStartupError("handshake_failed", "control") from error
     return ConnectedSession(

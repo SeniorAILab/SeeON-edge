@@ -308,6 +308,7 @@ def test_ready_publication_fsyncs_before_renames_and_staging_cleanup(
         ("replace", "manifest.json.tmp", "manifest.json"),
         ("fsync-file", "manifest.json", ""),
         ("fsync-directory", "durable-clip-id", ""),
+        ("replace", "terminal-outcome.json.tmp", "terminal-outcome.json"),
         ("rmtree", "durable-clip-id", ""),
         ("fsync-directory", ".staging", ""),
     ]

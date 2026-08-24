@@ -1,5 +1,6 @@
 #pragma once
 
+#include "au_transport.hpp"
 #include "child_server.hpp"
 #include "ipc_protocol.hpp"
 #include "source_runtime.hpp"
@@ -17,6 +18,7 @@ struct SourceSlot {
   std::uint32_t generation;
   std::uint64_t epoch;
   std::uint64_t source_sequence = 0;
+  std::uint64_t au_sequence = 0;
   std::optional<ipc::Message> latest;
 };
 
@@ -26,11 +28,13 @@ class ServerState {
   ~ServerState();
 
   void on_frame(const std::string& camera, std::uint64_t pts);
+  void on_access_unit(const std::string& camera, ParsedAccessUnit unit);
   void on_failure(const NativeFailure& failure);
   [[nodiscard]] std::deque<NativeFailure> take_failures();
 
   const ChildOptions& options;
   SourceRuntime runtime;
+  AuSender au_sender;
   std::mutex slot_mutex;
   std::condition_variable published_condition;
   int failure_fd;
