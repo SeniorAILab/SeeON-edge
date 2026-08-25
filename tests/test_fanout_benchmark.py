@@ -81,7 +81,7 @@ REPO_ROOT: Final = Path(__file__).resolve().parent.parent
 STREAM_COUNTS: Final = (1, 2, 4, 8, 13)
 DEFAULT_STREAMS: Final = "1,2"
 DEFAULT_DURATION_SEC: Final = 60.0
-DEFAULT_PROFILE: Final = "nvidia-host-bridge"
+DEFAULT_PROFILE: Final = "cpu"
 SAMPLE_INTERVAL_SEC: Final = 2.0
 # Bounded: a run that never takes a frame off an inference lane within this
 # window is the #312 stall signature, recorded as such -- never waited out.
@@ -136,6 +136,7 @@ def test_fanout_benchmark(
     relay: StubRelay,
     allow_loopback_rtsp: None,
     tmp_path: Path,
+    packaged_lstm_artifact: Path,
 ) -> None:
     """Serve ``stream_count`` recorded streams and emit ``bench-<N>.json``."""
     if stream_count not in _selected_counts():
@@ -172,7 +173,7 @@ def test_fanout_benchmark(
             config = build_config(
                 relay_url=relay.base_url,
                 rtsp_urls=rtsp_urls,
-                models_dir=REPO_ROOT / "models",
+                models_dir=packaged_lstm_artifact.parents[1],
                 live_view_port=(free_tcp_port() if viewer_count > 0 else None),
                 camera_fps=camera_fps,
             )
@@ -298,7 +299,10 @@ def _git_revision() -> str | None:
 
 @pytest.mark.real_stack
 def test_fanout_benchmark_fails_fast_on_dead_rtsp_port(
-    tmp_path: Path, relay: StubRelay, allow_loopback_rtsp: None
+    tmp_path: Path,
+    relay: StubRelay,
+    allow_loopback_rtsp: None,
+    packaged_lstm_artifact: Path,
 ) -> None:
     """A dead RTSP port must produce a bounded diagnostic, never a hang.
 
@@ -314,7 +318,7 @@ def test_fanout_benchmark_fails_fast_on_dead_rtsp_port(
     config = build_config(
         relay_url=relay.base_url,
         rtsp_urls=(f"rtsp://127.0.0.1:{dead_port}/dead",),
-        models_dir=REPO_ROOT / "models",
+        models_dir=packaged_lstm_artifact.parents[1],
     )
     serving = TimingServingClient([])
     run = WorkerRun(

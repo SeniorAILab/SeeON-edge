@@ -46,6 +46,7 @@ import uvicorn
 from numpy.typing import NDArray
 
 import worker.runtime.worker as worker_module
+from backend.app.edge_db.migrator import migrate_database
 from backend.app.features.cameras.store import CameraRegistryStore
 from backend.app.features.clips.catalog import CatalogStore
 from backend.app.features.status.runtime_status_store import (
@@ -66,6 +67,7 @@ from worker.pipeline.output.evidence.clip_config import CLIP_STORE_DIR_ENV
 from worker.pipeline.output.evidence.clip_recorder_models import ClipRecorderConfig
 from worker.runtime.config import WorkerConfig
 from worker.runtime.lease import GpuLease
+from worker.runtime.profile.registry import VerifyResult
 from worker.runtime.worker import CameraRuntimeContext, WorkerRuntime
 from worker.types import FramePacket
 
@@ -417,10 +419,11 @@ class LiveBackend:
         # Camera binding is registry-only now (no camera_inventory fallback --
         # see _camera_binding_from_registry in relay/router.py), so each
         # inventory entry must be seeded into a CameraRegistryStore instead.
-        # Shares state_dir/"catalog.sqlite3" with runtime_status_store/
-        # catalog_store below, matching CameraRegistryStore.from_env()'s own
-        # resolve_state_dir("ml-api")/"catalog.sqlite3" convention.
-        registry = CameraRegistryStore(state_dir / "catalog.sqlite3")
+        # Shares the backend-owned current-schema edge database with the
+        # runtime-status and clip catalog stores below.
+        database_path = state_dir / "edge.sqlite3"
+        _ = migrate_database(database_path)
+        registry = CameraRegistryStore(database_path)
         for camera_id, entry in camera_inventory.items():
             facility_id = entry.get("facility_id")
             registry.create(
@@ -433,7 +436,7 @@ class LiveBackend:
         self.app.state.camera_registry = registry
         self.app.state.backend_ingest_client = self.ingest_client
         self.app.state.runtime_status_store = RuntimeStatusStore()
-        self.app.state.catalog_store = CatalogStore.open(state_dir / "catalog.sqlite3")
+        self.app.state.catalog_store = CatalogStore.open(database_path)
         self.port = free_tcp_port()
         config = uvicorn.Config(
             self.app, host="127.0.0.1", port=self.port, log_level="warning", lifespan="off"
@@ -843,6 +846,7 @@ def start_worker_runtime(
             },
             serving_client=serving,
             acquire_lease=lambda: GpuLease.acquire(state_dir),
+            decode_probe=lambda decode: VerifyResult(True, "cpu", decode, "test fixture"),
             hard_exit=lambda _code: None,
             state_dir=state_dir,
         )
