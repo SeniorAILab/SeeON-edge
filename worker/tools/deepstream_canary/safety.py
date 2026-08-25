@@ -74,6 +74,7 @@ class SafetyLimits:
     minimum_gpu_slack_mib: float
     maximum_gpu_utilization: float
     require_live_status: bool
+    enforce_gpu_capacity: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,7 +204,7 @@ def refuse_mount_overlap(canary_mounts: tuple[Path, ...], snapshot: LiveSnapshot
                     )
 
 
-def compare_live_snapshot(before: LiveSnapshot, limits: SafetyLimits) -> None:
+def compare_live_snapshot(before: LiveSnapshot, limits: SafetyLimits) -> LiveSnapshot:
     after = capture_live_snapshot()
     baseline = {item.container_id: item for item in before.containers}
     current = {item.container_id: item for item in after.containers}
@@ -215,9 +216,12 @@ def compare_live_snapshot(before: LiveSnapshot, limits: SafetyLimits) -> None:
         raise CanarySafetyError("kernel_fault_monitor_unavailable", "current-boot log unavailable")
     if after.xid_count > before.xid_count:
         raise CanarySafetyError("new_xid", f"before={before.xid_count},after={after.xid_count}")
-    if after.gpu_total_mib - after.gpu_used_mib < limits.minimum_gpu_slack_mib:
+    if (
+        limits.enforce_gpu_capacity
+        and after.gpu_total_mib - after.gpu_used_mib < limits.minimum_gpu_slack_mib
+    ):
         raise CanarySafetyError("gpu_slack_breach", str(after.gpu_total_mib - after.gpu_used_mib))
-    if after.gpu_utilization > limits.maximum_gpu_utilization:
+    if limits.enforce_gpu_capacity and after.gpu_utilization > limits.maximum_gpu_utilization:
         raise CanarySafetyError("gpu_utilization_breach", str(after.gpu_utilization))
     baseline_pids = {item.split(",", maxsplit=1)[0] for item in before.gpu_processes}
     current_pids = {item.split(",", maxsplit=1)[0] for item in after.gpu_processes}
@@ -233,6 +237,7 @@ def compare_live_snapshot(before: LiveSnapshot, limits: SafetyLimits) -> None:
         raise CanarySafetyError("live_status_monitor_unavailable", "status endpoint unavailable")
     if before.evidence_drops >= 0 and after.evidence_drops > before.evidence_drops:
         raise CanarySafetyError("live_evidence_drop_increase", str(after.evidence_drops))
+    return after
 
 
 def persist_first_fault(path: Path, error: CanarySafetyError) -> None:

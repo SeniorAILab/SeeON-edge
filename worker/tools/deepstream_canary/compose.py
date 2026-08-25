@@ -87,7 +87,7 @@ def render_compose(request: RenderRequest) -> tuple[Path, str]:
         "CANARY_ENGINE_DIR": run_dir / "engine-cache",
         "CANARY_SCRATCH_DIR": run_dir / "scratch",
         "CANARY_CLIP_DIR": run_dir / "clips",
-        "CANARY_CONFIG_PATH": run_dir / "worker.yaml",
+        "CANARY_CONFIG_PATH": run_dir / "configs",
     }
     for path in paths.values():
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -103,8 +103,13 @@ def render_compose(request: RenderRequest) -> tuple[Path, str]:
     if paths["CANARY_MODEL_DIR"].exists():
         raise FileExistsError(paths["CANARY_MODEL_DIR"])
     shutil.copytree(request.model_dir.resolve(), paths["CANARY_MODEL_DIR"])
-    paths["CANARY_CONFIG_PATH"].write_bytes(
-        _worker_config(request.camera_count)
+    paths["CANARY_CONFIG_PATH"].mkdir(mode=0o700)
+    zero_config = paths["CANARY_CONFIG_PATH"] / "worker-zero.json"
+    workload_config = paths["CANARY_CONFIG_PATH"] / "worker-workload.json"
+    zero_config.write_bytes(_worker_config(0))
+    workload_config.write_bytes(_worker_config(request.camera_count))
+    (paths["CANARY_RECEIPT_DIR"] / "active-config").write_text(
+        "zero\n", encoding="utf-8"
     )
     template = BASE_COMPOSE.read_text(encoding="utf-8")
     replacements = {
@@ -120,5 +125,5 @@ def render_compose(request: RenderRequest) -> tuple[Path, str]:
     compose_path = root / "compose.rendered.yaml"
     compose_path.write_text(rendered, encoding="utf-8")
     compose_digest = hashlib.sha256(compose_path.read_bytes()).hexdigest()
-    _ = write_receipt_manifest(root, (compose_path, paths["CANARY_CONFIG_PATH"]))
+    _ = write_receipt_manifest(root, (compose_path, zero_config, workload_config))
     return compose_path, compose_digest

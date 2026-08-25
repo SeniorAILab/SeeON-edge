@@ -6,9 +6,19 @@ import json
 import os
 import subprocess
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
+from worker.tools.deepstream_canary.collector import CollectionRequest, collect_recorded_telemetry
+from worker.tools.deepstream_canary.execution_artifacts import (
+    ExecutionArtifactSources,
+    ReceiptEmissionRequest,
+    emit_receipts,
+    generate_corpus,
+    gpu_sample,
+    native_windows,
+)
+from worker.tools.deepstream_canary.models import CanaryMode
 from worker.tools.deepstream_canary.safety import (
     CanarySafetyError,
     LiveSnapshot,
@@ -16,6 +26,7 @@ from worker.tools.deepstream_canary.safety import (
     compare_live_snapshot,
     persist_first_fault,
 )
+from worker.tools.deepstream_canary.telemetry import RuntimeGpuSample
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,9 +34,13 @@ class ExecutionRequest:
     compose_path: Path
     evidence_dir: Path
     baseline: LiveSnapshot
-    monitor_seconds: int
+    rung_durations: tuple[tuple[str, int], ...]
+    publisher_count: int
     relay_token: str
     safety_limits: SafetyLimits
+    mode: CanaryMode
+    rungs: tuple[str, ...]
+    artifacts: ExecutionArtifactSources
 
 
 def _compose(request: ExecutionRequest, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -46,43 +61,13 @@ def _compose(request: ExecutionRequest, *arguments: str) -> subprocess.Completed
     )
 
 
-def _generate_corpus(root: Path) -> Path:
-    corpus = root / "run" / "scratch" / "loopback.mp4"
-    completed = subprocess.run(
-        (
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "lavfi",
-            "-i",
-            "testsrc2=size=1280x720:rate=15",
-            "-t",
-            "60",
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-g",
-            "30",
-            "-keyint_min",
-            "30",
-            "-sc_threshold",
-            "0",
-            "-movflags",
-            "+faststart",
-            str(corpus),
-        ),
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+def _require_success(
+    completed: subprocess.CompletedProcess[str],
+    code: str,
+    detail: str,
+) -> None:
     if completed.returncode != 0:
-        raise CanarySafetyError("corpus_generation_failed", completed.stderr[-500:])
-    _ = corpus.chmod(0o444)
-    _ = corpus.parent.chmod(0o755)
-    return corpus
+        raise CanarySafetyError(code, detail)
 
 
 def execute_canary(request: ExecutionRequest) -> int:
@@ -90,6 +75,10 @@ def execute_canary(request: ExecutionRequest) -> int:
     fault_path = request.evidence_dir / "first-fault.json"
     stop = threading.Event()
     stack_started = threading.Event()
+    capacity_armed = threading.Event()
+    active_rung: list[str] = ["prepare"]
+    gpu_samples: dict[str, list[RuntimeGpuSample]] = {}
+    sample_lock = threading.Lock()
     watchdog_fault: list[CanarySafetyError] = []
 
     def abort(error: CanarySafetyError) -> None:
@@ -111,36 +100,101 @@ def execute_canary(request: ExecutionRequest) -> int:
                     abort(CanarySafetyError("canary_service_exited", ",".join(failed_services)))
                     return
             try:
-                compare_live_snapshot(request.baseline, request.safety_limits)
+                snapshot = compare_live_snapshot(
+                    request.baseline,
+                    replace(
+                        request.safety_limits,
+                        enforce_gpu_capacity=capacity_armed.is_set(),
+                    ),
+                )
+                if capacity_armed.is_set() and stack_started.is_set():
+                    with sample_lock:
+                        gpu_samples.setdefault(active_rung[0], []).append(
+                            gpu_sample(snapshot)
+                        )
             except CanarySafetyError as error:
                 abort(error)
                 return
 
     try:
-        _ = _generate_corpus(request.evidence_dir)
+        corpus = generate_corpus(request.evidence_dir)
         monitor = threading.Thread(target=watchdog, name="canary-live-watchdog", daemon=True)
         monitor.start()
-        up = _compose(request, "up", "-d", "--remove-orphans")
-        stack_started.set()
-        (request.evidence_dir / "compose-up.log").write_text(
-            up.stdout + up.stderr, encoding="utf-8"
+        prepare = _compose(request, "run", "--rm", "engine-builder")
+        _ = (request.evidence_dir / "engine-prepare.log").write_text(
+            prepare.stdout + prepare.stderr, encoding="utf-8"
         )
         if watchdog_fault:
             raise watchdog_fault[0]
-        if up.returncode != 0:
-            logs = _compose(request, "logs", "--no-color")
-            _ = (request.evidence_dir / "compose-failure.log").write_text(
-                logs.stdout + logs.stderr, encoding="utf-8"
+        _require_success(prepare, "engine_prepare_failed", prepare.stderr[-500:])
+        capacity_armed.set()
+        phase_logs: list[str] = []
+        for rung, duration in request.rung_durations:
+            stack_started.clear()
+            active_rung[0] = rung
+            selected = "zero" if rung == "zero" else "workload"
+            (request.evidence_dir / "raw" / "active-config").write_text(
+                f"{selected}\n", encoding="utf-8"
             )
-            error = CanarySafetyError("compose_up_failed", up.stderr[-500:])
-            persist_first_fault(fault_path, error)
-            return 1
-        _ = stop.wait(request.monitor_seconds)
+            if selected == "workload":
+                publishers = tuple(
+                    f"publisher-{index:02d}"
+                    for index in range(1, request.publisher_count + 1)
+                )
+                publisher_up = _compose(request, "up", "-d", *publishers)
+                phase_logs.append(publisher_up.stdout + publisher_up.stderr)
+                _require_success(publisher_up, "publisher_start_failed", rung)
+                up = _compose(request, "up", "-d", "--force-recreate", "ml-worker")
+            else:
+                up = _compose(request, "up", "-d", "relay-stub", "mediamtx", "ml-worker")
+            phase_logs.append(up.stdout + up.stderr)
+            stack_started.set()
+            if watchdog_fault:
+                raise watchdog_fault[0]
+            _require_success(up, "compose_up_failed", up.stderr[-500:])
+            _ = stop.wait(duration)
+            if watchdog_fault:
+                raise watchdog_fault[0]
+            final_snapshot = compare_live_snapshot(
+                request.baseline, request.safety_limits
+            )
+            with sample_lock:
+                gpu_samples.setdefault(rung, []).append(gpu_sample(final_snapshot))
+                phase_gpu = tuple(gpu_samples[rung])
+            camera_count = 0 if rung == "zero" else request.publisher_count
+            _ = collect_recorded_telemetry(
+                CollectionRequest(
+                    evidence_dir=request.evidence_dir,
+                    rung=rung,
+                    mode=request.mode,
+                    clean_steady_seconds=duration,
+                    camera_count=camera_count,
+                    gpu_samples=phase_gpu,
+                    native_windows=(
+                        ()
+                        if rung == "zero"
+                        else native_windows(
+                            request.evidence_dir / "raw" / "native-telemetry.jsonl"
+                        )
+                    ),
+                )
+            )
+            stack_started.clear()
+            stopped = _compose(request, "stop", "ml-worker")
+            phase_logs.append(stopped.stdout + stopped.stderr)
         stop.set()
         monitor.join(timeout=15.0)
-        if watchdog_fault:
-            raise watchdog_fault[0]
-        compare_live_snapshot(request.baseline, request.safety_limits)
+        _ = (request.evidence_dir / "compose-up.log").write_text(
+            "".join(phase_logs), encoding="utf-8"
+        )
+        _ = emit_receipts(
+            ReceiptEmissionRequest(
+                evidence_dir=request.evidence_dir,
+                rungs=request.rungs,
+                artifacts=request.artifacts,
+            ),
+            corpus,
+        )
         logs = _compose(request, "logs", "--no-color")
         (request.evidence_dir / "compose.log").write_text(
             logs.stdout + logs.stderr, encoding="utf-8"
@@ -148,7 +202,7 @@ def execute_canary(request: ExecutionRequest) -> int:
         execution = {
             "schema_version": 1,
             "status": "collected",
-            "note": "verdict requires independent raw-rung receipts",
+            "note": "raw rung receipts emitted for independent verification",
         }
         (request.evidence_dir / "execution.json").write_text(
             json.dumps(execution, sort_keys=True, separators=(",", ":")) + "\n",

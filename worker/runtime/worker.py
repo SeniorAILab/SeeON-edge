@@ -118,6 +118,7 @@ from worker.runtime.config import (
     LiveClipExportPolicy,
     WorkerConfig,
 )
+from worker.runtime.deepstream.canary_telemetry import NativeCanaryTelemetry
 from worker.runtime.deepstream.config import ChildConfig
 from worker.runtime.deepstream.native_policy_pump import (
     NativeEventSink,
@@ -1695,6 +1696,7 @@ class WorkerRuntime:
                 attacher,
                 self.diagnostics,
                 plan.schedule.get("bed", self.temporal_profile.decision_interval_frames("bed")),
+                NativeCanaryTelemetry.from_environment(camera.camera_id),
             ),
         )
         pumps.append(pump)

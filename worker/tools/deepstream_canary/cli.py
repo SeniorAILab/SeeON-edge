@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import secrets
 import sys
@@ -20,7 +21,11 @@ from worker.tools.deepstream_canary.authorization import (
 from worker.tools.deepstream_canary.compose import RenderRequest, render_compose
 from worker.tools.deepstream_canary.models import AuthorizationArtifact, CanaryMode, GatePolicy
 from worker.tools.deepstream_canary.report import JsonValue, canonical_json, write_once
-from worker.tools.deepstream_canary.runner import ExecutionRequest, execute_canary
+from worker.tools.deepstream_canary.runner import (
+    ExecutionArtifactSources,
+    ExecutionRequest,
+    execute_canary,
+)
 from worker.tools.deepstream_canary.safety import (
     CanarySafetyError,
     SafetyLimits,
@@ -33,6 +38,10 @@ DEFAULT_WORKER_IMAGE: Final = (
     "seeon-edge@sha256:23b9cc63520aef5106d828b6db8f481db66aeaaead66b66c61b509135ace33ad"
 )
 POLICY_PATH: Final = Path("scripts/qa/deepstream-canary/gate-policy.v1.json")
+SUPPORT_IMAGE_DIGESTS: Final = (
+    "sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a",
+    "sha256:2001b73159ec146478df64d5fe5a973ae0d978a1648138cbbc6bc6f9c4cc9c82",
+)
 
 
 class CanaryArgumentError(ValueError):
@@ -95,21 +104,22 @@ def _image_digest(image: str) -> str:
     return f"sha256:{digest}"
 
 
-def _monitor_seconds(rungs: tuple[str, ...], policy: GatePolicy) -> int:
-    total = 0
+def _rung_durations(rungs: tuple[str, ...], policy: GatePolicy) -> tuple[tuple[str, int], ...]:
+    durations: list[tuple[str, int]] = []
     for rung in rungs:
         match rung:
             case "zero":
-                total += policy.zero_clean_seconds
+                seconds = policy.zero_clean_seconds
             case "loopback":
-                total += policy.loopback_clean_seconds
+                seconds = policy.loopback_clean_seconds
             case "1" | "4":
-                total += policy.warmup_seconds + policy.standard_rung_clean_seconds
+                seconds = policy.warmup_seconds + policy.standard_rung_clean_seconds
             case "8" | "13":
-                total += policy.warmup_seconds + policy.candidate_rung_clean_seconds
+                seconds = policy.warmup_seconds + policy.candidate_rung_clean_seconds
             case unreachable:
                 raise CanaryArgumentError(f"unsupported rung {unreachable}")
-    return total
+        durations.append((rung, seconds))
+    return tuple(durations)
 
 
 def _run(arguments: RunArguments) -> int:
@@ -178,12 +188,21 @@ def _run(arguments: RunArguments) -> int:
             compose_path=compose_path,
             evidence_dir=evidence_dir,
             baseline=baseline,
-            monitor_seconds=_monitor_seconds(rungs, policy),
+            rung_durations=_rung_durations(rungs, policy),
+            publisher_count=camera_count,
             relay_token=relay_token,
             safety_limits=SafetyLimits(
                 minimum_gpu_slack_mib=policy.minimum_gpu_slack_mib,
                 maximum_gpu_utilization=policy.gpu_utilization_absolute_max,
                 require_live_status=mode is CanaryMode.SHARED_HOST_SMOKE,
+            ),
+            mode=mode,
+            rungs=rungs,
+            artifacts=ExecutionArtifactSources(
+                worker_image=_image_digest(worker_image),
+                support_images=SUPPORT_IMAGE_DIGESTS,
+                gate_policy=hashlib.sha256(POLICY_PATH.read_bytes()).hexdigest(),
+                compose=compose_digest,
             ),
         )
     )

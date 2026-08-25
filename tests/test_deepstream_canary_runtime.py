@@ -36,6 +36,91 @@ def test_publishers_wait_for_mediamtx_health_when_compose_is_rendered(tmp_path: 
     assert "mediamtx:\n        condition: service_healthy" in publisher
 
 
+def test_engine_prepare_is_profiled_before_steady_capacity_gate(tmp_path: Path) -> None:
+    from worker.tools.deepstream_canary.models import GatePolicy
+
+    # Given: the tracked policy and a rendered canary project.
+    evidence = tmp_path / "prepare"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "worker.tools.deepstream_canary",
+            "run",
+            "--rungs",
+            "zero,loopback",
+            "--evidence-dir",
+            str(evidence),
+            "--render-only",
+            "--worker-image",
+            "seeon-edge@sha256:" + "b" * 64,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    # When: preparation and steady-state declarations are inspected.
+    assert completed.returncode == 0, completed.stderr
+    rendered = (evidence / "compose.rendered.yaml").read_text()
+    policy = GatePolicy.model_validate_json(
+        Path("scripts/qa/deepstream-canary/gate-policy.v1.json").read_bytes()
+    )
+
+    # Then: engine build is explicit and does not weaken the unchanged runtime threshold.
+    engine = rendered.split("  engine-builder:", maxsplit=1)[1].split(
+        "  ml-worker:", maxsplit=1
+    )[0]
+    worker = rendered.split("  ml-worker:", maxsplit=1)[1].split(
+        "  publisher-01:", maxsplit=1
+    )[0]
+    assert "profiles: [prepare]" in engine
+    assert "engine-builder:" not in worker
+    assert policy.engine_preparation.utilization_gate_active is False
+    assert policy.gpu_utilization_absolute_max == 95.0
+
+
+def test_runner_emits_verifiable_rung_receipt_from_recorded_telemetry(tmp_path: Path) -> None:
+    from worker.tools.deepstream_canary.models import ArtifactBindings
+    from worker.tools.deepstream_canary.telemetry import emit_rung_receipt
+
+    # Given: recorded per-window telemetry and immutable artifact identities.
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    telemetry = Path("tests/fixtures_deepstream_canary_telemetry.json")
+    artifacts = ArtifactBindings(
+        worker_image="sha256:" + "1" * 64,
+        support_images=("sha256:" + "2" * 64,),
+        models_manifest="3" * 64,
+        engine_manifest="4" * 64,
+        corpus="5" * 64,
+        gate_policy="6" * 64,
+        compose="7" * 64,
+    )
+
+    # When: the runner's telemetry transformation emits a raw rung receipt.
+    receipt = emit_rung_receipt(telemetry, evidence, artifacts)
+
+    # Then: the independent verifier recomputes PASS without trusting execution status.
+    assert receipt.name == "rung-loopback.json"
+    verified = subprocess.run(
+        [
+            sys.executable,
+            "scripts/qa/verify_deepstream_delivery.py",
+            "canary",
+            "--evidence-root",
+            str(evidence),
+            "--output",
+            str(evidence / "verified.json"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert verified.returncode == 0, verified.stderr
+    assert '"verdict":"PASS"' in verified.stdout
+
+
 def test_authorization_rejects_camera_count_that_does_not_match_rung() -> None:
     from datetime import UTC, datetime, timedelta
 

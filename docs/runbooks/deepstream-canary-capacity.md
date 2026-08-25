@@ -10,8 +10,11 @@ and is advisory, so it does **not** protect the production worker.
 - `commissioning`: run before facility cameras are enabled. A capacity claim is
   eligible only when the recorded corpus exactly matches the claimed codec,
   resolution, FPS, GOP, models, policies, and camera count.
-- `shared-host-smoke`: use while a live worker already carries cameras. It proves
-  coexistence safety only and always has `claim_eligible=false`.
+- `shared-host-smoke`: use on a development/operations host where a live worker
+  already carries facility cameras. It proves coexistence safety only, always
+  has `claim_eligible=false`, and must never be converted into a capacity claim.
+  Such a host must not run commissioning or stop its live cameras. Commissioning
+  belongs on the target facility appliance before its cameras are enabled.
 
 Never load `compose.edge.yaml`, read `.env.edge.prod`, reuse a live mount, or
 supply facility RTSP URLs for the default run. Confirm Docker, NVIDIA runtime,
@@ -32,6 +35,14 @@ uv run python scripts/qa/verify_deepstream_delivery.py canary \
   --evidence-root .omo/evidence/deepstream-nvidia-worker-migration/task-8-canary-default \
   --output .omo/evidence/deepstream-nvidia-worker-migration/task-8-canary-green.json
 ```
+
+Before either rung, the harness explicitly runs the profiled `engine-builder`.
+It verifies and reuses the matching `c7-<plan-key>` cache or builds the three
+content-addressed engines and stores `raw/engine-prepare.json`. During this
+one-time phase, live worker restarts, camera stale transitions, evidence-drop
+increases, and new Xids remain abort conditions. The steady-state utilization
+and slack gates arm only after preparation succeeds; their thresholds are not
+relaxed.
 
 Zero-camera runs for 2 minutes after the C7 preflight. Loopback uses the fixed
 15 FPS H.264 1280x720 GOP-30 corpus for 15 clean minutes. The generated Compose
@@ -90,9 +101,11 @@ The host watchdog atomically records the first fault and runs only:
 docker compose -p seeon-ds-canary -f <run>/compose.rendered.yaml down --remove-orphans
 ```
 
-Abort on any new Xid/kernel fault, utilization or VRAM policy breach, live
-container replacement/restart, online-to-stale live camera, evidence-drop
-increase, relay sentinel leak, or mount intersection. Never run `down` against
+After engine preparation, abort on any new Xid/kernel fault, utilization or
+VRAM policy breach, live container replacement/restart, online-to-stale live
+camera, evidence-drop increase, relay sentinel leak, or mount intersection.
+During preparation, all those live-health signals remain armed except the
+steady-state utilization/slack limits. Never run `down` against
 the live project.
 
 ## Cleanup proof

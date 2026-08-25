@@ -16,6 +16,7 @@ from worker.native.deepstream.metadata import AcceptanceToken, LatestMetadataSlo
 from worker.pipeline.decision import EventAggregator
 from worker.pipeline.output.evidence_attacher import AlertEvidenceAttacher
 from worker.pipeline.perception import SceneState, build_decision_input, build_frame_observation
+from worker.runtime.deepstream.canary_telemetry import NativeCanaryTelemetry
 from worker.types import BusinessEvent, ChannelState, NativeEvidenceTrigger
 
 LOGGER = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ class NativePolicyContext:
     attacher: AlertEvidenceAttacher
     diagnostics: NativeDiagnostics
     bed_interval: int
+    canary_telemetry: NativeCanaryTelemetry | None = None
 
 
 @final
@@ -58,6 +60,7 @@ class NativePolicyPump:
         self._attacher = context.attacher
         self._diagnostics = context.diagnostics
         self._bed_interval = context.bed_interval
+        self._canary_telemetry = context.canary_telemetry
         self._stop = threading.Event()
         self._fps: deque[float] = deque()
         self.processed_count = 0
@@ -160,6 +163,12 @@ class NativePolicyPump:
                 snapshot = None
             self._sink.emit_for_frame(self._attacher.attach_native(event, snapshot), trigger)
         self._diagnostics.record_detection_completed(self.camera_id)
+        if self._canary_telemetry is not None:
+            self._canary_telemetry.record(
+                frame.identity.source_pts or 0,
+                metadata.source_time_ns,
+                metadata.native_publish_sequence,
+            )
         now = time.monotonic()
         self._fps.append(now)
         while self._fps and now - self._fps[0] > _FPS_WINDOW_SEC:

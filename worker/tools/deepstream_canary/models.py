@@ -14,12 +14,28 @@ class CanaryMode(StrEnum):
     SHARED_HOST_SMOKE = "shared-host-smoke"
 
 
+class EnginePreparationPolicy(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    utilization_gate_active: bool
+    required_live_signals: tuple[str, ...]
+
+
+class PolicyVersion(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    policy_id: str
+    reason: str
+
+
 class GatePolicy(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     schema_version: Literal[1]
     policy_id: str
     provenance: str
+    version_history: tuple[PolicyVersion, ...]
+    engine_preparation: EnginePreparationPolicy
     fps_p05_min: float = Field(gt=0)
     fps_p50_min: float = Field(gt=0)
     fps_p95_min: float = Field(gt=0)

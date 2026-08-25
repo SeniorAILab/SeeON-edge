@@ -18,7 +18,8 @@ from typing import Final
 
 TOKEN: Final = os.environ["CANARY_RELAY_TOKEN"]
 RECEIPTS: Final = Path(os.environ["CANARY_RECEIPT_DIR"])
-WORKER_CONFIG: Final = Path(os.environ["CANARY_WORKER_CONFIG"])
+WORKER_CONFIG_DIR: Final = Path(os.environ["CANARY_WORKER_CONFIG_DIR"])
+ACTIVE_CONFIG: Final = Path(os.environ["CANARY_ACTIVE_CONFIG"])
 MAX_BODY: Final = 2 * 1024 * 1024
 
 
@@ -32,7 +33,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             if self.headers.get("X-Edge-Relay-Token", "") != TOKEN:
                 self.send_error(HTTPStatus.UNAUTHORIZED)
                 return
-            body = WORKER_CONFIG.read_bytes()
+            selected = ACTIVE_CONFIG.read_text(encoding="utf-8").strip()
+            body = (WORKER_CONFIG_DIR / f"worker-{selected}.json").read_bytes()
         else:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
