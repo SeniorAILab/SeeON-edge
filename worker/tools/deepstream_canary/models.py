@@ -47,6 +47,7 @@ class GatePolicy(BaseModel):
     gpu_utilization_p95_max: float = Field(gt=0, le=100)
     gpu_utilization_absolute_max: float = Field(gt=0, le=100)
     minimum_gpu_slack_mib: float = Field(gt=0)
+    protected_gpu_process_loss_grace_seconds: float = Field(gt=0)
     gpu_warmup_peak_max_mib: float = Field(gt=0)
     gpu_steady_p95_max_mib: float = Field(gt=0)
     gpu_recovery_max_mib: float = Field(gt=0)

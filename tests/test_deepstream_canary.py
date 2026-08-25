@@ -202,6 +202,62 @@ def test_mount_guard_rejects_live_volume_ancestor(tmp_path: Path) -> None:
         refuse_mount_overlap((live / "canary",), snapshot)
 
 
+def test_live_gpu_protection_attributes_container_and_allows_pid_churn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import worker.tools.deepstream_canary.safety as safety_module
+    from worker.tools.deepstream_canary.safety import (
+        LiveContainer,
+        LiveSnapshot,
+        SafetyLimits,
+        compare_live_snapshot,
+    )
+
+    # Given: one protected SeeON GPU container plus an unrelated host process.
+    before = LiveSnapshot(
+        containers=(LiveContainer("live-1", 0, (), True, ("123",)),),
+        xid_count=0,
+        gpu_processes=("123, python, 100", "999, desktop, 10"),
+    )
+    after = LiveSnapshot(
+        containers=(LiveContainer("live-1", 0, (), True, ("456",)),),
+        xid_count=0,
+        gpu_processes=("456, ffmpeg, 100",),
+    )
+    monkeypatch.setattr(safety_module, "capture_live_snapshot", lambda: after)
+
+    # When / Then: unrelated exit and attributed in-container PID churn are allowed.
+    observed: dict[str, float] = {}
+    compare_live_snapshot(before, SafetyLimits(0, 100, False), observed)
+    assert observed == {}
+
+
+def test_live_gpu_protection_applies_bounded_container_loss_grace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import worker.tools.deepstream_canary.safety as safety_module
+    from worker.tools.deepstream_canary.safety import (
+        LiveContainer,
+        LiveSnapshot,
+        SafetyLimits,
+        compare_live_snapshot,
+    )
+
+    # Given: a protected SeeON container temporarily has no attributed GPU process.
+    before = LiveSnapshot((LiveContainer("live-1", 0, (), True, ("123",)),), 0)
+    after = LiveSnapshot((LiveContainer("live-1", 0, (), True, ()),), 0)
+    monkeypatch.setattr(safety_module, "capture_live_snapshot", lambda: after)
+    clock = iter((0.0, 31.0))
+    monkeypatch.setattr(safety_module.time, "monotonic", lambda: next(clock))
+    observed: dict[str, float] = {}
+    limits = SafetyLimits(0, 100, False, gpu_process_loss_grace_seconds=30)
+
+    # When / Then: the first miss is tolerated, but sustained loss fails closed.
+    compare_live_snapshot(before, limits, observed)
+    with pytest.raises(RuntimeError, match="live_container_gpu_process_missing"):
+        compare_live_snapshot(before, limits, observed)
+
+
 def test_verifier_recomputes_pass_and_rejects_intentional_red(tmp_path: Path) -> None:
     from worker.tools.deepstream_canary.gates import evaluate_receipt
     from worker.tools.deepstream_canary.models import GatePolicy, RungReceipt
@@ -263,6 +319,41 @@ def _render_evidence(root: Path) -> None:
         "seeon-edge@sha256:" + "b" * 64,
     )
     assert result.returncode == 0
+
+
+def test_canary_verifier_rejects_missing_requested_rung(tmp_path: Path) -> None:
+    # Given: immutable zero+loopback intent but only a valid zero receipt.
+    root = tmp_path / "missing-loopback"
+    (root / "raw").mkdir(parents=True)
+    zero = _passing_receipt(camera_count=0)
+    zero.update(
+        {
+            "rung": "zero",
+            "clean_steady_seconds": 120,
+            "nvdec": {"hardware_branches": 0, "software_fallbacks": 0},
+            "timeline": [],
+            "workload": {
+                "codec": "h264",
+                "width": 1280,
+                "height": 720,
+                "fps": 15.0,
+                "gop": 30,
+                "camera_phase_offsets_ms": [],
+            },
+        }
+    )
+    (root / "raw" / "rung-zero.json").write_text(json.dumps(zero))
+    (root / "run-request.json").write_text(
+        '{"schema_version":1,"requested_rungs":["zero","loopback"]}\n'
+    )
+
+    # When: the independent verifier evaluates the immutable requested set.
+    result = _verify("canary", root)
+
+    # Then: an available zero PASS cannot hide the absent loopback receipt.
+    assert result.returncode == 1
+    verdict = json.loads((root / "canary.json").read_text())
+    assert verdict["findings"] == ["requested_rung_missing:loopback"]
 
 
 def test_canary_verifier_rejects_low_per_camera_fps(tmp_path: Path) -> None:

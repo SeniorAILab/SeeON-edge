@@ -43,6 +43,13 @@ class ReceiptManifest(BaseModel):
     files: dict[str, ManifestEntry]
 
 
+class RunRequestReceipt(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal[1]
+    requested_rungs: tuple[str, ...]
+
+
 class DeliveryVerdict(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
@@ -55,15 +62,30 @@ class DeliveryVerdict(BaseModel):
 
 def _canary(root: Path, policy_path: Path) -> DeliveryVerdict:
     policy = GatePolicy.model_validate_json(policy_path.read_bytes())
+    request = RunRequestReceipt.model_validate_json((root / "run-request.json").read_bytes())
     receipts = tuple(
         RungReceipt.model_validate_json(path.read_bytes())
         for path in sorted((root / "raw").glob("rung-*.json"))
     )
-    reports = tuple(evaluate_receipt(receipt, policy) for receipt in receipts)
+    by_rung = {receipt.rung: receipt for receipt in receipts}
+    findings = tuple(
+        f"requested_rung_missing:{rung}"
+        for rung in request.requested_rungs
+        if rung not in by_rung
+    )
+    reports = tuple(
+        evaluate_receipt(by_rung[rung], policy)
+        for rung in request.requested_rungs
+        if rung in by_rung
+    )
     for report in reports:
         _ = write_canonical_report(root, report.model_dump(mode="json"))
-    passed = bool(reports) and all(report.verdict == "PASS" for report in reports)
-    findings = () if reports else ("raw_rung_receipts_missing",)
+    passed = (
+        not findings
+        and bool(reports)
+        and len(reports) == len(request.requested_rungs)
+        and all(report.verdict == "PASS" for report in reports)
+    )
     return DeliveryVerdict(
         verdict="PASS" if passed else "FAIL",
         verifier="canary",

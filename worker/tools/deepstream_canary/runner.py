@@ -237,6 +237,7 @@ def execute_canary(request: ExecutionRequest) -> int:
     gpu_samples: dict[str, list[RuntimeGpuSample]] = {}
     sample_lock = threading.Lock()
     watchdog_fault: list[CanarySafetyError] = []
+    gpu_loss_observed_at: dict[str, float] = {}
     native_path = request.evidence_dir / "raw" / "native-telemetry.jsonl"
     native_path.touch(mode=0o666, exist_ok=False)
     native_path.chmod(0o666)
@@ -323,6 +324,7 @@ def execute_canary(request: ExecutionRequest) -> int:
                         request.safety_limits,
                         enforce_gpu_capacity=capacity_armed.is_set(),
                     ),
+                    gpu_loss_observed_at,
                 )
                 if capacity_armed.is_set() and stack_started.is_set():
                     sample = gpu_sample(snapshot)
@@ -390,7 +392,9 @@ def execute_canary(request: ExecutionRequest) -> int:
             if watchdog_fault:
                 raise watchdog_fault[0]
             final_snapshot = compare_live_snapshot(
-                request.baseline, request.safety_limits
+                request.baseline,
+                request.safety_limits,
+                gpu_loss_observed_at,
             )
             if camera_ids:
                 _wait_for_source_ready(native_path, camera_ids[0])

@@ -30,6 +30,7 @@ from worker.tools.deepstream_canary.safety import (
     CanarySafetyError,
     SafetyLimits,
     capture_live_snapshot,
+    encode_live_snapshot,
     refuse_existing_project,
     refuse_mount_overlap,
 )
@@ -155,6 +156,13 @@ def _run(arguments: RunArguments) -> int:
         write_once(evidence_dir / "authorization-refusal.json", canonical_json(refusal))
         print(str(error), file=sys.stderr)
         return 2
+    requested_rungs: list[JsonValue] = [item for item in rungs]
+    write_once(
+        evidence_dir / "run-request.json",
+        canonical_json(
+            {"schema_version": 1, "requested_rungs": requested_rungs}
+        ),
+    )
     refuse_existing_project()
     maximum = max((int(item) for item in rungs if item.isdigit()), default=0)
     camera_count = max(maximum, 1 if "loopback" in rungs else 0)
@@ -173,6 +181,7 @@ def _run(arguments: RunArguments) -> int:
     if arguments.render_only:
         return 0
     baseline = capture_live_snapshot()
+    write_once(evidence_dir / "raw" / "live-baseline.json", encode_live_snapshot(baseline))
     if mode is CanaryMode.COMMISSIONING and baseline.healthy_runtime_camera_ids:
         raise CanarySafetyError(
             "commissioning_live_cameras_present",
@@ -198,6 +207,9 @@ def _run(arguments: RunArguments) -> int:
                 minimum_gpu_slack_mib=policy.minimum_gpu_slack_mib,
                 maximum_gpu_utilization=policy.gpu_utilization_absolute_max,
                 require_live_status=mode is CanaryMode.SHARED_HOST_SMOKE,
+                gpu_process_loss_grace_seconds=(
+                    policy.protected_gpu_process_loss_grace_seconds
+                ),
             ),
             mode=mode,
             rungs=rungs,

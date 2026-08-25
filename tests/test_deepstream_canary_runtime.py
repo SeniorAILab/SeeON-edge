@@ -144,6 +144,9 @@ def test_runner_emits_verifiable_rung_receipt_from_recorded_telemetry(tmp_path: 
 
     # Then: the independent verifier recomputes PASS without trusting execution status.
     assert receipt.name == "rung-loopback.json"
+    (evidence / "run-request.json").write_text(
+        '{"schema_version":1,"requested_rungs":["loopback"]}\n'
+    )
     verified = subprocess.run(
         [
             sys.executable,
