@@ -28,12 +28,11 @@ Always-fail stubs belong in tests only.
   payloads into worker-internal `PerceptionFrameV1` envelopes or typed failures.
   This C1 boundary is not a `contracts` type or a backend/public wire.
 
-## Serving and device batch
+## Serving
 
 - `serving.py`: `ServingClient.create(task, ...) -> RunnerProtocol`.
 - `BatchServingClient.infer_batch(task, frames) -> tuple[RunnerResult, ...]`. Batch-input contract so a future networked serving service can swap in. That swap is deferred (ADR-0002). Do not land Triton or HTTP serving here.
 - `BatchServingProvider.batch_serving_client` exposes a model-sharing batch view. A wrapper without it silently downgrades.
-- `device_batch.py` is not serving. `DeviceResidentPool` acquires or recycles bounded device slots and raises on overflow. `DeviceResidentBatcher.form_batch` groups leases only. No inference, no task policy, no host round-trip, no per-frame synchronize.
 
 ## Encode, frame, output
 
