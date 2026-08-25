@@ -125,6 +125,10 @@ def execute_canary(request: ExecutionRequest) -> int:
             up.stdout + up.stderr, encoding="utf-8"
         )
         if up.returncode != 0:
+            logs = _compose(request, "logs", "--no-color")
+            _ = (request.evidence_dir / "compose-failure.log").write_text(
+                logs.stdout + logs.stderr, encoding="utf-8"
+            )
             error = CanarySafetyError("compose_up_failed", up.stderr[-500:])
             persist_first_fault(fault_path, error)
             return 1
