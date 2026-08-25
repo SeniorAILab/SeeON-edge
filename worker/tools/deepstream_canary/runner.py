@@ -91,6 +91,13 @@ def execute_canary(request: ExecutionRequest) -> int:
 
     def watchdog() -> None:
         while not stop.wait(10.0):
+            exited = _compose(request, "ps", "--status", "exited", "--services")
+            if exited.returncode != 0 or exited.stdout.strip():
+                watchdog_fault.append(
+                    CanarySafetyError("canary_service_exited", exited.stdout.strip())
+                )
+                stop.set()
+                return
             try:
                 compare_live_snapshot(request.baseline, request.safety_limits)
             except CanarySafetyError as error:

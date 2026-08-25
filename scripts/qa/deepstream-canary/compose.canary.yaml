@@ -15,6 +15,11 @@ services:
     command: [python, /relay_stub.py]
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2)"]
+      interval: 1s
+      timeout: 3s
+      retries: 10
 
   mediamtx:
     image: bluenviron/mediamtx@sha256:2001b73159ec146478df64d5fe5a973ae0d978a1648138cbbc6bc6f9c4cc9c82
@@ -27,12 +32,22 @@ services:
       - "127.0.0.1:18888:8888"
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, /mediamtx, --version]
+      interval: 1s
+      timeout: 3s
+      retries: 10
 
   ml-worker:
     image: ${CANARY_WORKER_IMAGE}
     pull_policy: never
     restart: "no"
     networks: [canary]
+    depends_on:
+      relay-stub:
+        condition: service_healthy
+      mediamtx:
+        condition: service_healthy
     environment:
       RELAY_TOKEN: ${CANARY_RELAY_TOKEN}
       ML_WORKER_PROFILE: nvidia

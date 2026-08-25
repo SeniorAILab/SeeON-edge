@@ -34,6 +34,7 @@ def _publisher_block(camera_count: int, worker_image: str, corpus_dir: Path) -> 
             f"    image: {worker_image}\n"
             "    pull_policy: never\n"
             "    restart: \"no\"\n"
+            "    depends_on:\n      mediamtx:\n        condition: service_healthy\n"
             "    networks: [canary]\n"
             f"    volumes:\n      - {corpus_dir}:/corpus:ro\n"
             "    command: [ffmpeg, -re, -stream_loop, \"-1\", "
