@@ -80,16 +80,41 @@ def generate_corpus(root: Path) -> Path:
 
 def gpu_sample(snapshot: LiveSnapshot) -> RuntimeGpuSample:
     child = tuple(
-        line for line in snapshot.gpu_processes if "seeon-deepstream" in line
+        line for line in snapshot.gpu_processes if "seeon-deep" in line
     )
-    if len(child) != 1:
+    if len(child) > 1:
         raise CanarySafetyError("native_child_gpu_process_count", str(len(child)))
-    fields = tuple(item.strip() for item in child[0].split(","))
-    if len(fields) != 3:
-        raise CanarySafetyError("native_child_gpu_process_invalid", child[0])
+    if child:
+        fields = tuple(item.strip() for item in child[0].split(","))
+        if len(fields) != 3:
+            raise CanarySafetyError("native_child_gpu_process_invalid", child[0])
+        child_pid = int(fields[0])
+        child_memory_mib = float(fields[2])
+    else:
+        process = subprocess.run(
+            (
+                "docker",
+                "top",
+                "seeon-ds-canary-ml-worker-1",
+                "-eo",
+                "pid,comm",
+            ),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        matches = tuple(
+            line.split()[0]
+            for line in process.stdout.splitlines()
+            if "seeon-deep" in line
+        )
+        if process.returncode != 0 or len(matches) != 1:
+            raise CanarySafetyError("native_child_process_count", str(len(matches)))
+        child_pid = int(matches[0])
+        child_memory_mib = 0.0
     return RuntimeGpuSample(
-        child_pid=int(fields[0]),
-        child_memory_mib=float(fields[2]),
+        child_pid=child_pid,
+        child_memory_mib=child_memory_mib,
         global_used_mib=snapshot.gpu_used_mib,
         total_mib=snapshot.gpu_total_mib,
         utilization=snapshot.gpu_utilization,
