@@ -44,6 +44,8 @@ def authorize_rungs(
         raise CanaryAuthorizationError("worker_image_mismatch")
     if artifact.camera_ids != request.camera_ids:
         raise CanaryAuthorizationError("camera_ids_mismatch")
+    if max(request.rungs) != len(request.camera_ids):
+        raise CanaryAuthorizationError("camera_count_mismatch")
     if any(rung not in artifact.authorized_rungs for rung in request.rungs):
         raise CanaryAuthorizationError("rung_not_authorized")
     if 13 in request.rungs:
