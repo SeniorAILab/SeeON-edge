@@ -17,6 +17,7 @@ def _run_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
         check=False,
         capture_output=True,
         text=True,
+        timeout=30,
     )
 
 
@@ -134,6 +135,7 @@ def test_cli_renders_isolated_zero_and_loopback_compose(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         env={**os.environ, "CANARY_RELAY_TOKEN": "test-only-render-token"},
+        timeout=30,
     )
     assert compose_check.returncode == 0, compose_check.stderr
 
@@ -245,6 +247,7 @@ def _verify(kind: str, root: Path) -> subprocess.CompletedProcess[str]:
         check=False,
         capture_output=True,
         text=True,
+        timeout=30,
     )
 
 

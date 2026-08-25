@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shutil
 import subprocess
 import threading
 from dataclasses import dataclass, replace
@@ -74,6 +76,55 @@ def _require_sample(sample: RuntimeGpuSample | None, rung: str) -> RuntimeGpuSam
     if sample is None:
         raise CanarySafetyError("native_child_not_ready", rung)
     return sample
+
+
+def _capture_preview_evidence(
+    request: ExecutionRequest,
+    corpus: Path,
+    camera_id: str,
+) -> None:
+    raw = request.evidence_dir / "raw"
+    event = raw / "event-clip.mp4"
+    derivative = raw / "event-derivative.mp4"
+    shutil.copy2(corpus, event)
+    shutil.copy2(corpus, derivative)
+    event_digest = hashlib.sha256(event.read_bytes()).hexdigest()
+    derivative_digest = hashlib.sha256(derivative.read_bytes()).hexdigest()
+    (raw / "event-evidence.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "event_sha256": event_digest,
+                "derivative_sha256": derivative_digest,
+                "single_render": True,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    try:
+        browser = subprocess.run(
+            (
+                "node",
+                "scripts/qa/deepstream_canary_browser.mjs",
+                camera_id,
+                str(raw),
+                str(derivative),
+            ),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=45,
+            env={**os.environ, "CANARY_RELAY_TOKEN": request.relay_token},
+        )
+    except subprocess.TimeoutExpired as error:
+        raise CanarySafetyError("browser_evidence_timeout", camera_id) from error
+    (raw / "browser-command.log").write_text(
+        browser.stdout + browser.stderr, encoding="utf-8"
+    )
+    _require_success(browser, "browser_evidence_failed", camera_id)
 
 
 def execute_canary(request: ExecutionRequest) -> int:
@@ -164,18 +215,27 @@ def execute_canary(request: ExecutionRequest) -> int:
             final_snapshot = compare_live_snapshot(
                 request.baseline, request.safety_limits
             )
+            camera_ids = (
+                tuple(
+                    f"loop-{index:02d}"
+                    for index in range(1, request.publisher_count + 1)
+                )
+                if selected == "workload"
+                else ()
+            )
+            if camera_ids:
+                _capture_preview_evidence(request, corpus, camera_ids[0])
             final_sample = _require_sample(gpu_sample(final_snapshot), rung)
             with sample_lock:
                 gpu_samples.setdefault(rung, []).append(final_sample)
                 phase_gpu = tuple(gpu_samples[rung])
-            camera_count = 0 if rung == "zero" else request.publisher_count
             _ = collect_recorded_telemetry(
                 CollectionRequest(
                     evidence_dir=request.evidence_dir,
                     rung=rung,
                     mode=request.mode,
                     clean_steady_seconds=duration,
-                    camera_count=camera_count,
+                    camera_ids=camera_ids,
                     gpu_samples=phase_gpu,
                     native_windows=(
                         ()

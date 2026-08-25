@@ -32,7 +32,7 @@ class CollectionRequest(BaseModel):
     rung: str
     mode: CanaryMode
     clean_steady_seconds: int
-    camera_count: int
+    camera_ids: tuple[str, ...]
     gpu_samples: tuple[RuntimeGpuSample, ...] = Field(min_length=1)
     native_windows: tuple[NativeWindowSample, ...]
 
@@ -89,6 +89,11 @@ def collect_recorded_telemetry(request: CollectionRequest) -> Path:
     by_camera: dict[str, list[NativeWindowSample]] = {}
     for window in request.native_windows:
         by_camera.setdefault(window.camera_id, []).append(window)
+    if set(by_camera) != set(request.camera_ids):
+        raise ValueError(
+            f"native camera identities mismatch: expected={request.camera_ids!r} "
+            f"actual={tuple(sorted(by_camera))!r}"
+        )
     timeline = _timeline(request.evidence_dir / "raw", request.rung)
     parity = {entry.kind for entry in timeline} >= {"event", "evidence", "derivative"}
     preview_ok = any(entry.kind == "preview" and entry.playable for entry in timeline)
@@ -123,7 +128,7 @@ def collect_recorded_telemetry(request: CollectionRequest) -> Path:
         schema_version=1,
         rung=request.rung,
         mode=request.mode,
-        camera_count=request.camera_count,
+        camera_count=len(request.camera_ids),
         clean_steady_seconds=request.clean_steady_seconds,
         cameras=cameras,
         gpu=RecordedGpuTelemetry(
@@ -140,7 +145,7 @@ def collect_recorded_telemetry(request: CollectionRequest) -> Path:
             new_xids=(),
         ),
         nvdec=NvdecSignals(
-            hardware_branches=request.camera_count,
+            hardware_branches=len(request.camera_ids),
             software_fallbacks=0,
         ),
         timeline=timeline,
@@ -159,7 +164,7 @@ def collect_recorded_telemetry(request: CollectionRequest) -> Path:
             height=720,
             fps=15.0,
             gop=30,
-            camera_phase_offsets_ms=tuple(index * 67 for index in range(request.camera_count)),
+            camera_phase_offsets_ms=tuple(index * 67 for index in range(len(request.camera_ids))),
         ),
     )
     destination = request.evidence_dir / "raw" / f"telemetry-{request.rung}.json"

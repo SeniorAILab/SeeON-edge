@@ -78,6 +78,12 @@ class NativePolicyPump:
             except TimeoutError:
                 continue
             token = AcceptanceToken(self._binding, frame.native_publish_sequence)
+            if self._canary_telemetry is not None:
+                self._canary_telemetry.record(
+                    frame.frame.identity.source_pts or 0,
+                    frame.source_time_ns,
+                    frame.native_publish_sequence,
+                )
             try:
                 self._process(frame)
             except (ChildControlError, OSError, ValueError, RuntimeError):
@@ -163,12 +169,6 @@ class NativePolicyPump:
                 snapshot = None
             self._sink.emit_for_frame(self._attacher.attach_native(event, snapshot), trigger)
         self._diagnostics.record_detection_completed(self.camera_id)
-        if self._canary_telemetry is not None:
-            self._canary_telemetry.record(
-                frame.identity.source_pts or 0,
-                metadata.source_time_ns,
-                metadata.native_publish_sequence,
-            )
         now = time.monotonic()
         self._fps.append(now)
         while self._fps and now - self._fps[0] > _FPS_WINDOW_SEC:

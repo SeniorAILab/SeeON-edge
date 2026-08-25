@@ -56,5 +56,6 @@ def test_zero_and_loopback_canary_when_real_qa_is_authorized(tmp_path: Path) -> 
         check=False,
         capture_output=True,
         text=True,
+        timeout=30,
     )
     assert verified.returncode == 0, verified.stderr

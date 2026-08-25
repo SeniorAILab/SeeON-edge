@@ -27,6 +27,7 @@ def test_publishers_wait_for_mediamtx_health_when_compose_is_rendered(tmp_path: 
         check=False,
         capture_output=True,
         text=True,
+        timeout=30,
     )
 
     # Then: publisher startup cannot race the digest-pinned RTSP server.
@@ -64,6 +65,7 @@ def test_render_copies_prepared_content_addressed_engine_cache(tmp_path: Path) -
         check=False,
         capture_output=True,
         text=True,
+        timeout=30,
     )
 
     # Then: a read-only source is mounted only into the explicit prepare service.
@@ -96,6 +98,7 @@ def test_engine_prepare_is_profiled_before_steady_capacity_gate(tmp_path: Path) 
         check=False,
         capture_output=True,
         text=True,
+        timeout=30,
     )
 
     # When: preparation and steady-state declarations are inspected.
@@ -154,6 +157,7 @@ def test_runner_emits_verifiable_rung_receipt_from_recorded_telemetry(tmp_path: 
         check=False,
         capture_output=True,
         text=True,
+        timeout=30,
     )
     assert verified.returncode == 0, verified.stderr
     assert '"verdict":"PASS"' in verified.stdout
