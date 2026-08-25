@@ -12,6 +12,9 @@ Constructor argument. Vendor kits live here: OpenCV, PyAV, ffmpeg.
 - `nvdec_cuvid/`: fail-loud NVDEC/CUVID. FFprobe, `*_cuvid` codec, bounded stdout queue, child reap.
 - `pyav_*.py`: packet-preserving demux and NVDEC tee. Remux path only.
 - `nvdec_device/`: device-resident pool. Only the unified `nvidia` profile. Host-only profiles never construct it.
+- `native_au_receiver.py`: bounded child AU stream into the shared
+  `PacketRingRepository`; retires camera generations and escalates stream death.
+- `native_preview_receiver.py`: bounded child JPEG stream into `LatestFrameStore`.
 
 ## Port and backend selection
 
@@ -33,7 +36,7 @@ Runtime profile owns `(device, decode, encode)`. Adapters do not probe onto anot
 
 ## Packet preservation and epochs
 
-Primary clips remux source packets. Decoded frames are analysis and snapshot taps. `PyAvPacketDemuxer` publishes byte-identical compressed packets to `SourcePacketSink`. Exactly one video stream. A full ring increments `packet_drop_count`. Never echo a credentialed URL.
+Primary clips remux source packets. Decoded frames are analysis and snapshot taps. `PyAvPacketDemuxer` publishes byte-identical compressed packets to `SourcePacketSink`. Exactly one video stream. A full ring increments `packet_drop_count`. Never echo a credentialed URL. Under `nvidia`, `NativeAuReceiver` feeds the same packet repository from the child's pre-decode AU tee and `NativePreviewReceiver` feeds the live-view store; no per-camera FFmpeg runs on that path.
 
 NVDEC preservation requires `EpochRollingSourcePacketSink` and opens `NvdecPacketTeeSession`: demux in-process, all video decode in one ffmpeg child on stdin. `DecoderInputQueue` is capacity 32. Overflow discards backlog and resumes at a keyframe.
 

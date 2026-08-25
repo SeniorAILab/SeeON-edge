@@ -28,6 +28,10 @@ is forbidden. Relay HTTP only.
 - `faults/`: one first-fault record, stop every loop, `os._exit(4)`.
 - `lease.py`: advisory flock at `~/.local/state/ml-worker/.gpu.lease`. Acquire before CUDA, NVDEC, or model construction. No env override.
 - `watchdog.py`: hung forward drives the same `FaultHandler` path.
+- `deepstream/`: `nvidia`-only native media plane. `worker.py` verifies the
+  content-addressed plan cache, starts one `NvidiaMediaPlane`, and drives the
+  existing policy/evidence plane through image-free `NativePolicyPump`s. The
+  child owns GPU 0; the parent has no in-process serving or Python tracker.
 
 ## Failures, allocation, CLI, tests
 
@@ -44,9 +48,10 @@ failures reprobe, and payload-invalid failures become permanent. Two workers
 must not share one outbox. NVENC may demote to `libx264` during preflight and once per camera
 after session-open failure, logged. VAAPI may demote to `opencv` at boot.
 NVDEC and OpenCV decode stay fail-fast. Mid-run device loss writes one first-fault
-record, stops every camera, hard-exits 4. CUDA context is never recreated
-in-process. Worker never queries Xid state. Zero configured cameras is a
-valid boot.
+record, stops every camera, hard-exits 4. Under `nvidia`, native fatal exit also
+persists one first-fault record and hard-exits 4; the CUDA context exists only
+in the child and is never recreated in-process. Worker never queries Xid state.
+Zero configured cameras is a valid boot.
 
 Shared once: models, extractors, serving client, coordinator, profile/device,
 GPU lease, config/LKG, evidence outbox, clip-store lock, audit overlay,

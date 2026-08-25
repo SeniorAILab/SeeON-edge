@@ -33,8 +33,10 @@ legacy identity: `ml-api` (`Dockerfile.backend`, `ML_API_`/`API_*`) and
 prefixes. `front` is built into the backend image and served at `/`.
 
 GPU serving is in-process behind `worker/interfaces/serving.py`
-(`worker/adapters/model/in_process.py`). Required GPU/NVDEC infra fails fast
-(ADR-0002). The worker is an RTSP client only.
+(`worker/adapters/model/in_process.py`) except under `nvidia`, where the native
+DeepStream child owns media/inference and the Python parent owns supervision
+(`worker/native/deepstream/`, `worker/runtime/deepstream/`). Required GPU/NVDEC
+infra fails fast (ADR-0002). The worker is an RTSP client only.
 
 ## Code Map
 
@@ -48,6 +50,9 @@ GPU serving is in-process behind `worker/interfaces/serving.py`
 | Dashboard | `front/src/app/App.tsx` | `AuthGate` + `Dashboard`. Pages: events, operations, settings. |
 | Event wire | `shared/events/` | Schemas, outbox, `edge_ingest_client.py` (facts + heartbeats to the Event API). |
 | SQLite foundation | `backend/app/edge_db/` | Schema, migrator, and ownership. The backend writes every application table family; the migrator alone writes `schema_*`. |
+| Native media child | `worker/native/deepstream/` | C++ RTSP/NVDEC/TensorRT/association plus the Python contract for `nvidia`; boot verifies engines and never builds them. |
+| Child supervision | `worker/runtime/deepstream/` | Python PID-1 supervisor, inherited IPC, restart-based source lifecycle, and CPU-only policy pump. |
+| Canary harness | `worker/tools/deepstream_canary/` | Host-side isolated qualification tool; excluded from the production worker image and path. |
 
 Per-frame path after the coordinator: `worker/pipeline/camera_pipeline.py` and
 `worker/pipeline/perception/` into `worker/domains/` (fall, bed-exit). Read the

@@ -15,12 +15,16 @@ Run `uv run --group lint lint-imports`; a forbidden import means the design is w
 | `adapters/` | decode, model, encode | `types`, `interfaces` |
 | `pipeline/` | ingest, bus, perception, decision, output | everything except `runtime` |
 | `domains/` | fall and bed-exit | `types`, `interfaces`, `pipeline.perception` |
+| `native/deepstream/` | native child + Python wire/preflight seam | `types` |
 | `runtime/` | composition root | everything |
+| `tools/deepstream_canary/` | host-side operator qualification tool | out of the production import graph |
 
 Order: `runtime -> pipeline -> domains -> adapters -> interfaces -> types -> contracts`.
 `contracts` contains cross-instance L0 data only. Worker-internal ports and envelopes live under `worker/`; never duplicate or shadow a vendored type, including `contracts/AGENTS.md`.
 Shared leaves are scope-owned: `detection_policies`, `events`, and
-`rtsp_url_policy`. Worker never imports `backend` or database modules.
+`rtsp_url_policy`. Worker never imports `backend` or database modules. The
+`nvidia` production path consumes `native/deepstream/` from `runtime/`;
+`tools/deepstream_canary/` remains out-of-band and is excluded from the image.
 
 ## Data and lifetime boundaries
 
@@ -50,8 +54,11 @@ Read the nearest `AGENTS.md` before changing that package.
 | `pipeline/output/` | EventSink, evidence, overlay, MJPEG |
 | `domains/fall/` | window classifier, rising-edge latch |
 | `domains/bed_exit/` | assignment, grace/hold |
+| `native/deepstream/` | native media/inference, `PerceptionFrameV1` wire, preflight, engine cache, association |
 | `runtime/worker.py` | composition root |
+| `runtime/deepstream/` | `NvidiaMediaPlane`, child supervision, source lifecycle, native policy pump |
 | `runtime/bootstrap.py` | named stages |
+| `tools/deepstream_canary/` | isolated canary harness, off the production worker path |
 | `runtime/profile/` | `ML_WORKER_PROFILE` -> `(device, decode, encode)` |
 
 New seam: Protocol plus two implementations, or one plus a test double.

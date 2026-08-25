@@ -8,11 +8,17 @@ Durable clip, snapshot, and relay-outbox path after admission. Pixels stop here 
 
 `bus.evidence` is FIFO, default 128. A full subscription rejects the incoming packet and releases it. `ClipFrameFeeder` is the only drain: take, `ClipRecorder.on_frame`, then `packet.release()`. Admission retains before enqueue. A full recorder queue (also 128) drops the frame or event, releases the retained handle, and increments the drop counter.
 
-`PacketRingRepository` owns one `SourcePacketRing` per camera under a process-wide byte ceiling. Primary clips remux those source packets. Decoded frames are analysis and snapshot taps only. `select()` holds a `PacketSelection` lease; `close()` must pair it. Epoch roll retires leased packets and drops the rest. Global pressure evicts the oldest unleased packet from the fattest ring. Don't remux across a discontinuity, a closed ring, or a stale stream epoch. Don't close the repository from a routine encoder flush. Rings live until ingest stops.
+`PacketRingRepository` owns one `SourcePacketRing` per camera under a process-wide byte ceiling. Primary clips remux those source packets. Decoded frames are analysis and snapshot taps only. Under `nvidia`, `NativeAuReceiver` feeds this repository from the native pre-decode encoded-AU tee; no decode, OSD, or encoder enters the primary path. `select()` holds a `PacketSelection` lease; `close()` must pair it. Epoch roll retires leased packets and drops the rest. Global pressure evicts the oldest unleased packet from the fattest ring. Don't remux across a discontinuity, a closed ring, or a stale stream epoch. Don't close the repository from a routine encoder flush. Rings live until ingest stops.
 
 ## Clip recording
 
 Shared `ClipRecorder`, one actor thread, camera-local rings. `ClipAdmission` allocates a collision-free `ClipId` and a `.staging` dir. `PacketClipRecordingCoordinator` window-selects around the trigger PTS, stream-copies to `clip.mp4`, then the publisher atomically replaces into `clips/<clip_id>/`. Unavailable is a published outcome, not a silent skip. Thumbnail miss logs and still publishes. `ClipStoreLock` takes a non-blocking flock on `.worker.lock` for the recorder lifetime.
+
+Under `nvidia`, `NativePolicyPump` attaches events through
+`AlertEvidenceAttacher.attach_native` and emits a `NativeEvidenceTrigger`
+(camera, boot, stream epoch, source generation, sequence, source PTS, source
+time). Annotated clips remain single-render event-only derivatives; a second
+render is a gate failure.
 
 ## Durable staging and outbox
 
