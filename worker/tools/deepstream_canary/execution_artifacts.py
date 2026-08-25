@@ -59,6 +59,8 @@ def generate_corpus(root: Path) -> Path:
             "yuv420p",
             "-g",
             "30",
+            "-bf",
+            "0",
             "-keyint_min",
             "30",
             "-sc_threshold",
