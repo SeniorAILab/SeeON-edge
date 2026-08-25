@@ -5,16 +5,16 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const [cameraId, outputDir, clipPath] = process.argv.slice(2);
+const [cameraId, outputDir, clipPath, viewerUrl] = process.argv.slice(2);
 const token = process.env.CANARY_RELAY_TOKEN;
-if (!cameraId || !outputDir || !clipPath || !token) {
-  console.error("usage: CANARY_RELAY_TOKEN=<token> node deepstream_canary_browser.mjs <camera-id> <output-dir> <clip>");
+if (!cameraId || !outputDir || !clipPath || !viewerUrl || !token) {
+  console.error("usage: CANARY_RELAY_TOKEN=<token> node deepstream_canary_browser.mjs <camera-id> <output-dir> <clip> <viewer-url>");
   process.exit(2);
 }
 
 const screenshot = resolve(outputDir, `viewer-${cameraId}.png`);
 const chromium = process.env.CHROMIUM ?? "chromium";
-const viewer = `http://127.0.0.1:18090/mjpeg/${encodeURIComponent(cameraId)}`;
+const viewer = viewerUrl;
 const consumer = spawn(
   "curl",
   ["--silent", "--show-error", "--max-time", "30", "--header", `X-Edge-Relay-Token: ${token}`, viewer],

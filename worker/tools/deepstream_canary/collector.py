@@ -35,6 +35,8 @@ class CollectionRequest(BaseModel):
     camera_ids: tuple[str, ...]
     gpu_samples: tuple[RuntimeGpuSample, ...] = Field(min_length=1)
     native_windows: tuple[NativeWindowSample, ...]
+    allow_partial: bool = False
+    fault_windows: tuple[str, ...] = ()
 
 
 def _sha256(path: Path) -> str:
@@ -89,7 +91,7 @@ def collect_recorded_telemetry(request: CollectionRequest) -> Path:
     by_camera: dict[str, list[NativeWindowSample]] = {}
     for window in request.native_windows:
         by_camera.setdefault(window.camera_id, []).append(window)
-    if set(by_camera) != set(request.camera_ids):
+    if not request.allow_partial and set(by_camera) != set(request.camera_ids):
         raise ValueError(
             f"native camera identities mismatch: expected={request.camera_ids!r} "
             f"actual={tuple(sorted(by_camera))!r}"
@@ -157,7 +159,7 @@ def collect_recorded_telemetry(request: CollectionRequest) -> Path:
             mount_intersections=0,
             kernel_faults=0,
         ),
-        fault_windows=(),
+        fault_windows=request.fault_windows,
         workload=WorkloadFacts(
             codec="h264",
             width=1280,

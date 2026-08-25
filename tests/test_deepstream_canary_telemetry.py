@@ -37,6 +37,39 @@ def test_native_telemetry_seals_non_overlapping_window_when_boundary_arrives(
     assert record["timestamp_discontinuities"] == 0
 
 
+def test_collector_flushes_partial_camera_registry_on_abort(tmp_path: Path) -> None:
+    # Given: source telemetry is absent but the expected camera registry is known.
+    (tmp_path / "raw").mkdir()
+    gpu = RuntimeGpuSample(
+        child_pid=1,
+        child_memory_mib=1.0,
+        global_used_mib=1.0,
+        total_mib=10.0,
+        utilization=1.0,
+    )
+
+    # When: the first-fault path seals the rung before teardown.
+    receipt = collect_recorded_telemetry(
+        CollectionRequest(
+            evidence_dir=tmp_path,
+            rung="loopback",
+            mode=CanaryMode.SHARED_HOST_SMOKE,
+            clean_steady_seconds=900,
+            camera_ids=("loop-01",),
+            gpu_samples=(gpu,),
+            native_windows=(),
+            allow_partial=True,
+            fault_windows=("native_source_ready_timeout",),
+        )
+    )
+
+    # Then: declared identity and fault survive even though camera samples are empty.
+    recorded = json.loads(receipt.read_text())
+    assert recorded["camera_count"] == 1
+    assert recorded["cameras"] == []
+    assert recorded["fault_windows"] == ["native_source_ready_timeout"]
+
+
 def test_collector_rejects_missing_expected_camera_identity(tmp_path: Path) -> None:
     # Given: a workload declares loop-01 but native telemetry belongs to no such camera.
     window = NativeWindowSample(

@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -78,10 +79,108 @@ def _require_sample(sample: RuntimeGpuSample | None, rung: str) -> RuntimeGpuSam
     return sample
 
 
+def _require_corpus(corpus: Path | None) -> Path:
+    if corpus is None:
+        raise CanarySafetyError("corpus_missing", "execution")
+    return corpus
+
+
+def _wait_for_source_ready(path: Path, camera_id: str) -> None:
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        if path.is_file() and path.stat().st_size > 0:
+            return
+        threading.Event().wait(0.25)
+    raise CanarySafetyError("native_source_ready_timeout", camera_id)
+
+
+def _preview_url(request: ExecutionRequest, camera_id: str) -> str:
+    inspect = subprocess.run(
+        (
+            "docker",
+            "inspect",
+            "seeon-ds-canary-ml-worker-1",
+            "--format",
+            "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+        ),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    _require_success(inspect, "preview_container_ip_missing", camera_id)
+    address = inspect.stdout.strip()
+    if not address:
+        raise CanarySafetyError("preview_container_ip_missing", camera_id)
+    return f"http://{address}:8090/stream/{camera_id}"
+
+
+def _probe_preview_paths(request: ExecutionRequest, camera_id: str) -> str:
+    internal = subprocess.run(
+        (
+            "docker",
+            "exec",
+            "seeon-ds-canary-relay-stub-1",
+            "python",
+            "-c",
+            (
+                "import urllib.request;"
+                "q=urllib.request.Request("
+                f"'http://ml-worker:8090/stream/{camera_id}',"
+                f"headers={{'X-Edge-Relay-Token':'{request.relay_token}'}});"
+                "r=urllib.request.urlopen(q,timeout=5);"
+                "print(r.status,len(r.read(1024)))"
+            ),
+        ),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    host = subprocess.run(
+        (
+            "curl",
+            "--silent",
+            "--show-error",
+            "--max-time",
+            "3",
+            "--header",
+            f"X-Edge-Relay-Token: {request.relay_token}",
+            "--output",
+            "/dev/null",
+            f"http://127.0.0.1:18090/stream/{camera_id}",
+        ),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    (request.evidence_dir / "raw" / "preview-probes.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "camera_id": camera_id,
+                "host_exit": host.returncode,
+                "host_stderr": host.stderr[-200:],
+                "internal_exit": internal.returncode,
+                "internal_stdout": internal.stdout[-200:],
+                "internal_stderr": internal.stderr[-200:],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _require_success(internal, "internal_preview_probe_failed", camera_id)
+    return _preview_url(request, camera_id)
+
+
 def _capture_preview_evidence(
     request: ExecutionRequest,
     corpus: Path,
     camera_id: str,
+    viewer_url: str,
 ) -> None:
     raw = request.evidence_dir / "raw"
     event = raw / "event-clip.mp4"
@@ -112,6 +211,7 @@ def _capture_preview_evidence(
                 camera_id,
                 str(raw),
                 str(derivative),
+                viewer_url,
             ),
             check=False,
             capture_output=True,
@@ -137,12 +237,72 @@ def execute_canary(request: ExecutionRequest) -> int:
     gpu_samples: dict[str, list[RuntimeGpuSample]] = {}
     sample_lock = threading.Lock()
     watchdog_fault: list[CanarySafetyError] = []
+    native_path = request.evidence_dir / "raw" / "native-telemetry.jsonl"
+    native_path.touch(mode=0o666, exist_ok=False)
+    native_path.chmod(0o666)
+    corpus: Path | None = None
+
+    def flush_partial(error: CanarySafetyError) -> None:
+        for rung, duration in request.rung_durations:
+            telemetry_path = request.evidence_dir / "raw" / f"telemetry-{rung}.json"
+            with sample_lock:
+                phase_gpu = tuple(gpu_samples.get(rung, ()))
+            if telemetry_path.is_file() or not phase_gpu:
+                continue
+            camera_ids = (
+                tuple(
+                    f"loop-{index:02d}"
+                    for index in range(1, request.publisher_count + 1)
+                )
+                if rung != "zero"
+                else ()
+            )
+            _ = collect_recorded_telemetry(
+                CollectionRequest(
+                    evidence_dir=request.evidence_dir,
+                    rung=rung,
+                    mode=request.mode,
+                    clean_steady_seconds=duration,
+                    camera_ids=camera_ids,
+                    gpu_samples=phase_gpu,
+                    native_windows=native_windows(native_path),
+                    allow_partial=True,
+                    fault_windows=(error.code,),
+                )
+            )
+        available = tuple(
+            rung
+            for rung, _duration in request.rung_durations
+            if (request.evidence_dir / "raw" / f"telemetry-{rung}.json").is_file()
+        )
+        if corpus is not None and available:
+            _ = emit_receipts(
+                ReceiptEmissionRequest(
+                    evidence_dir=request.evidence_dir,
+                    rungs=available,
+                    artifacts=request.artifacts,
+                ),
+                corpus,
+            )
+        (request.evidence_dir / "raw" / "partial-execution.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "status": "aborted",
+                    "first_fault": error.code,
+                    "receipts": list(available),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
     def abort(error: CanarySafetyError) -> None:
         watchdog_fault.append(error)
         stop.set()
         persist_first_fault(fault_path, error)
-        _ = _compose(request, "down", "--remove-orphans")
 
     def watchdog() -> None:
         while not stop.wait(10.0):
@@ -193,6 +353,23 @@ def execute_canary(request: ExecutionRequest) -> int:
             (request.evidence_dir / "raw" / "active-config").write_text(
                 f"{selected}\n", encoding="utf-8"
             )
+            camera_ids = (
+                tuple(
+                    f"loop-{index:02d}"
+                    for index in range(1, request.publisher_count + 1)
+                )
+                if selected == "workload"
+                else ()
+            )
+            (request.evidence_dir / "raw" / f"camera-registry-{rung}.json").write_text(
+                json.dumps(
+                    {"schema_version": 1, "rung": rung, "camera_ids": camera_ids},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             if selected == "workload":
                 publishers = tuple(
                     f"publisher-{index:02d}"
@@ -215,16 +392,12 @@ def execute_canary(request: ExecutionRequest) -> int:
             final_snapshot = compare_live_snapshot(
                 request.baseline, request.safety_limits
             )
-            camera_ids = (
-                tuple(
-                    f"loop-{index:02d}"
-                    for index in range(1, request.publisher_count + 1)
-                )
-                if selected == "workload"
-                else ()
-            )
             if camera_ids:
-                _capture_preview_evidence(request, corpus, camera_ids[0])
+                _wait_for_source_ready(native_path, camera_ids[0])
+                viewer_url = _probe_preview_paths(request, camera_ids[0])
+                _capture_preview_evidence(
+                    request, _require_corpus(corpus), camera_ids[0], viewer_url
+                )
             final_sample = _require_sample(gpu_sample(final_snapshot), rung)
             with sample_lock:
                 gpu_samples.setdefault(rung, []).append(final_sample)
@@ -260,7 +433,7 @@ def execute_canary(request: ExecutionRequest) -> int:
                 rungs=request.rungs,
                 artifacts=request.artifacts,
             ),
-            corpus,
+            _require_corpus(corpus),
         )
         logs = _compose(request, "logs", "--no-color")
         (request.evidence_dir / "compose.log").write_text(
@@ -276,6 +449,18 @@ def execute_canary(request: ExecutionRequest) -> int:
             encoding="utf-8",
         )
     except CanarySafetyError as error:
+        try:
+            flush_partial(error)
+        except (OSError, ValueError) as flush_error:
+            (request.evidence_dir / "raw" / "receipt-flush-error.json").write_text(
+                json.dumps(
+                    {"schema_version": 1, "detail": str(flush_error)},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
+            )
         logs = _compose(request, "logs", "--no-color")
         _ = (request.evidence_dir / "compose-failure.log").write_text(
             logs.stdout + logs.stderr, encoding="utf-8"

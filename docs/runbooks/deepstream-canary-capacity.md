@@ -56,7 +56,7 @@ Exercise preview and one event derivative while loaded:
 
 ```sh
 CANARY_RELAY_TOKEN='<run token from the protected run environment>' \
-  node scripts/qa/deepstream_canary_browser.mjs loop-01 <run>/raw <event-clip>
+  node scripts/qa/deepstream_canary_browser.mjs loop-01 <run>/raw <event-clip> <internal-viewer-url>
 ```
 
 Do not put the token in a tracked file or command transcript. The derivative
