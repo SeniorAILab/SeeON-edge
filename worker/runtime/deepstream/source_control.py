@@ -6,12 +6,14 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol, final, override
+from typing import Final, Protocol, final, override
 
 from worker.native.deepstream.control import ChildControlError
 from worker.native.deepstream.ipc import MetadataFrame
 from worker.native.deepstream.metadata import AcceptanceToken, SourceBinding
 from worker.types import ChannelState
+
+_SOURCE_READY_TIMEOUT_SEC: Final = 10.0
 
 
 class SourceState(StrEnum):
@@ -98,7 +100,10 @@ class DarkSourceController:
         token = self._slot.register_source(binding)
         _ = self._receiver.pull_now(binding.camera_id)
         try:
-            metadata = self._slot.wait_accepted(token, timeout_sec=2.0)
+            metadata = self._slot.wait_accepted(
+                token,
+                timeout_sec=_SOURCE_READY_TIMEOUT_SEC,
+            )
         except TimeoutError as error:
             raise SourceReadinessError("source_ready_timeout", binding.camera_id) from error
         frame = metadata.frame
