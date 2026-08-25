@@ -103,11 +103,14 @@ def render_compose(request: RenderRequest) -> tuple[Path, str]:
     if paths["CANARY_MODEL_DIR"].exists():
         raise FileExistsError(paths["CANARY_MODEL_DIR"])
     shutil.copytree(request.model_dir.resolve(), paths["CANARY_MODEL_DIR"])
-    paths["CANARY_CONFIG_PATH"].mkdir(mode=0o700)
+    paths["CANARY_CONFIG_PATH"].mkdir(mode=0o755)
     zero_config = paths["CANARY_CONFIG_PATH"] / "worker-zero.json"
     workload_config = paths["CANARY_CONFIG_PATH"] / "worker-workload.json"
     zero_config.write_bytes(_worker_config(0))
     workload_config.write_bytes(_worker_config(request.camera_count))
+    _ = zero_config.chmod(0o444)
+    _ = workload_config.chmod(0o444)
+    _ = paths["CANARY_RECEIPT_DIR"].chmod(0o777)
     (paths["CANARY_RECEIPT_DIR"] / "active-config").write_text(
         "zero\n", encoding="utf-8"
     )

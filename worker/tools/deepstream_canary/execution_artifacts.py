@@ -78,7 +78,7 @@ def generate_corpus(root: Path) -> Path:
     return corpus
 
 
-def gpu_sample(snapshot: LiveSnapshot) -> RuntimeGpuSample:
+def gpu_sample(snapshot: LiveSnapshot) -> RuntimeGpuSample | None:
     child = tuple(
         line for line in snapshot.gpu_processes if "seeon-deep" in line
     )
@@ -108,7 +108,11 @@ def gpu_sample(snapshot: LiveSnapshot) -> RuntimeGpuSample:
             for line in process.stdout.splitlines()
             if "seeon-deep" in line
         )
-        if process.returncode != 0 or len(matches) != 1:
+        if process.returncode != 0:
+            return None
+        if not matches:
+            return None
+        if len(matches) != 1:
             raise CanarySafetyError("native_child_process_count", str(len(matches)))
         child_pid = int(matches[0])
         child_memory_mib = 0.0

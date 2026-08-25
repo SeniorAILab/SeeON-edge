@@ -70,6 +70,12 @@ def _require_success(
         raise CanarySafetyError(code, detail)
 
 
+def _require_sample(sample: RuntimeGpuSample | None, rung: str) -> RuntimeGpuSample:
+    if sample is None:
+        raise CanarySafetyError("native_child_not_ready", rung)
+    return sample
+
+
 def execute_canary(request: ExecutionRequest) -> int:
     """Execute only the isolated project; any first fault tears down only it."""
     fault_path = request.evidence_dir / "first-fault.json"
@@ -108,10 +114,10 @@ def execute_canary(request: ExecutionRequest) -> int:
                     ),
                 )
                 if capacity_armed.is_set() and stack_started.is_set():
-                    with sample_lock:
-                        gpu_samples.setdefault(active_rung[0], []).append(
-                            gpu_sample(snapshot)
-                        )
+                    sample = gpu_sample(snapshot)
+                    if sample is not None:
+                        with sample_lock:
+                            gpu_samples.setdefault(active_rung[0], []).append(sample)
             except CanarySafetyError as error:
                 abort(error)
                 return
@@ -158,8 +164,9 @@ def execute_canary(request: ExecutionRequest) -> int:
             final_snapshot = compare_live_snapshot(
                 request.baseline, request.safety_limits
             )
+            final_sample = _require_sample(gpu_sample(final_snapshot), rung)
             with sample_lock:
-                gpu_samples.setdefault(rung, []).append(gpu_sample(final_snapshot))
+                gpu_samples.setdefault(rung, []).append(final_sample)
                 phase_gpu = tuple(gpu_samples[rung])
             camera_count = 0 if rung == "zero" else request.publisher_count
             _ = collect_recorded_telemetry(
