@@ -92,6 +92,7 @@ class RemuxStreamFact:
     input_framing: str = "container"
     output_framing: str = "container"
     normalizer_version: str = "none"
+    parser_caps_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

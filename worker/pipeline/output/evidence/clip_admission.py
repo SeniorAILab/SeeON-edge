@@ -35,6 +35,7 @@ class _ReservationWindow:
     reservation: ClipReservation
     worker_boot_id: str
     stream_epoch: int
+    source_generation: int
     start_time_sec: float
     end_time_sec: float
 
@@ -102,6 +103,7 @@ class ClipAdmission:
                     for candidate in windows
                     if candidate.worker_boot_id == trigger_packet.worker_boot_id
                     and candidate.stream_epoch == trigger_packet.stream_epoch
+                    and candidate.source_generation == trigger_packet.source_generation
                     and start_time <= candidate.end_time_sec
                     and end_time >= candidate.start_time_sec
                 ),
@@ -122,6 +124,7 @@ class ClipAdmission:
                     reservation,
                     trigger_packet.worker_boot_id,
                     trigger_packet.stream_epoch,
+                    trigger_packet.source_generation,
                     start_time,
                     end_time,
                 )

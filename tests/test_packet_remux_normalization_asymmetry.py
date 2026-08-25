@@ -87,6 +87,13 @@ def _source_and_muxed(*, translation: int = -10):
     return packets, muxed
 
 
+def test_annexb_normalizer_rejects_unbounded_start_code_count() -> None:
+    payload = b"\0\0\1e" * 4_097
+
+    with pytest.raises(ValueError, match="NAL unit count"):
+        packet_remuxer._annexb_to_length_prefixed(payload, 4)  # noqa: SLF001
+
+
 def test_normalized_stream_rejects_unexplained_payload_rewrite() -> None:
     """Container normalization is not an exemption from AU byte verification."""
     packets, muxed = _source_and_muxed()

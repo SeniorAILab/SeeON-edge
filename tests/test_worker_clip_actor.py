@@ -34,6 +34,7 @@ from worker.pipeline.output.evidence.evidence_outbox_types import (
     EvidenceReasonCode,
 )
 from worker.types import BusinessEvent, FrameKey, FramePacket
+from worker.types.source_packet import StreamEpoch
 
 RUNTIME_MANIFEST_SHA256 = "b" * 64
 
@@ -257,6 +258,21 @@ def test_actor_passes_the_trigger_frame_key_to_clip_finalization(tmp_path: Path)
     assert coordinator.trigger_frame_keys == [message.trigger_packet.frame_key]
 
 
+def test_epoch_roll_immediately_seals_active_window_unavailable(tmp_path: Path) -> None:
+    reservation = _reservation(tmp_path)
+    actor, stats, _, publisher, _ = _actor(
+        tmp_path,
+        ClipUnavailable("unused", ClipReasonCode.NO_SEGMENTS),
+    )
+    actor.handle_event(_event_message(reservation, "event-1"))
+
+    actor.handle_epoch_roll(StreamEpoch("boot-1", "cam-1", 3, 0))
+
+    assert stats.active_clips == 0
+    assert publisher.unavailable[0][2] is EvidenceReasonCode.STREAM_EPOCH_MISMATCH
+    assert publisher.unavailable[0][1].source_error_reason == "STREAM_EPOCH_ROLLED"
+
+
 def test_actor_carries_admitted_event_runtime_manifest_into_publication_metadata(
     tmp_path: Path,
 ) -> None:
@@ -305,6 +321,7 @@ def test_ready_artifact_origin_is_published_as_clip_time_origin(tmp_path: Path) 
                 height=90,
                 packet_count=25,
                 timestamp_translation_ticks=-10,
+                parser_caps_sha256="c" * 64,
             ),
         ),
         remux_method="pyav-packet-stream-copy",
@@ -334,6 +351,7 @@ def test_ready_artifact_origin_is_published_as_clip_time_origin(tmp_path: Path) 
     assert isinstance(streams[0], dict)
     assert streams[0]["packet_count"] == 25
     assert streams[0]["timestamp_translation_ticks"] == -10
+    assert streams[0]["parser_caps_sha256"] == "c" * 64
     assert metadata.source_media["selected_start_pts_sec"] == 9.0
 
 

@@ -27,6 +27,7 @@ class RemuxStreamFacts(BaseModel):
     input_framing: str | None = None
     output_framing: str | None = None
     normalizer_version: str | None = None
+    parser_caps_sha256: str | None = None
 
     @model_validator(mode="after")
     def _typed_values(self) -> Self:
@@ -35,6 +36,8 @@ class RemuxStreamFacts(BaseModel):
         _ = _fraction(self.time_base)
         if self.extradata_sha256 is not None:
             _sha256(self.extradata_sha256, "extradata_sha256")
+        if self.parser_caps_sha256 is not None:
+            _sha256(self.parser_caps_sha256, "parser_caps_sha256")
         for value in (self.width, self.height, self.sample_rate, self.channels):
             if value is not None and value <= 0:
                 raise PydanticCustomError("remux_stream", "remux stream dimensions are invalid")
@@ -52,7 +55,7 @@ class AuIndexFacts(BaseModel):
 
     @model_validator(mode="after")
     def _valid(self) -> Self:
-        if not self.path or self.size_bytes < 0 or self.count < 0:
+        if self.path != "au-index.cbor" or self.size_bytes < 0 or self.count < 0:
             raise PydanticCustomError("au_index", "AU index facts are invalid")
         _sha256(self.sha256, "au_index.sha256")
         return self
