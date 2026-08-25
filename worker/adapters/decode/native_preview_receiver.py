@@ -6,17 +6,22 @@ import socket
 import struct
 import threading
 from contextlib import suppress
-from typing import Final, final
-
-from worker.pipeline.output.live_view import LatestFrameStore
+from typing import Final, Protocol, final
 
 _HEADER: Final = struct.Struct("<4sIQQHI")
 _MAX_PREVIEW_BYTES: Final = 2 * 1024 * 1024
 
 
+class NativePreviewSink(Protocol):
+    def register_camera(self, camera_id: str) -> None: ...
+    def publish_jpeg(
+        self, camera_id: str, jpeg: bytes, *, frame_index: int, seq: int | None = None
+    ) -> None: ...
+
+
 @final
 class NativePreviewReceiver:
-    def __init__(self, endpoint: socket.socket, store: LatestFrameStore) -> None:
+    def __init__(self, endpoint: socket.socket, store: NativePreviewSink) -> None:
         self._endpoint = endpoint
         self._store = store
         self._stop = threading.Event()
@@ -68,4 +73,4 @@ def _recv_exact(endpoint: socket.socket, size: int) -> bytes:
     return bytes(chunks)
 
 
-__all__ = ["NativePreviewReceiver"]
+__all__ = ["NativePreviewReceiver", "NativePreviewSink"]
