@@ -181,8 +181,13 @@ class DeepStreamChildSupervisor:
 
     def _fail_deadly(self, category: str) -> None:
         process = self._process
-        if category == "au_stream_closed" and process is not None and process.poll() is not None:
-            category = "child_exit"
+        if category == "au_stream_closed" and process is not None:
+            try:
+                _ = process.wait(timeout=0.1)
+            except subprocess.TimeoutExpired:
+                pass
+            else:
+                category = "child_exit"
         self._set_fatal_category(category)
         self._fatal_received.set()
         _ = persist_child_fault(self._config, category)

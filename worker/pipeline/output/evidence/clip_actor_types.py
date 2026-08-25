@@ -46,10 +46,6 @@ class ClipPublicationPort(Protocol):
         self, reservation: ClipReservation, metadata: ClipPublicationMetadata,
         reason_code: EvidenceReasonCode,
     ) -> PublishedClip | None: ...
-    def publish_corrupt(
-        self, reservation: ClipReservation, metadata: ClipPublicationMetadata
-    ) -> PublishedClip | None: ...
-
 
 class ClipCloseHook(Protocol):
     def __call__(self, camera_id: str, clip_id: ClipId, /) -> None: ...
