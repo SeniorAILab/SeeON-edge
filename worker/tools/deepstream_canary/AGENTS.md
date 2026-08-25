@@ -7,7 +7,9 @@ project `seeon-ds-canary`; it does not authorize facility cameras.
 ## Safety boundary
 
 - Published ports bind `127.0.0.1`; the GPU is the only shared physical
-  resource. The canary `GpuLease` is advisory and does not protect a live worker.
+  resource. The nested production worker container uses
+  `worker.runtime.lease.GpuLease` against its isolated canary state directory;
+  that lease does not protect the live worker.
 - Refuse an existing canary project, overlapping live mounts, and a worker image
   without a SHA-256 digest.
 - `commissioning` refuses healthy live runtime cameras. `shared-host-smoke` is
@@ -24,10 +26,10 @@ network/socket/temp state.
 
 ## Gate policy and evidence
 
-Canonical policy is `scripts/qa/deepstream-canary/gate-policy.v1.json`, policy
-ID `c8-c7-ab-20260825-v3`, SHA-256
-`95bb74fd48e242ced4a640399f403321bd45df1d70408e163a284584dcbfefa5`.
-The request records that digest; the verifier recomputes it. Engine preparation
+Canonical policy is `scripts/qa/deepstream-canary/gate-policy.v1.json`.
+Recompute its current identity with
+`sha256sum scripts/qa/deepstream-canary/gate-policy.v1.json`; the request records
+that digest and the verifier recomputes it. Engine preparation
 writes `raw/engine-prepare.json`; telemetry and immutable receipts write
 `raw/telemetry-<rung>.json` and `raw/rung-<rung>.json`.
 

@@ -2,7 +2,8 @@
 
 Python PID-1 composition for the `nvidia` profile. Own one native child, IPC,
 containment, restart-based source lifecycle, and CPU-only temporal policy over
-native metadata. GPU work and business math stay elsewhere.
+native metadata. GPU work stays in the child; Python-owned temporal/domain
+policy remains in this process.
 
 ## Composition
 
@@ -32,18 +33,24 @@ establishes readiness.
 
 ## Policy and evidence
 
-`NativePolicyPump` converts image-free metadata into the existing observation,
-`SceneState`, decision, and event paths. It requires complete geometry and an
-association assignment for every person cue. It creates `NativeEvidenceTrigger`
-and calls `AlertEvidenceAttacher.attach_native`; it does not run a Python
-tracker or model.
+One `NativePolicyPump` is created per activated camera. It converts image-free
+metadata into the existing observation, `SceneState`, decision, and event paths.
+It requires complete geometry and an association assignment for every person
+cue. It creates `NativeEvidenceTrigger` and calls
+`AlertEvidenceAttacher.attach_native`. It executes Python-owned
+`decision.update`, including the configured CPU fall LSTM and temporal policy.
+It never invokes a Python tracker on the `nvidia` runtime path, although
+preflighted `CameraDetectionPlan` objects still contain an unused tracker.
 
 `NativeAuReceiver` feeds the shared `PacketRingRepository` and
-`NativePreviewReceiver` feeds `LatestFrameStore`. Do not add a second outbox,
-per-camera FFmpeg, host-frame IPC, or GPU work to the parent.
+requests a source rebuild on AU discontinuity. `NativePreviewReceiver` feeds
+`LatestFrameStore`; viewer demand and explicit snapshot requests travel through
+the child control channel, and returned JPEGs reuse that store. Do not add a
+second outbox, per-camera FFmpeg, host-frame IPC, or GPU work to the parent.
 
 ## Commands and focused tests
 
-- Production entry: `python -m worker` with `ML_WORKER_PROFILE=nvidia`.
+- Production composition: `python -m worker` with `ML_WORKER_PROFILE=nvidia`.
+- Isolated QA/dark runner: `python -m worker.runtime.deepstream --state-dir <dir>`; it supervises one child outside normal `WorkerRuntime` composition.
 - Focused: `uv run pytest -q tests/test_deepstream_child_supervisor.py tests/test_deepstream_dark_runner.py tests/test_nvidia_native_policy_pump.py tests/test_deepstream_review_regressions.py`.
 - Boundary: `uv run --group lint lint-imports`.

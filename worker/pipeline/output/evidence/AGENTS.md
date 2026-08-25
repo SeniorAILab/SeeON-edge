@@ -14,11 +14,10 @@ Durable clip, snapshot, and relay-outbox path after admission. Pixels stop here 
 
 Shared `ClipRecorder`, one actor thread, camera-local rings. `ClipAdmission` allocates a collision-free `ClipId` and a `.staging` dir. `PacketClipRecordingCoordinator` window-selects around the trigger PTS, stream-copies to `clip.mp4`, then the publisher atomically replaces into `clips/<clip_id>/`. Unavailable is a published outcome, not a silent skip. Thumbnail miss logs and still publishes. `ClipStoreLock` takes a non-blocking flock on `.worker.lock` for the recorder lifetime.
 
-Under `nvidia`, `NativePolicyPump` attaches events through
-`AlertEvidenceAttacher.attach_native` and emits a `NativeEvidenceTrigger`
-(camera, boot, stream epoch, source generation, sequence, source PTS, source
-time). Annotated clips remain single-render event-only derivatives; a second
-render is a gate failure.
+The `nvidia` runtime owns the policy/attach handoff; this package receives its
+`NativeEvidenceTrigger` and binds source identity to the packet-ring selection.
+See `worker/runtime/deepstream/AGENTS.md`. Annotated clips remain single-render,
+event-only derivatives; a second render is a gate failure.
 
 ## Durable staging and outbox
 

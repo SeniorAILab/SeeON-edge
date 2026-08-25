@@ -6,11 +6,15 @@ CPU, MPS, and iGPU profiles do not run them.
 
 ## Ownership
 
-- `src/` owns RTSP/depay/parser, the encoded-AU tee before decode, NVDEC/NVMM,
-  streammux batching, TensorRT inference, tensor parse, inverse geometry,
-  association, and bounded encoded-AU/preview outputs.
-- Python modules own manifest preflight, engine-cache identity, lifecycle
-  control, IPC codecs, metadata admission, and parity checks.
+- `src/` owns per-source RTSP/depay/parser and the encoded-AU tee before decode;
+  the decode branch owns `nvv4l2decoder`/NVMM, custom TensorRT inference, tensor
+  parse, inverse geometry, association, and bounded preview output. Production
+  uses custom `TrtPerception`, not `nvinfer` or `nvtracker`;
+  `nvstreammux batch-size=1` appears only in the preflight warmup.
+- Python modules here own control/IPC codecs, metadata admission, manifest
+  preflight, engine-cache identity, and parity helpers. PID-1 supervision and
+  source lifecycle belong to `worker/runtime/deepstream/`; C++
+  `ChildServer`/`SourceRuntime` execute child commands and source graphs.
 - `PerceptionFrameV1` is the image-free boundary. Its identity is worker boot,
   camera, stream epoch, sequence, and optional source PTS; independent person,
   pose, and bed channels each report `inferred`, `inferred_empty`, or `skipped`.
@@ -47,5 +51,7 @@ boot calls `verify_plan_cache` and never builds an engine.
 - Build/verify cache: `uv run python -m worker.native.deepstream.engine_cache build <manifest>` / `uv run python -m worker.native.deepstream.engine_cache verify <manifest>`.
 - Standalone preflight: `uv run python -m worker.native.deepstream.preflight <manifest>`.
 - Native compile and CTest run in `docker build -f Dockerfile.edge .`.
-- Focused: `uv run pytest -q tests/test_perception_frame_v1.py tests/test_deepstream_full_wire.py tests/test_deepstream_preflight.py tests/test_deepstream_model_parity.py`.
-- Boundary: `uv run --group lint lint-imports`.
+- Focused: `uv run pytest -q tests/test_perception_frame_v1.py tests/test_deepstream_full_wire.py tests/test_deepstream_preflight.py tests/test_deepstream_model_parity.py tests/test_native_association_registry.py`.
+- `uv run --group lint lint-imports` checks configured contracts; the native
+  types-only ceiling is checked by focused dependency tests and manual import
+  path review.
