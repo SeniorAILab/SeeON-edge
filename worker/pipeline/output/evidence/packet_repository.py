@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import final
 
@@ -37,6 +38,7 @@ class PacketRingRepository:
         self._global_max_bytes = global_max_bytes
         self._lock = threading.RLock()
         self._closed = False
+        self._epoch_listeners: list[Callable[[StreamEpoch, StreamEpoch], None]] = []
         self.metrics = PacketRepositoryMetrics()
 
     def register_camera(self, camera_id: str) -> None:
@@ -45,6 +47,18 @@ class PacketRingRepository:
                 raise RuntimeError("cannot register a closed packet repository")
             if camera_id not in self._rings:
                 self._rings[camera_id] = SourcePacketRing(camera_id, self._per_camera_limits)
+
+    def remove_camera(self, camera_id: str) -> None:
+        with self._lock:
+            ring = self._rings.pop(camera_id, None)
+            if ring is not None:
+                ring.close()
+
+    def subscribe_epoch_roll(
+        self, listener: Callable[[StreamEpoch, StreamEpoch], None]
+    ) -> None:
+        with self._lock:
+            self._epoch_listeners.append(listener)
 
     def append(self, packet: SourcePacket) -> bool:
         with self._lock:
@@ -72,7 +86,14 @@ class PacketRingRepository:
         with self._lock:
             if self._closed:
                 raise RuntimeError("cannot roll a closed packet repository")
-            self.ring(epoch.camera_id).roll_epoch(epoch)
+            ring = self.ring(epoch.camera_id)
+            previous = ring.active_epoch
+            listeners = tuple(self._epoch_listeners)
+        if previous is not None and previous != epoch:
+            for listener in listeners:
+                listener(previous, epoch)
+        with self._lock:
+            ring.roll_epoch(epoch)
 
     def ring(self, camera_id: str) -> SourcePacketRing:
         try:

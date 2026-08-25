@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <array>
+#include <cerrno>
 #include <cstring>
 #include <utility>
 
@@ -81,6 +82,7 @@ bool send_all(int descriptor, const std::vector<std::uint8_t>& bytes) {
   std::size_t offset = 0;
   while (offset < bytes.size()) {
     const auto count = send(descriptor, bytes.data() + offset, bytes.size() - offset, MSG_NOSIGNAL);
+    if (count < 0 && errno == EINTR) continue;
     if (count <= 0) return false;
     offset += static_cast<std::size_t>(count);
   }
@@ -88,18 +90,39 @@ bool send_all(int descriptor, const std::vector<std::uint8_t>& bytes) {
 }
 }  // namespace
 
+PipelineBinding::PipelineBinding(std::uint32_t generation, std::uint64_t epoch)
+    : generation_(generation), epoch_(epoch) {}
+void PipelineBinding::invalidate() { std::lock_guard lock{mutex_}; live_ = false; }
+bool PipelineBinding::dispatch_au(
+    const std::function<void(std::uint32_t, std::uint64_t, std::uint64_t)>& action) {
+  std::lock_guard lock{mutex_};
+  if (!live_) return false;
+  action(generation_, epoch_, ++sequence_);
+  return true;
+}
+bool PipelineBinding::dispatch_frame(
+    const std::function<void(std::uint32_t, std::uint64_t)>& action) {
+  std::lock_guard lock{mutex_};
+  if (!live_) return false;
+  action(generation_, epoch_);
+  return true;
+}
+
 AuSender::AuSender(int descriptor, std::size_t max_items, std::size_t max_bytes)
     : descriptor_(descriptor), max_items_(max_items), max_bytes_(max_bytes),
       thread_(&AuSender::run, this) {}
 AuSender::~AuSender() { stop(); }
 
 bool AuSender::enqueue(AuEnvelope envelope) {
-  const auto size = envelope.unit.payload.size() + envelope.unit.codec_data.size();
+  const auto size = envelope.camera.size() + envelope.unit.parser_caps.size() +
+                    envelope.unit.payload.size() + envelope.unit.codec_data.size();
   std::lock_guard lock{mutex_};
   if (stopped_) return false;
-  if (size > max_bytes_ || queue_.size() >= max_items_ || bytes_ + size > max_bytes_) {
+  if (gap_.has_value() || size > kMaxAuFrameBytes || size > max_bytes_ ||
+      envelope.camera.size() > UINT16_MAX || envelope.unit.parser_caps.size() > UINT16_MAX ||
+      queue_.size() >= max_items_ || bytes_ + size > max_bytes_) {
     ++dropped_;
-    gap_ = std::move(envelope);
+    if (!gap_.has_value()) gap_ = std::move(envelope);
     ready_.notify_one();
     return false;
   }
@@ -117,14 +140,15 @@ void AuSender::run() {
       std::unique_lock lock{mutex_};
       ready_.wait(lock, [this] { return stopped_ || gap_.has_value() || !queue_.empty(); });
       if (stopped_ && !gap_.has_value() && queue_.empty()) return;
-      if (gap_.has_value()) {
+      if (!queue_.empty()) {
+        envelope = std::move(queue_.front());
+        bytes_ -= envelope.camera.size() + envelope.unit.parser_caps.size() +
+                  envelope.unit.payload.size() + envelope.unit.codec_data.size();
+        queue_.pop_front();
+      } else {
         envelope = std::move(*gap_);
         gap_.reset();
         gap = true;
-      } else {
-        envelope = std::move(queue_.front());
-        bytes_ -= envelope.unit.payload.size() + envelope.unit.codec_data.size();
-        queue_.pop_front();
       }
     }
     if (!send_all(descriptor_, encode(envelope, gap))) {

@@ -1,46 +1,22 @@
 from __future__ import annotations
 
-import hashlib
+import queue
 import socket
-import struct
 import threading
 from contextlib import suppress
 from dataclasses import dataclass
-from enum import IntEnum
-from fractions import Fraction
-from typing import Final, Protocol, final
+from typing import Protocol, final
 
-from worker.adapters.decode.native_au_mux_template import (
-    NativeAuTemplateInput,
-    build_native_au_mux_template,
-    native_configuration_signature,
+from worker.adapters.decode.native_au_codec import (
+    AuEnvelope,
+    AuFrameError,
+    AuKind,
+    receive_envelope,
+    stream_configuration,
 )
+from worker.adapters.decode.native_au_mux_template import native_configuration_signature
 from worker.adapters.decode.native_au_progress import NativeAuProgress
-from worker.types.source_packet import (
-    SourcePacket,
-    SourceStreamConfiguration,
-    SourceStreamDescriptor,
-    StreamEpoch,
-)
-
-_HEADER: Final = struct.Struct("<4sIBBBBIQQqqqiiIIHHII")
-_MAGIC: Final = b"SAU1"
-_MAX_FRAME: Final = 32 * 1024 * 1024
-
-
-class _Kind(IntEnum):
-    ACCESS_UNIT = 1
-    GAP = 2
-
-
-class _Codec(IntEnum):
-    H264 = 1
-    H265 = 2
-
-
-class _Framing(IntEnum):
-    ANNEX_B = 1
-    AVCC = 2
+from worker.types.source_packet import SourcePacket, SourceStreamConfiguration, StreamEpoch
 
 
 class NativeAuSink(Protocol):
@@ -53,30 +29,21 @@ class NativeAuGapHandler(Protocol):
     def __call__(self, camera_id: str, category: str) -> None: ...
 
 
+class NativeAuStreamDeathHandler(Protocol):
+    def __call__(self, category: str) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
-class _Envelope:
-    kind: _Kind
-    codec: _Codec
-    framing: _Framing
-    keyframe: bool
-    generation: int
-    epoch: int
-    sequence: int
-    pts: int
-    dts: int
-    duration: int
-    time_base: Fraction
-    width: int
-    height: int
+class _Gap:
     camera_id: str
-    parser_caps: str
-    codec_data: bytes
-    payload: bytes
+
+
+_Work = AuEnvelope | _Gap
 
 
 @final
 class NativeAuReceiver:
-    """Drain lossless AU IPC; any declared/observed gap rebuilds the native source."""
+    """Drain AU bytes independently from slower configuration and ring work."""
 
     def __init__(
         self,
@@ -84,35 +51,54 @@ class NativeAuReceiver:
         worker_boot_id: str,
         sink: NativeAuSink,
         gap_handler: NativeAuGapHandler,
+        stream_death_handler: NativeAuStreamDeathHandler | None = None,
     ) -> None:
         self._endpoint = endpoint
         self._worker_boot_id = worker_boot_id
         self._sink = sink
         self._gap_handler = gap_handler
+        self._stream_death_handler = stream_death_handler or (lambda _category: None)
         self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._drain_thread: threading.Thread | None = None
+        self._process_thread: threading.Thread | None = None
+        self._work: queue.Queue[_Work] = queue.Queue(maxsize=256)
         self._epochs: dict[str, StreamEpoch] = {}
         self._sequences: dict[tuple[str, int, int], int] = {}
         self._configurations: dict[tuple[str, int, int], SourceStreamConfiguration] = {}
         self._configuration_signatures: dict[tuple[str, int, int], str] = {}
+        self._timeline: dict[tuple[str, int, int], tuple[int, int]] = {}
+        self._gaps_active: set[str] = set()
+        self._retired_generations: dict[str, int] = {}
         self._progress = NativeAuProgress()
 
     def start(self) -> None:
-        self._thread = threading.Thread(
-            target=self._run,
-            name="deepstream-au-receiver",
-            daemon=True,
+        self._drain_thread = threading.Thread(
+            target=self._drain, name="deepstream-au-drain", daemon=True
         )
-        self._thread.start()
+        self._process_thread = threading.Thread(
+            target=self._process, name="deepstream-au-process", daemon=True
+        )
+        self._process_thread.start()
+        self._drain_thread.start()
 
     def close(self) -> None:
         self._stop.set()
         with suppress(OSError):
             self._endpoint.shutdown(socket.SHUT_RDWR)
         self._endpoint.close()
-        thread = self._thread
-        if thread is not None:
-            thread.join(timeout=2.0)
+        for thread in (self._drain_thread, self._process_thread):
+            if thread is not None:
+                thread.join(timeout=2.0)
+
+    def retire_camera(self, camera_id: str) -> None:
+        active = self._epochs.pop(camera_id, None)
+        if active is not None:
+            self._retired_generations[camera_id] = active.source_generation
+        self._gaps_active.discard(camera_id)
+        self._retire_keys(camera_id)
+        remove = getattr(self._sink, "remove_camera", None)
+        if callable(remove):
+            remove(camera_id)
 
     def accepted_count(self, camera_id: str) -> int:
         return self._progress.count(camera_id)
@@ -120,169 +106,126 @@ class NativeAuReceiver:
     def wait_for_packets(self, camera_id: str, target: int, timeout: float) -> bool:
         return self._progress.wait(camera_id, target, timeout)
 
-    def _run(self) -> None:
+    def _drain(self) -> None:
         while not self._stop.is_set():
             try:
-                header = _recv_exact(self._endpoint, _HEADER.size)
-                envelope = _decode(header, _recv_exact(self._endpoint, _body_size(header)))
-            except (ConnectionError, OSError, ValueError):
+                work: _Work = receive_envelope(self._endpoint)
+            except AuFrameError as error:
+                if error.camera_id:
+                    work = _Gap(error.camera_id)
+                else:
+                    self._stream_death_handler("au_framing_unknown_camera")
+                    return
+            except (ConnectionError, OSError):
+                if not self._stop.is_set():
+                    self._stream_death_handler("au_stream_closed")
                 return
-            self._accept(envelope)
+            try:
+                self._work.put_nowait(work)
+            except queue.Full:
+                camera = work.camera_id
+                with suppress(queue.Empty):
+                    _ = self._work.get_nowait()
+                with suppress(queue.Full):
+                    self._work.put_nowait(_Gap(camera))
 
-    def _accept(self, envelope: _Envelope) -> None:
+    def _process(self) -> None:
+        while not self._stop.is_set():
+            try:
+                work = self._work.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if isinstance(work, _Gap):
+                self._report_gap(work.camera_id)
+                continue
+            try:
+                self._accept(work)
+            except Exception:  # noqa: BLE001 - malformed camera data is isolated
+                self._report_gap(work.camera_id)
+
+    def _report_gap(self, camera_id: str) -> None:
+        if not camera_id or camera_id in self._gaps_active:
+            return
+        self._gaps_active.add(camera_id)
+        self._gap_handler(camera_id, "parser")
+
+    def _accept(self, envelope: AuEnvelope) -> None:
+        retired = self._retired_generations.get(envelope.camera_id, -1)
+        if envelope.generation <= retired:
+            return
+        self._retired_generations.pop(envelope.camera_id, None)
+        active = self._epochs.get(envelope.camera_id)
+        if active is not None and (
+            envelope.generation < active.source_generation
+            or (
+                envelope.generation == active.source_generation
+                and envelope.epoch < active.stream_epoch
+            )
+        ):
+            self._report_gap(envelope.camera_id)
+            return
         identity = StreamEpoch(
-            self._worker_boot_id,
-            envelope.camera_id,
-            envelope.epoch,
-            envelope.generation,
+            self._worker_boot_id, envelope.camera_id, envelope.epoch, envelope.generation
         )
         key = (envelope.camera_id, envelope.generation, envelope.epoch)
         expected = self._sequences.get(key, 0) + 1
-        if envelope.kind is _Kind.GAP or envelope.sequence != expected:
-            self._gap_handler(envelope.camera_id, "parser")
+        if envelope.kind is AuKind.GAP or envelope.sequence != expected:
+            self._report_gap(envelope.camera_id)
             return
-        self._sequences[key] = envelope.sequence
-        active = self._epochs.get(envelope.camera_id)
+        if self._timestamp_discontinuous(key, envelope):
+            self._report_gap(envelope.camera_id)
+            return
         if active != identity:
+            if active is not None and envelope.generation > active.source_generation:
+                remove = getattr(self._sink, "remove_camera", None)
+                if callable(remove):
+                    remove(envelope.camera_id)
             self._sink.register_camera(envelope.camera_id)
             self._sink.roll_epoch(identity)
+            self._retire_keys(envelope.camera_id, keep=key)
             self._epochs[envelope.camera_id] = identity
+        self._sequences[key] = envelope.sequence
         signature = native_configuration_signature(
             envelope.codec, envelope.framing, envelope.parser_caps, envelope.codec_data,
             envelope.width, envelope.height, envelope.time_base,
         )
         configuration = self._configurations.get(key)
         if configuration is None:
-            configuration = _configuration(envelope)
+            configuration = stream_configuration(envelope)
             self._configurations[key] = configuration
             self._configuration_signatures[key] = signature
         elif self._configuration_signatures[key] != signature:
-            self._gap_handler(envelope.camera_id, "caps")
+            self._report_gap(envelope.camera_id)
             return
-        if not self._sink.append(
-            SourcePacket(
-                identity,
-                configuration,
-                0,
-                envelope.pts,
-                envelope.dts,
-                envelope.duration,
-                envelope.keyframe,
-                envelope.payload,
-                envelope.sequence - 1,
-            )
-        ):
-            self._gap_handler(envelope.camera_id, "parser")
+        packet = SourcePacket(
+            identity, configuration, 0, envelope.pts, envelope.dts, envelope.duration,
+            envelope.keyframe, envelope.payload, envelope.sequence - 1,
+        )
+        if not self._sink.append(packet):
+            self._report_gap(envelope.camera_id)
             return
+        self._timeline[key] = (envelope.dts, envelope.duration)
+        self._gaps_active.discard(envelope.camera_id)
         self._progress.accept(envelope.camera_id)
 
+    def _timestamp_discontinuous(self, key: tuple[str, int, int], envelope: AuEnvelope) -> bool:
+        previous = self._timeline.get(key)
+        if previous is None:
+            return False
+        previous_dts, previous_duration = previous
+        delta = envelope.dts - previous_dts
+        maximum = max(previous_duration * 120, envelope.time_base.denominator * 5)
+        return delta <= 0 or delta > maximum
 
-def _recv_exact(endpoint: socket.socket, size: int) -> bytes:
-    chunks = bytearray()
-    while len(chunks) < size:
-        chunk = endpoint.recv(size - len(chunks))
-        if not chunk:
-            raise ConnectionError("native AU stream closed")
-        chunks.extend(chunk)
-    return bytes(chunks)
-
-
-def _body_size(header: bytes) -> int:
-    if len(header) != _HEADER.size or header[:4] != _MAGIC:
-        raise ValueError("native AU header invalid")
-    size = int.from_bytes(header[4:8], "little")
-    if size > _MAX_FRAME:
-        raise ValueError("native AU frame exceeds bound")
-    return size
+    def _retire_keys(self, camera_id: str, keep: tuple[str, int, int] | None = None) -> None:
+        for mapping in (
+            self._sequences, self._configurations, self._configuration_signatures, self._timeline,
+        ):
+            for key in tuple(mapping):
+                if key[0] == camera_id and key != keep:
+                    del mapping[key]
 
 
-def _decode(header: bytes, body: bytes) -> _Envelope:
-    try:
-        kind = _Kind(header[8])
-        codec = _Codec(header[9])
-        framing = _Framing(header[10])
-    except ValueError as error:
-        raise ValueError("native AU variant invalid") from error
-    camera_size = int.from_bytes(header[72:74], "little")
-    caps_size = int.from_bytes(header[74:76], "little")
-    codec_size = int.from_bytes(header[76:80], "little")
-    payload_size = int.from_bytes(header[80:84], "little")
-    if camera_size + caps_size + codec_size + payload_size != len(body):
-        raise ValueError("native AU body framing invalid")
-    camera_end = camera_size
-    caps_end = camera_end + caps_size
-    codec_end = caps_end + codec_size
-    return _Envelope(
-        kind,
-        codec,
-        framing,
-        bool(header[11]),
-        int.from_bytes(header[12:16], "little"),
-        int.from_bytes(header[16:24], "little"),
-        int.from_bytes(header[24:32], "little"),
-        int.from_bytes(header[32:40], "little", signed=True),
-        int.from_bytes(header[40:48], "little", signed=True),
-        int.from_bytes(header[48:56], "little", signed=True),
-        Fraction(
-            int.from_bytes(header[56:60], "little", signed=True),
-            int.from_bytes(header[60:64], "little", signed=True),
-        ),
-        int.from_bytes(header[64:68], "little"),
-        int.from_bytes(header[68:72], "little"),
-        body[:camera_end].decode(),
-        body[camera_end:caps_end].decode(),
-        body[caps_end:codec_end],
-        body[codec_end:],
-    )
-
-
-def _configuration(envelope: _Envelope) -> SourceStreamConfiguration:
-    match envelope.codec:
-        case _Codec.H264:
-            codec_name = "h264"
-        case _Codec.H265:
-            codec_name = "hevc"
-    match envelope.framing:
-        case _Framing.ANNEX_B:
-            stream_format = "byte-stream"
-            # The Python MP4 normalizer writes four-byte lengths and records
-            # that choice. Annex-B has no lengthSizeMinusOne field to inherit.
-            nal_length_size = 4
-        case _Framing.AVCC:
-            stream_format = "avc" if codec_name == "h264" else "hvc1"
-            nal_length_size = _nal_length_size(envelope.codec_data, codec_name)
-    descriptor = SourceStreamDescriptor(
-        0,
-        "video",
-        codec_name,
-        "avc1" if codec_name == "h264" else "hvc1",
-        envelope.time_base,
-        envelope.codec_data,
-        envelope.width,
-        envelope.height,
-        stream_format=stream_format,
-        alignment="au",
-        nal_length_size=nal_length_size,
-        parser_caps_sha256=hashlib.sha256(envelope.parser_caps.encode()).hexdigest(),
-    )
-    return SourceStreamConfiguration.from_streams(
-        (descriptor,),
-        mux_template=build_native_au_mux_template(
-            descriptor,
-            NativeAuTemplateInput(
-                envelope.payload,
-                envelope.duration,
-                envelope.keyframe,
-            ),
-        ),
-    )
-
-
-def _nal_length_size(codec_data: bytes, codec_name: str) -> int:
-    index = 4 if codec_name == "h264" else 21
-    if len(codec_data) <= index:
-        raise ValueError("native codec data lacks NAL length size")
-    return (codec_data[index] & 0b11) + 1
-
-
-__all__ = ["NativeAuGapHandler", "NativeAuReceiver", "NativeAuSink"]
+__all__ = [
+    "NativeAuGapHandler", "NativeAuReceiver", "NativeAuSink", "NativeAuStreamDeathHandler",
+]

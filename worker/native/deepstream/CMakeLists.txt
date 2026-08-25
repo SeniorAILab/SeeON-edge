@@ -25,9 +25,12 @@ add_executable(
   src/child_command_support.cpp
   src/child_failures.cpp
   src/child_server.cpp
+  src/encoded_source_bus.cpp
   src/encoded_source_branch.cpp
   src/encoded_source_sample.cpp
   src/perception_wire.cpp
+  src/preview_transport.cpp
+  src/source_bus.cpp
   src/source_runtime.cpp
   src/source_uri.cpp
 )
@@ -57,6 +60,7 @@ if(BUILD_TESTING)
   add_executable(
     seeon-deepstream-source-runtime-test
     src/source_runtime_test.cpp
+    src/au_transport.cpp
     src/source_runtime.cpp
     src/source_uri.cpp
   )
@@ -67,8 +71,11 @@ if(BUILD_TESTING)
     seeon-deepstream-source-runtime-gstreamer-test
     src/source_runtime_gstreamer_test.cpp
     src/au_parser.cpp
+    src/au_transport.cpp
+    src/encoded_source_bus.cpp
     src/encoded_source_branch.cpp
     src/encoded_source_sample.cpp
+    src/source_bus.cpp
     src/source_runtime.cpp
     src/source_uri.cpp
   )
@@ -94,6 +101,7 @@ if(BUILD_TESTING)
     src/child_command_support.cpp
     src/child_failures.cpp
     src/perception_wire.cpp
+    src/preview_transport.cpp
     src/source_runtime.cpp
     src/source_uri.cpp
   )
@@ -104,6 +112,10 @@ if(BUILD_TESTING)
   target_compile_features(seeon-deepstream-au-parser-test PRIVATE cxx_std_20)
   target_compile_options(seeon-deepstream-au-parser-test PRIVATE ${SEEON_WARNINGS})
   add_test(NAME seeon-deepstream-au-parser-test COMMAND seeon-deepstream-au-parser-test)
+  add_executable(seeon-deepstream-au-transport-test src/au_transport_test.cpp src/au_transport.cpp)
+  target_compile_features(seeon-deepstream-au-transport-test PRIVATE cxx_std_20)
+  target_compile_options(seeon-deepstream-au-transport-test PRIVATE ${SEEON_WARNINGS})
+  add_test(NAME seeon-deepstream-au-transport-test COMMAND seeon-deepstream-au-transport-test)
 endif()
 
 install(TARGETS seeon-deepstream-preflight seeon-deepstream-child RUNTIME DESTINATION bin)

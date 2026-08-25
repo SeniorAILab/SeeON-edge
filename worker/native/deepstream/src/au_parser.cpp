@@ -4,6 +4,7 @@
 
 namespace seeon {
 namespace {
+constexpr std::size_t kMaxNalUnits = 4096;
 struct NalUnit {
   std::size_t prefix;
   std::size_t payload;
@@ -16,9 +17,11 @@ std::vector<NalUnit> annexb_units(const std::uint8_t* data, std::size_t size) {
     if (data[index] != 0 || data[index + 1] != 0) continue;
     if (data[index + 2] == 1) {
       starts.emplace_back(index, 3);
+      if (starts.size() > kMaxNalUnits) return {};
       index += 2;
     } else if (index + 4 < size && data[index + 2] == 0 && data[index + 3] == 1) {
       starts.emplace_back(index, 4);
+      if (starts.size() > kMaxNalUnits) return {};
       index += 3;
     }
   }

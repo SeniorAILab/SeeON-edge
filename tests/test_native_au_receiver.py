@@ -36,10 +36,18 @@ def _frame(
     sequence: int,
     kind: int = 1,
     payload: bytes = b"\0\0\0\x02e\x80",
+    generation: int = 3,
+    width: int = 640,
+    height: int = 360,
+    time_base_denominator: int = 90_000,
+    pts: int | None = None,
+    framing: int = 2,
+    codec_data: bytes = b"\x01d\0\x1f\xff",
+    caps_suffix: bytes = b"",
 ) -> bytes:
     camera = b"camera-a"
-    caps = b"video/x-h264,alignment=(string)au,stream-format=(string)avc"
-    codec_data = b"\x01d\0\x1f\xff"
+    stream_format = b"avc" if framing == 2 else b"byte-stream"
+    caps = b"video/x-h264,alignment=(string)au,stream-format=(string)" + stream_format + caps_suffix
     body = camera + caps + codec_data + payload
     return (
         _HEADER.pack(
@@ -47,18 +55,18 @@ def _frame(
             len(body),
             kind,
             1,
-            2,
+            framing,
             1,
-            3,
+            generation,
             epoch,
             sequence,
-            sequence * 3_000,
-            sequence * 3_000,
+            sequence * 3_000 if pts is None else pts,
+            sequence * 3_000 if pts is None else pts,
             3_000,
             1,
-            90_000,
-            640,
-            360,
+            time_base_denominator,
+            width,
+            height,
             len(camera),
             len(caps),
             len(codec_data),
@@ -124,3 +132,120 @@ def test_native_au_receiver_reports_gap_without_appending_across_epoch() -> None
     child.close()
     assert gaps == [("camera-a", "parser")]
     assert sink.packets == []
+
+
+def test_malformed_camera_au_does_not_kill_other_camera_drain() -> None:
+    parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    sink = _Sink()
+    gap_seen = threading.Event()
+    gaps: list[tuple[str, str]] = []
+
+    def gap(camera_id: str, category: str) -> None:
+        gaps.append((camera_id, category))
+        gap_seen.set()
+
+    receiver = NativeAuReceiver(parent, "boot-1", sink, gap)
+    receiver.start()
+    child.sendall(_frame(epoch=7, sequence=1, width=0))
+    assert gap_seen.wait(timeout=2.0)
+    child.sendall(_frame(epoch=8, sequence=1))
+
+    assert sink.accepted.wait(timeout=2.0)
+    receiver.close()
+    child.close()
+    assert gaps == [("camera-a", "parser")]
+    assert sink.packets[-1].epoch.stream_epoch == 8
+
+
+def test_backward_epoch_is_rejected_but_higher_generation_readd_survives() -> None:
+    parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    sink = _Sink()
+    gaps: list[tuple[str, str]] = []
+    receiver = NativeAuReceiver(parent, "boot-1", sink, lambda *gap: gaps.append(gap))
+    receiver.start()
+    child.sendall(_frame(epoch=2, sequence=1))
+    assert sink.accepted.wait(timeout=2.0)
+    sink.accepted.clear()
+    child.sendall(_frame(epoch=1, sequence=1))
+    child.sendall(_frame(epoch=1, sequence=1, generation=4))
+
+    assert sink.accepted.wait(timeout=2.0)
+    receiver.close()
+    child.close()
+    assert gaps == [("camera-a", "parser")]
+    assert sink.packets[-1].epoch == StreamEpoch("boot-1", "camera-a", 1, 4)
+
+
+def test_timestamp_jump_requests_epoch_roll_without_appending_jump() -> None:
+    parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    sink = _Sink()
+    gap_seen = threading.Event()
+    receiver = NativeAuReceiver(
+        parent,
+        "boot-1",
+        sink,
+        lambda _camera, _category: gap_seen.set(),
+    )
+    receiver.start()
+    child.sendall(_frame(epoch=7, sequence=1))
+    assert sink.accepted.wait(timeout=2.0)
+    sink.accepted.clear()
+    child.sendall(_frame(epoch=7, sequence=2, pts=900_000))
+
+    assert gap_seen.wait(timeout=2.0)
+    receiver.close()
+    child.close()
+    assert len(sink.packets) == 1
+
+
+def test_caps_and_framing_changes_fail_closed_without_splicing() -> None:
+    parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    sink = _Sink()
+    gap_seen = threading.Event()
+    gaps: list[tuple[str, str]] = []
+
+    def gap(camera: str, category: str) -> None:
+        gaps.append((camera, category))
+        gap_seen.set()
+
+    receiver = NativeAuReceiver(parent, "boot-1", sink, gap)
+    receiver.start()
+    child.sendall(_frame(epoch=7, sequence=1))
+    assert sink.accepted.wait(timeout=2.0)
+    sink.accepted.clear()
+    child.sendall(_frame(epoch=7, sequence=2, caps_suffix=b",profile=(string)high"))
+    assert gap_seen.wait(timeout=2.0)
+    gap_seen.clear()
+    child.sendall(
+        _frame(
+            epoch=8,
+            sequence=1,
+            framing=1,
+            codec_data=b"",
+            payload=b"\0\0\0\1\x65\x80",
+        )
+    )
+    assert sink.accepted.wait(timeout=2.0)
+
+    receiver.close()
+    child.close()
+    assert gaps == [("camera-a", "parser")]
+    assert [packet.epoch.stream_epoch for packet in sink.packets] == [7, 8]
+
+
+def test_short_avcc_codec_data_isolated_then_next_epoch_survives() -> None:
+    parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    sink = _Sink()
+    gap_seen = threading.Event()
+    receiver = NativeAuReceiver(
+        parent, "boot-1", sink, lambda _camera, _category: gap_seen.set()
+    )
+    receiver.start()
+    child.sendall(_frame(epoch=7, sequence=1, codec_data=b"\x01"))
+    assert gap_seen.wait(timeout=2.0)
+    child.sendall(_frame(epoch=8, sequence=1))
+
+    assert sink.accepted.wait(timeout=2.0)
+    receiver.close()
+    child.close()
+    assert sink.packets[-1].epoch.stream_epoch == 8

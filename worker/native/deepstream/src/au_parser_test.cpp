@@ -28,5 +28,12 @@ int main() {
         "H.265 IRAP was not identified");
   check(!seeon::parse_length_prefixed_keyframe(h265.data(), h265.size(), true, 0).has_value(),
         "unknown NAL framing did not fail closed");
+
+  std::vector<std::uint8_t> excessive;
+  for (std::size_t index = 0; index < 4097; ++index) {
+    excessive.insert(excessive.end(), {0, 0, 1, 0x41});
+  }
+  check(!seeon::parse_annexb(excessive.data(), excessive.size(), false).keyframe.has_value(),
+        "excessive Annex-B NAL count did not fail closed");
   return 0;
 }

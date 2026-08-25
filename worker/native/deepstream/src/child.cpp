@@ -34,7 +34,7 @@ bool read_identity(int descriptor, seeon::ChildOptions* options) {
 }
 
 std::optional<seeon::ChildOptions> parse_options(int argc, char** argv) {
-  if (argc != 15) {
+  if (argc != 17) {
     return std::nullopt;
   }
   seeon::ChildOptions options{};
@@ -48,6 +48,8 @@ std::optional<seeon::ChildOptions> parse_options(int argc, char** argv) {
       if (!parse_fd(value, &options.wake_fd)) return std::nullopt;
     } else if (flag == "--au-fd") {
       if (!parse_fd(value, &options.au_fd)) return std::nullopt;
+    } else if (flag == "--preview-fd") {
+      if (!parse_fd(value, &options.preview_fd)) return std::nullopt;
     } else if (flag == "--failure-fd") {
       if (!parse_fd(value, &options.failure_fd)) return std::nullopt;
     } else if (flag == "--identity-fd") {
@@ -62,7 +64,7 @@ std::optional<seeon::ChildOptions> parse_options(int argc, char** argv) {
     }
   }
   if (options.control_fd < 0 || options.wake_fd < 0 || options.au_fd < 0 ||
-      options.failure_fd < 0 ||
+      options.preview_fd < 0 || options.failure_fd < 0 ||
       options.ready_fd < 0 || identity_fd < 0 || !read_identity(identity_fd, &options)) {
     return std::nullopt;
   }
@@ -71,7 +73,8 @@ std::optional<seeon::ChildOptions> parse_options(int argc, char** argv) {
 
 bool set_close_on_exec(const seeon::ChildOptions& options) {
   const int descriptors[] = {
-      options.control_fd, options.wake_fd, options.au_fd, options.failure_fd, options.ready_fd};
+      options.control_fd, options.wake_fd, options.au_fd, options.preview_fd,
+      options.failure_fd, options.ready_fd};
   for (const int descriptor : descriptors) {
     const int flags = fcntl(descriptor, F_GETFD);
     if (flags < 0 || fcntl(descriptor, F_SETFD, flags | FD_CLOEXEC) < 0) return false;

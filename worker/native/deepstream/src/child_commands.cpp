@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <memory>
 #include <utility>
 
 namespace seeon {
@@ -21,7 +22,6 @@ CommandResult handle_command(ServerState& state, const ipc::Message& request) {
   const bool debug_command = kind == ipc::Kind::kEmitMetadata ||
                              kind == ipc::Kind::kWaitPublish ||
                              kind == ipc::Kind::kInjectSourceEos ||
-                             kind == ipc::Kind::kSetPreviewDemand ||
                              kind == ipc::Kind::kGetPreviewStatus ||
                              kind == ipc::Kind::kWaitPreview;
   if (debug_command && !state.options.qa_mode) {
@@ -30,6 +30,7 @@ CommandResult handle_command(ServerState& state, const ipc::Message& request) {
   std::string error;
   switch (kind) {
     case ipc::Kind::kAddSource: {
+      const auto binding = std::make_shared<PipelineBinding>(request.header.source_generation, 1);
       {
         std::lock_guard lock{state.slot_mutex};
         if (!state.generation_high_water.contains(request.camera) &&
@@ -44,10 +45,10 @@ CommandResult handle_command(ServerState& state, const ipc::Message& request) {
         state.generation_high_water[request.camera] = request.header.source_generation;
         state.sources.emplace(
             request.camera,
-            SourceSlot{request.header.source_generation, 1, 0, 0, std::nullopt});
+            SourceSlot{request.header.source_generation, 1, 0, std::nullopt, binding});
       }
       const std::string uri{request.payload.begin(), request.payload.end()};
-      if (!state.runtime.add(request.camera, uri, &error)) {
+      if (!state.runtime.add(request.camera, uri, binding, &error)) {
         std::lock_guard lock{state.slot_mutex};
         state.sources.erase(request.camera);
         return {error_reply(request, error)};
@@ -85,15 +86,22 @@ CommandResult handle_command(ServerState& state, const ipc::Message& request) {
           return {error_reply(request, "source_unknown")};
         }
       }
+      if (!state.runtime.quiesce(request.camera)) {
+        return {error_reply(request, "source_quiesce_failed")};
+      }
       std::uint64_t epoch = 0;
+      PipelineBindingPtr binding;
       {
         std::lock_guard lock{state.slot_mutex};
         const auto found = state.sources.find(request.camera);
         epoch = ++found->second.epoch;
         found->second.latest.reset();
-        found->second.au_sequence = 0;
+        found->second.source_sequence = 0;
+        binding = std::make_shared<PipelineBinding>(found->second.generation, epoch);
+        found->second.binding = binding;
       }
-      if (!state.runtime.rebuild(request.camera, &error)) {
+      if (!state.runtime.restart(request.camera, binding, &error)) {
+        binding->invalidate();
         return {error_reply(request, error)};
       }
       {
@@ -189,11 +197,10 @@ CommandResult handle_command(ServerState& state, const ipc::Message& request) {
       }
       std::uint64_t target = 0;
       std::memcpy(&target, request.payload.data(), sizeof(target));
-      std::unique_lock lock{state.slot_mutex};
+      std::unique_lock lock{state.published_mutex};
       const bool reached = state.published_condition.wait_for(
-          lock,
-          std::chrono::seconds{2},
-          [&state, target] { return state.published >= target; });
+          lock, std::chrono::seconds{2},
+          [&state, target] { return state.published.load() >= target; });
       return reached ? CommandResult{ipc::reply(request, ipc::Kind::kAck)}
                      : CommandResult{error_reply(request, "publish target timeout"), 4};
     }

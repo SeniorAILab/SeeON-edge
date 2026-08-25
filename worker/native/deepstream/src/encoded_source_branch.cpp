@@ -1,5 +1,6 @@
 #include "encoded_source_branch.hpp"
 
+#include "encoded_source_bus.hpp"
 #include "encoded_source_context.hpp"
 
 #ifdef SEEON_HAS_GSTREAMER
@@ -14,9 +15,21 @@
 
 namespace seeon {
 namespace {
-GstPadProbeReturn on_preview_encoded(GstPad*, GstPadProbeInfo*, gpointer raw) {
+GstPadProbeReturn on_preview_encoded(GstPad*, GstPadProbeInfo* info, gpointer raw) {
   auto* context = static_cast<EncodedSourceContext*>(raw);
-  ++context->preview_encoded;
+  GstBuffer* buffer = gst_pad_probe_info_get_buffer(info);
+  GstMapInfo mapped{};
+  if (!context->previews || !gst_buffer_map(buffer, &mapped, GST_MAP_READ)) {
+    return GST_PAD_PROBE_OK;
+  }
+  context->previews(
+      context->camera, GST_BUFFER_PTS_IS_VALID(buffer) ? GST_BUFFER_PTS(buffer) : 0,
+      {mapped.data, mapped.data + mapped.size});
+  gst_buffer_unmap(buffer, &mapped);
+  {
+    std::lock_guard lock{context->preview_mutex};
+    ++context->preview_encoded;
+  }
   context->preview_ready.notify_all();
   return GST_PAD_PROBE_OK;
 }
@@ -24,7 +37,8 @@ GstPadProbeReturn on_preview_encoded(GstPad*, GstPadProbeInfo*, gpointer raw) {
 GstPadProbeReturn on_decoded(GstPad*, GstPadProbeInfo* info, gpointer raw) {
   auto* context = static_cast<EncodedSourceContext*>(raw);
   GstBuffer* buffer = gst_pad_probe_info_get_buffer(info);
-  context->frames(context->camera, GST_BUFFER_PTS_IS_VALID(buffer) ? GST_BUFFER_PTS(buffer) : 0);
+  context->frames(context->camera, context->binding,
+                  GST_BUFFER_PTS_IS_VALID(buffer) ? GST_BUFFER_PTS(buffer) : 0);
   return GST_PAD_PROBE_OK;
 }
 
@@ -71,6 +85,16 @@ void on_rtp_pad(GstElement*, GstPad* output, gpointer raw) {
   if (std::ranges::any_of(elements, [](GstElement* item) { return item == nullptr; }) ||
       preview_sink == nullptr) {
     context->failures({context->camera, "element_unavailable", FailureScope::kFatal});
+    for (GstElement* item : elements) {
+      if (item != nullptr) {
+        static_cast<void>(gst_object_ref_sink(item));
+        gst_object_unref(item);
+      }
+    }
+    if (preview_sink != nullptr) {
+      static_cast<void>(gst_object_ref_sink(preview_sink));
+      gst_object_unref(preview_sink);
+    }
     if (input_caps != nullptr) gst_caps_unref(input_caps);
     return;
   }
@@ -80,11 +104,14 @@ void on_rtp_pad(GstElement*, GstPad* output, gpointer raw) {
            : "video/x-h265,alignment=au,stream-format=byte-stream");
   g_object_set(parser_caps, "caps", aligned_caps, nullptr);
   gst_caps_unref(aligned_caps);
-  g_object_set(record_queue, "max-size-buffers", 128U, "max-size-bytes", 64U * 1024U * 1024U,
+  g_object_set(record_queue, "max-size-buffers", 128U, "max-size-bytes", kMaxAuFrameBytes,
                nullptr);
   g_object_set(record_sink, "emit-signals", TRUE, "sync", FALSE, "max-buffers", 128U,
                "drop", FALSE, nullptr);
-  g_object_set(decode_queue, "leaky", context->preview_viewers.load() == 0 ? 2 : 0, nullptr);
+  g_object_set(decode_queue, "max-size-buffers", 64U, "max-size-bytes", 0U,
+               "max-size-time", 0U, "leaky", 2, nullptr);
+  g_object_set(inference_queue, "max-size-buffers", 1U, "max-size-bytes", 0U,
+               "max-size-time", 0U, "leaky", 2, nullptr);
   g_object_set(sink, "sync", FALSE, nullptr);
   g_object_set(preview_valve, "drop", context->preview_viewers.load() == 0, nullptr);
   g_object_set(preview_queue, "max-size-buffers", 1U, "max-size-bytes", 0U,
@@ -136,6 +163,8 @@ GstElement* build_encoded_rtsp_pipeline(const std::string& camera, const std::st
                                          const FrameCallback& frames,
                                          const FailureCallback& failures,
                                          const AccessUnitCallback& access_units,
+                                         const PreviewCallback& previews,
+                                         const PipelineBindingPtr& binding,
                                          std::string* error_code) {
   GstElement* pipeline = gst_pipeline_new(nullptr);
   GstElement* source = element("rtspsrc");
@@ -148,9 +177,10 @@ GstElement* build_encoded_rtsp_pipeline(const std::string& camera, const std::st
   g_object_set(source, "location", uri.c_str(), "latency", 200U, nullptr);
   gst_bin_add(GST_BIN(pipeline), source);
   auto* context = new EncodedSourceContext{
-      frames, failures, access_units, camera, pipeline, 0, false, {}, nullptr, nullptr, 0, 0,
-      std::nullopt, {}, {}};
+      frames, failures, access_units, previews, binding, camera, pipeline, 0, false, {}, nullptr, nullptr,
+      0, 0, std::nullopt, 0, false, {}, {}, {}};
   g_object_set_data_full(G_OBJECT(pipeline), "seeon-encoded-context", context, destroy_branch);
+  attach_encoded_bus_handler(pipeline, camera, failures);
   g_signal_connect(source, "pad-added", G_CALLBACK(on_rtp_pad), context);
   if (gst_element_set_state(pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
     *error_code = "pipeline_start_failed";
@@ -168,9 +198,6 @@ bool set_encoded_preview_viewers(GstElement* pipeline, std::uint32_t viewers) {
   if (context->preview_valve != nullptr) {
     g_object_set(context->preview_valve, "drop", viewers == 0, nullptr);
   }
-  if (context->decode_queue != nullptr) {
-    g_object_set(context->decode_queue, "leaky", viewers == 0 ? 2 : 0, nullptr);
-  }
   return true;
 }
 
@@ -182,6 +209,12 @@ bool wait_encoded_preview(GstElement* pipeline, std::uint64_t target) {
   return context->preview_ready.wait_for(lock, std::chrono::seconds{2}, [context, target] {
     return context->preview_encoded.load() >= target;
   });
+}
+
+void quiesce_encoded_pipeline(GstElement* pipeline) {
+  auto* context = static_cast<EncodedSourceContext*>(
+      g_object_get_data(G_OBJECT(pipeline), "seeon-encoded-context"));
+  if (context != nullptr) flush_pending_access_unit(context);
 }
 
 std::optional<PreviewStatus> encoded_preview_status(GstElement* pipeline) {

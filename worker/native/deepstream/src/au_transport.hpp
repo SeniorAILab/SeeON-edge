@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -30,7 +31,25 @@ struct ParsedAccessUnit {
   std::vector<std::uint8_t> codec_data;
   std::vector<std::uint8_t> payload;
 };
-using AccessUnitCallback = std::function<void(const std::string&, ParsedAccessUnit)>;
+class PipelineBinding {
+ public:
+  PipelineBinding(std::uint32_t generation, std::uint64_t epoch);
+  void invalidate();
+  [[nodiscard]] bool dispatch_au(
+      const std::function<void(std::uint32_t, std::uint64_t, std::uint64_t)>& action);
+  [[nodiscard]] bool dispatch_frame(
+      const std::function<void(std::uint32_t, std::uint64_t)>& action);
+
+ private:
+  std::uint32_t generation_;
+  std::uint64_t epoch_;
+  std::uint64_t sequence_ = 0;
+  bool live_ = true;
+  std::mutex mutex_;
+};
+using PipelineBindingPtr = std::shared_ptr<PipelineBinding>;
+using AccessUnitCallback =
+    std::function<void(const std::string&, const PipelineBindingPtr&, ParsedAccessUnit)>;
 
 struct AuEnvelope {
   std::string camera;
@@ -39,6 +58,8 @@ struct AuEnvelope {
   std::uint64_t sequence;
   ParsedAccessUnit unit;
 };
+
+inline constexpr std::size_t kMaxAuFrameBytes = 32U * 1024U * 1024U;
 
 class AuSender {
  public:

@@ -18,6 +18,8 @@ struct EncodedSourceContext {
   FrameCallback frames;
   FailureCallback failures;
   AccessUnitCallback access_units;
+  PreviewCallback previews;
+  PipelineBindingPtr binding;
   std::string camera;
   GstElement* pipeline;
   std::uint64_t order = 0;
@@ -28,10 +30,14 @@ struct EncodedSourceContext {
   std::atomic<std::uint64_t> preview_encoded{0};
   std::atomic<std::uint64_t> preview_viewers{0};
   std::optional<ParsedAccessUnit> pending_duration;
+  std::int64_t last_duration = 0;
+  std::atomic<bool> parser_failure_latched{false};
+  std::mutex sample_mutex;
   std::mutex preview_mutex;
   std::condition_variable preview_ready;
 };
 
 GstFlowReturn on_encoded_sample(GstAppSink* sink, gpointer raw);
+void flush_pending_access_unit(EncodedSourceContext* context);
 }  // namespace seeon
 #endif

@@ -7,10 +7,12 @@ import threading
 from typing import Final, final
 
 from worker.adapters.decode.native_au_receiver import NativeAuReceiver
+from worker.adapters.decode.native_preview_receiver import NativePreviewReceiver
 from worker.native.deepstream.control import ChildControlError, DeepStreamControlClient
 from worker.native.deepstream.metadata import LatestMetadataSlot, MetadataReceiver
 from worker.pipeline.output.evidence.packet_repository import PacketRingRepository
 from worker.pipeline.output.evidence.packet_ring import PacketRingLimits
+from worker.pipeline.output.live_view import LatestFrameStore
 from worker.runtime.deepstream.child_monitor import ChildExitMonitor, monitor_metadata
 from worker.runtime.deepstream.cleanup import ChildResources, stop_child_resources
 from worker.runtime.deepstream.config import (
@@ -47,6 +49,8 @@ class DeepStreamChildSupervisor:
         self._metadata: LatestMetadataSlot = LatestMetadataSlot()
         self._receiver: MetadataReceiver | None = None
         self._au_receiver: NativeAuReceiver | None = None
+        self._preview_receiver: NativePreviewReceiver | None = None
+        self._preview_frames = LatestFrameStore()
         self._packet_repository = PacketRingRepository(
             (),
             per_camera_limits=PacketRingLimits(4_000, 64 * 1024 * 1024, 120.0),
@@ -80,6 +84,10 @@ class DeepStreamChildSupervisor:
         if self._au_receiver is None:
             raise ChildStartupError("not_started", "gpu-0")
         return self._au_receiver
+
+    @property
+    def preview_frames(self) -> LatestFrameStore:
+        return self._preview_frames
 
     @property
     def control(self) -> DeepStreamControlClient:
@@ -129,8 +137,14 @@ class DeepStreamChildSupervisor:
             str(self._config.worker_boot_id),
             self._packet_repository,
             self._handle_au_gap,
+            self._fail_deadly,
         )
+        session.sources.set_retire_hook(self._au_receiver.retire_camera)
         self._au_receiver.start()
+        self._preview_receiver = NativePreviewReceiver(
+            transport.previews, self._preview_frames
+        )
+        self._preview_receiver.start()
         failures = NativeFailureCoordinator(
             self._config,
             lambda: self._sources,
@@ -163,7 +177,17 @@ class DeepStreamChildSupervisor:
             try:
                 _ = sources.rebuild(camera_id, category)
             except (ChildControlError, SourceReadinessError):
-                self._set_fatal_category("au_epoch_rebuild_failed")
+                self._fail_deadly("au_epoch_rebuild_failed")
+
+    def _fail_deadly(self, category: str) -> None:
+        process = self._process
+        if category == "au_stream_closed" and process is not None and process.poll() is not None:
+            category = "child_exit"
+        self._set_fatal_category(category)
+        self._fatal_received.set()
+        _ = persist_child_fault(self._config, category)
+        if process is not None and process.poll() is None:
+            process.kill()
 
     def _mark_control_eof(self) -> None:
         if self._fatal_category == "child_exit":
@@ -195,6 +219,9 @@ class DeepStreamChildSupervisor:
         au_receiver, self._au_receiver = self._au_receiver, None
         if au_receiver is not None:
             au_receiver.close()
+        preview_receiver, self._preview_receiver = self._preview_receiver, None
+        if preview_receiver is not None:
+            preview_receiver.close()
         resources = ChildResources(
             self._process,
             self._control,
