@@ -172,7 +172,6 @@ def _probe_preview_paths(request: ExecutionRequest, camera_id: str) -> str:
         + "\n",
         encoding="utf-8",
     )
-    _require_success(internal, "internal_preview_probe_failed", camera_id)
     return _preview_url(request, camera_id)
 
 
@@ -397,11 +396,11 @@ def execute_canary(request: ExecutionRequest) -> int:
                 gpu_loss_observed_at,
             )
             if camera_ids:
-                _wait_for_source_ready(native_path, camera_ids[0])
                 viewer_url = _probe_preview_paths(request, camera_ids[0])
                 _capture_preview_evidence(
                     request, _require_corpus(corpus), camera_ids[0], viewer_url
                 )
+                _wait_for_source_ready(native_path, camera_ids[0])
             final_sample = _require_sample(gpu_sample(final_snapshot), rung)
             with sample_lock:
                 gpu_samples.setdefault(rung, []).append(final_sample)

@@ -15,39 +15,48 @@ if (!cameraId || !outputDir || !clipPath || !viewerUrl || !token) {
 const screenshot = resolve(outputDir, `viewer-${cameraId}.png`);
 const chromium = process.env.CHROMIUM ?? "chromium";
 const viewer = viewerUrl;
-const consumer = spawn(
-  "curl",
-  ["--silent", "--show-error", "--max-time", "30", "--header", `X-Edge-Relay-Token: ${token}`, viewer],
-  { stdio: ["ignore", "pipe", "pipe"] },
-);
-
-const frame = await new Promise((resolveFrame, rejectFrame) => {
+const deadline = Date.now() + 60_000;
+const attach = () => new Promise((resolveAttach, rejectAttach) => {
+  const consumer = spawn(
+    "curl",
+    ["--silent", "--show-error", "--max-time", "30", "--header", `X-Edge-Relay-Token: ${token}`, viewer],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
   let received = Buffer.alloc(0);
-  const timeout = setTimeout(() => rejectFrame(new Error("MJPEG frame deadline exceeded")), 20_000);
-  consumer.once("error", (error) => {
-    clearTimeout(timeout);
-    rejectFrame(error);
-  });
+  let resolved = false;
+  consumer.once("error", rejectAttach);
   consumer.once("close", (code) => {
-    if (received.indexOf(Buffer.from([0xff, 0xd9])) < 0) {
-      clearTimeout(timeout);
-      rejectFrame(new Error(`MJPEG consumer exited before a frame: ${code}`));
-    }
+    if (!resolved) rejectAttach(new Error(`MJPEG consumer exited before a frame: ${code}`));
   });
   consumer.stdout.on("data", (chunk) => {
+    if (resolved) return;
     received = Buffer.concat([received, chunk]);
     const start = received.indexOf(Buffer.from([0xff, 0xd8]));
     const end = received.indexOf(Buffer.from([0xff, 0xd9]), Math.max(0, start + 2));
     if (start >= 0 && end > start) {
-      clearTimeout(timeout);
-      resolveFrame(received.subarray(start, end + 2));
+      resolved = true;
+      resolveAttach({ consumer, frame: received.subarray(start, end + 2) });
     }
   });
-}).catch((error) => {
-  console.error(String(error));
-  consumer.kill("SIGTERM");
-  process.exit(1);
 });
+
+let attachment;
+while (!attachment && Date.now() < deadline) {
+  try {
+    attachment = await attach();
+  } catch (error) {
+    if (Date.now() >= deadline) {
+      console.error(String(error));
+      process.exit(1);
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+  }
+}
+if (!attachment) {
+  console.error("MJPEG frame deadline exceeded");
+  process.exit(1);
+}
+const { consumer, frame } = attachment;
 
 const browser = spawnSync(
   chromium,
@@ -63,6 +72,7 @@ const browser = spawnSync(
   ],
   { encoding: "utf8", timeout: 30_000 },
 );
+await new Promise((resolveHold) => setTimeout(resolveHold, 11_000));
 consumer.kill("SIGTERM");
 
 const probe = spawnSync(

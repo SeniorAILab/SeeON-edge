@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from typing import Final, final
 
@@ -14,6 +15,7 @@ from worker.native.deepstream.metadata import LatestMetadataSlot, MetadataReceiv
 from worker.pipeline.output.evidence.packet_repository import PacketRingRepository
 from worker.pipeline.output.evidence.packet_ring import PacketRingLimits
 from worker.pipeline.output.live_view import LatestFrameStore
+from worker.runtime.deepstream.canary_telemetry import NativeCanaryTelemetry
 from worker.runtime.deepstream.child_monitor import ChildExitMonitor, monitor_metadata
 from worker.runtime.deepstream.cleanup import ChildResources, stop_child_resources
 from worker.runtime.deepstream.config import (
@@ -63,6 +65,7 @@ class DeepStreamChildSupervisor:
         self._receiver: MetadataReceiver | None = None
         self._au_receiver: NativeAuReceiver | None = None
         self._preview_receiver: NativePreviewReceiver | None = None
+        self._canary_preview_telemetry: dict[str, NativeCanaryTelemetry | None] = {}
         self._preview_frames = LatestFrameStore() if resources is None else resources.preview_frames
         self._packet_repository = (
             PacketRingRepository(
@@ -159,7 +162,11 @@ class DeepStreamChildSupervisor:
         )
         session.sources.set_retire_hook(self._au_receiver.retire_camera)
         self._au_receiver.start()
-        self._preview_receiver = NativePreviewReceiver(transport.previews, self._preview_frames)
+        self._preview_receiver = NativePreviewReceiver(
+            transport.previews,
+            self._preview_frames,
+            self._record_canary_preview,
+        )
         self._preview_receiver.start()
         failures = NativeFailureCoordinator(
             self._config,
@@ -233,6 +240,15 @@ class DeepStreamChildSupervisor:
                 self._config.first_fault_path,
             )
         return 0
+
+    def _record_canary_preview(self, camera_id: str, pts: int, sequence: int) -> None:
+        if camera_id not in self._canary_preview_telemetry:
+            self._canary_preview_telemetry[camera_id] = (
+                NativeCanaryTelemetry.from_environment(camera_id)
+            )
+        telemetry = self._canary_preview_telemetry[camera_id]
+        if telemetry is not None:
+            telemetry.record(pts, time.time_ns(), sequence)
 
     def stop(self) -> None:
         self._stopping.set()
