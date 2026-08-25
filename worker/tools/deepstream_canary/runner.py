@@ -95,6 +95,7 @@ def execute_canary(request: ExecutionRequest) -> int:
     def abort(error: CanarySafetyError) -> None:
         watchdog_fault.append(error)
         stop.set()
+        persist_first_fault(fault_path, error)
         _ = _compose(request, "down", "--remove-orphans")
 
     def watchdog() -> None:
@@ -124,6 +125,8 @@ def execute_canary(request: ExecutionRequest) -> int:
         (request.evidence_dir / "compose-up.log").write_text(
             up.stdout + up.stderr, encoding="utf-8"
         )
+        if watchdog_fault:
+            raise watchdog_fault[0]
         if up.returncode != 0:
             logs = _compose(request, "logs", "--no-color")
             _ = (request.evidence_dir / "compose-failure.log").write_text(
@@ -156,7 +159,8 @@ def execute_canary(request: ExecutionRequest) -> int:
         _ = (request.evidence_dir / "compose-failure.log").write_text(
             logs.stdout + logs.stderr, encoding="utf-8"
         )
-        persist_first_fault(fault_path, error)
+        if not watchdog_fault:
+            persist_first_fault(fault_path, error)
         return 1
     else:
         return 0
