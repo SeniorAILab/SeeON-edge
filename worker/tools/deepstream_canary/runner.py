@@ -89,32 +89,38 @@ def execute_canary(request: ExecutionRequest) -> int:
     """Execute only the isolated project; any first fault tears down only it."""
     fault_path = request.evidence_dir / "first-fault.json"
     stop = threading.Event()
+    stack_started = threading.Event()
     watchdog_fault: list[CanarySafetyError] = []
+
+    def abort(error: CanarySafetyError) -> None:
+        watchdog_fault.append(error)
+        stop.set()
+        _ = _compose(request, "down", "--remove-orphans")
 
     def watchdog() -> None:
         while not stop.wait(10.0):
-            exited = _compose(request, "ps", "--status", "exited", "--services")
-            failed_services = tuple(
-                service
-                for service in exited.stdout.splitlines()
-                if service and service != "engine-builder"
-            )
-            if exited.returncode != 0 or failed_services:
-                watchdog_fault.append(
-                    CanarySafetyError("canary_service_exited", ",".join(failed_services))
+            if stack_started.is_set():
+                exited = _compose(request, "ps", "--status", "exited", "--services")
+                failed_services = tuple(
+                    service
+                    for service in exited.stdout.splitlines()
+                    if service and service != "engine-builder"
                 )
-                stop.set()
-                return
+                if exited.returncode != 0 or failed_services:
+                    abort(CanarySafetyError("canary_service_exited", ",".join(failed_services)))
+                    return
             try:
                 compare_live_snapshot(request.baseline, request.safety_limits)
             except CanarySafetyError as error:
-                watchdog_fault.append(error)
-                stop.set()
+                abort(error)
                 return
 
     try:
         _ = _generate_corpus(request.evidence_dir)
+        monitor = threading.Thread(target=watchdog, name="canary-live-watchdog", daemon=True)
+        monitor.start()
         up = _compose(request, "up", "-d", "--remove-orphans")
+        stack_started.set()
         (request.evidence_dir / "compose-up.log").write_text(
             up.stdout + up.stderr, encoding="utf-8"
         )
@@ -122,8 +128,6 @@ def execute_canary(request: ExecutionRequest) -> int:
             error = CanarySafetyError("compose_up_failed", up.stderr[-500:])
             persist_first_fault(fault_path, error)
             return 1
-        monitor = threading.Thread(target=watchdog, name="canary-live-watchdog", daemon=True)
-        monitor.start()
         _ = stop.wait(request.monitor_seconds)
         stop.set()
         monitor.join(timeout=15.0)
