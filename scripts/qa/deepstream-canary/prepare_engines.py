@@ -35,6 +35,24 @@ def _run(action: str, manifest: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _prepare_bootstrap_cache(manifest: Path) -> int:
+    completed = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "worker.native.deepstream.preflight",
+            str(manifest),
+            "--prepare-engine-cache",
+        ),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        print(completed.stdout + completed.stderr, file=sys.stderr)
+    return completed.returncode
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -49,6 +67,8 @@ def main() -> int:
     source = Path(os.environ.get("CANARY_ENGINE_CACHE_SOURCE", "/missing"))
     if source.is_dir():
         shutil.copytree(source, ENGINE_CACHE, dirs_exist_ok=True)
+    if _prepare_bootstrap_cache(manifest) != 0:
+        return 2
     verified = _run("verify", manifest)
     action = "reused"
     if verified.returncode != 0:
@@ -79,6 +99,7 @@ def main() -> int:
         "plan_key": plan.name,
         "manifest_sha256": _sha256(manifest),
         "identity_sha256": _sha256(plan / ".identity.json"),
+        "bootstrap_identity_sha256": _sha256(ENGINE_CACHE / ".identity.json"),
         "engines": engines,
     }
     encoded = (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode()
