@@ -137,6 +137,10 @@ def execute_canary(request: ExecutionRequest) -> int:
             encoding="utf-8",
         )
     except CanarySafetyError as error:
+        logs = _compose(request, "logs", "--no-color")
+        _ = (request.evidence_dir / "compose-failure.log").write_text(
+            logs.stdout + logs.stderr, encoding="utf-8"
+        )
         persist_first_fault(fault_path, error)
         return 1
     else:
