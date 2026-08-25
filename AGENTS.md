@@ -1,7 +1,7 @@
 # PROJECT KNOWLEDGE BASE
 
 **Generated:** 2026-08-25
-**Commit:** 0a623c2
+**Commit:** 1d79e2f
 **Branch:** seeon-edge-ds-09
 
 Python/uv + React monorepo for fall and bed-exit detection. Three deployable
@@ -47,9 +47,9 @@ infra fails fast (ADR-0002). The worker is an RTSP client only.
 | Composition root | `worker/runtime/worker.py` | Selects the host coordinator/camera pipeline or the `nvidia` native media plane/policy pumps; wires evidence, MJPEG, and relay. |
 | Worker profile routing | `worker/runtime/profile/` | `ML_WORKER_PROFILE` selects the canonical stage/memory descriptor; `nvidia` routes production construction to the native child instead of host adapters. |
 | Host cross-cam inference | `worker/pipeline/inference_coordinator.py` | Non-`nvidia` only: `CapabilityInferenceCoordinator` drains latest-only frames and owns host pose forwards. The `nvidia` path never constructs it. |
-| Evidence | `worker/pipeline/output/evidence/` | Clip recorder, packet ring, snapshot store, durable stager, outbox. |
+| Evidence | `worker/pipeline/output/evidence/` | Clip recorder, packet ring, snapshot store, durable stager, filesystem delivery queue. |
 | Dashboard | `front/src/app/App.tsx` | `AuthGate` + `Dashboard`. Pages: events, operations, settings. |
-| Event wire | `shared/events/` | Schemas, outbox, `edge_ingest_client.py` (facts + heartbeats to the Event API). |
+| Event wire | `shared/events/` | Schemas and `edge_ingest_client.py` (facts + heartbeats to the Event API). |
 | SQLite foundation | `backend/app/edge_db/` | Schema, migrator, and ownership. The backend writes every application table family; the migrator alone writes `schema_*`. |
 | Native media child | `worker/native/deepstream/` | C++ RTSP/NVDEC/TensorRT/association plus the Python contract for `nvidia`; boot verifies engines and never builds them. |
 | Child supervision | `worker/runtime/deepstream/` | Python PID-1 supervisor, inherited IPC, restart-based source lifecycle, and CPU-only policy pump. |

@@ -46,7 +46,7 @@ preflighted `CameraDetectionPlan` objects still contain an unused tracker.
 requests a source rebuild on AU discontinuity. `NativePreviewReceiver` feeds
 `LatestFrameStore`; viewer demand and explicit snapshot requests travel through
 the child control channel, and returned JPEGs reuse that store. Do not add a
-second outbox, per-camera FFmpeg, host-frame IPC, or GPU work to the parent.
+second delivery queue, per-camera FFmpeg, host-frame IPC, or GPU work to the parent.
 
 ## Commands and focused tests
 

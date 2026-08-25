@@ -1,6 +1,6 @@
 # worker/pipeline/output/evidence
 
-Durable clip, snapshot, and relay-outbox path after admission. Pixels stop here as remuxed source packets and JPEG snapshots. Decision never writes this tree.
+Durable clip, snapshot, and filesystem delivery path after admission. Pixels stop here as remuxed source packets and JPEG snapshots. Decision never writes this tree.
 
 `worker.pipeline` must not import `worker.runtime`. Runtime injects the store dir, delivery queue, lock, and sender. Missing production wiring or a locked store refuses to start. Remote failures do not block startup: retryable classes retry, compatibility failures reprobe, and payload-invalid failures become permanent. Two workers must not share one delivery queue.
 
@@ -54,7 +54,7 @@ Media never lives in rows. Path is not identity; hash and size are.
 - `tests/test_worker_clip_publication.py`, `tests/test_worker_clip_recording.py`, `tests/test_clip_store_lock.py`
 - `tests/test_evidence_stager.py`, `tests/test_evidence_sender.py`, `tests/test_evidence_delivery_queue_restart.py`
 - `tests/test_retired_worker_dead_surfaces.py`, `tests/test_evidence_retention.py`, `tests/test_worker_clip_maintenance.py`
-- `tests/test_snapshot_store.py`, `tests/test_snapshot_lifecycle.py`, `tests/test_evidence_stager_provenance.py`
+- `tests/test_snapshot_store.py`
 - Boundary: `uv run --group lint lint-imports`
 
 Keep new pure-code modules at or below 250 logical LOC. Preserve lease balance, hold-before-delete, and the SQLite-vs-bytes split whenever a handoff changes shape.

@@ -32,7 +32,7 @@ Implement the port. Don't invent a parallel API.
 - `ClipEncoder.open(camera, profile, geometry)`. Profile arrives resolved. Don't re-parse `ML_WORKER_PROFILE`.
 - `ServingClient.create(task, ...)`. One runner per task/options per process. Preserve object identity across cameras.
 - `FrameMaterializer` / `HostFrameView`. Non-host `view` fails. No silent host<->device transfer.
-- `DeviceResidentPool` / `DeviceResidentBatcher` stay experimental.
+- The `decode/nvdec_device/` pool and `encode/nvenc_device/` renderer stay experimental.
 
 A new backend is a new package behind the existing port, registered by `worker/runtime`. Not a branch inside an adapter. Not `if profile` in a pipeline stage. Delete unused skeletons. Don't leak FFmpeg, cv2, or torch through the port signature.
 

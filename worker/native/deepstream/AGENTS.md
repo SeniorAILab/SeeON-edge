@@ -30,7 +30,7 @@ rows, the legacy score threshold/integer conversion, and the no-second-NMS
 rule unless a separate behavior change is approved.
 
 The encoded-AU tee is source-primary and precedes decode. Primary evidence
-remuxes that stream; preview and annotated event clips are bounded derivatives.
+remuxes that stream; preview JPEGs are bounded derivatives.
 Do not add stock `nvtracker`, a second encoder on the primary path, or a public
 `PerceptionFrameV1` contract.
 

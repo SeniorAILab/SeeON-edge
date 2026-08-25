@@ -16,7 +16,7 @@ Stages hold per-camera state and call ports. Process lifecycle stays in runtime.
 - `bus/`: named bounded subscriptions, `scheduler.py`, publish/take/drop counters, queue age.
 - `perception/` + `analytics/`: observation builder, greedy tracker, `SceneState`, window buffer, `DecisionInput`, `features/`. `CompositeExtractor` owns one camera's tracker/scene and reuses shared named extractors. Scheduler picks due modules; every packet still coasts or advances tracker/scene.
 - `decision/`: `IncidentManager` (cooldown, admission, persisted identity, enrichment) and `EventAggregator`.
-- `output/`: `EventSink`, evidence (encoder, finalizer, manifests, outbox, retention, reconciliation), overlay, live view, snapshot store. Clip, snapshot, and relay side effects run after admission, here only.
+- `output/`: `EventSink`, evidence (encoder, finalizer, manifests, filesystem delivery queue, retention), overlay, live view, snapshot store. Clip, snapshot, and relay side effects run after admission, here only.
 - `camera_pipeline.py`: per-camera wiring. No business math.
 - `inference_coordinator.py`: non-`nvidia` shared pose owner between
   `bus.inference` and the pump. The `nvidia` runtime never constructs it. Not a
@@ -34,7 +34,7 @@ A queue owns every accepted packet until take, eviction, or close. After `take()
 
 ## Pixel / numeric, per-camera, output
 
-Pixels stop at model extract, derivative evidence, overlay/live view, and the alert snapshot. Decision sees `DecisionInput` only: observation, frame size, live track ids, time, frame index, bed region. No array, no buffer, no frame handle. Need a pixel-derived number? Extract it in `perception/` first.
+Pixels stop at model extract, overlay/live view, and the alert snapshot. Decision sees `DecisionInput` only: observation, frame size, live track ids, time, frame index, bed region. No array, no buffer, no frame handle. Need a pixel-derived number? Extract it in `perception/` first.
 
 On the host pipeline, per-camera ownership includes tracker, `SceneState`, window buffer, scheduler, `IncidentManager`, bus slot, encoder ring, ingest backoff, result slot, and live observation cache row; model objects, named extractors, serving client, and coordinator are shared once. The `nvidia` path instead uses native inference plus per-camera `NativePolicyPump` state. Don't hoist a per-camera row to save memory.
 

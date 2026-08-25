@@ -29,7 +29,7 @@ Perception math, domain judgment, and vendor kits live elsewhere. `backend` is f
 Global stages are fatal. Failed named stage starts zero cameras and exits non-zero. Lease, profile/device, and decode miss exit 3; ordinary stage failure exits 1.
 `FatalAcceleratorError` exits 4 and outranks the stage code. Lease is released before exit. `run_camera_stage` degrades only that camera; `FatalAcceleratorError` still re-raises because GPU context is process-wide.
 RTSP failure retries with backoff. Decode stall reopens the source. Source open failure is camera `DEGRADED` plus `camera.offline`; later processing failure is not offline.
-Missing evidence wiring or a locked local store refuses to start. Remote delivery is classified: retry classes retry, compatibility failures reprobe, and payload-invalid failures become permanent. Two workers must not share one outbox.
+Missing evidence wiring or a locked local store refuses to start. Remote delivery is classified: retry classes retry, compatibility failures reprobe, and payload-invalid failures become permanent. Two workers must not share one delivery queue.
 NVENC may demote to `libx264` during preflight and once per camera after session-open failure, logged. VAAPI may demote to `opencv` at boot. NVDEC and OpenCV decode stay fail-fast.
 Mid-run device loss writes one first-fault record, stops every camera, hard-exits 4. Under `nvidia`, native fatal exit also persists one first-fault record and hard-exits 4; the CUDA context exists only in the child and is never recreated in-process.
 Worker never queries Xid state. Zero configured cameras is a valid boot.
@@ -38,7 +38,7 @@ For non-`nvidia`, shared-once ownership includes models, extractors, serving
 client, and coordinator; per-camera ownership includes tracker, `SceneState`,
 window buffer, bus, encoder ring, result slot, and live observation cache.
 `nvidia` shares the native media plane and uses per-camera policy pumps instead.
-All profiles share profile/device, GPU lease, config/LKG, evidence outbox,
+All profiles share profile/device, GPU lease, config/LKG, evidence delivery queue,
 clip-store lock, audit overlay, snapshot store, and diagnostics; domain policy
 state and evidence attachers remain per camera. Hoisting a per-camera row leaks one resident into another.
 `tests/test_worker_per_camera_fall_state.py` asserts both halves.

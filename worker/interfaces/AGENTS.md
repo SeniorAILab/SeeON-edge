@@ -69,4 +69,4 @@ Implicit host-device transfer is a leak; name a materializer instead.
   signature, substitutability, and worker-internal envelope behavior.
 - `tests/test_import_dependency_ladder.py` and `uv run --group lint lint-imports`.
 - `tests/test_serving_batch_client.py`, `tests/test_worker_model_serving.py`: batch vs single-frame.
-- `tests/test_nvidia_device_resident_prototype.py`: pool and batcher ports.
+- `tests/test_nvidia_device_resident_prototype.py`: surviving experimental adapter prototypes.
