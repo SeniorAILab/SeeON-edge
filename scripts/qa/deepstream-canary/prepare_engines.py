@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -45,6 +46,9 @@ def _sha256(path: Path) -> str:
 def main() -> int:
     manifest = Path(sys.argv[1])
     receipt_path = Path(sys.argv[2])
+    source = Path(os.environ.get("CANARY_ENGINE_CACHE_SOURCE", "/missing"))
+    if source.is_dir():
+        shutil.copytree(source, ENGINE_CACHE, dirs_exist_ok=True)
     verified = _run("verify", manifest)
     action = "reused"
     if verified.returncode != 0:

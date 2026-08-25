@@ -47,8 +47,11 @@ services:
     restart: "no"
     profiles: [prepare]
     networks: [canary]
+    environment:
+      CANARY_ENGINE_CACHE_SOURCE: /prepared-cache
     volumes:
       - ${CANARY_ASSET_DIR}/prepare_engines.py:/prepare_engines.py:ro
+      # CANARY_ENGINE_SOURCE_MOUNT
       - ${CANARY_MODEL_DIR}:/app/models:ro
       - ${CANARY_ENGINE_DIR}:/var/cache/seeon/tensorrt:rw
       - ${CANARY_RECEIPT_DIR}:/receipts:rw

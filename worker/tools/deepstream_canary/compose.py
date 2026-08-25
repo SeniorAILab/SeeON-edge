@@ -101,12 +101,6 @@ def render_compose(request: RenderRequest) -> tuple[Path, str]:
         "CANARY_CLIP_DIR",
     ):
         paths[key].mkdir(parents=True, exist_ok=True, mode=0o700)
-    if request.engine_cache_source is not None:
-        shutil.copytree(
-            request.engine_cache_source.resolve(),
-            paths["CANARY_ENGINE_DIR"],
-            dirs_exist_ok=True,
-        )
     if paths["CANARY_MODEL_DIR"].exists():
         raise FileExistsError(paths["CANARY_MODEL_DIR"])
     shutil.copytree(request.model_dir.resolve(), paths["CANARY_MODEL_DIR"])
@@ -128,6 +122,12 @@ def render_compose(request: RenderRequest) -> tuple[Path, str]:
     }
     for name, value in replacements.items():
         template = template.replace(f"${{{name}}}", value)
+    source_mount = (
+        ""
+        if request.engine_cache_source is None
+        else f"      - {request.engine_cache_source.resolve()}:/prepared-cache:ro\n"
+    )
+    template = template.replace("      # CANARY_ENGINE_SOURCE_MOUNT\n", source_mount)
     publisher = _publisher_block(
         request.camera_count, request.worker_image, paths["CANARY_SCRATCH_DIR"]
     )

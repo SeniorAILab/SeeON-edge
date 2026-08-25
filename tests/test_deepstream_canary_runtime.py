@@ -66,9 +66,11 @@ def test_render_copies_prepared_content_addressed_engine_cache(tmp_path: Path) -
         text=True,
     )
 
-    # Then: reuse is run-local and leaves the source untouched.
+    # Then: a read-only source is mounted only into the explicit prepare service.
     assert completed.returncode == 0, completed.stderr
-    assert (evidence / "run/engine-cache/c7-plan-key/.identity.json").read_text() == "{}\n"
+    rendered = (evidence / "compose.rendered.yaml").read_text()
+    assert f"{source.resolve()}:/prepared-cache:ro" in rendered
+    assert not (evidence / "run/engine-cache/c7-plan-key").exists()
     assert (plan / ".identity.json").is_file()
 
 
