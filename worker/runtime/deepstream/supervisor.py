@@ -67,7 +67,9 @@ class DeepStreamChildSupervisor:
         self._receiver: MetadataReceiver | None = None
         self._au_receiver: NativeAuReceiver | None = None
         self._preview_receiver: NativePreviewReceiver | None = None
-        self._canary_preview_telemetry: dict[str, NativeCanaryTelemetry | None] = {}
+        self._canary_au_telemetry: dict[
+            str, tuple[int, NativeCanaryTelemetry | None]
+        ] = {}
         self._preview_frames = LatestFrameStore() if resources is None else resources.preview_frames
         self._packet_repository = (
             PacketRingRepository(
@@ -161,13 +163,13 @@ class DeepStreamChildSupervisor:
             self._packet_repository,
             self._handle_au_gap,
             self._fail_deadly,
+            self._record_canary_au,
         )
         session.sources.set_retire_hook(self._au_receiver.retire_camera)
         self._au_receiver.start()
         self._preview_receiver = NativePreviewReceiver(
             transport.previews,
             self._preview_frames,
-            self._record_canary_preview,
         )
         self._preview_receiver.start()
         failures = NativeFailureCoordinator(
@@ -251,12 +253,18 @@ class DeepStreamChildSupervisor:
             )
         return 0
 
-    def _record_canary_preview(self, camera_id: str, pts: int, sequence: int) -> None:
-        if camera_id not in self._canary_preview_telemetry:
-            self._canary_preview_telemetry[camera_id] = (
-                NativeCanaryTelemetry.from_environment(camera_id)
-            )
-        telemetry = self._canary_preview_telemetry[camera_id]
+    def _record_canary_au(
+        self,
+        camera_id: str,
+        pts: int,
+        sequence: int,
+        generation: int,
+    ) -> None:
+        current = self._canary_au_telemetry.get(camera_id)
+        if current is None or current[0] != generation:
+            current = (generation, NativeCanaryTelemetry.from_environment(camera_id))
+            self._canary_au_telemetry[camera_id] = current
+        telemetry = current[1]
         if telemetry is not None:
             telemetry.record(pts, time.time_ns(), sequence)
 
