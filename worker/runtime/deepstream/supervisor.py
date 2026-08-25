@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import threading
 import time
@@ -40,6 +41,7 @@ from worker.runtime.deepstream.transport import spawn_child
 from worker.runtime.lease import GpuLease
 
 FATAL_CHILD_EXIT_CODE: Final = 4
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,11 +177,19 @@ class DeepStreamChildSupervisor:
             self._fatal_received,
             self._set_fatal_category,
         )
+        def source_failure(camera_id: str, category: str) -> None:
+            LOGGER.warning(
+                "native source failure: camera_id=%s category=%s",
+                camera_id,
+                category,
+            )
+            failures.source_failure(camera_id, category)
+
         self._failure_receiver = NativeFailureReceiver(
             transport.failures,
             self._config.worker_boot_id,
             self._config.child_instance_id,
-            failures.source_failure,
+            source_failure,
             failures.fatal,
         )
         self._failure_receiver.start()
