@@ -90,6 +90,7 @@ void on_rtp_pad(GstElement*, GstPad* output, gpointer raw) {
   GstElement* decode_queue = element("queue");
   GstElement* decoder = element("nvv4l2decoder");
   GstElement* convert = element("nvvideoconvert");
+  GstElement* decoded_caps = element("capsfilter");
   GstElement* transform = element("seeonperceptiontransform");
   GstElement* decoded_tee = element("tee");
   GstElement* inference_queue = element("queue");
@@ -105,9 +106,9 @@ void on_rtp_pad(GstElement*, GstPad* output, gpointer raw) {
   GstElement* jpeg_caps = element("capsfilter");
   GstElement* jpeg = element("nvjpegenc");
   GstElement* preview_sink = element("fakesink");
-  const std::array<GstElement*, 23> elements{
+  const std::array<GstElement*, 24> elements{
       depay, parser, parser_caps, tee, record_queue, record_sink, decode_queue, decoder, convert,
-      transform, decoded_tee, inference_queue, inference_convert, inference_caps, sink,
+      decoded_caps, transform, decoded_tee, inference_queue, inference_convert, inference_caps, sink,
       preview_valve, preview_queue, preview_convert, preview_caps, osd, jpeg_convert,
       jpeg_caps, jpeg};
   if (std::ranges::any_of(elements, [](GstElement* item) { return item == nullptr; }) ||
@@ -140,11 +141,15 @@ void on_rtp_pad(GstElement*, GstPad* output, gpointer raw) {
                "max-size-time", 0U, "leaky", 2, nullptr);
   g_object_set(inference_queue, "max-size-buffers", 1U, "max-size-bytes", 0U,
                "max-size-time", 0U, "leaky", 2, nullptr);
+  GstCaps* decoded_rgba = gst_caps_from_string("video/x-raw(memory:NVMM),format=RGBA");
+  g_object_set(decoded_caps, "caps", decoded_rgba, nullptr);
+  gst_caps_unref(decoded_rgba);
   GstCaps* inference_rgba = gst_caps_from_string("video/x-raw,format=RGBA");
+  g_object_set(inference_convert, "nvbuf-memory-type", 1, nullptr);
   g_object_set(inference_caps, "caps", inference_rgba, nullptr);
   gst_caps_unref(inference_rgba);
-  g_object_set(sink, "emit-signals", TRUE, "sync", FALSE, "max-buffers", 1U,
-               "drop", TRUE, nullptr);
+  g_object_set(sink, "emit-signals", TRUE, "sync", FALSE, "async", FALSE,
+               "max-buffers", 1U, "drop", TRUE, nullptr);
   g_object_set(preview_valve, "drop", context->preview_viewers.load() == 0, nullptr);
   g_object_set(preview_queue, "max-size-buffers", 1U, "max-size-bytes", 0U,
                "max-size-time", 0U, "leaky", 2, nullptr);
@@ -154,7 +159,7 @@ void on_rtp_pad(GstElement*, GstPad* output, gpointer raw) {
   GstCaps* i420_caps = gst_caps_from_string("video/x-raw(memory:NVMM),format=I420");
   g_object_set(jpeg_caps, "caps", i420_caps, nullptr);
   gst_caps_unref(i420_caps);
-  g_object_set(preview_sink, "sync", FALSE, nullptr);
+  g_object_set(preview_sink, "sync", FALSE, "async", FALSE, nullptr);
   context->preview_valve = preview_valve;
   context->decode_queue = decode_queue;
   g_signal_connect(record_sink, "new-sample", G_CALLBACK(on_encoded_sample), context);
@@ -164,14 +169,14 @@ void on_rtp_pad(GstElement*, GstPad* output, gpointer raw) {
                                       on_preview_encoded, context, nullptr));
   gst_object_unref(jpeg_output);
   gst_bin_add_many(GST_BIN(context->pipeline), depay, parser, parser_caps, tee, record_queue,
-                   record_sink, decode_queue, decoder, convert, transform, decoded_tee,
+                   record_sink, decode_queue, decoder, convert, decoded_caps, transform, decoded_tee,
                    inference_queue, inference_convert, inference_caps, sink, preview_valve,
                    preview_queue, preview_convert, preview_caps, osd, jpeg_convert, jpeg_caps,
                    jpeg, preview_sink, nullptr);
   const bool linked = gst_element_link_many(depay, parser, parser_caps, tee, nullptr) &&
                       gst_element_link_many(tee, record_queue, record_sink, nullptr) &&
-                      gst_element_link_many(tee, decode_queue, decoder, convert, transform,
-                                            decoded_tee, nullptr) &&
+                      gst_element_link_many(tee, decode_queue, decoder, convert, decoded_caps,
+                                            transform, decoded_tee, nullptr) &&
                       gst_element_link_many(decoded_tee, inference_queue, inference_convert,
                                             inference_caps, sink, nullptr) &&
                       gst_element_link_many(decoded_tee, preview_valve, preview_queue,

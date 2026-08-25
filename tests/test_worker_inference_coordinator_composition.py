@@ -157,7 +157,7 @@ def test_non_nvidia_composed_coordinator_removes_pose_and_reuses_the_runner(
     try:
         assert [extractor.module_name for extractor in context.analytics.extractors] == ["bed"]
         assert context.inference_results is not None
-        assert getattr(context.pump, "_results") is context.inference_results
+        assert context.pump._results is context.inference_results  # pyright: ignore[reportAttributeAccessIssue]  # noqa: SLF001
         assert coordinator._lanes[0].results is context.inference_results  # noqa: SLF001
 
         pooled_pose = graph.components["pose"]

@@ -15,9 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from contracts.runner import RunnerProtocol
-
 import worker.runtime.worker as worker_module
+from contracts.runner import RunnerProtocol
 from worker.adapters.device.mps.probe import MpsCapability
 from worker.native.deepstream.preflight import DeepStreamPreflightError
 from worker.runtime.config import WorkerConfig
