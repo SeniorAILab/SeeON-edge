@@ -80,6 +80,8 @@ def _generate_corpus(root: Path) -> Path:
     )
     if completed.returncode != 0:
         raise CanarySafetyError("corpus_generation_failed", completed.stderr[-500:])
+    _ = corpus.chmod(0o444)
+    _ = corpus.parent.chmod(0o755)
     return corpus
 
 
@@ -92,9 +94,14 @@ def execute_canary(request: ExecutionRequest) -> int:
     def watchdog() -> None:
         while not stop.wait(10.0):
             exited = _compose(request, "ps", "--status", "exited", "--services")
-            if exited.returncode != 0 or exited.stdout.strip():
+            failed_services = tuple(
+                service
+                for service in exited.stdout.splitlines()
+                if service and service != "engine-builder"
+            )
+            if exited.returncode != 0 or failed_services:
                 watchdog_fault.append(
-                    CanarySafetyError("canary_service_exited", exited.stdout.strip())
+                    CanarySafetyError("canary_service_exited", ",".join(failed_services))
                 )
                 stop.set()
                 return

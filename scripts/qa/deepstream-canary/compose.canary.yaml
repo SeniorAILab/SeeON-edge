@@ -9,9 +9,11 @@ services:
     environment:
       CANARY_RELAY_TOKEN: ${CANARY_RELAY_TOKEN}
       CANARY_RECEIPT_DIR: /receipts
+      CANARY_WORKER_CONFIG: /worker-config.json
     volumes:
       - ${CANARY_ASSET_DIR}/relay_stub.py:/relay_stub.py:ro
       - ${CANARY_RECEIPT_DIR}:/receipts:rw
+      - ${CANARY_CONFIG_PATH}:/worker-config.json:ro
     command: [python, /relay_stub.py]
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -38,6 +40,23 @@ services:
       timeout: 3s
       retries: 10
 
+  engine-builder:
+    image: ${CANARY_WORKER_IMAGE}
+    pull_policy: never
+    restart: "no"
+    networks: [canary]
+    volumes:
+      - ${CANARY_MODEL_DIR}:/app/models:ro
+      - ${CANARY_ENGINE_DIR}:/var/cache/seeon/tensorrt:rw
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: [python, -m, worker.native.deepstream.engine_cache, build, /opt/seeon/deepstream-manifest.json]
+
   ml-worker:
     image: ${CANARY_WORKER_IMAGE}
     pull_policy: never
@@ -48,6 +67,8 @@ services:
         condition: service_healthy
       mediamtx:
         condition: service_healthy
+      engine-builder:
+        condition: service_completed_successfully
     environment:
       RELAY_TOKEN: ${CANARY_RELAY_TOKEN}
       ML_WORKER_PROFILE: nvidia
@@ -62,7 +83,6 @@ services:
       - ${CANARY_ENGINE_DIR}:/var/cache/seeon/tensorrt:rw
       - ${CANARY_SCRATCH_DIR}:/var/lib/seeon-scratch:rw
       - ${CANARY_CLIP_DIR}:/var/lib/clip-store:rw
-      - ${CANARY_CONFIG_PATH}:/run/seeon/canary-worker.yaml:ro
     deploy:
       resources:
         reservations:
@@ -70,7 +90,7 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    command: [python, -m, worker, --config, /run/seeon/canary-worker.yaml, --state-dir, /var/lib/seeon-state]
+    command: [python, -m, worker, --state-dir, /var/lib/seeon-state]
 
 networks:
   canary:

@@ -18,6 +18,7 @@ from typing import Final
 
 TOKEN: Final = os.environ["CANARY_RELAY_TOKEN"]
 RECEIPTS: Final = Path(os.environ["CANARY_RECEIPT_DIR"])
+WORKER_CONFIG: Final = Path(os.environ["CANARY_WORKER_CONFIG"])
 MAX_BODY: Final = 2 * 1024 * 1024
 
 
@@ -26,11 +27,20 @@ class RelayHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/health/live":
-            self.send_response(HTTPStatus.OK)
-            self.end_headers()
-            self.wfile.write(b'{"status":"ok"}\n')
+            body = b'{"status":"ok"}\n'
+        elif self.path == "/api/v1/cameras/worker-config":
+            if self.headers.get("X-Edge-Relay-Token", "") != TOKEN:
+                self.send_error(HTTPStatus.UNAUTHORIZED)
+                return
+            body = WORKER_CONFIG.read_bytes()
+        else:
+            self.send_error(HTTPStatus.NOT_FOUND)
             return
-        self.send_error(HTTPStatus.NOT_FOUND)
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        _ = self.wfile.write(body)
 
     def do_POST(self) -> None:  # noqa: N802
         authorization = self.headers.get("Authorization", "")

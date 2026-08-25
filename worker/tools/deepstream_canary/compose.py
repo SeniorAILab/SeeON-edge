@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from worker.tools.deepstream_canary.report import write_receipt_manifest
+from worker.tools.deepstream_canary.report import JsonValue, canonical_json, write_receipt_manifest
 
 PROJECT_NAME: Final = "seeon-ds-canary"
 SUPPORT_DIR: Final = Path("scripts/qa/deepstream-canary")
@@ -47,35 +47,31 @@ def _publisher_block(camera_count: int, worker_image: str, corpus_dir: Path) -> 
     return "".join(blocks)
 
 
-def _worker_config(camera_count: int, relay_token: str) -> bytes:
-    cameras = "".join(
-        f"  - camera_id: loop-{index:02d}\n"
-        "    facility_id: canary-facility\n"
-        f"    resident_id: canary-resident-{index:02d}\n"
-        f"    rtsp_url: rtsp://mediamtx:8554/loop-{index:02d}\n"
-        "    heartbeat_interval_sec: 10\n"
-        "    frame_stride: 1\n"
-        f"    label: Canary {index:02d}\n"
+def _worker_config(camera_count: int) -> bytes:
+    cameras: list[JsonValue] = [
+        {
+            "camera_id": f"loop-{index:02d}",
+            "facility_id": "canary-facility",
+            "space_id": f"canary-space-{index:02d}",
+            "label": f"Canary {index:02d}",
+            "rtsp_url": f"rtsp://mediamtx:8554/loop-{index:02d}",
+            "online": True,
+            "fps": 15.0,
+            "frame_stride": 1,
+            "decode_backend": "nvdec",
+            "domains": ["fall", "bed_exit"],
+        }
         for index in range(1, camera_count + 1)
-    )
-    return (
-        "version: 1\n"
-        "relay:\n  url: http://ml-api:8000\n"
-        f"  token: {relay_token}\n"
-        "runtime:\n  max_failures: 3\n  open_timeout_ms: 5000\n  read_timeout_ms: 5000\n"
-        "models:\n"
-        "  fall:\n"
-        "    type: lstm\n    framework: pytorch\n    mode: sequence\n"
-        "    artifact_dir: /app/models/fall/lstm\n"
-        "    weights: model.pt\n    architecture: arch.json\n    metadata: metadata.yaml\n"
-        "    window: 30\n    stride: 5\n    input_shape: [30, 51]\n"
-        "    operating_threshold: 0.5\n    schema_version: 1\n"
-        "    preprocessing_identity: legacy-coco17-xyc-frame-normalized-zero-fill-v1\n"
-        "domains:\n  fall:\n    enabled: true\n  bed_exit:\n    enabled: true\n"
-        "    night_window:\n      start: '21:00'\n      end: '05:00'\n      tz: Asia/Seoul\n"
-        "clip:\n  enabled: true\n"
-        f"cameras:\n{cameras}"
-    ).encode()
+    ]
+    payload: dict[str, JsonValue] = {
+        "registry_version": 1,
+        "config_version": 1,
+        "restart_epoch": 0,
+        "cameras": cameras,
+        "clip_export_enabled": False,
+        "clip_export_version": 0,
+    }
+    return canonical_json(payload)
 
 
 def render_compose(request: RenderRequest) -> tuple[Path, str]:
@@ -108,7 +104,7 @@ def render_compose(request: RenderRequest) -> tuple[Path, str]:
         raise FileExistsError(paths["CANARY_MODEL_DIR"])
     shutil.copytree(request.model_dir.resolve(), paths["CANARY_MODEL_DIR"])
     paths["CANARY_CONFIG_PATH"].write_bytes(
-        _worker_config(request.camera_count, request.relay_token)
+        _worker_config(request.camera_count)
     )
     template = BASE_COMPOSE.read_text(encoding="utf-8")
     replacements = {
