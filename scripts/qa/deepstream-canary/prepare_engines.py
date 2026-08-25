@@ -86,6 +86,8 @@ def main() -> int:
         print("engine plan directory is not unique", file=sys.stderr)
         return 2
     plan = plan_dirs[0]
+    (ENGINE_CACHE / ".identity.json").chmod(0o444)
+    (plan / ".identity.json").chmod(0o444)
     engines = {
         path.name: _sha256(path)
         for path in sorted(plan.glob("*.engine"))
