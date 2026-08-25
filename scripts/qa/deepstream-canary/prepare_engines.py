@@ -74,7 +74,7 @@ def main() -> int:
         "action": action,
         "plan_key": plan.name,
         "manifest_sha256": _sha256(manifest),
-        "identity_sha256": _sha256(plan / ".plan-identity.json"),
+        "identity_sha256": _sha256(plan / ".identity.json"),
         "engines": engines,
     }
     encoded = (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode()
