@@ -154,7 +154,9 @@ def _container_snapshot(
             container_id,
         )
     )
-    mounts = tuple(Path(line).resolve() for line in mount_text.splitlines() if line)
+    mounts = tuple(
+        sorted(Path(line).resolve() for line in mount_text.splitlines() if line)
+    )
     return LiveContainer(
         container_id=container_id,
         restart_count=restart_count,
