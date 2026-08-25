@@ -75,7 +75,7 @@ int main(int argc, char** argv) {
   frame.poses = {{{3, 4, 0.9}, {7, 8, 0.8}}, {{10, 11, 0.7}}};
   frame.bed_regions = {{{0, 0, 100, 80, 0.95}, {{0, 0}, {100, 0}, {100, 80}}}};
   frame.association = seeon::WireAssociation{
-      "legacy-greedy-bbox-iou.v1", "person_box", {{41, 0}, {42, 1}}};
+      "legacy-greedy-bbox-iou.v1", "person_box", {{41, 0}, {42, 1}}, {41, 42}};
   const std::string nonempty = hex(seeon::encode_perception(message, frame));
   if (argc == 2 && std::string{argv[1]} == "--emit-nonempty") {
     std::cout << nonempty << '\n';
@@ -92,7 +92,8 @@ int main(int argc, char** argv) {
             "7812345678123456781234567808006361"
             "6d6572612d61070000000000000040e20100000000000b0000000000000019006c65"
             "676163792d6772656564792d62626f782d696f752e76310a00706572736f6e5f626f"
-            "780200290000000000000000002a000000000000000100",
+            "780200290000000000000000002a00000000000000010002002900000000000000"
+            "2a00000000000000",
         "non-empty Python/C++ golden vector mismatch");
 
   frame.person_state = 2;

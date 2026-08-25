@@ -11,6 +11,7 @@ from typing import Protocol, final, override
 from worker.native.deepstream.control import ChildControlError
 from worker.native.deepstream.ipc import MetadataFrame
 from worker.native.deepstream.metadata import AcceptanceToken, SourceBinding
+from worker.types import ChannelState
 
 
 class SourceState(StrEnum):
@@ -97,9 +98,21 @@ class DarkSourceController:
         token = self._slot.register_source(binding)
         _ = self._receiver.pull_now(binding.camera_id)
         try:
-            _ = self._slot.wait_accepted(token, timeout_sec=2.0)
+            metadata = self._slot.wait_accepted(token, timeout_sec=2.0)
         except TimeoutError as error:
             raise SourceReadinessError("source_ready_timeout", binding.camera_id) from error
+        frame = metadata.frame
+        complete = (
+            metadata.source_width > 0
+            and metadata.source_height > 0
+            and metadata.source_time_ns > 0
+            and frame.association is not None
+            and frame.person_box.state is not ChannelState.SKIPPED
+            and frame.human_pose.state is not ChannelState.SKIPPED
+            and frame.bed_region.state is not ChannelState.SKIPPED
+        )
+        if not complete:
+            raise SourceReadinessError("source_ready_incomplete", binding.camera_id)
         ready = _snapshot(binding, SourceState.SOURCE_READY)
         with self._state_lock:
             current = self._states.get(binding.camera_id)

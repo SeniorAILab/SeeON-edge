@@ -110,6 +110,10 @@ std::vector<std::uint8_t> encode_perception(const ipc::Message& envelope,
       append(payload, track_id);
       append(payload, cue_index);
     }
+    append_count(payload, association.live_track_ids.size());
+    for (const std::int64_t live_id : association.live_track_ids) {
+      append(payload, live_id);
+    }
   }
   return payload;
 }

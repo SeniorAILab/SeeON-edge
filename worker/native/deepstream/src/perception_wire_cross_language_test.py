@@ -79,6 +79,9 @@ def main() -> None:
     (pair_count,) = reader.unpack("<H")
     pairs = [reader.unpack("<qH") for _ in range(int(pair_count))]
     assert pairs == [(41, 0), (42, 1)]
+    (live_count,) = reader.unpack("<H")
+    live_track_ids = [reader.unpack("<q")[0] for _ in range(int(live_count))]
+    assert live_track_ids == [41, 42]
     assert reader.offset == len(reader.payload)
 
 

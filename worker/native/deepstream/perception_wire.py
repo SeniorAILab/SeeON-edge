@@ -152,6 +152,9 @@ def encode_perception_frame(
             strict=True,
         ):
             writer.raw(_I64_U16.pack(track_id, cue_index))
+        writer.u16(len(association.live_track_ids))
+        for live_id in association.live_track_ids:
+            writer.raw(struct.pack("<q", live_id))
     return bytes(writer.value)
 
 
@@ -189,12 +192,14 @@ def decode_perception_wire(payload: bytes, expected: PerceptionFrameIdentity) ->
             raise PerceptionWireError("association_identity_mismatch", repr(association_identity))
         strategy, cue_source = reader.text(), reader.text()
         pairs = tuple((reader.i64(), reader.u16()) for _ in range(reader.u16()))
+        live_ids = tuple(reader.i64() for _ in range(reader.u16()))
         association = AssociationResult(
             strategy,
             tuple(pair[0] for pair in pairs),
             tuple(pair[1] for pair in pairs),
             identity,
             cue_source,
+            live_ids,
         )
     elif association_present != 0:
         raise PerceptionWireError("association_flag", str(association_present))

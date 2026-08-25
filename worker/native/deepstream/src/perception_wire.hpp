@@ -29,6 +29,7 @@ struct WireAssociation {
   std::string strategy;
   std::string cue_source;
   std::vector<std::pair<std::int64_t, std::uint16_t>> selections;
+  std::vector<std::int64_t> live_track_ids;
 };
 struct PerceptionPayload {
   std::uint8_t person_state = 2;
