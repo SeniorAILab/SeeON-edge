@@ -15,6 +15,7 @@ command=(
   -f compose.edge.yaml
   -f compose.edge.nvidia.yaml
   up -d
+  --pull never
   --no-deps
   --force-recreate
   ml-worker
