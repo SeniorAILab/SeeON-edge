@@ -59,6 +59,7 @@ class RunArguments(argparse.Namespace):
     worker_image: str = DEFAULT_WORKER_IMAGE
     model_dir: Path = Path("models")
     engine_cache_source: Path | None = None
+    policy: Path = POLICY_PATH
     appliance_id: str = "unbound-canary-appliance"
     camera_ids: str = ""
     render_only: bool = False
@@ -75,6 +76,7 @@ def _parser() -> argparse.ArgumentParser:
     _ = run.add_argument("--worker-image", default=DEFAULT_WORKER_IMAGE)
     _ = run.add_argument("--model-dir", type=Path, default=Path("models"))
     _ = run.add_argument("--engine-cache-source", type=Path)
+    _ = run.add_argument("--policy", type=Path, default=POLICY_PATH)
     _ = run.add_argument("--appliance-id", default="unbound-canary-appliance")
     _ = run.add_argument("--camera-ids", default="")
     _ = run.add_argument("--render-only", action="store_true")
@@ -130,7 +132,10 @@ def _run(arguments: RunArguments) -> int:
     evidence_dir.mkdir(parents=True, mode=0o700, exist_ok=False)
     rungs = _parse_rungs(arguments.rungs)
     mode = CanaryMode(arguments.mode)
-    policy = GatePolicy.model_validate_json(POLICY_PATH.read_bytes())
+    policy_path = arguments.policy.resolve()
+    policy_content = policy_path.read_bytes()
+    policy = GatePolicy.model_validate_json(policy_content)
+    policy_digest = hashlib.sha256(policy_content).hexdigest()
     worker_image: str = arguments.worker_image
     camera_ids = tuple(item.strip() for item in arguments.camera_ids.split(",") if item.strip())
     live_rungs = tuple(int(item) for item in rungs if item.isdigit())
@@ -160,7 +165,11 @@ def _run(arguments: RunArguments) -> int:
     write_once(
         evidence_dir / "run-request.json",
         canonical_json(
-            {"schema_version": 1, "requested_rungs": requested_rungs}
+            {
+                "schema_version": 1,
+                "requested_rungs": requested_rungs,
+                "policy_sha256": policy_digest,
+            }
         ),
     )
     refuse_existing_project()
@@ -216,7 +225,7 @@ def _run(arguments: RunArguments) -> int:
             artifacts=ExecutionArtifactSources(
                 worker_image=_image_digest(worker_image),
                 support_images=SUPPORT_IMAGE_DIGESTS,
-                gate_policy=hashlib.sha256(POLICY_PATH.read_bytes()).hexdigest(),
+                gate_policy=policy_digest,
                 compose=compose_digest,
             ),
         )

@@ -343,8 +343,18 @@ def test_canary_verifier_rejects_missing_requested_rung(tmp_path: Path) -> None:
         }
     )
     (root / "raw" / "rung-zero.json").write_text(json.dumps(zero))
+    policy_digest = hashlib.sha256(
+        Path("scripts/qa/deepstream-canary/gate-policy.v1.json").read_bytes()
+    ).hexdigest()
     (root / "run-request.json").write_text(
-        '{"schema_version":1,"requested_rungs":["zero","loopback"]}\n'
+        json.dumps(
+            {
+                "schema_version": 1,
+                "requested_rungs": ["zero", "loopback"],
+                "policy_sha256": policy_digest,
+            }
+        )
+        + "\n"
     )
 
     # When: the independent verifier evaluates the immutable requested set.

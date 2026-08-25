@@ -131,7 +131,19 @@ def _container_gpu_pids(container_id: str, gpu_processes: tuple[str, ...]) -> tu
 def _container_snapshot(
     container_id: str,
     gpu_processes: tuple[str, ...],
-) -> LiveContainer:
+) -> LiveContainer | None:
+    name = _run(("docker", "inspect", "-f", "{{.Name}}", container_id))
+    project = _run(
+        (
+            "docker",
+            "inspect",
+            "-f",
+            f"{{{{index .Config.Labels \"{PROJECT_LABEL}\"}}}}",
+            container_id,
+        )
+    )
+    if "seeon" not in name.lower() or project == PROJECT_NAME:
+        return None
     restart_count = int(_run(("docker", "inspect", "-f", "{{.RestartCount}}", container_id)))
     mount_text = _run(
         (
@@ -143,7 +155,6 @@ def _container_snapshot(
         )
     )
     mounts = tuple(Path(line).resolve() for line in mount_text.splitlines() if line)
-    name = _run(("docker", "inspect", "-f", "{{.Name}}", container_id))
     return LiveContainer(
         container_id=container_id,
         restart_count=restart_count,
@@ -191,20 +202,12 @@ def _live_status() -> tuple[tuple[str, ...], tuple[str, ...], int]:
 
 
 def capture_live_snapshot() -> LiveSnapshot:
-    ids = _run(
-        (
-            "docker",
-            "ps",
-            "--filter",
-            f"label={PROJECT_LABEL}!={PROJECT_NAME}",
-            "--format",
-            "{{.ID}}",
-        )
-    )
+    ids = _run(("docker", "ps", "--format", "{{.ID}}"))
     gpu_used, gpu_total, gpu_utilization, gpu_processes = _gpu_snapshot()
-    containers = tuple(
+    candidates = tuple(
         _container_snapshot(item, gpu_processes) for item in ids.splitlines() if item
     )
+    containers = tuple(item for item in candidates if item is not None)
     kernel = subprocess.run(
         ("journalctl", "--boot", "0", "--dmesg", "--no-pager"),
         check=False,

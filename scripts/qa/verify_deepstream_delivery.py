@@ -48,6 +48,7 @@ class RunRequestReceipt(BaseModel):
 
     schema_version: Literal[1]
     requested_rungs: tuple[str, ...]
+    policy_sha256: str
 
 
 class DeliveryVerdict(BaseModel):
@@ -63,15 +64,23 @@ class DeliveryVerdict(BaseModel):
 def _canary(root: Path, policy_path: Path) -> DeliveryVerdict:
     policy = GatePolicy.model_validate_json(policy_path.read_bytes())
     request = RunRequestReceipt.model_validate_json((root / "run-request.json").read_bytes())
+    policy_digest = hashlib.sha256(policy_path.read_bytes()).hexdigest()
     receipts = tuple(
         RungReceipt.model_validate_json(path.read_bytes())
         for path in sorted((root / "raw").glob("rung-*.json"))
     )
     by_rung = {receipt.rung: receipt for receipt in receipts}
     findings = tuple(
-        f"requested_rung_missing:{rung}"
-        for rung in request.requested_rungs
-        if rung not in by_rung
+        [
+            f"requested_rung_missing:{rung}"
+            for rung in request.requested_rungs
+            if rung not in by_rung
+        ]
+        + (
+            []
+            if request.policy_sha256 == policy_digest
+            else ["run_request_policy_digest_mismatch"]
+        )
     )
     reports = tuple(
         evaluate_receipt(by_rung[rung], policy)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -144,8 +146,18 @@ def test_runner_emits_verifiable_rung_receipt_from_recorded_telemetry(tmp_path: 
 
     # Then: the independent verifier recomputes PASS without trusting execution status.
     assert receipt.name == "rung-loopback.json"
+    policy_digest = hashlib.sha256(
+        Path("scripts/qa/deepstream-canary/gate-policy.v1.json").read_bytes()
+    ).hexdigest()
     (evidence / "run-request.json").write_text(
-        '{"schema_version":1,"requested_rungs":["loopback"]}\n'
+        json.dumps(
+            {
+                "schema_version": 1,
+                "requested_rungs": ["loopback"],
+                "policy_sha256": policy_digest,
+            }
+        )
+        + "\n"
     )
     verified = subprocess.run(
         [
