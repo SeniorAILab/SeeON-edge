@@ -22,6 +22,7 @@ class RenderRequest:
     relay_token: str
     camera_count: int
     model_dir: Path
+    engine_cache_source: Path | None = None
 
 
 def _publisher_block(camera_count: int, worker_image: str, corpus_dir: Path) -> str:
@@ -100,6 +101,12 @@ def render_compose(request: RenderRequest) -> tuple[Path, str]:
         "CANARY_CLIP_DIR",
     ):
         paths[key].mkdir(parents=True, exist_ok=True, mode=0o700)
+    if request.engine_cache_source is not None:
+        shutil.copytree(
+            request.engine_cache_source.resolve(),
+            paths["CANARY_ENGINE_DIR"],
+            dirs_exist_ok=True,
+        )
     if paths["CANARY_MODEL_DIR"].exists():
         raise FileExistsError(paths["CANARY_MODEL_DIR"])
     shutil.copytree(request.model_dir.resolve(), paths["CANARY_MODEL_DIR"])

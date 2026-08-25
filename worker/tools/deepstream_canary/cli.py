@@ -57,6 +57,7 @@ class RunArguments(argparse.Namespace):
     authorization: Path | None = None
     worker_image: str = DEFAULT_WORKER_IMAGE
     model_dir: Path = Path("models")
+    engine_cache_source: Path | None = None
     appliance_id: str = "unbound-canary-appliance"
     camera_ids: str = ""
     render_only: bool = False
@@ -72,6 +73,7 @@ def _parser() -> argparse.ArgumentParser:
     _ = run.add_argument("--authorization", type=Path)
     _ = run.add_argument("--worker-image", default=DEFAULT_WORKER_IMAGE)
     _ = run.add_argument("--model-dir", type=Path, default=Path("models"))
+    _ = run.add_argument("--engine-cache-source", type=Path)
     _ = run.add_argument("--appliance-id", default="unbound-canary-appliance")
     _ = run.add_argument("--camera-ids", default="")
     _ = run.add_argument("--render-only", action="store_true")
@@ -164,6 +166,7 @@ def _run(arguments: RunArguments) -> int:
             relay_token=relay_token,
             camera_count=camera_count,
             model_dir=arguments.model_dir,
+            engine_cache_source=arguments.engine_cache_source,
         )
     )
     print(json.dumps({"compose_sha256": compose_digest, "project": "seeon-ds-canary"}))

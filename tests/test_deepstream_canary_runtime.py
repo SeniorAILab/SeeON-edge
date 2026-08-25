@@ -36,6 +36,42 @@ def test_publishers_wait_for_mediamtx_health_when_compose_is_rendered(tmp_path: 
     assert "mediamtx:\n        condition: service_healthy" in publisher
 
 
+def test_render_copies_prepared_content_addressed_engine_cache(tmp_path: Path) -> None:
+    # Given: an immutable previously prepared plan cache.
+    source = tmp_path / "prepared"
+    plan = source / "c7-plan-key"
+    plan.mkdir(parents=True)
+    (plan / ".identity.json").write_text("{}\n")
+    evidence = tmp_path / "reuse"
+
+    # When: the isolated run is rendered with that explicit cache source.
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "worker.tools.deepstream_canary",
+            "run",
+            "--rungs",
+            "zero,loopback",
+            "--evidence-dir",
+            str(evidence),
+            "--render-only",
+            "--engine-cache-source",
+            str(source),
+            "--worker-image",
+            "seeon-edge@sha256:" + "b" * 64,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    # Then: reuse is run-local and leaves the source untouched.
+    assert completed.returncode == 0, completed.stderr
+    assert (evidence / "run/engine-cache/c7-plan-key/.identity.json").read_text() == "{}\n"
+    assert (plan / ".identity.json").is_file()
+
+
 def test_engine_prepare_is_profiled_before_steady_capacity_gate(tmp_path: Path) -> None:
     from worker.tools.deepstream_canary.models import GatePolicy
 
