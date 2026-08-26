@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 import subprocess
 import sys
 import textwrap
@@ -10,6 +12,7 @@ from typing import cast
 
 import pytest
 
+from shared.events.delivery_queue import DeliveryQueue
 from worker.adapters.model.errors import FatalAcceleratorError
 from worker.adapters.model.warmup import warmup_to_ready
 from worker.runtime import bootstrap
@@ -239,7 +242,10 @@ def test_watchdog_subprocess_hard_exits_with_fatal_accelerator_code(tmp_path: Pa
     )
 
     assert completed.returncode == 4
-    assert not (tmp_path / "edge.sqlite3").exists()
+    fault = _durable_fault_payload(tmp_path)
+    assert fault["stage"] == WATCHDOG_STAGE
+    assert fault["exit_code"] == 4
+    assert fault["camera_id"] == "camera-a"
 
 
 @pytest.mark.real_stack
@@ -466,7 +472,22 @@ def test_watchdog_detects_a_genuinely_hanging_extractor_inside_the_real_composit
     )
 
     assert completed.returncode == 4, f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
-    assert not (tmp_path / "edge.sqlite3").exists()
+    fault = _durable_fault_payload(tmp_path)
+    assert fault["stage"] == WATCHDOG_STAGE
+    assert fault["exit_code"] == 4
+    assert fault["camera_id"] == "camera-a"
+    assert fault["task"] == "pose"
+
+
+def _durable_fault_payload(state_dir: Path) -> dict[str, object]:
+    entries = tuple(DeliveryQueue(state_dir / "delivery-queue").entries())
+    assert len(entries) == 1
+    assert entries[0]["event_type"] == "runtime.fault"
+    encoded = entries[0]["values_b64"]
+    assert isinstance(encoded, str)
+    payload = json.loads(base64.b64decode(encoded))
+    assert isinstance(payload, dict)
+    return payload
 
 
 def _raise_warmup() -> None:
