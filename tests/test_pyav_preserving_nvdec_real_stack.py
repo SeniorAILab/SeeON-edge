@@ -42,11 +42,20 @@ def _worker_main(urls: tuple[str, ...]) -> int:
                     camera_id,
                     url,
                     open_timeout_ms=5_000,
-                    read_timeout_ms=2_000,
+                    read_timeout_ms=10_000,
                 )
             )
             session.set_stream_identity("real-stack-boot", 1)
             sessions.append(session)
+        # A spawned child is not yet a ready decoder: CUDA initialization and
+        # the first packet write happen asynchronously. Prove every child can
+        # produce a frame before publishing readiness, so the parent never
+        # races a just-spawned or already-defunct ffmpeg process.
+        for session in sessions:
+            frame = session.read()
+            if frame is None:
+                raise RuntimeError("NVDEC child produced no frame before readiness")
+            frame.release()
         _emit({"event": "ready", "worker_pid": os.getpid()})
         command = sys.stdin.readline().strip()
         if command.startswith("SLOW "):
@@ -157,7 +166,7 @@ def _read_document(process: subprocess.Popen[str], *, timeout: float) -> dict[st
     if not line:
         stderr = "" if process.stderr is None else process.stderr.read()
         raise RuntimeError(
-            f"worker helper exited early with code {process.poll()}: {stderr[-1_000:]}"
+            f"worker helper exited early with code {process.poll()}: {stderr[-4_000:]}"
         )
     return json.loads(line)
 
@@ -342,7 +351,7 @@ def test_nvdec_packet_tee_real_stack(tmp_path: Path) -> None:
             bufsize=1,
         )
         try:
-            ready = _read_document(process, timeout=20.0)
+            ready = _read_document(process, timeout=30.0)
             assert ready == {"event": "ready", "worker_pid": process.pid}
             ps_output = subprocess.run(
                 ("ps", "-ww", "-o", "pid,ppid,comm,args", "--ppid", str(process.pid)),

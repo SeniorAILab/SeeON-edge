@@ -65,6 +65,7 @@ from contracts.runner import (
 from shared.events.evidence_export_contract import EventReceipt
 from worker.pipeline.output.evidence.clip_config import CLIP_STORE_DIR_ENV
 from worker.pipeline.output.evidence.clip_recorder_models import ClipRecorderConfig
+from worker.pipeline.output.evidence.snapshot_store import SnapshotStore
 from worker.runtime.config import WorkerConfig
 from worker.runtime.lease import GpuLease
 from worker.runtime.profile.registry import VerifyResult
@@ -431,6 +432,7 @@ class LiveBackend:
                 label=camera_id,
                 rtsp_url=f"rtsp://camera/{camera_id}",
                 space_id=facility_id if isinstance(facility_id, str) else None,
+                backend_camera_id=camera_id,
                 status="online",
             )
         self.app.state.camera_registry = registry
@@ -809,6 +811,7 @@ class WorkerRunHandle:
     runtime: WorkerRuntime
     camera: CameraRuntimeContext
     thread: threading.Thread
+    snapshot_store: SnapshotStore
 
 
 def _fall_model_via_serving_client(runtime: WorkerRuntime, _device: str) -> object:
@@ -858,7 +861,7 @@ def start_worker_runtime(
         WorkerRuntime._create_fall_model = original_create_fall_model  # type: ignore[method-assign]
 
     camera = runtime.cameras[0]
-    return WorkerRunHandle(runtime, camera, thread)
+    return WorkerRunHandle(runtime, camera, thread, runtime._snapshot_store)
 
 
 def stop_worker_runtime(handle: WorkerRunHandle, *, timeout: float = 15.0) -> None:

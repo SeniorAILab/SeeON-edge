@@ -136,7 +136,6 @@ def test_fanout_benchmark(
     relay: StubRelay,
     allow_loopback_rtsp: None,
     tmp_path: Path,
-    packaged_lstm_artifact: Path,
 ) -> None:
     """Serve ``stream_count`` recorded streams and emit ``bench-<N>.json``."""
     if stream_count not in _selected_counts():
@@ -150,6 +149,10 @@ def test_fanout_benchmark(
     label = os.environ.get("BENCH_LABEL", "")
     camera_fps_raw = os.environ.get("BENCH_CAMERA_FPS")
     camera_fps = None if camera_fps_raw is None else float(camera_fps_raw)
+    cuda_visibility_before = (
+        "CUDA_VISIBLE_DEVICES" in os.environ,
+        os.environ.get("CUDA_VISIBLE_DEVICES"),
+    )
     metrics = RunMetrics()
     latencies: list[float] = []
     viewers: list[LiveViewViewer] = []
@@ -173,7 +176,7 @@ def test_fanout_benchmark(
             config = build_config(
                 relay_url=relay.base_url,
                 rtsp_urls=rtsp_urls,
-                models_dir=packaged_lstm_artifact.parents[1],
+                models_dir=REPO_ROOT / "models",
                 live_view_port=(free_tcp_port() if viewer_count > 0 else None),
                 camera_fps=camera_fps,
             )
@@ -201,6 +204,10 @@ def test_fanout_benchmark(
     finally:
         coordinator_logger.removeHandler(work_item_log)
 
+    assert (
+        "CUDA_VISIBLE_DEVICES" in os.environ,
+        os.environ.get("CUDA_VISIBLE_DEVICES"),
+    ) == cuda_visibility_before
     metrics.pose_latencies_ms = latencies
     metrics.notes["viewers"] = [viewer.report() for viewer in viewers]
     if plan is not None:
@@ -302,7 +309,6 @@ def test_fanout_benchmark_fails_fast_on_dead_rtsp_port(
     tmp_path: Path,
     relay: StubRelay,
     allow_loopback_rtsp: None,
-    packaged_lstm_artifact: Path,
 ) -> None:
     """A dead RTSP port must produce a bounded diagnostic, never a hang.
 
@@ -318,7 +324,7 @@ def test_fanout_benchmark_fails_fast_on_dead_rtsp_port(
     config = build_config(
         relay_url=relay.base_url,
         rtsp_urls=(f"rtsp://127.0.0.1:{dead_port}/dead",),
-        models_dir=packaged_lstm_artifact.parents[1],
+        models_dir=REPO_ROOT / "models",
     )
     serving = TimingServingClient([])
     run = WorkerRun(
