@@ -194,8 +194,10 @@ def test_browser_evidence_authenticates_upstream_before_accepting_screenshot() -
     assert "--extra-headers=" not in script
     assert '"X-Edge-Relay-Token": token' in script
     assert "upstreamStatus === 200" in script
+    assert "frameDelivered" in script
     assert '"content-type": "image/jpeg"' in script
     assert "upstream.destroy()" in script
+    assert 'stdio: "ignore"' in script
     assert "setTimeout(resolveHold" not in script
 
 

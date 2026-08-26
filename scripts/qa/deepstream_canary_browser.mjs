@@ -60,7 +60,13 @@ if (!attachment) {
 const { consumer, frame } = attachment;
 
 let upstreamStatus = null;
-const proxy = createServer((_request, response) => {
+let frameDelivered = false;
+const proxy = createServer((request, response) => {
+  if (request.url !== `/stream/${cameraId}`) {
+    response.writeHead(404);
+    response.end();
+    return;
+  }
   const upstream = httpRequest(
     new URL(viewer),
     { headers: { "X-Edge-Relay-Token": token } },
@@ -88,8 +94,10 @@ const proxy = createServer((_request, response) => {
           "content-type": "image/jpeg",
           "content-length": authenticatedFrame.length,
         });
-        response.end(authenticatedFrame);
-        upstream.destroy();
+        response.end(authenticatedFrame, () => {
+          frameDelivered = true;
+          upstream.destroy();
+        });
       });
       upstreamResponse.once("end", () => {
         if (!sent) response.destroy(new Error("authenticated MJPEG frame missing"));
@@ -121,7 +129,7 @@ const browserExit = await new Promise((resolveExit) => {
       "--window-size=1280,720",
       browserViewer,
     ],
-    { stdio: ["ignore", "pipe", "pipe"] },
+    { stdio: "ignore" },
   );
   let settled = false;
   const finish = (status) => {
@@ -148,7 +156,10 @@ const probe = spawnSync(
 );
 const clip = readFileSync(clipPath);
 const viewerOk =
-  browserExit === 0 && upstreamStatus === 200 && existsSync(screenshot);
+  browserExit === 0 &&
+  upstreamStatus === 200 &&
+  frameDelivered &&
+  existsSync(screenshot);
 const receipt = {
   schema_version: 1,
   camera_id: cameraId,
