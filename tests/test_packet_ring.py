@@ -464,25 +464,28 @@ def test_wait_until_ready_returns_true_once_the_ring_holds_the_epoch() -> None:
     assert ready is True
 
 
-def test_wait_until_ready_times_out_when_the_ring_is_behind_the_trigger_epoch() -> None:
-    """Regression for #429: the trigger names an epoch the ring has not adopted.
+def test_wait_until_ready_returns_at_once_when_the_ring_is_on_another_epoch() -> None:
+    """The barrier must not wait for an epoch roll.
 
-    Measured on the live fleet, 43 of 44 clip-selection failures had the
-    trigger ahead of the ring and every clip came back without video. The
-    barrier must report the skew rather than block forever.
+    The ring rolls only after the recorder seals the previous epoch's clip on
+    the actor thread -- the thread that calls this. Waiting here for that roll
+    can never succeed and stalls a 128-slot queue fed at ~195 messages/s, so
+    the barrier reports the skew immediately instead of burning its timeout.
     """
     # Given
     ring = SourcePacketRing("camera-1", PacketRingLimits(64, 4_096, 60.0))
     ring.roll_epoch(StreamEpoch("boot-1", "camera-1", 1))
     _append_gop(ring, start=0, stop=8)
     # When: the trigger carries the next epoch
+    started = time.monotonic()
     ready = ring.wait_until_ready(
         epoch=StreamEpoch("boot-1", "camera-1", 2),
         through_pts=Fraction(5),
-        timeout_sec=0.2,
+        timeout_sec=2.0,
     )
     # Then
     assert ready is False
+    assert time.monotonic() - started < 0.5
 
 
 def test_wait_until_ready_times_out_when_video_has_not_reached_the_trigger_pts() -> None:

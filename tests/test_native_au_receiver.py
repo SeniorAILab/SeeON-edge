@@ -6,6 +6,8 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+import pytest
+
 from worker.adapters.decode.native_au_receiver import NativeAuReceiver
 from worker.types.source_packet import SourcePacket, StreamEpoch
 
@@ -307,7 +309,9 @@ def test_in_flight_units_from_a_rolled_epoch_do_not_request_another_rebuild() ->
     assert all(packet.epoch.stream_epoch == 5 for packet in sink.packets)
 
 
-def test_a_rejected_ring_append_reports_a_named_reason() -> None:
+def test_a_rejected_ring_append_reports_a_named_reason(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """Every gap path must pass a reason; a missed one becomes a TypeError storm.
 
     Adding the reason argument to _report_gap left two call sites unconverted.
@@ -339,9 +343,14 @@ def test_a_rejected_ring_append_reports_a_named_reason() -> None:
         time.sleep(0.02)
     receiver.close()
     child.close()
-    # Then: a gap was requested, and it did not raise on the way there
+    # Then: a gap was requested, and it did not raise on the way there. The
+    # reason lives only in the log, and a TypeError at the call site would be
+    # swallowed by _process and reported as malformed_envelope instead.
     assert gaps, "ring rejection must request recovery"
     assert gaps[0][0] == "camera-a"
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("reason=ring_append_rejected" in m for m in messages), messages
+    assert not any("malformed_envelope" in m for m in messages), messages
 
 
 def test_a_lost_opening_unit_no_longer_strands_the_receiver() -> None:

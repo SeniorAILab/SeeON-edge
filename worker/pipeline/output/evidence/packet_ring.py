@@ -185,38 +185,40 @@ class SourcePacketRing:
         through_pts: Fraction,
         timeout_sec: float,
     ) -> bool:
-        """Block until this ring holds ``epoch`` with video through ``through_pts``.
+        """Wait briefly for this ring's video to reach ``through_pts`` on ``epoch``.
 
-        The perception plane advances ``stream_epoch`` before the AU ring
-        adopts it, so a clip trigger can arrive labelled with an epoch this
-        ring has not seen yet. Measured on the live fleet, 43 of 44 selection
-        failures had the trigger ahead of the ring. Refusing them produced
-        clips with no video at all, which is worse than waiting briefly.
+        The AU tee and the perception metadata leave the child on separate
+        sockets, so the access unit for a trigger can land a moment after the
+        frame that raised it. Waiting for that PTS is cheap and bounded.
 
-        Returns ``True`` when the ring is aligned, ``False`` on timeout or if
-        the ring has already moved past ``epoch``. The caller must NOT relabel
-        the trigger on ``False``: emitting with the original identity is what
-        lets the evidence path record an honest ``video_unavailable`` cause.
+        The barrier does NOT wait for the ring to adopt ``epoch``. The ring
+        rolls only after the recorder has sealed the previous epoch's clip,
+        and that seal runs on the same actor thread this method is called
+        from; waiting here for a roll that is queued behind the caller can
+        never succeed, and every second spent doing so backs up a 128-slot
+        recorder queue fed at ~195 messages/s. So a ring on another epoch
+        returns ``False`` at once. A ring that never rolled an epoch admits
+        everything and returns ``True`` at once for the same reason.
+
+        The caller must NOT relabel the trigger on ``False``: emitting with
+        the original identity is what lets the evidence path record an honest
+        ``video_unavailable`` cause.
         """
 
-        def aligned() -> bool:
+        def state() -> bool | None:
             if self._closed:
                 return False
             if self._active_epoch is None:
-                # No epoch has ever been rolled: append admits everything and
-                # select never compares the trigger, so there is nothing for
-                # the barrier to wait for. Blocking here for the full timeout
-                # let a pre+post-sized ring evict the trigger on the pyav path.
                 return True
             if self._active_epoch != epoch:
                 return False
-            return (
-                self._newest_video_pts is not None
-                and self._newest_video_pts >= through_pts
-            )
+            if self._newest_video_pts is not None and self._newest_video_pts >= through_pts:
+                return True
+            return None
 
         with self._advanced:
-            return self._advanced.wait_for(aligned, timeout=timeout_sec)
+            self._advanced.wait_for(lambda: state() is not None, timeout=timeout_sec)
+            return state() is True
 
     def append(self, packet: SourcePacket) -> bool:
         if packet.epoch.camera_id != self.camera_id:

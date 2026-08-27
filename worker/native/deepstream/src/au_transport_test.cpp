@@ -10,6 +10,7 @@
 #include <string>
 #include <chrono>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -48,6 +49,14 @@ std::uint64_t decode_epoch(const std::vector<std::uint8_t>& header) {
     epoch |= static_cast<std::uint64_t>(header[16 + index]) << (8U * index);
   }
   return epoch;
+}
+
+std::uint64_t decode_sequence(const std::vector<std::uint8_t>& header) {
+  std::uint64_t sequence = 0;
+  for (std::size_t index = 0; index < 8; ++index) {
+    sequence |= static_cast<std::uint64_t>(header[24 + index]) << (8U * index);
+  }
+  return sequence;
 }
 
 seeon::AuEnvelope envelope_for(std::uint64_t epoch, std::uint64_t sequence,
@@ -342,18 +351,13 @@ int main() {
   }
 
 
-  // Ordering barrier, proven deterministically through the public surface.
+  // Ordering, proven on the wire through the public surface.
   //
-  // run() drains queue_ before transitions_, so a unit admitted while a
-  // reservation is pending reaches the wire AHEAD of the epoch-opening unit
-  // and recreates the discontinuity the reservation exists to prevent.
-  //
-  // The construction turns on one window: once the reader has fully consumed
-  // the unit the sender is writing, the sender pops the NEXT queued unit and
-  // blocks on it, leaving queue_ empty and bytes_ at zero while the
-  // reservation is still pending. In that window congestion is gone, so a
-  // refusal can only be the barrier. The different-camera control makes that
-  // airtight.
+  // run() drains a reserved transition ahead of queue_, re-checking before
+  // every send, so a unit admitted after a reservation can never reach the
+  // wire ahead of the epoch-opening unit. The construction: pin the sender
+  // on one unit, reserve the transition while it is blocked, then admit a
+  // later unit of the same camera and read the wire order.
   {
     int pair[2]{};
     check(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0, "socketpair failed");
@@ -361,7 +365,7 @@ int main() {
     setsockopt(pair[0], SOL_SOCKET, SO_SNDBUF, &tiny, sizeof(tiny));
     setsockopt(pair[1], SOL_SOCKET, SO_RCVBUF, &tiny, sizeof(tiny));
     const std::size_t budget = 8 * 1024 * 1024;
-    seeon::AuSender barrier(pair[0], 8, budget);
+    seeon::AuSender ordered(pair[0], 8, budget);
     timeval timeout{};
     timeout.tv_sec = 3;
     setsockopt(pair[1], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
@@ -387,53 +391,39 @@ int main() {
       }
     };
 
-    // 1. Pin the sender. Reading its header proves it was popped, so bytes_ is
-    //    back to zero and the ballast below can be admitted whole.
+    // 1. Pin the sender on a unit the reader has not consumed.
     auto pinned = envelope_for(1, 1, 400 * 1024);
-    pinned.camera = "camera-a";
-    check(barrier.enqueue(std::move(pinned)), "pinning unit must be admitted");
+    check(ordered.enqueue(std::move(pinned)), "pinning unit must be admitted");
     const auto pinned_header = read_header();
     const auto pinned_body = body_size_of(pinned_header);
 
-    // 2. Ballast consumes nearly the whole budget.
-    auto ballast = envelope_for(1, 2, 7800 * 1024);
-    ballast.camera = "camera-a";
-    check(barrier.enqueue(std::move(ballast)), "ballast must be admitted");
-
-    // 3. The epoch-opening unit cannot be queued (ballast + transition exceeds
-    //    the budget) but fits the reservation allowance, so it is reserved.
-    auto transition = envelope_for(2, 1, 512 * 1024);
-    transition.camera = "camera-a";
-    check(!barrier.enqueue(std::move(transition)),
+    // 2. Ballast consumes nearly the whole budget, so the transition cannot be
+    //    queued and is reserved instead.
+    check(ordered.enqueue(envelope_for(1, 2, 7800 * 1024)), "ballast must be admitted");
+    check(!ordered.enqueue(envelope_for(2, 1, 512 * 1024)),
           "the epoch-opening unit must be refused and reserved");
 
-    // 4. Finish the pinned unit and read the ballast header. Receiving it
-    //    proves the ballast was popped - which is when bytes_ is credited - so
-    //    queue_ is empty and bytes_ is zero with the reservation still pending.
+    // 3. A later unit of the same camera is admitted (64 bytes fit the
+    //    remaining budget) while the reservation is still pending.
+    check(ordered.enqueue(envelope_for(2, 2, 64)),
+          "a later unit must be admitted; nothing but congestion refuses it");
+
+    // 4. On the wire: pinned first (it was mid-send), then the reserved
+    //    transition ahead of everything queued behind it.
     read_body(pinned_body);
-    static_cast<void>(read_header());
-
-    // 5. Control: a different camera's ordinary unit must now be ADMITTED,
-    //    which is what proves congestion is no longer a reason to refuse.
-    auto probe = envelope_for(1, 5, 64);
-    probe.camera = "camera-b";
-    check(barrier.enqueue(std::move(probe)),
-          "congestion did not clear, so the barrier assertion below would be "
-          "vacuous");
-
-    // Congestion is gone - camera-b was just admitted. A camera-a unit can
-    // therefore only be refused by the barrier.
-    const auto before = barrier.dropped();
-    auto later = envelope_for(2, 2, 64);
-    later.camera = "camera-a";
-    check(!barrier.enqueue(std::move(later)),
-          "a later unit from a camera holding a reservation must be refused; "
-          "run() drains the queue first, so admitting it would put it on the "
-          "wire ahead of the epoch-opening unit (#429)");
-    check(barrier.dropped() == before + 1,
-          "the barrier refusal must be counted exactly once");
-
-    barrier.stop();
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> order;
+    for (int index = 0; index < 3; ++index) {
+      const auto header = read_header();
+      order.emplace_back(decode_epoch(header), decode_sequence(header));
+      read_body(body_size_of(header));
+    }
+    ordered.stop();
+    check(order[0] == std::make_pair(std::uint64_t{2}, std::uint64_t{1}),
+          "the reserved epoch-opening unit must be the next thing on the wire, "
+          "ahead of the queue (#429)");
+    check(order[1] == std::make_pair(std::uint64_t{1}, std::uint64_t{2}) &&
+              order[2] == std::make_pair(std::uint64_t{2}, std::uint64_t{2}),
+          "queued units must follow the transition in admission order");
     close(pair[1]);
   }
 
@@ -727,6 +717,9 @@ int main() {
       off += static_cast<std::size_t>(count);
     }
     drain_until("camera-r", 2);
+    // The reservation drained ahead of the ballast; drain the ballast too so
+    // round two starts from an empty queue.
+    drain_until("camera-r", 1);
 
     // Round two: congest again and reserve for a DIFFERENT camera. This only
     // fits if round one's reservation was credited when it drained.

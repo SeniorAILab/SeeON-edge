@@ -218,6 +218,7 @@ if(BUILD_TESTING)
       seeon-deepstream-child-commands-test
       seeon-deepstream-au-parser-test
       seeon-deepstream-au-transport-test
+      seeon-deepstream-workspace-pool-test
     RUNTIME DESTINATION native-build/bin
   )
   install(

@@ -138,14 +138,12 @@ bool AuSender::enqueue(AuEnvelope envelope) {
                                  envelope.unit.parser_caps.size() > UINT16_MAX;
   const bool invalid = size > kMaxAuFrameBytes || size > max_bytes_ || identity_too_long;
   const auto existing = transitions_.find(envelope.camera);
-  // A camera with a pending reservation must not enqueue anything further.
-  // run() always drains queue_ before transitions_, so a later unit admitted
-  // now would reach the wire AHEAD of the reserved sequence 1 and recreate the
-  // very discontinuity the reservation exists to prevent.
-  const bool awaiting_transition = !invalid && existing != transitions_.end();
+  // No ordering barrier is needed for a camera with a pending reservation:
+  // run() sends the reservation before anything in queue_, re-checking on
+  // every wake, so a unit admitted now always follows it on the wire.
   const bool congested =
       gap_.has_value() || queue_.size() >= max_items_ || bytes_ + size > max_bytes_;
-  if (invalid || congested || awaiting_transition) {
+  if (invalid || congested) {
     ++dropped_;
     // A unit that opens a stream epoch is reserved rather than destroyed, but
     // only when it is legally framable and was refused for congestion. A
@@ -217,17 +215,22 @@ void AuSender::run() {
         return stopped_ || gap_.has_value() || !queue_.empty() || !transitions_.empty();
       });
       if (stopped_ && !gap_.has_value() && queue_.empty() && transitions_.empty()) return;
-      if (!queue_.empty()) {
-        envelope = std::move(queue_.front());
-        bytes_ -= envelope_bytes(envelope);
-        queue_.pop_front();
-      } else if (!transitions_.empty()) {
-        // Ahead of the gap, and as an ordinary unit: the receiver adopts an
-        // epoch from a normal sequence-1 access unit, never from a gap marker.
+      if (!transitions_.empty()) {
+        // First, ahead of the queue and the gap, and as an ordinary unit: the
+        // receiver adopts an epoch from a normal sequence-1 access unit, never
+        // from a gap marker. A reservation exists because the sender is
+        // congested, so draining it only once the queue empties starves that
+        // camera for as long as the other twelve keep the queue non-empty.
+        // Units of the superseded epoch still queued behind it are dropped by
+        // the receiver as debris, which is what they are.
         const auto first = transitions_.begin();
         envelope = std::move(first->second);
         transition_bytes_ -= envelope_bytes(envelope);
         transitions_.erase(first);
+      } else if (!queue_.empty()) {
+        envelope = std::move(queue_.front());
+        bytes_ -= envelope_bytes(envelope);
+        queue_.pop_front();
       } else {
         envelope = std::move(*gap_);
         gap_.reset();

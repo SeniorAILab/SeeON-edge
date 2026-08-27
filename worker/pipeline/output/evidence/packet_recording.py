@@ -17,6 +17,7 @@ from worker.pipeline.output.evidence.clip_recording import (
     ClipWindow,
 )
 from worker.pipeline.output.evidence.packet_repository import PacketRingRepository
+from worker.pipeline.output.evidence.packet_ring import PacketTruncationReason
 from worker.types import BusinessEvent, FrameKey, FramePacket
 from worker.types.source_packet import (
     PacketSelectionError,
@@ -27,7 +28,9 @@ from worker.types.source_packet import (
 
 # Bounded wait for the AU ring to adopt a trigger's epoch. Finalize already
 # runs after the post-event window, so this is off the ingestion hot path.
-_RING_ALIGNMENT_TIMEOUT_SEC = 2.0
+# Bounded by the recorder queue: this wait runs on the actor thread, and the
+# 128-slot queue behind it fills in well under a second at fleet load.
+_RING_ALIGNMENT_TIMEOUT_SEC = 0.25
 
 LOGGER: Final = logging.getLogger(__name__)
 
@@ -118,12 +121,8 @@ class PacketClipRecordingCoordinator:
                 ClipReasonCode.REMUX_FAILED,
                 "SOURCE_PACKET_RING_UNAVAILABLE",
             )
-        # The perception plane advances stream_epoch before the AU ring adopts
-        # it, so a trigger can name an epoch this ring has not seen. Measured on
-        # the live fleet, 43 of 44 selection failures had the trigger ahead of
-        # the ring and every clip came back without video. Waiting here costs
-        # nothing on the hot path: finalize already runs after the post-event
-        # window, by which point the ring has usually caught up anyway.
+        # Let the access unit for the trigger land; see wait_until_ready for
+        # why this never waits on an epoch roll.
         ring.wait_until_ready(
             epoch=epoch,
             through_pts=trigger_pts,
@@ -139,7 +138,9 @@ class PacketClipRecordingCoordinator:
         except PacketSelectionError as exc:
             return ClipUnavailable(
                 clip_id,
-                ClipReasonCode.REMUX_FAILED,
+                ClipReasonCode.STREAM_EPOCH_MISMATCH
+                if exc.reason is PacketTruncationReason.STREAM_EPOCH_MISMATCH
+                else ClipReasonCode.REMUX_FAILED,
                 exc.reason.value,
             )
         # Detach everything the remux needs, then release the ring lease BEFORE

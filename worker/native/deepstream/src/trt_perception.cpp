@@ -170,14 +170,20 @@ class TrtPerception::Impl {
       *error = "engine_enqueue_failed";
       return false;
     }
+    // After enqueueV3 the workspace's buffers belong to the GPU until the
+    // stream drains. The lease returns them to the pool on any false, so a
+    // failure past this point must synchronize first or the next lessee
+    // overwrites device_input under a kernel that is still reading it.
     if (cudaMemcpyAsync(host_rows, device_rows, rows_capacity * sizeof(float),
                         cudaMemcpyDeviceToHost, workspace.stream) != cudaSuccess) {
+      static_cast<void>(cudaStreamSynchronize(workspace.stream));
       *error = "engine_output_copy_failed";
       return false;
     }
     if (slot.output_names.size() > 1 && host_extra != nullptr) {
       if (cudaMemcpyAsync(host_extra, device_extra, extra_capacity * sizeof(float),
                           cudaMemcpyDeviceToHost, workspace.stream) != cudaSuccess) {
+        static_cast<void>(cudaStreamSynchronize(workspace.stream));
         *error = "engine_prototype_copy_failed";
         return false;
       }

@@ -103,7 +103,7 @@ void test_every_workspace_is_usable_concurrently() {
       if (++waiting == kPoolSize) {
         arrived.notify_all();
       } else {
-        arrived.wait(lock, [&] { return waiting == kPoolSize; });
+        arrived.wait_for(lock, std::chrono::seconds{10}, [&] { return waiting == kPoolSize; });
       }
     });
   }
