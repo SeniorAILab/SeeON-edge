@@ -622,7 +622,10 @@ def _trigger_roster_sync(app: FastAPI) -> None:
     never raises, but this still guards against a future change there.
     """
     try:
-        sync_camera_roster(app)
+        # A CRUD event is the operator's explicit retry signal. Refreshing the
+        # Hub revision here is what clears a durable CONFLICT pause; a plain
+        # retry returns early forever and leaves new cameras unpublished.
+        sync_camera_roster(app, _force=True, _refresh=True)
     except Exception:  # noqa: BLE001, S110 - a roster-sync bug must never surface here
         pass
 
@@ -1119,7 +1122,16 @@ def _public_snapshot(
     for index, record in enumerate(records):
         if index in explicit_backend_by_record_index:
             continue
-        space_id = record.get("space_id")
+        # A local registration carries its room under room_location_id from the
+        # moment it is bound; space_id is only filled once topology sync has
+        # run against the Hub. Matching on space_id alone therefore fails for
+        # every locally-registered camera on an edge whose sync has not
+        # completed, and each unmatched roster row is then emitted as a second,
+        # permanently offline tile for a room that is already on screen and
+        # streaming. Both fields hold the same sp_* room identifier.
+        space_id = record.get("space_id") or record.get("room_location_id")
+        if not (isinstance(space_id, str) and space_id):
+            space_id = record.get("room_edge_ref")
         if isinstance(space_id, str) and space_id:
             unmatched_record_indexes_by_space.setdefault(space_id, []).append(index)
     fallback_backend_by_record_index: dict[int, str] = {}
@@ -1190,6 +1202,11 @@ def _public_snapshot(
         cameras.append(camera)
 
     for backend_camera in roster.values():
+        # A roster row that a local registration already claimed is the same
+        # physical camera, not an unregistered one. Emitting it again produced
+        # a duplicate offline tile beside the live one.
+        if backend_camera.camera_id in claimed_roster_ids:
+            continue
         roster_bed_zone = bed_zones.get(backend_camera.camera_id)
         cameras.append(
             {
