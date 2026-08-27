@@ -183,6 +183,7 @@ if(BUILD_TESTING)
     seeon-deepstream-child-commands-test
     seeon-deepstream-au-parser-test
     seeon-deepstream-au-transport-test
+    seeon-deepstream-workspace-pool-test
   )
   if(SEEON_ENABLE_SANITIZERS)
     foreach(target IN LISTS SEEON_NATIVE_TEST_TARGETS)
@@ -199,6 +200,7 @@ if(BUILD_TESTING)
       seeon-deepstream-child-commands-test
       seeon-deepstream-au-parser-test
       seeon-deepstream-au-transport-test
+      seeon-deepstream-workspace-pool-test
       PROPERTIES
         ENVIRONMENT
           "ASAN_OPTIONS=detect_leaks=1:halt_on_error=1;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1"
