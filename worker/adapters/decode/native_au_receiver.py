@@ -169,11 +169,19 @@ class NativeAuReceiver:
             try:
                 self._work.put_nowait(work)
             except queue.Full:
-                camera = work.camera_id
+                # Shed the oldest unit. Its camera's sequence check marks the
+                # hole on the next unit it accepts; it does not need telling.
+                # This used to inject a gap marker for the INCOMING camera --
+                # not the one whose unit was shed -- and every marker asked
+                # for a source rebuild, which ran synchronously on the process
+                # thread this queue feeds. Each rebuild stalled the drain, the
+                # stall overflowed the queue, and the overflow requested more
+                # rebuilds: 265 rebuilds a minute across 13 cameras, epochs in
+                # the sixties four minutes after boot, no clip with video.
                 with suppress(queue.Empty):
                     _ = self._work.get_nowait()
                 with suppress(queue.Full):
-                    self._work.put_nowait(_Gap(camera))
+                    self._work.put_nowait(work)
 
     def _process(self) -> None:
         while not self._stop.is_set():
@@ -286,10 +294,23 @@ class NativeAuReceiver:
             self._report_gap(envelope.camera_id, "gap_marker", observed)
             return
         expected = self._sequences.get(key, 0) + 1
+        discontinuity: str | None = None
         if envelope.sequence != expected:
             if key in self._sequences:
-                self._report_gap(envelope.camera_id, "sequence_discontinuity", observed)
-                return
+                if envelope.sequence < expected:
+                    return  # duplicate or reordered; already accounted for
+                # Units lost inside an epoch leave a hole in the ring. The
+                # packet that follows the hole carries the mark, and clip
+                # selection refuses a window that crosses it -- one clip
+                # window, not a source rebuild. Rebuilding for a hole was the
+                # engine of the storm described in _drain.
+                discontinuity = f"sequence_gap:{expected}->{envelope.sequence}"
+                LOGGER.warning(
+                    "native au sequence gap: camera_id=%s generation=%d epoch=%d "
+                    "expected=%d got=%d",
+                    envelope.camera_id, envelope.generation, envelope.epoch,
+                    expected, envelope.sequence,
+                )
             # A unit for an identity newer than anything adopted, arriving
             # after sequence 1. The identity itself proves the rebuild landed;
             # only the opening unit was lost, and the sender-side reservation
@@ -337,6 +358,7 @@ class NativeAuReceiver:
         packet = SourcePacket(
             identity, configuration, 0, envelope.pts, envelope.dts, envelope.duration,
             envelope.keyframe, envelope.payload, envelope.sequence - 1,
+            discontinuity=discontinuity,
         )
         if not self._sink.append(packet):
             self._report_gap(envelope.camera_id, "ring_append_rejected", observed)

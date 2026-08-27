@@ -394,13 +394,14 @@ def test_a_lost_opening_unit_no_longer_strands_the_receiver() -> None:
         assert [p.epoch.stream_epoch for p in sink.packets] == [1, 1, 2, 2], gaps
         assert gaps == [], "adopting a newer identity must not request a rebuild"
 
-        # A discontinuity INSIDE the adopted epoch is still a gap.
+        # A hole INSIDE the adopted epoch is marked on the next packet, not
+        # turned into another rebuild.
         child.sendall(_frame(epoch=2, sequence=5))
         deadline = time.monotonic() + 3.0
-        while time.monotonic() < deadline and not gaps:
+        while time.monotonic() < deadline and len(sink.packets) < 5:
             time.sleep(0.01)
-        assert gaps == [("camera-a", "parser")], gaps
-        assert len(sink.packets) == 4
+        assert gaps == [], gaps
+        assert sink.packets[-1].discontinuity == "sequence_gap:4->5"
     finally:
         receiver.close()
         child.close()
@@ -530,6 +531,51 @@ def test_a_newer_epoch_is_adopted_even_when_its_opening_unit_was_lost() -> None:
             time.sleep(0.01)
         assert [p.epoch.stream_epoch for p in sink.packets] == [1, 1, 2, 2], gaps
         assert len(gaps) == 1, gaps
+    finally:
+        receiver.close()
+        child.close()
+        parent.close()
+
+
+def test_units_lost_inside_an_epoch_mark_a_hole_instead_of_rebuilding() -> None:
+    """Regression for the rebuild storm the first #429 fix set off on the live fleet.
+
+    Every lost unit used to request a source rebuild, and the rebuild ran on
+    the receiver's own processing thread. Each one stalled the drain queue,
+    the stall shed more units, and every shed unit requested another rebuild:
+    265 rebuilds a minute across 13 cameras, epochs in the sixties four
+    minutes after boot, and not one clip with video. The stale per-camera
+    suppression had been the only thing damping it.
+
+    A hole inside an epoch costs the clip windows that cross it and nothing
+    else: the next packet carries the mark, clip selection refuses to span
+    it, and the stream keeps running. Duplicates and reordered units are
+    dropped without comment.
+    """
+    parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    sink = _Sink()
+    gaps: list[tuple[str, str]] = []
+    receiver = NativeAuReceiver(
+        parent, "boot-1", sink, lambda camera, reason: gaps.append((camera, reason))
+    )
+    receiver.start()
+    try:
+        child.sendall(_frame(epoch=1, sequence=1))
+        child.sendall(_frame(epoch=1, sequence=2))
+        # sequences 3 and 4 are lost; 2 arrives again out of order
+        child.sendall(_frame(epoch=1, sequence=5))
+        child.sendall(_frame(epoch=1, sequence=2))
+        child.sendall(_frame(epoch=1, sequence=6))
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and len(sink.packets) < 4:
+            time.sleep(0.01)
+        time.sleep(0.2)
+        assert gaps == [], f"a hole must not request a rebuild: {gaps}"
+        assert [p.arrival_index for p in sink.packets] == [0, 1, 4, 5]
+        assert [p.discontinuity for p in sink.packets] == [
+            None, None, "sequence_gap:3->5", None,
+        ]
+        assert [e.stream_epoch for e in sink.epochs] == [1]
     finally:
         receiver.close()
         child.close()
