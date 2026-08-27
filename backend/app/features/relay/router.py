@@ -577,12 +577,18 @@ def relay_alert(
             payload.camera_id,
             extra={"local_camera_id": payload.camera_id},
         )
-        return _alert_response(_local_accept_body(payload), catalog_result)
+        return _alert_response(
+            _local_accept_body(payload, projected=projected, catalog_error=catalog_result),
+            catalog_result,
+        )
     canonical_camera_id = bound_camera_id
     client = _optional_backend_ingest_client(request, camera_id=canonical_camera_id)
     if client is None:
         # Registry-bound local accept; cloud only when store built a client.
-        return _alert_response(_local_accept_body(payload), catalog_result)
+        return _alert_response(
+            _local_accept_body(payload, projected=projected, catalog_error=catalog_result),
+            catalog_result,
+        )
     alert_kwargs: _AlertKwargs = {
         "event_type": payload.event_type,
         "detected_at": payload.detected_at,
@@ -961,21 +967,43 @@ def _json_depth(value: Any) -> int:
     return 0
 
 
-def _local_accept_body(payload: RelayAlertRequest) -> dict[str, str]:
+def _local_accept_body(
+    payload: RelayAlertRequest,
+    *,
+    projected: bool,
+    catalog_error: str | None,
+) -> dict[str, str]:
     """Name a deliberate local accept so the worker can stop retrying it.
 
-    Both callers have durably recorded the event and decided it will never be
-    pushed upstream. A bare {"status": "accepted"} could not say that: the
-    worker requires a receipt echoing its edge_event_id, an absent one is
-    indistinguishable from a mangled response, and so it retried forever and
-    wedged the durable queue behind the oldest undeliverable entry (#431).
+    Both callers decided the event will never be pushed upstream. A bare
+    {"status": "accepted"} could not say that: the worker requires a receipt
+    echoing its edge_event_id, an absent one is indistinguishable from a mangled
+    response, and so it retried forever and wedged the durable queue behind the
+    oldest undeliverable entry (#431).
 
-    Only this backend knows the difference, so only this backend can state it.
-    Workers that sent no edge_event_id are not tracking receipts at all and keep
-    the prior body unchanged.
+    But a terminal receipt tells the worker to DELETE its copy, so it may only
+    be issued for an event this backend actually persisted. On this path nothing
+    goes upstream, so local persistence is the only copy that will exist. If the
+    projection failed and the catalog fallback also failed, claiming terminal
+    acceptance destroys the alert on both sides at once.
+
+    That is narrower than the catalog's usual rule. A catalog failure must never
+    block a safety alert from reaching the backend (#183, #202) because there
+    the upstream push carries durability -- here there is no upstream push.
+
+    Workers that sent no edge_event_id are not tracking receipts, keep their own
+    copy regardless, and get the prior body unchanged.
     """
     if payload.edge_event_id is None:
         return {"status": "accepted"}
+    if not projected and catalog_error is not None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "edge-local persistence failed and this alert is not being "
+                f"pushed upstream; retry required ({catalog_error})"
+            ),
+        )
     return {"status": "accepted_local", "edge_event_id": payload.edge_event_id}
 
 
