@@ -2,7 +2,7 @@ import { createElement } from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { extractFrame, parseBoundary, useMjpegStream, type MjpegStream } from '@/features/operations/useMjpegStream';
+import { extractFrame, parseBoundary, useMjpegStream, type MjpegStream } from '@/shared/api/useMjpegStream';
 
 /** worker `_mjpeg_http.py:364-371` `_write_part` 의 와이어 포맷 그대로 파트 하나를 만든다. */
 function encodePart(jpeg: Uint8Array<ArrayBuffer>, boundary = 'frame'): Uint8Array<ArrayBuffer> {
