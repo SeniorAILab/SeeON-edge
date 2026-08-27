@@ -407,3 +407,60 @@ def test_a_lost_first_unit_strands_the_receiver_on_the_previous_epoch() -> None:
         receiver.close()
         child.close()
         parent.close()
+
+
+def test_a_reserved_transition_is_adopted_with_no_receiver_change() -> None:
+    """The remedy's whole point: adoption, not merely delivery.
+
+    AuSender now reserves the unit that opens an epoch and drains it ahead of
+    the gap as an ORDINARY access unit rather than a gap marker. That shape is
+    what makes it effective: the receiver returns immediately on AuKind.GAP
+    and never adopts the epoch a gap marker carries, so an earlier attempt
+    that preserved the newest epoch in the gap slot delivered the transition
+    to something that discards it. Delivery is not adoption, and this test
+    asserts the difference.
+
+    Because the receiver expects sequence 1 for a new (camera, generation,
+    epoch) key, the reserved unit passes its existing checks unchanged. No
+    receiver-side contract change is required, which is why this remedy does
+    not reopen the regression caused by relaxing those checks.
+    """
+    parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    sink = _Sink()
+    gaps: list[tuple[str, str]] = []
+    receiver = NativeAuReceiver(
+        parent, "boot-1", sink, lambda camera, reason: gaps.append((camera, reason))
+    )
+    receiver.start()
+    try:
+        child.sendall(_frame(epoch=1, sequence=1))
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and len(sink.packets) < 1:
+            time.sleep(0.01)
+        assert len(sink.packets) == 1, f"epoch 1 baseline failed: {gaps}"
+
+        # The reserved transition arrives as an ordinary unit at sequence 1.
+        child.sendall(_frame(epoch=2, sequence=1))
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and len(sink.packets) < 2:
+            time.sleep(0.01)
+
+        adopted = [p.epoch.stream_epoch for p in sink.packets]
+        assert 2 in adopted, (
+            f"the receiver must ADOPT the epoch, not merely receive it; saw {adopted} "
+            f"gaps={gaps}"
+        )
+        assert not gaps, f"adoption must not require a rebuild first: {gaps}"
+
+        # And the epoch continues normally from that baseline.
+        child.sendall(_frame(epoch=2, sequence=2))
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and len(sink.packets) < 3:
+            time.sleep(0.01)
+        assert [p.epoch.stream_epoch for p in sink.packets].count(2) == 2, (
+            f"the adopted epoch did not continue: {gaps}"
+        )
+    finally:
+        receiver.close()
+        child.close()
+        parent.close()

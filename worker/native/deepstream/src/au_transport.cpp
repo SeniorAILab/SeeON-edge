@@ -155,6 +155,27 @@ bool AuSender::enqueue(AuEnvelope envelope) {
     // Both are transport-contract decisions; the mechanism is pinned by
     // au_transport_test.cpp and test_native_au_receiver.py so a reviewer can
     // choose with evidence.
+    // A unit opening a stream epoch is reserved rather than destroyed. It is
+    // held per camera and keyed by (generation, epoch) so a higher generation
+    // wins even though its epoch restarts at 1, which a scalar epoch
+    // comparison across this shared sender could not express.
+    // Everything enqueued here is an access unit; gap markers are synthesised
+    // at send time. Sequence 1 is therefore exactly the unit that opens an
+    // epoch.
+    if (envelope.sequence == 1) {
+      const auto existing = transitions_.find(envelope.camera);
+      const bool newer =
+          existing == transitions_.end() ||
+          std::make_pair(envelope.generation, envelope.epoch) >
+              std::make_pair(existing->second.generation, existing->second.epoch);
+      if (newer) {
+        transitions_[envelope.camera] = std::move(envelope);
+        ready_.notify_one();
+        return false;
+      }
+      ready_.notify_one();
+      return false;
+    }
     if (!gap_.has_value()) gap_ = std::move(envelope);
     ready_.notify_one();
     return false;
@@ -171,13 +192,21 @@ void AuSender::run() {
     bool gap = false;
     {
       std::unique_lock lock{mutex_};
-      ready_.wait(lock, [this] { return stopped_ || gap_.has_value() || !queue_.empty(); });
-      if (stopped_ && !gap_.has_value() && queue_.empty()) return;
+      ready_.wait(lock, [this] {
+        return stopped_ || gap_.has_value() || !queue_.empty() || !transitions_.empty();
+      });
+      if (stopped_ && !gap_.has_value() && queue_.empty() && transitions_.empty()) return;
       if (!queue_.empty()) {
         envelope = std::move(queue_.front());
         bytes_ -= envelope.camera.size() + envelope.unit.parser_caps.size() +
                   envelope.unit.payload.size() + envelope.unit.codec_data.size();
         queue_.pop_front();
+      } else if (!transitions_.empty()) {
+        // Ahead of the gap, and as an ordinary unit: the receiver adopts an
+        // epoch from a normal sequence-1 access unit, never from a gap marker.
+        const auto first = transitions_.begin();
+        envelope = std::move(first->second);
+        transitions_.erase(first);
       } else {
         envelope = std::move(*gap_);
         gap_.reset();
@@ -189,6 +218,7 @@ void AuSender::run() {
       stopped_ = true;
       queue_.clear();
       gap_.reset();
+      transitions_.clear();
       return;
     }
   }

@@ -29,6 +29,25 @@ seeon::AuEnvelope envelope(std::uint64_t sequence, std::size_t size) {
           {seeon::AuCodec::kH264, seeon::AuFraming::kAnnexB, 1, 1, 1, 1, 90000,
            640, 360, sequence == 1, "caps", {}, std::vector<std::uint8_t>(size, 0x41)}};
 }
+constexpr std::size_t kAuHeaderBytes = 84;
+
+// Packed header: magic[4], body_size u32, kind u8 at 8, codec, framing,
+// keyframe, generation u32, epoch u64 at offset 16.
+std::size_t body_size_of(const std::vector<std::uint8_t>& header) {
+  return static_cast<std::size_t>(header[4]) |
+         static_cast<std::size_t>(header[5]) << 8U |
+         static_cast<std::size_t>(header[6]) << 16U |
+         static_cast<std::size_t>(header[7]) << 24U;
+}
+
+std::uint64_t decode_epoch(const std::vector<std::uint8_t>& header) {
+  std::uint64_t epoch = 0;
+  for (std::size_t index = 0; index < 8; ++index) {
+    epoch |= static_cast<std::uint64_t>(header[16 + index]) << (8U * index);
+  }
+  return epoch;
+}
+
 seeon::AuEnvelope envelope_for(std::uint64_t epoch, std::uint64_t sequence,
                                 std::size_t size) {
   return {"camera-a", 1, epoch, sequence,
@@ -120,13 +139,70 @@ int main() {
     check(gapped.dropped() == dropped_after_overflow + 1,
           "the epoch transition was refused without being counted as dropped");
 
-    // The transition is destroyed here, and that is the defect. Preserving
-    // the newest epoch in this slot does NOT fix it: the sender is shared by
-    // every camera so a scalar epoch comparison is wrong across cameras and
-    // across generations, and NativeAuReceiver discards gap markers without
-    // adopting their epoch. See the note in AuSender::enqueue.
+    // The transition is RESERVED, not destroyed: refused for admission to the
+    // queue, but held per camera and drained ahead of the gap as an ordinary
+    // unit so the receiver can adopt the epoch.
+    timeval timeout{};
+    timeout.tv_sec = 2;
+    setsockopt(pair[1], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    bool saw_transition_as_normal_unit = false;
+    bool saw_gap_before_transition = false;
+    for (int index = 0; index < 512 && !saw_transition_as_normal_unit; ++index) {
+      std::vector<std::uint8_t> header(kAuHeaderBytes);
+      std::size_t offset = 0;
+      bool complete = true;
+      while (offset < kAuHeaderBytes) {
+        const auto count =
+            recv(pair[1], header.data() + offset, kAuHeaderBytes - offset, 0);
+        if (count <= 0) { complete = false; break; }
+        offset += static_cast<std::size_t>(count);
+      }
+      if (!complete) break;
+      const auto body = body_size_of(header);
+      std::vector<std::uint8_t> discard(body);
+      std::size_t body_offset = 0;
+      while (body_offset < body) {
+        const auto count =
+            recv(pair[1], discard.data() + body_offset, body - body_offset, 0);
+        if (count <= 0) break;
+        body_offset += static_cast<std::size_t>(count);
+      }
+      const bool is_gap = header[8] == 2;
+      if (is_gap) saw_gap_before_transition = true;
+      if (!is_gap && decode_epoch(header) == 2) saw_transition_as_normal_unit = true;
+    }
     gapped.stop();
-    gapped.stop();
+    check(saw_transition_as_normal_unit,
+          "the unit opening epoch 2 must reach the wire as an ORDINARY access "
+          "unit; a gap marker is discarded by NativeAuReceiver before the "
+          "epoch is adopted, so delivering it as a gap fixes nothing (#429)");
+    check(!saw_gap_before_transition,
+          "the reserved transition must drain AHEAD of the gap marker, "
+          "otherwise the receiver rebuilds before it can adopt the epoch");
+  }
+
+  // Cross-camera isolation: this sender is shared by every camera, so one
+  // camera's transition must never suppress another's. A scalar epoch
+  // comparison got this wrong.
+  {
+    int pair[2]{};
+    check(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0, "socketpair failed");
+    int small = 4096;
+    setsockopt(pair[0], SOL_SOCKET, SO_SNDBUF, &small, sizeof(small));
+    seeon::AuSender shared(pair[0], 1, seeon::kMaxAuFrameBytes);
+    for (std::uint64_t index = 1; index <= 64; ++index) {
+      if (!shared.enqueue(envelope_for(1, index, 8192))) break;
+    }
+    auto high = envelope_for(7, 1, 64);
+    high.camera = "camera-a";
+    auto low = envelope_for(2, 1, 64);
+    low.camera = "camera-b";
+    static_cast<void>(shared.enqueue(std::move(high)));
+    const auto before = shared.dropped();
+    static_cast<void>(shared.enqueue(std::move(low)));
+    check(shared.dropped() == before + 1,
+          "camera-b's transition must be accounted separately from camera-a's");
+    shared.stop();
     close(pair[1]);
   }
 
