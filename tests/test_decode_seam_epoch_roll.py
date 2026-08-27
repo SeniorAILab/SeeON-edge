@@ -270,3 +270,4 @@ def test_append_rejects_stale_epoch_after_roll_and_foreign_camera_always() -> No
     )
     with pytest.raises(ValueError, match="packet camera does not match its ring"):
         ring.append(foreign)
+

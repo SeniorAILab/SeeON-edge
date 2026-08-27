@@ -258,6 +258,41 @@ class NativeAuReceiver:
             self._worker_boot_id, envelope.camera_id, envelope.epoch, envelope.generation
         )
         key = (envelope.camera_id, envelope.generation, envelope.epoch)
+        if active != identity:
+            # The epoch transition must be performed BEFORE intra-epoch
+            # continuity is validated, and this ordering is load-bearing.
+            #
+            # A new epoch's key has no recorded sequence, so `expected` is 1.
+            # The child does not restart its sequence counter across an epoch
+            # roll, so validating first rejects the very unit that carries the
+            # transition. The roll is then never performed, `expected` stays 1
+            # for that key, and every subsequent unit of the new epoch is
+            # rejected for the same reason: the ring is stranded on the old
+            # epoch permanently, with no way back.
+            #
+            # Measured on the live 13-camera stack before this change: rings
+            # frozen at active_epoch=1 while triggers reached 2, 3, 4 and 5,
+            # and clip selection failing 63 times in eight minutes with
+            # "trigger stream epoch is no longer active". Only the one camera
+            # whose first unit after each roll happened to be sequence 1 could
+            # produce clip video at all - 13 of 21 recorded clips came from
+            # that single camera while twelve others produced almost none.
+            #
+            # A gap marker is still not a valid carrier for a transition.
+            if envelope.kind is AuKind.GAP:
+                self._report_gap(envelope.camera_id, "gap_marker")
+                return
+            if active is not None and envelope.generation > active.source_generation:
+                remove = getattr(self._sink, "remove_camera", None)
+                if callable(remove):
+                    remove(envelope.camera_id)
+            self._sink.register_camera(envelope.camera_id)
+            self._sink.roll_epoch(identity)
+            self._retire_keys(envelope.camera_id, keep=key)
+            self._epochs[envelope.camera_id] = identity
+            # Seed the baseline from the unit that carried the transition
+            # rather than assuming the counter restarted at 1.
+            self._sequences[key] = envelope.sequence - 1
         expected = self._sequences.get(key, 0) + 1
         if envelope.kind is AuKind.GAP or envelope.sequence != expected:
             self._report_gap(
@@ -268,15 +303,6 @@ class NativeAuReceiver:
         if self._timestamp_discontinuous(key, envelope):
             self._report_gap(envelope.camera_id, "timestamp_discontinuity")
             return
-        if active != identity:
-            if active is not None and envelope.generation > active.source_generation:
-                remove = getattr(self._sink, "remove_camera", None)
-                if callable(remove):
-                    remove(envelope.camera_id)
-            self._sink.register_camera(envelope.camera_id)
-            self._sink.roll_epoch(identity)
-            self._retire_keys(envelope.camera_id, keep=key)
-            self._epochs[envelope.camera_id] = identity
         self._sequences[key] = envelope.sequence
         signature = native_configuration_signature(
             envelope.codec, envelope.framing, envelope.parser_caps, envelope.codec_data,

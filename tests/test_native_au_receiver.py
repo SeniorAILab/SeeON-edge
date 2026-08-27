@@ -342,3 +342,56 @@ def test_a_rejected_ring_append_reports_a_named_reason() -> None:
     # Then: a gap was requested, and it did not raise on the way there
     assert gaps, "ring rejection must request recovery"
     assert gaps[0][0] == "camera-a"
+
+
+def test_epoch_rolls_even_when_the_child_does_not_restart_its_sequence() -> None:
+    """The epoch transition must not be gated behind the new epoch's continuity.
+
+    A new epoch's key has no recorded sequence, so the expected value is 1.
+    The child does not restart its counter across a roll, so validating
+    continuity before performing the transition rejects the very unit that
+    carries it. The roll then never happens, the expectation stays 1, and
+    every later unit of that epoch is rejected identically -- the ring is
+    stranded on the old epoch permanently, with no way back.
+
+    Measured on the live 13-camera stack before the fix: rings frozen at
+    active_epoch=1 while triggers reached 2, 3, 4 and 5, and 63 clip
+    selections failing in eight minutes with 'trigger stream epoch is no
+    longer active'. Only the one camera whose first unit after a roll happened
+    to be sequence 1 produced clip video at all.
+    """
+    parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    sink = _Sink()
+    gaps: list[tuple[str, str]] = []
+    receiver = NativeAuReceiver(
+        parent, "boot-1", sink, lambda camera, reason: gaps.append((camera, reason))
+    )
+    receiver.start()
+    try:
+        child.sendall(_frame(epoch=1, sequence=1))
+        child.sendall(_frame(epoch=1, sequence=2))
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and len(sink.packets) < 2:
+            time.sleep(0.01)
+        assert len(sink.packets) == 2, f"epoch 1 baseline failed: {gaps}"
+
+        # The child rolls to epoch 2 but keeps counting: sequence 3, not 1.
+        child.sendall(_frame(epoch=2, sequence=3))
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and len(sink.packets) < 3:
+            time.sleep(0.01)
+        assert len(sink.packets) == 3, (
+            f"the unit carrying the epoch transition was rejected: {gaps}"
+        )
+        assert sink.packets[-1].epoch.stream_epoch == 2, sink.packets[-1].epoch
+
+        # And the new epoch keeps accepting from that baseline.
+        child.sendall(_frame(epoch=2, sequence=4))
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and len(sink.packets) < 4:
+            time.sleep(0.01)
+        assert len(sink.packets) == 4, f"new epoch did not continue: {gaps}"
+    finally:
+        receiver.close()
+        child.close()
+        parent.close()
