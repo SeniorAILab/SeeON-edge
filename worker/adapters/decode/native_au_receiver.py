@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import queue
 import socket
 import threading
@@ -18,6 +19,8 @@ from worker.adapters.decode.native_au_codec import (
 from worker.adapters.decode.native_au_mux_template import native_configuration_signature
 from worker.adapters.decode.native_au_progress import NativeAuProgress
 from worker.types.source_packet import SourcePacket, SourceStreamConfiguration, StreamEpoch
+
+LOGGER = logging.getLogger(__name__)
 
 
 class NativeAuSink(Protocol):
@@ -71,6 +74,10 @@ class NativeAuReceiver:
         self._configuration_signatures: dict[tuple[str, int, int], str] = {}
         self._timeline: dict[tuple[str, int, int], tuple[int, int]] = {}
         self._gaps_active: set[str] = set()
+        # Units dropped because they belonged to an epoch the receiver has
+        # already moved past. Counted rather than silent so a rebuild storm
+        # stays visible without being self-sustaining.
+        self._superseded_units: dict[str, int] = {}
         self._retired_generations: dict[str, int] = {}
         self._progress = NativeAuProgress()
 
@@ -139,17 +146,28 @@ class NativeAuReceiver:
             except queue.Empty:
                 continue
             if isinstance(work, _Gap):
-                self._report_gap(work.camera_id)
+                self._report_gap(work.camera_id, "transport_gap_marker")
                 continue
             try:
                 self._accept(work)
             except Exception:  # noqa: BLE001 - malformed camera data is isolated
-                self._report_gap(work.camera_id)
+                self._report_gap(work.camera_id, "malformed_envelope")
 
-    def _report_gap(self, camera_id: str) -> None:
+    def _report_gap(self, camera_id: str, reason: str) -> None:
+        """Ask for a source rebuild, naming the condition that prompted it.
+
+        The wire category stays ``"parser"`` because the child validates it
+        against a fixed whitelist, but that label describes none of these
+        conditions and sent one investigation into the C++ AU parser, which
+        turned out to be emitting nothing at all. The real reason goes to the
+        log so the next reader is not misdirected the same way.
+        """
         if not camera_id or camera_id in self._gaps_active:
             return
         self._gaps_active.add(camera_id)
+        LOGGER.warning(
+            "native au gap: camera_id=%s reason=%s", camera_id, reason
+        )
         self._gap_handler(camera_id, "parser")
 
     def _accept(self, envelope: AuEnvelope) -> None:
@@ -165,7 +183,17 @@ class NativeAuReceiver:
                 and envelope.epoch < active.stream_epoch
             )
         ):
-            self._report_gap(envelope.camera_id)
+            # Access units already in flight when the epoch rolled arrive
+            # carrying the superseded identity. That is expected debris, not a
+            # gap: reporting it asks for another rebuild, which advances the
+            # epoch again and strands the next batch of in-flight units, so the
+            # loop feeds itself. Measured on the live fleet this produced 301
+            # rebuilds in five minutes with zero child-reported failures.
+            # Retired generations are already dropped silently a few lines up;
+            # a superseded epoch gets the same treatment.
+            self._superseded_units[envelope.camera_id] = (
+                self._superseded_units.get(envelope.camera_id, 0) + 1
+            )
             return
         identity = StreamEpoch(
             self._worker_boot_id, envelope.camera_id, envelope.epoch, envelope.generation
@@ -173,10 +201,13 @@ class NativeAuReceiver:
         key = (envelope.camera_id, envelope.generation, envelope.epoch)
         expected = self._sequences.get(key, 0) + 1
         if envelope.kind is AuKind.GAP or envelope.sequence != expected:
-            self._report_gap(envelope.camera_id)
+            self._report_gap(
+                envelope.camera_id,
+                "gap_marker" if envelope.kind is AuKind.GAP else "sequence_discontinuity",
+            )
             return
         if self._timestamp_discontinuous(key, envelope):
-            self._report_gap(envelope.camera_id)
+            self._report_gap(envelope.camera_id, "timestamp_discontinuity")
             return
         if active != identity:
             if active is not None and envelope.generation > active.source_generation:

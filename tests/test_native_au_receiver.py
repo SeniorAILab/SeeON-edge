@@ -162,7 +162,7 @@ def test_malformed_camera_au_does_not_kill_other_camera_drain() -> None:
     assert sink.packets[-1].epoch.stream_epoch == 8
 
 
-def test_backward_epoch_is_rejected_but_higher_generation_readd_survives() -> None:
+def test_backward_epoch_is_dropped_without_recovery_but_higher_generation_readd_survives() -> None:
     parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
     sink = _Sink()
     gaps: list[tuple[str, str]] = []
@@ -177,7 +177,21 @@ def test_backward_epoch_is_rejected_but_higher_generation_readd_survives() -> No
     assert sink.accepted.wait(timeout=2.0)
     receiver.close()
     child.close()
-    assert gaps == [("camera-a", "parser")]
+    # CONTRACT CHANGE, deliberate and evidence-backed. This previously asserted
+    # gaps == [("camera-a", "parser")]: a backward epoch asked for a source
+    # rebuild. On the live 13-camera fleet that rule was self-sustaining --
+    # access units already in flight when the epoch rolled arrive carrying the
+    # superseded identity, each one requests a rebuild, each rebuild advances
+    # the epoch and strands the next batch. Measured: 301 rebuilds in five
+    # minutes with ZERO child-reported failures and no worker restart.
+    #
+    # A superseded epoch is now dropped the same way a retired generation
+    # already was, a few lines above it in _accept. The unit is still rejected;
+    # what changed is that rejection no longer triggers recovery.
+    #
+    # The other half of this test is unchanged and still load-bearing: a higher
+    # generation re-add carrying a lower epoch must still be accepted.
+    assert gaps == []
     assert sink.packets[-1].epoch == StreamEpoch("boot-1", "camera-a", 1, 4)
 
 
@@ -254,3 +268,39 @@ def test_short_avcc_codec_data_isolated_then_next_epoch_survives() -> None:
     receiver.close()
     child.close()
     assert sink.packets[-1].epoch.stream_epoch == 8
+
+
+def test_in_flight_units_from_a_rolled_epoch_do_not_request_another_rebuild() -> None:
+    """Regression for the self-sustaining rebuild storm (#424).
+
+    Reporting a gap for every superseded-epoch unit made recovery feed itself:
+    each rebuild advanced the epoch, stranding the units already in flight,
+    which requested another rebuild. Measured on the live fleet at 301 rebuilds
+    in five minutes with zero child-reported failures.
+    """
+    parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    sink = _Sink()
+    gaps: list[tuple[str, str]] = []
+    receiver = NativeAuReceiver(
+        parent,
+        "boot-1",
+        sink,
+        lambda camera, category: gaps.append((camera, category)),
+    )
+    receiver.start()
+    # Given: the receiver has adopted epoch 5
+    child.sendall(_frame(epoch=5, sequence=1))
+    assert sink.accepted.wait(timeout=2.0)
+    sink.accepted.clear()
+    accepted_before = len(sink.packets)
+    # When: several units that were in flight during the roll arrive late
+    for sequence in range(1, 4):
+        child.sendall(_frame(epoch=4, sequence=sequence))
+    child.sendall(_frame(epoch=5, sequence=2))
+    assert sink.accepted.wait(timeout=2.0)
+    receiver.close()
+    child.close()
+    # Then: none of them asked for recovery, and none of them entered the ring
+    assert gaps == []
+    assert len(sink.packets) == accepted_before + 1
+    assert all(packet.epoch.stream_epoch == 5 for packet in sink.packets)
