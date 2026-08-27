@@ -309,18 +309,36 @@ int main() {
     check(!guard.enqueue(envelope_for(9, 1, seeon::kMaxAuFrameBytes + 1)),
           "an oversized envelope must be refused");
 
+    // Deterministic, not timed: the refused envelope becomes the gap marker,
+    // so read the frame that IS expected and require it to be a GAP. If the
+    // validity guard were removed the envelope would be reserved and replayed
+    // as an ordinary ACCESS_UNIT, and this assertion fails on kind rather than
+    // on a timeout that could just be scheduling.
     timeval timeout{};
-    timeout.tv_usec = 300000;
+    timeout.tv_sec = 3;
     setsockopt(pair[1], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     std::vector<std::uint8_t> header(kAuHeaderBytes);
-    const auto count = recv(pair[1], header.data(), kAuHeaderBytes, 0);
-    const bool emitted_normal_unit =
-        count == static_cast<ssize_t>(kAuHeaderBytes) && header[8] != 2;
+    std::size_t got = 0;
+    while (got < kAuHeaderBytes) {
+      const auto count = recv(pair[1], header.data() + got, kAuHeaderBytes - got, 0);
+      check(count > 0, "no frame arrived for the refused oversized envelope");
+      got += static_cast<std::size_t>(count);
+    }
+    const auto body = body_size_of(header);
+    std::vector<std::uint8_t> discard(body);
+    std::size_t body_offset = 0;
+    while (body_offset < body) {
+      const auto count =
+          recv(pair[1], discard.data() + body_offset, body - body_offset, 0);
+      check(count > 0, "gap body truncated");
+      body_offset += static_cast<std::size_t>(count);
+    }
     guard.stop();
     close(pair[1]);
-    check(!emitted_normal_unit,
-          "an oversized sequence-1 envelope must not be reserved and replayed "
-          "as an ordinary unit; that would bypass kMaxAuFrameBytes");
+    check(header[8] == 2,
+          "an oversized sequence-1 envelope must become a GAP, never a reserved "
+          "unit replayed as an ordinary one - that would bypass "
+          "kMaxAuFrameBytes");
   }
 
 
@@ -538,37 +556,47 @@ int main() {
     wide.camera = std::string(static_cast<std::size_t>(UINT16_MAX) + 1, 'c');
     check(!guard.enqueue(std::move(wide)),
           "an over-width camera identity must be refused");
-    // Fence: a sentinel enqueued AFTER the over-width envelope must be the
-    // first frame on the wire. Waiting for a timeout would only prove nothing
-    // arrived quickly.
-    auto sentinel = envelope_for(4, 5, 128);
-    sentinel.camera = "sentinel";
-    check(guard.enqueue(std::move(sentinel)), "sentinel must be admitted");
-    timeval timeout{};
-    timeout.tv_sec = 3;
-    setsockopt(pair[1], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    std::vector<std::uint8_t> header(kAuHeaderBytes);
-    std::size_t got = 0;
-    while (got < kAuHeaderBytes) {
-      const auto count = recv(pair[1], header.data() + got, kAuHeaderBytes - got, 0);
-      check(count > 0, "sentinel never arrived");
-      got += static_cast<std::size_t>(count);
-    }
-    const auto body = body_size_of(header);
-    std::vector<std::uint8_t> payload(body);
-    std::size_t body_offset = 0;
-    while (body_offset < body) {
-      const auto count =
-          recv(pair[1], payload.data() + body_offset, body - body_offset, 0);
-      check(count > 0, "sentinel body truncated");
-      body_offset += static_cast<std::size_t>(count);
-    }
     guard.stop();
     close(pair[1]);
-    check(payload.size() >= 8 && std::string(payload.begin(), payload.begin() + 8) == "sentinel",
-          "the first frame on the wire must be the sentinel: an over-width "
-          "envelope must produce no frame at all, as an ordinary unit it "
-          "bypasses the width limit and as a gap it is truncated");
+  }
+
+  // Over-width identity: refusal is asserted; NON-RESERVATION IS NOT, and this
+  // note explains why rather than leaving a test that cannot fail.
+  //
+  // Three constructions were tried and none discriminates:
+  //   - "read to EOF after stop()" fails because stop() shuts the write side
+  //     immediately instead of draining, so pending work is discarded, not
+  //     emitted.
+  //   - "a sentinel must come first" fails because sentinels are queued and
+  //     queue_ drains before transitions_, so a wrongly reserved envelope
+  //     simply arrives afterwards.
+  //   - "two sentinels must be adjacent" fails for the same reason: a
+  //     reservation drains after the WHOLE queue, so it can never land between
+  //     two queued frames.
+  //   - dropped() cannot separate the cases either; both paths refuse and both
+  //     increment it.
+  //
+  // Observing the absence of a reservation therefore needs either a drain that
+  // stop() actually performs, or a way to inspect the reservation set. Both are
+  // interface changes and belong to review, not to an assertion that would pass
+  // whatever the code did.
+  //
+  // The oversized-payload sibling above IS discriminating, because such an
+  // envelope becomes the gap and the assertion is on the frame that does
+  // arrive rather than on one that does not.
+  {
+    int pair[2]{};
+    check(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0, "socketpair failed");
+    seeon::AuSender width(pair[0], 8, seeon::kMaxAuFrameBytes);
+    auto wide = envelope_for(4, 1, 64);
+    wide.camera = std::string(static_cast<std::size_t>(UINT16_MAX) + 1, 'c');
+    const auto before = width.dropped();
+    check(!width.enqueue(std::move(wide)),
+          "an over-width camera identity must be refused");
+    check(width.dropped() == before + 1,
+          "the refusal must be counted exactly once");
+    width.stop();
+    close(pair[1]);
   }
 
   // Draining a reservation must CREDIT its bytes. Without that the allowance

@@ -180,9 +180,10 @@ bool AuSender::enqueue(AuEnvelope envelope) {
       // than the 2x a second full budget would permit. That is a bound on
       // those two pools only: gap_, the envelope the sender has popped and is
       // still writing, and its encoded copy are all uncharged, so it is not a
-      // whole-sender ceiling. The 1/8 also only guarantees reservation for
-      // transitions that fit within it; a larger one is refused like any other
-      // unit.
+      // whole-sender ceiling. And fitting within the 1/8 makes a transition
+      // ELIGIBLE, not guaranteed: the allowance is aggregate across cameras
+      // and may already be consumed, and reservation still depends on the
+      // refusal and newness conditions above.
       const std::size_t transition_allowance = max_bytes_ / 8;
       const std::size_t projected = transition_bytes_ - replaced + size;
       if (newer && projected <= transition_allowance) {
