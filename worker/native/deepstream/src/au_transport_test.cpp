@@ -419,5 +419,128 @@ int main() {
     close(pair[1]);
   }
 
+  // The reservation allowance is a real cap, and a replacement credits the
+  // reservation it displaces. Both are asserted on the wire: a reserved
+  // transition eventually arrives as an ordinary unit, one that was refused
+  // for the allowance never does.
+  {
+    int pair[2]{};
+    check(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0, "socketpair failed");
+    int tiny = 4096;
+    setsockopt(pair[0], SOL_SOCKET, SO_SNDBUF, &tiny, sizeof(tiny));
+    setsockopt(pair[1], SOL_SOCKET, SO_RCVBUF, &tiny, sizeof(tiny));
+    timeval timeout{};
+    timeout.tv_sec = 3;
+    setsockopt(pair[1], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    const std::size_t budget = 8 * 1024 * 1024;  // allowance = 1 MiB
+    seeon::AuSender capped(pair[0], 8, budget);
+
+    auto pinned = envelope_for(1, 1, 400 * 1024);
+    pinned.camera = "camera-p";
+    check(capped.enqueue(std::move(pinned)), "pinning unit admitted");
+    std::vector<std::uint8_t> head(kAuHeaderBytes);
+    std::size_t got = 0;
+    while (got < kAuHeaderBytes) {
+      const auto count = recv(pair[1], head.data() + got, kAuHeaderBytes - got, 0);
+      check(count > 0, "sender never began writing");
+      got += static_cast<std::size_t>(count);
+    }
+    const auto pinned_body = body_size_of(head);
+    auto ballast = envelope_for(1, 2, 7800 * 1024);
+    ballast.camera = "camera-p";
+    check(capped.enqueue(std::move(ballast)), "ballast admitted");
+
+    // 900 KiB fits the 1 MiB allowance and is reserved.
+    auto first = envelope_for(2, 1, 900 * 1024);
+    first.camera = "camera-x";
+    check(!capped.enqueue(std::move(first)), "first transition reserved");
+
+    // A newer transition for the SAME camera must be accepted: crediting the
+    // one it replaces keeps the projected total at 900 KiB, not 1.8 MiB.
+    auto replacement = envelope_for(3, 1, 900 * 1024);
+    replacement.camera = "camera-x";
+    check(!capped.enqueue(std::move(replacement)), "replacement reserved");
+
+    // A DIFFERENT camera's transition of the same size would take the total to
+    // 1.8 MiB, beyond the allowance, so it must not be reserved.
+    auto over = envelope_for(2, 1, 900 * 1024);
+    over.camera = "camera-z";
+    check(!capped.enqueue(std::move(over)), "over-allowance transition refused");
+
+    // Drain and observe: camera-x epoch 3 must arrive as an ordinary unit,
+    // camera-x epoch 2 must not (it was replaced), and camera-z must not (it
+    // exceeded the allowance and became a gap at best).
+    std::vector<std::uint8_t> discard(pinned_body);
+    std::size_t off = 0;
+    while (off < pinned_body) {
+      const auto count = recv(pair[1], discard.data() + off, pinned_body - off, 0);
+      check(count > 0, "pinned body truncated");
+      off += static_cast<std::size_t>(count);
+    }
+    bool saw_replacement = false;
+    bool saw_replaced = false;
+    bool saw_over = false;
+    for (int index = 0; index < 64; ++index) {
+      std::vector<std::uint8_t> header(kAuHeaderBytes);
+      std::size_t offset = 0;
+      bool complete = true;
+      while (offset < kAuHeaderBytes) {
+        const auto count =
+            recv(pair[1], header.data() + offset, kAuHeaderBytes - offset, 0);
+        if (count <= 0) { complete = false; break; }
+        offset += static_cast<std::size_t>(count);
+      }
+      if (!complete) break;
+      const auto body = body_size_of(header);
+      std::vector<std::uint8_t> payload(body);
+      std::size_t body_offset = 0;
+      while (body_offset < body) {
+        const auto count =
+            recv(pair[1], payload.data() + body_offset, body - body_offset, 0);
+        if (count <= 0) break;
+        body_offset += static_cast<std::size_t>(count);
+      }
+      if (header[8] == 2 || payload.size() < 8) continue;
+      const std::string camera(payload.begin(), payload.begin() + 8);
+      const auto epoch = decode_epoch(header);
+      if (camera == "camera-x" && epoch == 3) saw_replacement = true;
+      if (camera == "camera-x" && epoch == 2) saw_replaced = true;
+      if (camera == "camera-z") saw_over = true;
+    }
+    capped.stop();
+    close(pair[1]);
+    check(saw_replacement,
+          "the replacing transition must reach the wire; crediting the "
+          "reservation it displaces is what keeps it inside the allowance");
+    check(!saw_replaced,
+          "the replaced transition must not also reach the wire");
+    check(!saw_over,
+          "a transition beyond the reservation allowance must not be reserved "
+          "and replayed as an ordinary unit");
+  }
+
+  // An envelope whose identity fields overflow the wire's uint16 lengths can
+  // be encoded neither as an ordinary unit nor as a gap marker, so it must
+  // produce nothing at all rather than a silently truncated frame.
+  {
+    int pair[2]{};
+    check(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0, "socketpair failed");
+    seeon::AuSender guard(pair[0], 4, seeon::kMaxAuFrameBytes);
+    auto wide = envelope_for(4, 1, 64);
+    wide.camera = std::string(static_cast<std::size_t>(UINT16_MAX) + 1, 'c');
+    check(!guard.enqueue(std::move(wide)),
+          "an over-width camera identity must be refused");
+    timeval timeout{};
+    timeout.tv_usec = 300000;
+    setsockopt(pair[1], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    std::vector<std::uint8_t> header(kAuHeaderBytes);
+    const auto count = recv(pair[1], header.data(), kAuHeaderBytes, 0);
+    guard.stop();
+    close(pair[1]);
+    check(count <= 0,
+          "an over-width envelope must produce no frame at all: as an ordinary "
+          "unit it bypasses the width limit, as a gap it is truncated");
+  }
+
   return 0;
 }

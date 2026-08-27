@@ -176,9 +176,13 @@ bool AuSender::enqueue(AuEnvelope envelope) {
       // it unreservable in exactly the situation the reservation exists for.
       //
       // The allowance is deliberately small - an eighth of the aggregate - so
-      // the sender's real ceiling is max_bytes_ * 9/8 rather than twice it,
-      // and it is still a hard bound: one small envelope per camera, replaced
-      // rather than accumulated.
+      // queued bytes plus reserved bytes are capped at max_bytes_ * 9/8 rather
+      // than the 2x a second full budget would permit. That is a bound on
+      // those two pools only: gap_, the envelope the sender has popped and is
+      // still writing, and its encoded copy are all uncharged, so it is not a
+      // whole-sender ceiling. The 1/8 also only guarantees reservation for
+      // transitions that fit within it; a larger one is refused like any other
+      // unit.
       const std::size_t transition_allowance = max_bytes_ / 8;
       const std::size_t projected = transition_bytes_ - replaced + size;
       if (newer && projected <= transition_allowance) {
