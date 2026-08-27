@@ -52,8 +52,10 @@ class TrtPerception {
 
   // rgba: HxWx4 host frame (RGBA byte order as the caps negotiate); stride in
   // bytes per row. Runs preprocess + pose + bed (+ person when
-  // run_person_engine mirrors box_source=="person") + parsers. Thread-safe
-  // (internal mutex).
+  // run_person_engine mirrors box_source=="person") + parsers. Thread-safe:
+  // concurrent callers lease one of a bounded pool of execution contexts and
+  // CUDA streams, so inferences overlap instead of serializing behind a single
+  // context. A caller blocks only when every workspace is busy.
   [[nodiscard]] bool infer(const std::uint8_t* rgba, int width, int height, int stride,
                            bool run_person_engine, PerceptionResult* result,
                            std::string* error);
@@ -64,7 +66,6 @@ class TrtPerception {
   TrtPerception();
   class Impl;
   std::unique_ptr<Impl> impl_;
-  std::mutex mutex_;
 };
 
 // C3-parity preprocessing on the host: float bilinear resize with the OpenCV
