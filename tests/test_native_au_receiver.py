@@ -3,6 +3,7 @@ from __future__ import annotations
 import socket
 import struct
 import threading
+import time
 from dataclasses import dataclass, field
 
 from worker.adapters.decode.native_au_receiver import NativeAuReceiver
@@ -304,3 +305,40 @@ def test_in_flight_units_from_a_rolled_epoch_do_not_request_another_rebuild() ->
     assert gaps == []
     assert len(sink.packets) == accepted_before + 1
     assert all(packet.epoch.stream_epoch == 5 for packet in sink.packets)
+
+
+def test_a_rejected_ring_append_reports_a_named_reason() -> None:
+    """Every gap path must pass a reason; a missed one becomes a TypeError storm.
+
+    Adding the reason argument to _report_gap left two call sites unconverted.
+    Both sat on paths the existing tests never exercised, so the suite stayed
+    green while production raised TypeError inside the gap handler 432 times in
+    four minutes -- each one caught by the same broad except that then reported
+    another gap, feeding the exact loop this work is trying to remove.
+    """
+    parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+
+    class _RejectingSink(_Sink):
+        def append(self, packet: object) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
+            super().append(packet)  # pyright: ignore[reportArgumentType]
+            return False
+
+    sink = _RejectingSink()
+    gaps: list[tuple[str, str]] = []
+    receiver = NativeAuReceiver(
+        parent,
+        "boot-1",
+        sink,
+        lambda camera, category: gaps.append((camera, category)),
+    )
+    receiver.start()
+    # When: the ring refuses the packet
+    child.sendall(_frame(epoch=1, sequence=1))
+    deadline = time.monotonic() + 2.0
+    while not gaps and time.monotonic() < deadline:
+        time.sleep(0.02)
+    receiver.close()
+    child.close()
+    # Then: a gap was requested, and it did not raise on the way there
+    assert gaps, "ring rejection must request recovery"
+    assert gaps[0][0] == "camera-a"

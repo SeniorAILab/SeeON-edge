@@ -150,8 +150,15 @@ class NativeAuReceiver:
                 continue
             try:
                 self._accept(work)
-            except Exception:  # noqa: BLE001 - malformed camera data is isolated
-                self._report_gap(work.camera_id, "malformed_envelope")
+            except Exception as error:  # noqa: BLE001 - malformed camera data is isolated
+                # The bare catch used to discard the exception entirely, so the
+                # dominant cause of source rebuilds was invisible: 293 of 308
+                # gaps in a five-minute window landed here with nothing to say
+                # what had been raised.
+                self._report_gap(
+                    work.camera_id,
+                    f"malformed_envelope:{type(error).__name__}:{error}"[:200],
+                )
 
     def _report_gap(self, camera_id: str, reason: str) -> None:
         """Ask for a source rebuild, naming the condition that prompted it.
@@ -229,14 +236,14 @@ class NativeAuReceiver:
             self._configurations[key] = configuration
             self._configuration_signatures[key] = signature
         elif self._configuration_signatures[key] != signature:
-            self._report_gap(envelope.camera_id)
+            self._report_gap(envelope.camera_id, "configuration_signature_changed")
             return
         packet = SourcePacket(
             identity, configuration, 0, envelope.pts, envelope.dts, envelope.duration,
             envelope.keyframe, envelope.payload, envelope.sequence - 1,
         )
         if not self._sink.append(packet):
-            self._report_gap(envelope.camera_id)
+            self._report_gap(envelope.camera_id, "ring_append_rejected")
             return
         self._timeline[key] = (envelope.dts, envelope.duration)
         self._gaps_active.discard(envelope.camera_id)
