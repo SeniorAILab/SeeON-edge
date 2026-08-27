@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import re
 from dataclasses import dataclass
 from fractions import Fraction
 
@@ -11,12 +12,41 @@ import av
 
 from worker.types.source_packet import SourceStreamDescriptor
 
+# Annex B start codes are 3- or 4-byte; the 4-byte form is the 3-byte form
+# with a leading zero, so one pattern covers both.
+_ANNEX_B_START_CODE = re.compile(rb"\x00\x00\x01")
+
 
 @dataclass(frozen=True, slots=True)
 class NativeAuTemplateInput:
     payload: bytes
     duration: int
     keyframe: bool
+
+
+def _distinct_parameter_sets(codec_data: bytes) -> bytes:
+    """Collapse a repeated parameter-set blob to its distinct units, in order.
+
+    Cameras retransmit VPS/SPS/PPS periodically, and an access unit sometimes
+    carries the same set twice. The blob then alternates between two byte
+    strings that describe the identical configuration -- measured on the live
+    fleet as codec_data_len flipping 210 to 105, exactly two copies versus one,
+    with every other signature input unchanged. Hashing the raw bytes turned
+    that benign retransmission into a configuration change, and each one
+    requested a source rebuild: 241 of them in a four-minute window.
+
+    Splitting on Annex B start codes is safe for a blob that is not Annex B:
+    it simply yields one unit and the result is the original bytes.
+    """
+    units = [unit for unit in _ANNEX_B_START_CODE.split(codec_data) if unit]
+    seen: set[bytes] = set()
+    distinct: list[bytes] = []
+    for unit in units:
+        if unit in seen:
+            continue
+        seen.add(unit)
+        distinct.append(unit)
+    return b"\x00\x00\x01".join(distinct)
 
 
 def native_configuration_signature(
@@ -32,7 +62,7 @@ def native_configuration_signature(
     for payload in (
         bytes((codec, framing)),
         parser_caps.encode(),
-        codec_data,
+        _distinct_parameter_sets(codec_data),
         width.to_bytes(4, "little"),
         height.to_bytes(4, "little"),
         time_base.numerator.to_bytes(4, "little", signed=True),

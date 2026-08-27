@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import queue
 import socket
@@ -19,6 +20,32 @@ from worker.adapters.decode.native_au_codec import (
 from worker.adapters.decode.native_au_mux_template import native_configuration_signature
 from worker.adapters.decode.native_au_progress import NativeAuProgress
 from worker.types.source_packet import SourcePacket, SourceStreamConfiguration, StreamEpoch
+
+
+def _components_of(envelope: AuEnvelope) -> tuple[object, ...]:
+    """Signature inputs in the same order native_configuration_signature hashes."""
+    return (
+        envelope.codec,
+        envelope.framing,
+        envelope.parser_caps,
+        len(envelope.codec_data),
+        hashlib.sha256(envelope.codec_data).hexdigest()[:8],
+        envelope.width,
+        envelope.height,
+        str(envelope.time_base),
+    )
+
+
+_COMPONENT_NAMES = (
+    "codec",
+    "framing",
+    "parser_caps",
+    "codec_data_len",
+    "codec_data_hash",
+    "width",
+    "height",
+    "time_base",
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -78,6 +105,12 @@ class NativeAuReceiver:
         # already moved past. Counted rather than silent so a rebuild storm
         # stays visible without being self-sustaining.
         self._superseded_units: dict[str, int] = {}
+        # Components behind each configuration signature, kept so a signature
+        # change can name the field that actually moved instead of reporting an
+        # opaque digest mismatch.
+        self._configuration_components: dict[
+            tuple[str, int, int], tuple[object, ...]
+        ] = {}
         self._retired_generations: dict[str, int] = {}
         self._progress = NativeAuProgress()
 
@@ -160,6 +193,25 @@ class NativeAuReceiver:
                     f"malformed_envelope:{type(error).__name__}:{error}"[:200],
                 )
 
+    def _signature_delta(self, key: tuple[str, int, int], envelope: AuEnvelope) -> str:
+        """Name which signature inputs changed, so the cause is not a guess.
+
+        The signature is a digest over seven inputs, so a mismatch alone says
+        nothing about which one moved. Cameras retransmit parameter sets
+        periodically, which is expected and should not look like a geometry or
+        codec change.
+        """
+        previous = self._configuration_components.get(key)
+        current = _components_of(envelope)
+        if previous is None:
+            return "no_previous_components"
+        moved = [
+            f"{name}:{old}->{new}"
+            for name, old, new in zip(_COMPONENT_NAMES, previous, current, strict=True)
+            if old != new
+        ]
+        return ",".join(moved) if moved else "digest_only"
+
     def _report_gap(self, camera_id: str, reason: str) -> None:
         """Ask for a source rebuild, naming the condition that prompted it.
 
@@ -235,8 +287,12 @@ class NativeAuReceiver:
             configuration = stream_configuration(envelope)
             self._configurations[key] = configuration
             self._configuration_signatures[key] = signature
+            self._configuration_components[key] = _components_of(envelope)
         elif self._configuration_signatures[key] != signature:
-            self._report_gap(envelope.camera_id, "configuration_signature_changed")
+            self._report_gap(
+                envelope.camera_id,
+                f"configuration_signature_changed:{self._signature_delta(key, envelope)}",
+            )
             return
         packet = SourcePacket(
             identity, configuration, 0, envelope.pts, envelope.dts, envelope.duration,
