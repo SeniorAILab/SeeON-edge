@@ -49,3 +49,46 @@ def test_retry_after_header_is_preserved_for_ambient_auth_failures() -> None:
 
     assert failure.disposition is DeliveryDisposition.RETRY
     assert failure.retry_after_seconds == 30.0
+
+
+def test_named_local_accept_is_terminal_and_absent_status_is_not() -> None:
+    """A receiptless 2xx wedged the durable queue forever (#431).
+
+    The edge backend deliberately accepts an event locally when the camera has
+    no Hub mapping or no cloud client exists. It records the event and will
+    never push it upstream, so no upstream id can ever be echoed. The worker
+    demanded one, retried indefinitely, and every newer event queued behind the
+    oldest undeliverable entry never left the edge.
+
+    Terminal acceptance must be STATED by the party that knows -- the backend --
+    never inferred by the worker from a missing field, because an absent id is
+    equally consistent with a mangled response from a broken proxy.
+    """
+    from shared.events.evidence_export_contract import DeliveryFailure, EventReceipt
+    from shared.events.evidence_http_transport import parse_event_result
+
+    named = parse_event_result(
+        (202, {}, b'{"status": "accepted_local", "edge_event_id": "edge-1"}'), "edge-1"
+    )
+    assert isinstance(named, EventReceipt), (
+        "a named local accept must be terminal; treating it as a failure is the "
+        "defect that wedged the queue"
+    )
+    assert named.status == "accepted_local"
+    assert named.edge_event_id == "edge-1"
+    assert named.event_id == "", "a local accept has no upstream id to fabricate"
+
+    # The old body, which says nothing about the decision, must NOT become
+    # terminal by accident -- that would silently drop genuinely mangled
+    # responses instead of retrying them.
+    bare = parse_event_result((202, {}, b'{"status": "accepted"}'), "edge-1")
+    assert isinstance(bare, DeliveryFailure), "an unnamed 2xx is still malformed"
+    assert bare.code == "MALFORMED_RECEIPT"
+
+    # A named local accept for a DIFFERENT event must not satisfy this one.
+    wrong = parse_event_result(
+        (202, {}, b'{"status": "accepted_local", "edge_event_id": "other"}'), "edge-1"
+    )
+    assert isinstance(wrong, DeliveryFailure), (
+        "a local accept naming another event must not acknowledge this one"
+    )
