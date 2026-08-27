@@ -1679,6 +1679,10 @@ class WorkerRuntime:
             ),
         )
         pumps.append(pump)
+        # The native pump, not the host inference coordinator, owns this
+        # camera's detection. Declare it so the relay payload reports the
+        # producer as present instead of falling through to "disabled".
+        self.diagnostics.register_native_detection(camera.camera_id)
         HeartbeatReporter(self.config, camera).mark_ready(camera.camera_id)
 
     def _compose_inference_coordinator(
