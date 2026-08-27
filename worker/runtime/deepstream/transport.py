@@ -35,8 +35,16 @@ def spawn_process(request: SpawnRequest) -> subprocess.Popen[bytes]:
         env=request.environment,
         pass_fds=request.pass_fds,
         stdin=subprocess.DEVNULL,
+        # The child owns decode, inference, parsing and association, so it is
+        # the only component that can report why any of them failed. Its
+        # diagnostics - GStreamer, TensorRT, CUDA and our own - are written to
+        # stderr, and discarding that stream leaves the entire media plane
+        # unobservable to an operator. Inherit the supervisor's stderr so the
+        # child reaches the container log. stdout stays discarded: nothing in
+        # the child writes structured output there, and the IPC contract runs
+        # over inherited sockets rather than a pipe.
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=None,
     )
 
 

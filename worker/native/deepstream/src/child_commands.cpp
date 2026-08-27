@@ -45,7 +45,7 @@ CommandResult handle_command(ServerState& state, const ipc::Message& request) {
         state.generation_high_water[request.camera] = request.header.source_generation;
         state.sources.emplace(
             request.camera,
-            SourceSlot{request.header.source_generation, 1, 0, 0, std::nullopt, binding, nullptr});
+            SourceSlot{request.header.source_generation, 1, 0, 0, 0, 0, std::nullopt, binding, nullptr});
       }
       const std::string uri{request.payload.begin(), request.payload.end()};
       if (!state.runtime.add(request.camera, uri, binding, &error)) {

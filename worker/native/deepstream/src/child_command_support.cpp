@@ -1,5 +1,7 @@
 #include "child_command_support.hpp"
 
+#include <cstdio>
+
 #include "perception_wire.hpp"
 
 #include <sys/socket.h>
@@ -173,9 +175,35 @@ void ServerState::on_frame(const std::string& camera, const PipelineBindingPtr& 
     const auto found = sources.find(camera);
     if (found == sources.end() || found->second.binding != binding) return;
     const std::uint64_t interval_ns = 1'000'000'000ULL / options.target_fps;
-    if (found->second.last_inference_source_time_ns != 0 &&
-        view.source_time_ns < found->second.last_inference_source_time_ns + interval_ns) {
+    const std::uint64_t last_admit = found->second.last_inference_source_time_ns;
+    if (last_admit != 0 && view.source_time_ns < last_admit + interval_ns) {
+      // Diagnostic: name why a frame was skipped, so an effective rate below
+      // the configured target can be attributed instead of guessed at. Sampled
+      // so a 30fps source cannot flood the log.
+      if ((++found->second.pace_skips % 128) == 0) {
+        std::fprintf(stderr,
+                     "seeon-pace: camera=%s skip target_fps=%u interval_ns=%llu "
+                     "gap_ns=%lld skips=%llu admits=%llu\n",
+                     camera.c_str(), options.target_fps,
+                     static_cast<unsigned long long>(interval_ns),
+                     static_cast<long long>(view.source_time_ns) -
+                         static_cast<long long>(last_admit),
+                     static_cast<unsigned long long>(found->second.pace_skips),
+                     static_cast<unsigned long long>(found->second.pace_admits));
+      }
       return;
+    }
+    if ((++found->second.pace_admits % 64) == 0) {
+      std::fprintf(stderr,
+                   "seeon-pace: camera=%s admit target_fps=%u interval_ns=%llu "
+                   "gap_ns=%lld skips=%llu admits=%llu\n",
+                   camera.c_str(), options.target_fps,
+                   static_cast<unsigned long long>(interval_ns),
+                   last_admit == 0 ? -1LL
+                                   : static_cast<long long>(view.source_time_ns) -
+                                         static_cast<long long>(last_admit),
+                   static_cast<unsigned long long>(found->second.pace_skips),
+                   static_cast<unsigned long long>(found->second.pace_admits));
     }
     found->second.last_inference_source_time_ns = view.source_time_ns;
   }

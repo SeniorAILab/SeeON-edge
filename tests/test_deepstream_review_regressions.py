@@ -349,3 +349,27 @@ def test_uri_boundary_rejects_file_scheme_and_preserves_rtsp_quotes() -> None:
     credentialed_uri = "rtsp://user:p'ass" + chr(64) + "camera.example/live"
     parsed = parser(credentialed_uri)
     assert parsed.encode() == b"rtsp://user:p'ass" + bytes((64,)) + b"camera.example/live"
+
+
+def test_child_stderr_is_inherited_so_media_plane_faults_reach_the_operator() -> None:
+    """The native child's stderr must not be discarded.
+
+    The child owns decode, inference, parsing and association; it is the only
+    component that can say why any of them failed. Discarding its stderr made
+    every native diagnostic invisible, including instrumentation added to
+    investigate a rebuild storm, which produced zero lines and was briefly
+    misread as evidence that the instrumented path was not involved.
+    """
+    import inspect
+    import subprocess
+
+    from worker.runtime.deepstream import transport
+
+    source = inspect.getsource(transport.spawn_process)
+    assert "stderr=None" in source, (
+        "spawn_process must inherit stderr so the child reaches the container log"
+    )
+    assert "stderr=subprocess.DEVNULL" not in source, (
+        "discarding child stderr leaves the media plane unobservable"
+    )
+    assert subprocess.DEVNULL is not None
