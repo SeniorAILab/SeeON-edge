@@ -153,19 +153,28 @@ docker inspect seeon-edge-main-ml-worker-1 \
 
 ## 4. 다음 사람이 할 일 (우선순위 순)
 
-### ① PR 병합 — 최우선
+### ① PR 리뷰·병합 — **사용자 담당**
+
+리뷰와 병합은 사용자가 직접 수행합니다. 에이전트는 손대지 않습니다.
 
 |PR|상태|비고|
 |---|---|---|
-|**#432**|`CLEAN`, 체크 통과|**바로 병합 가능**|
-|**#433**|`BEHIND`|main 병합 후 CI 재실행 필요. 라이브 가동 중|
-|**#427**|`BEHIND`, CI 진행 중|**라이브 가동 중, 미리뷰.** 33+ 커밋|
+|~~#432~~|**병합됨** (`95c6a0c`)|관제 화면 복구|
+|**#433**|`BEHIND`|릴레이 로컬 수락. **라이브 가동 중**|
+|**#427**|`DIRTY` — main과 충돌|**라이브 가동 중, 미리뷰.** 33+ 커밋|
 |#425|`BEHIND`, test 실패|저장소 정리. 실패 원인 확인 필요|
 |#398|`BEHIND`|non-nvidia 경로. 소규모|
 |#299|`DIRTY`|충돌. 16k 라인. 별도 처리|
 
 `main` 브랜치 보호는 `strict: true`이므로 **main이 앞서가면 브랜치 갱신 후 CI 재실행**이
 필요합니다. `gh api -X PUT repos/SeniorAILab/SeeON-edge/pulls/<N>/update-branch`.
+
+**#427 충돌 지점 (확인됨, 미해결로 남겨둠):**
+`tests/test_deepstream_review_regressions.py` 한 블록(L354-378).
+레인이 추가한 `test_child_stderr_is_inherited_so_media_plane_faults_reach_the_operator`가
+#432 병합으로 이동한 인접 코드와 겹칩니다. **ours(레인 쪽 테스트) 유지가 정답**입니다 —
+그 테스트는 배포된 stderr 상속 수정(`e7f0625`)을 고정합니다.
+`worker/runtime/worker.py`는 자동 병합됩니다.
 
 ### ② #429 잔여 실패율 분리 측정
 
