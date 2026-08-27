@@ -42,3 +42,28 @@ def test_a_real_parameter_change_still_changes_the_signature() -> None:
     assert native_configuration_signature(1, 0, args[0], baseline, *args[1:]) != (
         native_configuration_signature(1, 0, args[0], baseline, 1280, 720, args[3])
     )
+
+
+def test_four_byte_start_codes_deduplicate_too() -> None:
+    """The four-byte start code's leading zero lands on the previous unit.
+
+    Splitting on the three-byte pattern leaves ``PPS\\x00`` where a four-byte
+    code follows, so identical parameter sets compared unequal and 49 of these
+    gaps kept firing on cameras that emit four-byte codes even after the first
+    deduplication landed.
+    """
+    from fractions import Fraction
+
+    from worker.adapters.decode.native_au_mux_template import (
+        native_configuration_signature,
+    )
+
+    args = ("caps", 640, 360, Fraction(1, 90_000))
+    for once in (
+        b"\x00\x00\x00\x01VPS\x00\x00\x00\x01SPS\x00\x00\x00\x01PPS",
+        b"\x00\x00\x01VPS\x00\x00\x01SPS\x00\x00\x01PPS",
+        b"\x00\x00\x00\x01VPS\x00\x00\x01SPS\x00\x00\x00\x01PPS",
+    ):
+        assert native_configuration_signature(1, 0, args[0], once, *args[1:]) == (
+            native_configuration_signature(1, 0, args[0], once + once, *args[1:])
+        ), f"failed to deduplicate {once!r}"
