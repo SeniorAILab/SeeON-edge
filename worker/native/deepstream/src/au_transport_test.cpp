@@ -61,6 +61,17 @@ int main() {
   close(descriptors[0]);
   close(descriptors[1]);
 
+  {
+    int pair[2]{};
+    check(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0, "socketpair failed");
+    seeon::AuSender clean(pair[0], 4, seeon::kMaxAuFrameBytes);
+    check(clean.enqueue(envelope_for(2, 1, 64)),
+          "control: a 64-byte epoch-transition envelope must be admitted by a "
+          "sender whose gap slot is free");
+    clean.stop();
+    close(pair[1]);
+  }
+
   // A new stream epoch begins at sequence 1 because PipelineBinding is
   // recreated on a source rebuild. The receiver treats the first unit of an
   // epoch as the carrier of the transition, and rejects the epoch as
@@ -95,14 +106,21 @@ int main() {
       }
     }
     check(filled != 0, "sender never overflowed, cannot exercise the gap slot");
-    check(gapped.dropped() > 0, "overflow did not record a drop");
+    const auto dropped_after_overflow = gapped.dropped();
+    check(dropped_after_overflow > 0, "overflow did not record a drop");
 
-    // The source rebuilds: epoch 2 starts its sequence at 1.
+    // The source rebuilds: epoch 2 starts its sequence at 1. This envelope is
+    // 64 bytes, far below every size limit, so its rejection can only be the
+    // occupied gap slot -- a cumulative dropped() count alone would not
+    // establish that, which is why the size is chosen to rule out the other
+    // refusal conditions.
     const bool transition_admitted = gapped.enqueue(envelope_for(2, 1, 64));
     check(!transition_admitted,
           "expected the occupied gap slot to swallow the epoch transition; if "
           "this now passes the transport contract changed and the receiver's "
           "sequence expectation must be revisited");
+    check(gapped.dropped() == dropped_after_overflow + 1,
+          "the epoch transition was refused without being counted as dropped");
     gapped.stop();
     close(pair[1]);
   }
