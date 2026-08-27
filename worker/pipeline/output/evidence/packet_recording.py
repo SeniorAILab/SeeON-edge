@@ -25,6 +25,10 @@ from worker.types.source_packet import (
     StreamEpoch,
 )
 
+# Bounded wait for the AU ring to adopt a trigger's epoch. Finalize already
+# runs after the post-event window, so this is off the ingestion hot path.
+_RING_ALIGNMENT_TIMEOUT_SEC = 2.0
+
 LOGGER: Final = logging.getLogger(__name__)
 
 
@@ -107,17 +111,30 @@ class PacketClipRecordingCoordinator:
             pre_seconds = trigger_pts - Fraction(str(window_bounds[0]))
             post_seconds = Fraction(str(window_bounds[1])) - trigger_pts
         try:
-            selection = self._repository.ring(camera_id).select(
-                trigger_epoch=epoch,
-                trigger_pts=trigger_pts,
-                pre_seconds=max(pre_seconds, Fraction()),
-                post_seconds=max(post_seconds, Fraction()),
-            )
+            ring = self._repository.ring(camera_id)
         except ValueError:
             return ClipUnavailable(
                 clip_id,
                 ClipReasonCode.REMUX_FAILED,
                 "SOURCE_PACKET_RING_UNAVAILABLE",
+            )
+        # The perception plane advances stream_epoch before the AU ring adopts
+        # it, so a trigger can name an epoch this ring has not seen. Measured on
+        # the live fleet, 43 of 44 selection failures had the trigger ahead of
+        # the ring and every clip came back without video. Waiting here costs
+        # nothing on the hot path: finalize already runs after the post-event
+        # window, by which point the ring has usually caught up anyway.
+        _ = ring.wait_until_ready(
+            epoch=epoch,
+            through_pts=trigger_pts,
+            timeout_sec=_RING_ALIGNMENT_TIMEOUT_SEC,
+        )
+        try:
+            selection = ring.select(
+                trigger_epoch=epoch,
+                trigger_pts=trigger_pts,
+                pre_seconds=max(pre_seconds, Fraction()),
+                post_seconds=max(post_seconds, Fraction()),
             )
         except PacketSelectionError as exc:
             return ClipUnavailable(

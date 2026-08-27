@@ -7,7 +7,6 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from fractions import Fraction
 from typing import Protocol, final, runtime_checkable
 
 from contracts.observation import BoundingBox
@@ -19,13 +18,9 @@ from worker.pipeline.output.evidence_attacher import AlertEvidenceAttacher
 from worker.pipeline.perception import SceneState, build_decision_input, build_frame_observation
 from worker.runtime.deepstream.canary_telemetry import NativeCanaryTelemetry
 from worker.types import BusinessEvent, ChannelState, NativeEvidenceTrigger
-from worker.types.source_packet import StreamEpoch
 
 LOGGER = logging.getLogger(__name__)
 _FPS_WINDOW_SEC = 10.0
-# Bounded wait for the AU ring to adopt an event's epoch. Only event frames
-# wait, so this never throttles the steady ingestion path.
-_EVIDENCE_READY_TIMEOUT_SEC = 2.0
 
 
 @runtime_checkable
@@ -36,19 +31,8 @@ class NativeEventSink(Protocol):
 class NativeDiagnostics(Protocol):
     def update_measured_fps(self, camera_id: str, measured_fps: float | None) -> None: ...
     def record_detection_completed(self, camera_id: str) -> None: ...
+    def record_native_detection_attempt(self, camera_id: str) -> None: ...
 
-
-class EvidenceReadinessBarrier(Protocol):
-    """Wait for the AU packet ring to adopt the epoch an event was seen in."""
-
-    def wait_until_ready(
-        self,
-        camera_id: str,
-        *,
-        epoch: StreamEpoch,
-        through_pts: Fraction,
-        timeout_sec: float,
-    ) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +46,6 @@ class NativePolicyContext:
     diagnostics: NativeDiagnostics
     bed_interval: int
     canary_telemetry: NativeCanaryTelemetry | None = None
-    evidence_barrier: EvidenceReadinessBarrier | None = None
 
 
 @final
@@ -80,7 +63,6 @@ class NativePolicyPump:
         self._diagnostics = context.diagnostics
         self._bed_interval = context.bed_interval
         self._canary_telemetry = context.canary_telemetry
-        self._evidence_barrier = context.evidence_barrier
         self._stop = threading.Event()
         self._fps: deque[float] = deque()
         self.processed_count = 0
@@ -89,45 +71,6 @@ class NativePolicyPump:
     @property
     def camera_id(self) -> str:
         return self._binding.camera_id
-
-    def _await_evidence_ring(self, stream_epoch: int, source_pts: int) -> None:
-        """Let the AU ring catch up before this event's clip is requested.
-
-        The perception plane advances ``stream_epoch`` before the packet ring
-        adopts it, so a clip trigger can name an epoch the ring has not seen.
-        Measured on the live fleet, 43 of 44 selection failures had the trigger
-        ahead of the ring, and every clip came back without video.
-
-        Only event frames wait, never the steady per-frame path, so this cannot
-        throttle ingestion. On timeout the event is still emitted with its
-        original identity: relabelling it to the ring's current epoch would
-        attach the wrong footage, and the evidence path already records an
-        explicit unavailable reason.
-        """
-        barrier = self._evidence_barrier
-        if barrier is None:
-            return
-        epoch = StreamEpoch(
-            self._binding.worker_boot_id,
-            self.camera_id,
-            stream_epoch,
-            self._binding.source_generation,
-        )
-        ready = barrier.wait_until_ready(
-            self.camera_id,
-            epoch=epoch,
-            through_pts=Fraction(source_pts, 1_000_000_000),
-            timeout_sec=_EVIDENCE_READY_TIMEOUT_SEC,
-        )
-        if not ready:
-            LOGGER.warning(
-                "evidence ring did not reach the event epoch in time: "
-                "camera_id=%s stream_epoch=%d source_pts=%d timeout_sec=%.1f",
-                self.camera_id,
-                stream_epoch,
-                source_pts,
-                _EVIDENCE_READY_TIMEOUT_SEC,
-            )
 
     def _rebind_if_source_was_rebuilt(self) -> None:
         """Adopt the slot's current binding after a source rebuild.
@@ -175,6 +118,7 @@ class NativePolicyPump:
                     frame.source_time_ns,
                     frame.native_publish_sequence,
                 )
+            self._diagnostics.record_native_detection_attempt(self.camera_id)
             try:
                 self._process(frame)
             except (ChildControlError, OSError, ValueError, RuntimeError):
@@ -253,8 +197,6 @@ class NativePolicyPump:
             frame.identity.source_pts or 0,
             metadata.source_time_ns / 1_000_000_000,
         )
-        if events:
-            self._await_evidence_ring(frame.identity.stream_epoch, trigger.source_pts)
         for event in events:
             try:
                 snapshot = self._control.snapshot(self.camera_id)

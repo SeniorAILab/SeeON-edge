@@ -657,3 +657,42 @@ def test_metadata_counter_logging_is_a_no_op_without_the_nvidia_media_plane(
         _Runtime._log_native_metadata_counters(_Runtime())  # pyright: ignore[reportArgumentType]
     # Then
     assert not [r for r in caplog.records if "native metadata slot:" in r.getMessage()]
+
+
+def test_native_producer_reports_real_attempts_so_success_rate_is_meaningful() -> None:
+    """Regression: synthesising admitted == completed pinned success rate at 1.0.
+
+    The backend computes ``recent_success_rate`` as completed_delta over
+    admitted_delta, so reporting the two as equal made every native camera look
+    perfectly healthy no matter how many frames failed. ``admitted`` must be the
+    real attempt count.
+    """
+    # Given
+    diagnostics = WorkerDiagnostics()
+    diagnostics.update_decode("camera-a", _selection())
+    diagnostics.register_native_detection("camera-a")
+    for _ in range(5):
+        diagnostics.record_native_detection_attempt("camera-a")
+    for _ in range(3):
+        diagnostics.record_detection_completed("camera-a")
+    # When
+    detection = _detection_of(diagnostics.to_payload("facility-1", None, 1), "camera-a")
+    # Then
+    assert detection["inference_admitted"] == 5
+    assert detection["decision_completed"] == 3
+    # ordering invariant the backend enforces still holds
+    assert detection["decision_completed"] <= detection["inference_succeeded"]
+    assert detection["inference_succeeded"] <= detection["inference_admitted"]
+
+
+def test_native_attempts_never_fall_below_completions() -> None:
+    """A completion without a recorded attempt must not break the wire contract."""
+    # Given
+    diagnostics = WorkerDiagnostics()
+    diagnostics.update_decode("camera-a", _selection())
+    diagnostics.register_native_detection("camera-a")
+    diagnostics.record_detection_completed("camera-a")
+    # When
+    detection = _detection_of(diagnostics.to_payload("facility-1", None, 1), "camera-a")
+    # Then
+    assert detection["inference_admitted"] >= detection["decision_completed"]

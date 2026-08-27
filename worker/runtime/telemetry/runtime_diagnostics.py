@@ -85,6 +85,10 @@ class WorkerDiagnostics:
         # camera as ``expected=False`` (rendered "detection disabled") no
         # matter what the producer was actually doing.
         self._native_detection_cameras: set[str] = set()
+        # Real attempt count for the native producer. Without it the relay
+        # payload had to synthesise admitted == completed, which pinned the
+        # backend's recent_success_rate at 1.0 and hid every failed frame.
+        self._native_attempts_by_camera: dict[str, int] = {}
         self._encoder = EncoderLifecycleSnapshot()
         self._clip_recorder = ClipRecorderStatus()
         self._clip_export = RelayClipExportPayload(enabled=False, version=0)
@@ -307,6 +311,13 @@ class WorkerDiagnostics:
                 self._decision_completed_by_camera.get(camera_id, 0) + 1
             )
 
+    def record_native_detection_attempt(self, camera_id: str) -> None:
+        """Count one perception frame the native producer took responsibility for."""
+        with self._lock:
+            self._native_attempts_by_camera[camera_id] = (
+                self._native_attempts_by_camera.get(camera_id, 0) + 1
+            )
+
     def register_native_detection(self, camera_id: str) -> None:
         """Declare that a non-host producer owns this camera's detection.
 
@@ -523,6 +534,7 @@ class WorkerDiagnostics:
             inference = None if self._inference is None else self._inference.snapshot()
             decision_completed_by_camera = dict(self._decision_completed_by_camera)
             native_detection_cameras = set(self._native_detection_cameras)
+            native_attempts_by_camera = dict(self._native_attempts_by_camera)
             clip_recorder = self._clip_recorder
             clip_export = self._clip_export.copy()
             gpu = None if self._gpu is None else self._gpu.copy()
@@ -533,6 +545,7 @@ class WorkerDiagnostics:
                 inference_cameras.get(camera_id),
                 decision_completed_by_camera.get(camera_id, 0),
                 native_producer=camera_id in native_detection_cameras,
+                native_attempts=native_attempts_by_camera.get(camera_id, 0),
             )
             for camera_id in selections
         }
@@ -544,6 +557,7 @@ def _detection_for_camera(
     decision_completed: int,
     *,
     native_producer: bool = False,
+    native_attempts: int = 0,
 ) -> RelayDetectionPayload:
     """Report detection telemetry for whichever producer owns this camera.
 
@@ -575,9 +589,15 @@ def _detection_for_camera(
             decision_completed=decision_completed,
         )
     if native_producer:
+        # ``admitted`` is the real number of frames this producer took on;
+        # ``succeeded`` collapses onto ``completed`` because a frame that
+        # reaches a decision is by definition one the child already inferred.
+        # Reporting a real ``admitted`` is what makes the backend's
+        # recent_success_rate meaningful: it drops below 1.0 when frames fail
+        # instead of being pinned at 1.0 by a synthesised count.
         return detection_payload(
             expected=True,
-            inference_admitted=decision_completed,
+            inference_admitted=max(native_attempts, decision_completed),
             inference_succeeded=decision_completed,
             inference_overwritten=0,
             decision_completed=decision_completed,

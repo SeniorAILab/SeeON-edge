@@ -3,7 +3,6 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from fractions import Fraction
 from typing import final
 
 from worker.pipeline.output.evidence.packet_ring import PacketRingLimits, SourcePacketRing
@@ -41,28 +40,6 @@ class PacketRingRepository:
         self._closed = False
         self._epoch_listeners: list[Callable[[StreamEpoch, StreamEpoch], None]] = []
         self.metrics = PacketRepositoryMetrics()
-
-    def wait_until_ready(
-        self,
-        camera_id: str,
-        *,
-        epoch: StreamEpoch,
-        through_pts: Fraction,
-        timeout_sec: float,
-    ) -> bool:
-        """Wait for one camera's ring to catch up with the perception plane.
-
-        Returns ``False`` when the camera has no ring, so a caller that races
-        a removal degrades to the existing unavailable-evidence path instead
-        of raising.
-        """
-        with self._lock:
-            ring = self._rings.get(camera_id)
-        if ring is None:
-            return False
-        return ring.wait_until_ready(
-            epoch=epoch, through_pts=through_pts, timeout_sec=timeout_sec
-        )
 
     def register_camera(self, camera_id: str) -> None:
         with self._lock:

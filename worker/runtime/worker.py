@@ -1676,7 +1676,6 @@ class WorkerRuntime:
                 attacher,
                 self.diagnostics,
                 plan.schedule.get("bed", self.temporal_profile.decision_interval_frames("bed")),
-                evidence_barrier=self._packet_repository,
             ),
         )
         pumps.append(pump)
