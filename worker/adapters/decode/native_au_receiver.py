@@ -5,6 +5,7 @@ import logging
 import queue
 import socket
 import threading
+import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -97,7 +98,10 @@ class NativeAuReceiver:
         self._stop = threading.Event()
         self._drain_thread: threading.Thread | None = None
         self._process_thread: threading.Thread | None = None
-        self._work: queue.Queue[_Work] = queue.Queue(maxsize=256)
+        # Sized to ride out GIL scheduling jitter: the worker process runs a
+        # policy pump per camera alongside this thread, and a half-second
+        # stall at fleet rate is ~130 units. 256 shed on every stall.
+        self._work: queue.Queue[_Work] = queue.Queue(maxsize=2048)
         self._epochs: dict[str, StreamEpoch] = {}
         self._sequences: dict[tuple[str, int, int], int] = {}
         self._configurations: dict[tuple[str, int, int], SourceStreamConfiguration] = {}
@@ -118,6 +122,12 @@ class NativeAuReceiver:
         # Gap markers the child's sender emitted per camera; the holes they
         # announce are marked by the sequence check, so this is a tally only.
         self._sender_gap_markers: dict[str, int] = {}
+        # Raw signature inputs last seen per key, so the digest is recomputed
+        # only when a camera actually changes them. Cameras retransmit
+        # identical parameter sets on every keyframe.
+        self._signature_inputs: dict[tuple[str, int, int], tuple[object, ...]] = {}
+        self._tally = {"holes": 0, "shed": 0, "sender_markers": 0, "adopted": 0}
+        self._tally_logged_at = time.monotonic()
         self._progress = NativeAuProgress()
 
     def start(self) -> None:
@@ -183,6 +193,7 @@ class NativeAuReceiver:
                 # the sixties four minutes after boot, no clip with video.
                 with suppress(queue.Empty):
                     _ = self._work.get_nowait()
+                    self._tally["shed"] += 1
                 with suppress(queue.Full):
                     self._work.put_nowait(work)
 
@@ -191,7 +202,9 @@ class NativeAuReceiver:
             try:
                 work = self._work.get(timeout=0.2)
             except queue.Empty:
+                self._log_tally()
                 continue
+            self._log_tally()
             if isinstance(work, _Gap):
                 self._report_gap(work.camera_id, "transport_gap_marker")
                 continue
@@ -303,6 +316,7 @@ class NativeAuReceiver:
             self._sender_gap_markers[envelope.camera_id] = (
                 self._sender_gap_markers.get(envelope.camera_id, 0) + 1
             )
+            self._tally["sender_markers"] += 1
             return
         expected = self._sequences.get(key, 0) + 1
         discontinuity: str | None = None
@@ -316,6 +330,7 @@ class NativeAuReceiver:
                 # window, not a source rebuild. Rebuilding for a hole was the
                 # engine of the storm described in _drain.
                 discontinuity = f"sequence_gap:{expected}->{envelope.sequence}"
+                self._tally["holes"] += 1
                 LOGGER.warning(
                     "native au sequence gap: camera_id=%s generation=%d epoch=%d "
                     "expected=%d got=%d",
@@ -323,6 +338,7 @@ class NativeAuReceiver:
                     expected, envelope.sequence,
                 )
             else:
+                self._tally["adopted"] += 1
                 # A unit for an identity newer than anything adopted, arriving
                 # after sequence 1. The identity itself proves the rebuild
                 # landed; only the opening unit was lost, and the sender-side
@@ -350,11 +366,16 @@ class NativeAuReceiver:
             self._retire_keys(envelope.camera_id, keep=key)
             self._epochs[envelope.camera_id] = identity
         self._sequences[key] = envelope.sequence
-        signature = native_configuration_signature(
+        inputs = (
             envelope.codec, envelope.framing, envelope.parser_caps, envelope.codec_data,
             envelope.width, envelope.height, envelope.time_base,
         )
         configuration = self._configurations.get(key)
+        if configuration is not None and self._signature_inputs.get(key) == inputs:
+            signature = self._configuration_signatures[key]
+        else:
+            signature = native_configuration_signature(*inputs)
+            self._signature_inputs[key] = inputs
         if configuration is None:
             configuration = stream_configuration(envelope)
             self._configurations[key] = configuration
@@ -386,6 +407,19 @@ class NativeAuReceiver:
                 envelope.generation,
             )
 
+    def _log_tally(self) -> None:
+        now = time.monotonic()
+        if now - self._tally_logged_at < 60.0:
+            return
+        self._tally_logged_at = now
+        LOGGER.info(
+            "native au receiver tally (60s): holes=%d shed=%d sender_markers=%d adopted=%d",
+            self._tally["holes"], self._tally["shed"],
+            self._tally["sender_markers"], self._tally["adopted"],
+        )
+        for name in self._tally:
+            self._tally[name] = 0
+
     def _timestamp_discontinuous(self, key: tuple[str, int, int], envelope: AuEnvelope) -> bool:
         previous = self._timeline.get(key)
         if previous is None:
@@ -397,7 +431,8 @@ class NativeAuReceiver:
 
     def _retire_keys(self, camera_id: str, keep: tuple[str, int, int] | None = None) -> None:
         for mapping in (
-            self._sequences, self._configurations, self._configuration_signatures, self._timeline,
+            self._sequences, self._configurations, self._configuration_signatures,
+            self._timeline, self._signature_inputs,
         ):
             for key in tuple(mapping):
                 if key[0] == camera_id and key != keep:
