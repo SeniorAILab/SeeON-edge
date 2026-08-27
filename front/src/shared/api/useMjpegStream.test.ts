@@ -82,7 +82,6 @@ function mount(baseUrl: string | null): { root: Root; current: () => MjpegStream
 
 async function flushMicrotasks(times = 3): Promise<void> {
   for (let i = 0; i < times; i += 1) {
-    // eslint-disable-next-line no-await-in-loop
     await act(async () => { await Promise.resolve(); });
   }
 }
@@ -111,10 +110,8 @@ describe('useMjpegStream', () => {
 
     // 하트비트가 1초마다 오므로 2.5초 동안 계속 프레임을 흘려보내면 재연결이 없어야 한다.
     for (let elapsed = 0; elapsed < 2_500; elapsed += 1_000) {
-      // eslint-disable-next-line no-await-in-loop
       await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
       streams[0].push(encodePart(new Uint8Array([1, 2, 3])));
-      // eslint-disable-next-line no-await-in-loop
       await flushMicrotasks();
     }
 

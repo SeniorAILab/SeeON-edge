@@ -25,8 +25,9 @@ Import that way in app, features, shared, and tests. Never `../../`.
 
 Allowed: `@/app/*`, `@/features/<own-slice>/*`, `@/shared/*`.
 Features may read `dashboardLocation` types/helpers for their `use*Location` hooks.
-`shared/` must not import `@/features/*`.
+`shared/` must not import `@/features/*` or `@/app/*`.
 `shared/ui/NavBar` already types against `@/app/dashboardLocation`. Don't spread that pattern.
+These rules are lint errors: `front/eslint.config.js` (boundary rules only, `pnpm --dir front lint`). NavBar is the single file-level exception there.
 
 ## Cross-slice seams (keep them few)
 

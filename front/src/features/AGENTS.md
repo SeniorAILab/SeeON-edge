@@ -25,6 +25,8 @@ Forbidden: sibling slices except the frozen seams below. `App.tsx`. A second fet
 
 Do not add a third. Lift a new shared widget to `shared/ui` or `shared/api`.
 
+Enforced by `front/eslint.config.js` (`no-restricted-imports`, one override per slice; `pnpm --dir front lint`). Only the two seams below are allowlisted (`ALLOWED_SEAMS`); every other `@/features/<sibling>` import, any `../` import, `@/app/App`, and anything under `backend/` or `worker/` is a lint error. A new seam means editing that allowlist in the same PR as this file.
+
 `connection` -> `cameras` (one way):
 - Step 2 `CameraSyncStep` mounts `CameraPairingList` + `TopologyStructureEditor`, then `syncTopology()`.
 - Step 3 `ServerSyncStep` mounts `TopologyConfirmationDialog`. `preview.cameras/rooms/floors` counts are deactivations, not creates.
