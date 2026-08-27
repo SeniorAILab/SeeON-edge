@@ -346,6 +346,30 @@ def test_geometry_observation_failure_releases_every_selected_packet(
         coordinator.stop()
 
 
+def test_base_exception_during_forward_releases_every_selected_packet() -> None:
+    coordinator, client, _watchdog, _clock, lanes = _coordinator(("camera-a", "camera-b"))
+    held = {
+        "camera-a": _packet("camera-a", 11, height=360, width=640),
+        "camera-b": _packet("camera-b", 22, height=360, width=640),
+    }
+
+    def interrupt(*_args: object, **_kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    client.infer_batch = interrupt  # type: ignore[method-assign]
+    try:
+        for camera_id, packet in held.items():
+            lanes[camera_id][0].publish(packet)
+
+        with pytest.raises(KeyboardInterrupt):
+            coordinator.run_cycle()
+
+        assert all(packet.released for packet in held.values())
+        assert all(results.take(timeout_sec=0) is None for _source, results in lanes.values())
+    finally:
+        coordinator.stop()
+
+
 def test_nonfatal_geometry_bucket_failure_releases_only_that_bucket(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

@@ -212,10 +212,12 @@ class CapabilityInferenceCoordinator:
                         "pose work item failed: error=%s geometry=%sx%s cameras=%s",
                         type(error).__name__, *geometry, cameras,
                     )
-        except Exception:
+        finally:
+            # Any exit that leaves a packet un-published and un-released would leak
+            # its lease: telemetry failures, a fatal accelerator error, or a
+            # BaseException (KeyboardInterrupt/SystemExit) unwinding the thread.
             for packet in pending.values():
                 packet.release()
-            raise
         return published
 
     def _forward(self, frames: Sequence[FramePacket]) -> tuple[RunnerResult, ...]:
