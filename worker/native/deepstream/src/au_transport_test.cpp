@@ -29,6 +29,12 @@ seeon::AuEnvelope envelope(std::uint64_t sequence, std::size_t size) {
           {seeon::AuCodec::kH264, seeon::AuFraming::kAnnexB, 1, 1, 1, 1, 90000,
            640, 360, sequence == 1, "caps", {}, std::vector<std::uint8_t>(size, 0x41)}};
 }
+seeon::AuEnvelope envelope_for(std::uint64_t epoch, std::uint64_t sequence,
+                                std::size_t size) {
+  return {"camera-a", 1, epoch, sequence,
+          {seeon::AuCodec::kH264, seeon::AuFraming::kAnnexB, 1, 1, 1, 1, 90000,
+           640, 360, sequence == 1, "caps", {}, std::vector<std::uint8_t>(size, 0x41)}};
+}
 }  // namespace
 
 int main() {
@@ -54,5 +60,52 @@ int main() {
   sender.stop();
   close(descriptors[0]);
   close(descriptors[1]);
+
+  // A new stream epoch begins at sequence 1 because PipelineBinding is
+  // recreated on a source rebuild. The receiver treats the first unit of an
+  // epoch as the carrier of the transition, and rejects the epoch as
+  // discontinuous if it never arrives.
+  //
+  // But the gap slot holds exactly one envelope, and while it is occupied
+  // EVERY enqueue is refused - including that first unit. A rebuild burst
+  // fills the queue, the overflow claims the single gap slot, and the very
+  // next thing produced is epoch N+1 sequence 1, which is discarded. The
+  // receiver then sees the epoch beginning at sequence 2 and reports a
+  // discontinuity, which requests another rebuild, which fills the queue
+  // again.
+  //
+  // Observed on the live 13-camera stack: rings frozen at active_epoch=1
+  // while triggers reached 5, and clip selection failing with 'trigger
+  // stream epoch is no longer active'. This test pins the mechanism without
+  // asserting a remedy, because the remedy is a contract decision about how
+  // an epoch transition survives backpressure.
+  {
+    int pair[2]{};
+    check(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0, "socketpair failed");
+    int small = 4096;
+    setsockopt(pair[0], SOL_SOCKET, SO_SNDBUF, &small, sizeof(small));
+    seeon::AuSender gapped(pair[0], 1, seeon::kMaxAuFrameBytes);
+
+    // Fill the queue and then overflow it, so the gap slot is claimed.
+    std::uint64_t filled = 0;
+    for (std::uint64_t index = 1; index <= 64; ++index) {
+      if (!gapped.enqueue(envelope_for(1, index, 8192))) {
+        filled = index;
+        break;
+      }
+    }
+    check(filled != 0, "sender never overflowed, cannot exercise the gap slot");
+    check(gapped.dropped() > 0, "overflow did not record a drop");
+
+    // The source rebuilds: epoch 2 starts its sequence at 1.
+    const bool transition_admitted = gapped.enqueue(envelope_for(2, 1, 64));
+    check(!transition_admitted,
+          "expected the occupied gap slot to swallow the epoch transition; if "
+          "this now passes the transport contract changed and the receiver's "
+          "sequence expectation must be revisited");
+    gapped.stop();
+    close(pair[1]);
+  }
+
   return 0;
 }
