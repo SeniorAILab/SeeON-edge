@@ -22,10 +22,13 @@ _UPKEEP_INTERVAL_SEC = 0.1
 
 
 class _Rotate(Protocol):
-    """The maintenance seam, keyword-only so a wrong callable fails at import.
+    """The maintenance seam, declaring the keyword-only `force` contract.
 
-    `Callable[..., None]` accepted any signature and deferred the mismatch to a
-    background thread where it would surface as a dead recorder.
+    This is a static contract, NOT an import-time or runtime check: a Protocol
+    annotation binds nothing at call time. It exists so a type checker rejects a
+    mismatched callable, where the previous `Callable[..., None]` accepted any
+    signature and deferred the failure to the background recorder thread, where
+    it surfaces as a dead actor rather than an error at the wiring site.
     """
 
     def __call__(self, *, force: bool) -> None: ...
