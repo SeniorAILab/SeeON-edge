@@ -100,7 +100,15 @@ class NativeAuReceiver:
         self._configurations: dict[tuple[str, int, int], SourceStreamConfiguration] = {}
         self._configuration_signatures: dict[tuple[str, int, int], str] = {}
         self._timeline: dict[tuple[str, int, int], tuple[int, int]] = {}
-        self._gaps_active: set[str] = set()
+        # Cameras with a rebuild request outstanding, keyed by the
+        # (generation, epoch) the gap was reported against. A later report on
+        # the same identity is a duplicate; one on a newer identity is proof
+        # the rebuild landed and something else went wrong, so it is not.
+        self._gaps_active: dict[str, tuple[int, int]] = {}
+        # Units that opened a rebuilt epoch mid-stream because the sequence-1
+        # unit never reached this process. Counted so a lossy transport stays
+        # visible even though the ring recovers.
+        self._adopted_mid_epoch: dict[str, int] = {}
         # Units dropped because they belonged to an epoch the receiver has
         # already moved past. Counted rather than silent so a rebuild storm
         # stays visible without being self-sustaining.
@@ -137,7 +145,7 @@ class NativeAuReceiver:
         active = self._epochs.pop(camera_id, None)
         if active is not None:
             self._retired_generations[camera_id] = active.source_generation
-        self._gaps_active.discard(camera_id)
+        self._gaps_active.pop(camera_id, None)
         self._retire_keys(camera_id)
         remove = getattr(self._sink, "remove_camera", None)
         if callable(remove):
@@ -212,7 +220,12 @@ class NativeAuReceiver:
         ]
         return ",".join(moved) if moved else "digest_only"
 
-    def _report_gap(self, camera_id: str, reason: str) -> None:
+    def _report_gap(
+        self,
+        camera_id: str,
+        reason: str,
+        identity: tuple[int, int] | None = None,
+    ) -> None:
         """Ask for a source rebuild, naming the condition that prompted it.
 
         The wire category stays ``"parser"`` because the child validates it
@@ -220,10 +233,28 @@ class NativeAuReceiver:
         conditions and sent one investigation into the C++ AU parser, which
         turned out to be emitting nothing at all. The real reason goes to the
         log so the next reader is not misdirected the same way.
+
+        ``identity`` is the (generation, epoch) the condition was observed on;
+        transport gaps carry none and fall back to the adopted identity. A
+        report is suppressed only while one is outstanding for the same or a
+        newer identity. Suppressing by camera alone left rings stranded on the
+        live fleet: the rebuild landed, its units were refused for a reason of
+        their own, and the refusal could never be reported because the camera
+        was still marked pending from the gap that caused the rebuild.
         """
-        if not camera_id or camera_id in self._gaps_active:
+        if not camera_id:
             return
-        self._gaps_active.add(camera_id)
+        if identity is None:
+            active = self._epochs.get(camera_id)
+            identity = (
+                (active.source_generation, active.stream_epoch)
+                if active is not None
+                else (0, 0)
+            )
+        pending = self._gaps_active.get(camera_id)
+        if pending is not None and pending >= identity:
+            return
+        self._gaps_active[camera_id] = identity
         LOGGER.warning(
             "native au gap: camera_id=%s reason=%s", camera_id, reason
         )
@@ -258,15 +289,34 @@ class NativeAuReceiver:
             self._worker_boot_id, envelope.camera_id, envelope.epoch, envelope.generation
         )
         key = (envelope.camera_id, envelope.generation, envelope.epoch)
-        expected = self._sequences.get(key, 0) + 1
-        if envelope.kind is AuKind.GAP or envelope.sequence != expected:
-            self._report_gap(
-                envelope.camera_id,
-                "gap_marker" if envelope.kind is AuKind.GAP else "sequence_discontinuity",
-            )
+        observed = (envelope.generation, envelope.epoch)
+        if envelope.kind is AuKind.GAP:
+            self._report_gap(envelope.camera_id, "gap_marker", observed)
             return
+        expected = self._sequences.get(key, 0) + 1
+        if envelope.sequence != expected:
+            if key in self._sequences:
+                self._report_gap(envelope.camera_id, "sequence_discontinuity", observed)
+                return
+            # A unit for an identity newer than anything adopted, arriving
+            # after sequence 1. The identity itself proves the rebuild landed;
+            # only the opening unit was lost, and the sender-side reservation
+            # cannot protect it once it is inside this process (the drain
+            # queue overflows under a fleet-wide rebuild storm). Refusing it
+            # and asking for another rebuild fed that storm and, with the
+            # pending-gap suppression, then stranded ten of thirteen rings for
+            # half an hour. Adopt it: the ring starts at the next keyframe
+            # regardless of which unit opened the epoch.
+            self._adopted_mid_epoch[envelope.camera_id] = (
+                self._adopted_mid_epoch.get(envelope.camera_id, 0) + 1
+            )
+            LOGGER.warning(
+                "native au epoch adopted mid-stream: camera_id=%s generation=%d "
+                "epoch=%d first_sequence=%d",
+                envelope.camera_id, envelope.generation, envelope.epoch, envelope.sequence,
+            )
         if self._timestamp_discontinuous(key, envelope):
-            self._report_gap(envelope.camera_id, "timestamp_discontinuity")
+            self._report_gap(envelope.camera_id, "timestamp_discontinuity", observed)
             return
         if active != identity:
             if active is not None and envelope.generation > active.source_generation:
@@ -292,6 +342,7 @@ class NativeAuReceiver:
             self._report_gap(
                 envelope.camera_id,
                 f"configuration_signature_changed:{self._signature_delta(key, envelope)}",
+                observed,
             )
             return
         packet = SourcePacket(
@@ -299,10 +350,10 @@ class NativeAuReceiver:
             envelope.keyframe, envelope.payload, envelope.sequence - 1,
         )
         if not self._sink.append(packet):
-            self._report_gap(envelope.camera_id, "ring_append_rejected")
+            self._report_gap(envelope.camera_id, "ring_append_rejected", observed)
             return
         self._timeline[key] = (envelope.dts, envelope.duration)
-        self._gaps_active.discard(envelope.camera_id)
+        self._gaps_active.pop(envelope.camera_id, None)
         self._progress.accept(envelope.camera_id)
         if self._accept_handler is not None:
             self._accept_handler(

@@ -344,24 +344,20 @@ def test_a_rejected_ring_append_reports_a_named_reason() -> None:
     assert gaps[0][0] == "camera-a"
 
 
-def test_a_lost_first_unit_strands_the_receiver_on_the_previous_epoch() -> None:
-    """The observable consequence of the sender dropping an epoch transition.
+def test_a_lost_opening_unit_no_longer_strands_the_receiver() -> None:
+    """The receiver resynchronises on an epoch whose transition was lost.
 
-    AuSender's gap slot holds exactly one envelope, and while it is occupied
-    every enqueue is refused. A rebuild burst fills the queue, the overflow
-    claims that slot, and the next unit produced is epoch N+1 sequence 1 --
-    the carrier of the transition -- which is discarded
-    (see src/au_transport_test.cpp).
+    This test used to pin the opposite: the receiver saw epoch 2 begin at
+    sequence 2, reported a discontinuity, refused to adopt it, and stayed
+    stranded until a process restart. The remedy chosen then was sender-side
+    only -- AuSender reserves the opening unit -- on the reasoning that the
+    receiver's checks should not be relaxed (#424 storm).
 
-    This pins what the receiver then does: it sees the new epoch beginning at
-    sequence 2, reports a discontinuity rather than adopting it, and the ring
-    keeps serving the old epoch. On the live stack that showed up as rings
-    frozen at active_epoch=1 while triggers reached 5, and clip selection
-    failing with 'trigger stream epoch is no longer active'.
-
-    This test asserts the mechanism, not a remedy. Reserving the slot,
-    carrying the epoch in the gap marker, or resynchronising the receiver on
-    an epoch change are all transport-contract choices for review.
+    The live fleet showed that reservation is not enough: the loss also
+    happens inside this process, and the earlier contract turned one lost unit
+    into a permanent outage. The check is relaxed exactly for a strictly newer
+    identity, which cannot be the #424 debris (superseded units are dropped
+    before this point) and cannot splice epochs (the ring rolls first).
     """
     parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
     sink = _Sink()
@@ -378,31 +374,24 @@ def test_a_lost_first_unit_strands_the_receiver_on_the_previous_epoch() -> None:
             time.sleep(0.01)
         assert len(sink.packets) == 2, f"epoch 1 baseline failed: {gaps}"
 
-        # The sender dropped epoch 2 sequence 1, so the first unit the wire
-        # carries for the new epoch is sequence 2.
+        # The opening unit of epoch 2 was lost; the first unit seen is sequence 2.
         child.sendall(_frame(epoch=2, sequence=2))
+        child.sendall(_frame(epoch=2, sequence=3))
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and len(sink.packets) < 4:
+            time.sleep(0.01)
+
+        assert [e.stream_epoch for e in sink.epochs] == [1, 2], gaps
+        assert [p.epoch.stream_epoch for p in sink.packets] == [1, 1, 2, 2], gaps
+        assert gaps == [], "adopting a newer identity must not request a rebuild"
+
+        # A discontinuity INSIDE the adopted epoch is still a gap.
+        child.sendall(_frame(epoch=2, sequence=5))
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline and not gaps:
             time.sleep(0.01)
-
-        # The wire category stays "parser" because the child validates it
-        # against a fixed whitelist; the specific reason is rendered into the
-        # log message. What matters here is that a rebuild is requested at all.
-        assert gaps, "a lost transition must be reported, not silently ignored"
-        assert gaps[-1][0] == "camera-a", gaps
-        adopted = [p.epoch.stream_epoch for p in sink.packets]
-        assert 2 not in adopted, (
-            f"the receiver must not adopt an epoch whose transition was lost, saw {adopted}"
-        )
-
-        # And it stays stranded: later units of epoch 2 are refused identically,
-        # which is why the ring never catches up without a process restart.
-        child.sendall(_frame(epoch=2, sequence=3))
-        time.sleep(0.3)
-        assert 2 not in [p.epoch.stream_epoch for p in sink.packets], (
-            "the receiver recovered on its own; the stranding described in #429 "
-            "no longer reproduces and the issue analysis must be revisited"
-        )
+        assert gaps == [("camera-a", "parser")], gaps
+        assert len(sink.packets) == 4
     finally:
         receiver.close()
         child.close()
@@ -460,6 +449,78 @@ def test_a_reserved_transition_is_adopted_with_no_receiver_change() -> None:
         assert [p.epoch.stream_epoch for p in sink.packets].count(2) == 2, (
             f"the adopted epoch did not continue: {gaps}"
         )
+    finally:
+        receiver.close()
+        child.close()
+        parent.close()
+
+
+def test_a_newer_epoch_is_adopted_even_when_its_opening_unit_was_lost() -> None:
+    """Regression for the residual #429 failure the reservation did not fix.
+
+    Measured on the live fleet after the sender-side reservation shipped: a
+    rebuild storm hit all 13 cameras within three seconds, the receiver's own
+    drain queue overflowed (``transport_gap_marker``), and afterwards ten rings
+    sat on ``active_epoch=1`` for half an hour while triggers carried epoch 2
+    or 3. Every clip in that window published without video.
+
+    The stuck state has two parts, and this test exercises both in the order
+    the live log showed them:
+
+    1. A gap was reported on epoch 1, so ``camera-a`` is already in the
+       pending-gap set when the rebuild lands.
+    2. The rebuilt epoch's sequence-1 unit never reaches ``_accept`` -- the
+       reservation only protects the sender's queue, not this process's --
+       so the first unit seen for epoch 2 is sequence 2.
+
+    Before: the sequence check refuses it, the pending gap suppresses the
+    report, and nothing ever happens again for this camera. After: a strictly
+    newer identity is proof the rebuild happened, so the receiver adopts it
+    from whatever unit arrives first instead of demanding a second rebuild
+    that would trigger the same storm.
+    """
+    parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    sink = _Sink()
+    gaps: list[tuple[str, str]] = []
+    receiver = NativeAuReceiver(
+        parent, "boot-1", sink, lambda camera, reason: gaps.append((camera, reason))
+    )
+    receiver.start()
+    try:
+        child.sendall(_frame(epoch=1, sequence=1))
+        child.sendall(_frame(epoch=1, sequence=2))
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and len(sink.packets) < 2:
+            time.sleep(0.01)
+        assert len(sink.packets) == 2, f"epoch 1 baseline failed: {gaps}"
+
+        # Step 1: the storm reports a gap on epoch 1 and a rebuild is requested.
+        child.sendall(_frame(epoch=1, sequence=3, kind=2, payload=b""))
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not gaps:
+            time.sleep(0.01)
+        assert gaps == [("camera-a", "parser")], gaps
+
+        # Step 2: the rebuilt epoch arrives without its opening unit.
+        child.sendall(_frame(epoch=2, sequence=2))
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and len(sink.packets) < 3:
+            time.sleep(0.01)
+
+        assert [e.stream_epoch for e in sink.epochs] == [1, 2], (
+            "the ring must roll to the rebuilt epoch; it stayed on "
+            f"{[e.stream_epoch for e in sink.epochs]} with gaps={gaps}"
+        )
+        assert sink.packets[-1].epoch.stream_epoch == 2
+        assert len(gaps) == 1, f"adoption must not ask for yet another rebuild: {gaps}"
+
+        # And the adopted epoch continues normally from that baseline.
+        child.sendall(_frame(epoch=2, sequence=3))
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and len(sink.packets) < 4:
+            time.sleep(0.01)
+        assert [p.epoch.stream_epoch for p in sink.packets] == [1, 1, 2, 2], gaps
+        assert len(gaps) == 1, gaps
     finally:
         receiver.close()
         child.close()
