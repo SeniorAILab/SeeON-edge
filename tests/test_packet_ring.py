@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from fractions import Fraction
 
 import pytest
@@ -495,3 +496,29 @@ def test_wait_until_ready_times_out_when_video_has_not_reached_the_trigger_pts()
     ready = ring.wait_until_ready(epoch=epoch, through_pts=Fraction(99), timeout_sec=0.2)
     # Then
     assert ready is False
+
+
+def test_wait_until_ready_does_not_block_a_ring_that_never_adopted_an_epoch() -> None:
+    """Regression: the barrier stalled every CPU-path clip for its full timeout.
+
+    ``append`` and ``select`` both treat a ring with no active epoch as
+    unconstrained: the pyav decode path never calls ``roll_epoch``, so every
+    packet is admitted and the trigger's epoch is never compared. The barrier
+    compared ``None != epoch`` instead, waited its whole timeout, and by then
+    a ring sized to pre+post seconds had evicted the trigger. The real-stack
+    e2e clip test went from passing on main to KEYFRAME_UNAVAILABLE.
+    """
+    # Given: a ring that admits packets without ever having rolled an epoch
+    ring = SourcePacketRing("camera-1", PacketRingLimits(64, 4_096, 60.0))
+    _append_gop(ring, start=0, stop=8)
+    assert ring.active_epoch is None
+    # When
+    started = time.monotonic()
+    ready = ring.wait_until_ready(
+        epoch=StreamEpoch("boot-1", "camera-1", 1),
+        through_pts=Fraction(5),
+        timeout_sec=2.0,
+    )
+    # Then: aligned immediately, exactly as select would treat it
+    assert ready is True
+    assert time.monotonic() - started < 0.5

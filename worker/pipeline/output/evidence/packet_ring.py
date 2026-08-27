@@ -189,7 +189,15 @@ class SourcePacketRing:
         """
 
         def aligned() -> bool:
-            if self._closed or self._active_epoch != epoch:
+            if self._closed:
+                return False
+            if self._active_epoch is None:
+                # No epoch has ever been rolled: append admits everything and
+                # select never compares the trigger, so there is nothing for
+                # the barrier to wait for. Blocking here for the full timeout
+                # let a pre+post-sized ring evict the trigger on the pyav path.
+                return True
+            if self._active_epoch != epoch:
                 return False
             return any(
                 entry.packet.epoch == epoch
