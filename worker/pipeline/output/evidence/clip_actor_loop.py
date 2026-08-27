@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import queue
 import threading
-from collections.abc import Callable
-from typing import assert_never
+import time
+from typing import Protocol, assert_never
 
 from worker.pipeline.output.evidence.clip_actor import ClipActor
 from worker.pipeline.output.evidence.clip_recorder_models import (
@@ -16,35 +16,62 @@ from worker.pipeline.output.evidence.clip_recorder_models import (
     RecorderMessage,
 )
 
+# How often the loop performs traffic-independent upkeep. `rotate` has its own
+# 30s interval guard, so this only bounds how often that guard is consulted.
+_UPKEEP_INTERVAL_SEC = 0.1
+
+
+class _Rotate(Protocol):
+    """The maintenance seam, keyword-only so a wrong callable fails at import.
+
+    `Callable[..., None]` accepted any signature and deferred the mismatch to a
+    background thread where it would surface as a dead recorder.
+    """
+
+    def __call__(self, *, force: bool) -> None: ...
+
 
 def run_actor_loop(
     actor: ClipActor,
     messages: queue.Queue[RecorderMessage],
     stop: threading.Event,
-    rotate: Callable[..., None],
+    rotate: _Rotate,
 ) -> None:
+    # Upkeep must be driven by elapsed time, NEVER by the queue running dry.
+    #
+    # Two things live here that recover state nothing else recovers: `rotate`
+    # clears the disk-pressure suspension that blocks every new clip, and
+    # `expire` closes an active clip whose camera stopped sending. Both used to
+    # run only in the `queue.Empty` branch below.
+    #
+    # That branch needs 100ms of total silence across the shared queue. Thirteen
+    # cameras at 15fps put roughly 195 messages/s into it, so in production it
+    # effectively never fires -- and a single healthy camera is enough to starve
+    # it. Recovery would then depend on traffic going idle, which is no better
+    # than the original defect where it depended on a clip finalizing.
+    #
+    # Measured live: the store hit 80.68% against the 0.80 watermark and every
+    # fall for ninety minutes recorded no footage. Reclaiming 264GB did not lift
+    # it; only a restart did, because the constructor resets the flag.
+    next_upkeep = time.monotonic()
+
+    def upkeep() -> None:
+        nonlocal next_upkeep
+        now = time.monotonic()
+        if now < next_upkeep:
+            return
+        next_upkeep = now + _UPKEEP_INTERVAL_SEC
+        actor.expire()
+        rotate(force=False)
+
     try:
         while True:
+            upkeep()
             try:
                 message = messages.get(timeout=0.1)
             except queue.Empty:
                 if stop.is_set() and messages.empty():
                     break
-                actor.expire()
-                # Re-evaluate retention here, NOT only on flush below.
-                # `rotate` is what clears disk-pressure suspension, and while
-                # suspended no clip is admitted, so none finalizes, so no
-                # FlushMessage is ever queued -- the only path that used to
-                # call this. Crossing the high watermark once therefore
-                # latched recording off permanently, and freeing the disk did
-                # not restore it; only a worker restart did. Observed live:
-                # the store sat at 80.68% and every fall for ninety minutes
-                # recorded no footage while detection, snapshots and delivery
-                # all looked healthy.
-                #
-                # Unforced, so the interval guard inside rotate() bounds the
-                # real work; this tick is 100 ms and must stay cheap.
-                rotate(force=False)
                 continue
             try:
                 match message:
