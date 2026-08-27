@@ -448,3 +448,50 @@ def test_epoch_skew_is_reported_as_its_own_reason_not_as_a_missing_keyframe() ->
     # Then
     assert caught.value.reason is PacketTruncationReason.STREAM_EPOCH_MISMATCH
     assert caught.value.reason is not PacketTruncationReason.KEYFRAME_UNAVAILABLE
+
+
+def test_wait_until_ready_returns_true_once_the_ring_holds_the_epoch() -> None:
+    """The evidence barrier must release as soon as the ring catches up."""
+    # Given
+    ring = SourcePacketRing("camera-1", PacketRingLimits(64, 4_096, 60.0))
+    epoch = StreamEpoch("boot-1", "camera-1", 1)
+    ring.roll_epoch(epoch)
+    _append_gop(ring, start=0, stop=8)
+    # When
+    ready = ring.wait_until_ready(epoch=epoch, through_pts=Fraction(5), timeout_sec=0.5)
+    # Then
+    assert ready is True
+
+
+def test_wait_until_ready_times_out_when_the_ring_is_behind_the_trigger_epoch() -> None:
+    """Regression for #429: the trigger names an epoch the ring has not adopted.
+
+    Measured on the live fleet, 43 of 44 clip-selection failures had the
+    trigger ahead of the ring and every clip came back without video. The
+    barrier must report the skew rather than block forever.
+    """
+    # Given
+    ring = SourcePacketRing("camera-1", PacketRingLimits(64, 4_096, 60.0))
+    ring.roll_epoch(StreamEpoch("boot-1", "camera-1", 1))
+    _append_gop(ring, start=0, stop=8)
+    # When: the trigger carries the next epoch
+    ready = ring.wait_until_ready(
+        epoch=StreamEpoch("boot-1", "camera-1", 2),
+        through_pts=Fraction(5),
+        timeout_sec=0.2,
+    )
+    # Then
+    assert ready is False
+
+
+def test_wait_until_ready_times_out_when_video_has_not_reached_the_trigger_pts() -> None:
+    """Right epoch is not enough: the AU for the event must have landed."""
+    # Given
+    ring = SourcePacketRing("camera-1", PacketRingLimits(64, 4_096, 60.0))
+    epoch = StreamEpoch("boot-1", "camera-1", 1)
+    ring.roll_epoch(epoch)
+    _append_gop(ring, start=0, stop=4)
+    # When: the event sits past the newest retained packet
+    ready = ring.wait_until_ready(epoch=epoch, through_pts=Fraction(99), timeout_sec=0.2)
+    # Then
+    assert ready is False

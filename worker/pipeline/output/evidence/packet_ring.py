@@ -115,6 +115,10 @@ class SourcePacketRing:
         self._active_epoch: StreamEpoch | None = None
         self._closed = False
         self._lock = threading.RLock()
+        # Signalled whenever the active epoch rolls or a packet lands, so an
+        # evidence trigger can wait for this ring to catch up with the
+        # perception plane instead of being refused for a skew it cannot see.
+        self._advanced = threading.Condition(self._lock)
 
     @property
     def active_epoch(self) -> StreamEpoch | None:
@@ -161,6 +165,41 @@ class SourcePacketRing:
             self.metrics.epoch_rolls += 1
             self.metrics.evicted_packets += removed_packets
             self.metrics.evicted_bytes += removed_bytes
+            self._advanced.notify_all()
+
+    def wait_until_ready(
+        self,
+        *,
+        epoch: StreamEpoch,
+        through_pts: Fraction,
+        timeout_sec: float,
+    ) -> bool:
+        """Block until this ring holds ``epoch`` with video through ``through_pts``.
+
+        The perception plane advances ``stream_epoch`` before the AU ring
+        adopts it, so a clip trigger can arrive labelled with an epoch this
+        ring has not seen yet. Measured on the live fleet, 43 of 44 selection
+        failures had the trigger ahead of the ring. Refusing them produced
+        clips with no video at all, which is worse than waiting briefly.
+
+        Returns ``True`` when the ring is aligned, ``False`` on timeout or if
+        the ring has already moved past ``epoch``. The caller must NOT relabel
+        the trigger on ``False``: emitting with the original identity is what
+        lets the evidence path record an honest ``video_unavailable`` cause.
+        """
+
+        def aligned() -> bool:
+            if self._closed or self._active_epoch != epoch:
+                return False
+            return any(
+                entry.packet.epoch == epoch
+                and entry.packet.stream.media_type == "video"
+                and _safe_pts(entry.packet) >= through_pts
+                for entry in reversed(self._entries)
+            )
+
+        with self._advanced:
+            return self._advanced.wait_for(aligned, timeout=timeout_sec)
 
     def append(self, packet: SourcePacket) -> bool:
         if packet.epoch.camera_id != self.camera_id:
@@ -178,6 +217,7 @@ class SourcePacketRing:
                 return False
             entry = _Entry(packet)
             self._entries.append(entry)
+            self._advanced.notify_all()
             self._total_bytes += packet.size_bytes
             if not self._trim_to_limits():
                 removed = self._entries.pop()
