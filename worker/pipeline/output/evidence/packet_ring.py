@@ -18,6 +18,14 @@ from worker.types.source_packet import (
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def _describe_pts(entry: object) -> float | None:
+    """Best-effort PTS for a diagnostic line; never raises."""
+    try:
+        return round(_safe_pts(entry.packet), 3)  # pyright: ignore[reportAttributeAccessIssue]
+    except Exception:  # noqa: BLE001 - diagnostics must not mask the real failure
+        return None
+
 @dataclass(frozen=True, slots=True)
 class PacketRingLimits:
     max_packets: int
@@ -197,11 +205,23 @@ class SourcePacketRing:
                     "packet history is closed",
                 )
             if trigger_epoch.camera_id != self.camera_id:
+                self._log_selection_failure(
+                    "trigger camera does not match packet ring",
+                    trigger_camera=trigger_epoch.camera_id,
+                    ring_camera=self.camera_id,
+                )
                 raise PacketSelectionError(
                     PacketTruncationReason.KEYFRAME_UNAVAILABLE,
                     "trigger camera does not match packet ring",
                 )
             if self._active_epoch is not None and trigger_epoch != self._active_epoch:
+                self._log_selection_failure(
+                    "trigger stream epoch is no longer active",
+                    trigger_epoch=trigger_epoch.stream_epoch,
+                    active_epoch=self._active_epoch.stream_epoch,
+                    trigger_generation=trigger_epoch.source_generation,
+                    active_generation=self._active_epoch.source_generation,
+                )
                 raise PacketSelectionError(
                     PacketTruncationReason.KEYFRAME_UNAVAILABLE,
                     "trigger stream epoch is no longer active",
@@ -216,6 +236,17 @@ class SourcePacketRing:
                 and _safe_pts(entry.packet) <= trigger_pts
             ]
             if not trigger_video:
+                self._log_selection_failure(
+                    "no video packet exists at or before the trigger",
+                    ring_entries=len(self._entries),
+                    epoch_entries=len(epoch_entries),
+                    epoch_video=sum(
+                        1 for e in epoch_entries if e.packet.stream.media_type == "video"
+                    ),
+                    trigger_pts=round(trigger_pts, 3),
+                    oldest_pts=_describe_pts(epoch_entries[0]) if epoch_entries else None,
+                    newest_pts=_describe_pts(epoch_entries[-1]) if epoch_entries else None,
+                )
                 raise PacketSelectionError(
                     PacketTruncationReason.KEYFRAME_UNAVAILABLE,
                     "no video packet exists at or before the trigger",
@@ -247,6 +278,29 @@ class SourcePacketRing:
                     and _safe_pts(entry.packet) <= trigger_pts
                 ]
                 if not later_keyframes:
+                    self._log_selection_failure(
+                        "no decodable keyframe exists at or before the trigger",
+                        ring_entries=len(self._entries),
+                        epoch_entries=len(epoch_entries),
+                        config_entries=len(config_entries),
+                        config_video=sum(
+                            1 for e in config_entries if e.packet.stream.media_type == "video"
+                        ),
+                        config_keyframes=sum(
+                            1
+                            for e in config_entries
+                            if e.packet.stream.media_type == "video" and e.packet.is_keyframe
+                        ),
+                        epoch_keyframes=sum(
+                            1
+                            for e in epoch_entries
+                            if e.packet.stream.media_type == "video" and e.packet.is_keyframe
+                        ),
+                        trigger_pts=round(trigger_pts, 3),
+                        requested_start=round(requested_start, 3),
+                        oldest_pts=_describe_pts(config_entries[0]) if config_entries else None,
+                        newest_pts=_describe_pts(config_entries[-1]) if config_entries else None,
+                    )
                     raise PacketSelectionError(
                         PacketTruncationReason.KEYFRAME_UNAVAILABLE,
                         "no decodable keyframe exists at or before the trigger",
@@ -261,6 +315,12 @@ class SourcePacketRing:
                 and _safe_pts(entry.packet) <= requested_end
             )
             if not end_candidates:
+                self._log_selection_failure(
+                    "keyframe selection produced no packets",
+                    config_entries=len(config_entries),
+                    selected_start=round(selected_start, 3),
+                    requested_end=round(requested_end, 3),
+                )
                 raise PacketSelectionError(
                     PacketTruncationReason.KEYFRAME_UNAVAILABLE,
                     "keyframe selection produced no packets",
@@ -351,6 +411,24 @@ class SourcePacketRing:
                 entry for entry in self._retired_entries if entry.lease_count > 0
             )
             self._total_bytes -= released_retired_bytes
+
+
+    def _log_selection_failure(self, detail: str, **facts: object) -> None:
+        """Name which selection predicate rejected the clip window.
+
+        Five distinct conditions all raise ``KEYFRAME_UNAVAILABLE``, and only
+        the reason code reaches the manifest, so an operator sees one opaque
+        code for five different faults. Rendered into the message string rather
+        than ``extra=`` because the worker's ``basicConfig`` format is
+        ``%(message)s`` only.
+        """
+        rendered = " ".join(f"{key}={value}" for key, value in facts.items())
+        _LOGGER.warning(
+            "packet selection failed: camera_id=%s detail=%s %s",
+            self.camera_id,
+            detail,
+            rendered,
+        )
 
     def _trim_to_limits(self) -> bool:
         while self._over_limit():

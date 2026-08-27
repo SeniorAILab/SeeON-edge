@@ -361,3 +361,63 @@ def test_close_releases_memory_and_rejects_new_packets_or_leases() -> None:
             post_seconds=Fraction(0),
         )
     assert raised.value.reason is PacketTruncationReason.RING_CLOSED
+
+
+def test_selection_failure_names_which_predicate_rejected_the_window(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Five conditions share one reason code; the log must disambiguate them.
+
+    ``KEYFRAME_UNAVAILABLE`` is raised by a camera mismatch, a rolled epoch, an
+    absent video packet, an absent keyframe, and an empty tail selection. Only
+    the code reaches the manifest, so an operator sees one opaque value for
+    five different faults. Rendered into the message string because the
+    worker's ``basicConfig`` format is ``%(message)s`` only.
+    """
+    # Given
+    import logging
+
+    ring = SourcePacketRing("camera-1", PacketRingLimits(64, 4_096, 60.0))
+    _append_gop(ring, start=0, stop=12)
+    # When: a trigger from a different camera
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(PacketSelectionError):
+            with ring.select(
+                trigger_epoch=StreamEpoch("boot-1", "camera-OTHER", 1),
+                trigger_pts=Fraction(7),
+                pre_seconds=Fraction(2),
+                post_seconds=Fraction(3),
+            ):
+                pass
+    # Then
+    lines = [record.getMessage() for record in caplog.records]
+    failure = next(line for line in lines if "packet selection failed:" in line)
+    assert "camera_id=camera-1" in failure
+    assert "trigger camera does not match packet ring" in failure
+    assert "trigger_camera=camera-OTHER" in failure
+
+
+def test_missing_keyframe_failure_reports_the_discriminating_counts(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The keyframe branch must say whether candidates existed and why none matched."""
+    # Given
+    import logging
+
+    ring = SourcePacketRing("camera-1", PacketRingLimits(64, 4_096, 60.0))
+    _append_gop(ring, start=0, stop=12)
+    # When: trigger far before any packet, so no video packet precedes it
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(PacketSelectionError):
+            with ring.select(
+                trigger_epoch=StreamEpoch("boot-1", "camera-1", 1),
+                trigger_pts=Fraction(-5),
+                pre_seconds=Fraction(2),
+                post_seconds=Fraction(3),
+            ):
+                pass
+    # Then
+    lines = [record.getMessage() for record in caplog.records]
+    failure = next(line for line in lines if "packet selection failed:" in line)
+    for field in ("ring_entries=", "epoch_entries=", "epoch_video=", "trigger_pts="):
+        assert field in failure
