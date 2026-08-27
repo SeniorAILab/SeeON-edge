@@ -353,7 +353,11 @@ class NativeAuReceiver:
                     envelope.camera_id, envelope.generation, envelope.epoch,
                     envelope.sequence,
                 )
-        if self._timestamp_discontinuous(key, envelope):
+        # A DTS jump on a CONTIGUOUS sequence is the camera's clock moving and
+        # needs a fresh stream. After a sequence gap the jump is just the hole,
+        # already marked on this packet; rebuilding for it turned every stall
+        # into thirteen rebuilds.
+        if discontinuity is None and self._timestamp_discontinuous(key, envelope):
             self._report_gap(envelope.camera_id, "timestamp_discontinuity", observed)
             return
         if active != identity:

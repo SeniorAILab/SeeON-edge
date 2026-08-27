@@ -592,3 +592,41 @@ def test_units_lost_inside_an_epoch_mark_a_hole_instead_of_rebuilding() -> None:
         receiver.close()
         child.close()
         parent.close()
+
+
+def test_a_hole_followed_by_a_dts_jump_is_still_a_hole_not_a_rebuild() -> None:
+    """A stall that sheds seconds of units must not become thirteen rebuilds.
+
+    On the live fleet every ~100 s stall shed >120 units per camera; the DTS
+    jump across that hole tripped timestamp_discontinuity and rebuilt all 13
+    sources at once. The jump on a contiguous sequence is a camera clock
+    anomaly and still rebuilds; after a sequence gap it is the hole itself.
+    """
+    parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    sink = _Sink()
+    gaps: list[tuple[str, str]] = []
+    receiver = NativeAuReceiver(
+        parent, "boot-1", sink, lambda camera, reason: gaps.append((camera, reason))
+    )
+    receiver.start()
+    try:
+        child.sendall(_frame(epoch=1, sequence=1))
+        child.sendall(_frame(epoch=1, sequence=2))
+        # 300 units (20 s at 3000 ticks each) lost, then the stream resumes.
+        child.sendall(_frame(epoch=1, sequence=303))
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and len(sink.packets) < 3:
+            time.sleep(0.01)
+        time.sleep(0.2)
+        assert gaps == [], gaps
+        assert sink.packets[-1].discontinuity == "sequence_gap:3->303"
+        # But a clock jump on a contiguous sequence still asks for a rebuild.
+        child.sendall(_frame(epoch=1, sequence=304, pts=303 * 3_000 + 90_000 * 60))
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not gaps:
+            time.sleep(0.01)
+        assert gaps == [("camera-a", "parser")], gaps
+    finally:
+        receiver.close()
+        child.close()
+        parent.close()
