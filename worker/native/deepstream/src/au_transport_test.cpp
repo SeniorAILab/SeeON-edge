@@ -560,43 +560,100 @@ int main() {
     close(pair[1]);
   }
 
-  // Over-width identity: refusal is asserted; NON-RESERVATION IS NOT, and this
-  // note explains why rather than leaving a test that cannot fail.
+  // Over-width identity must be refused AND must not consume the reservation
+  // allowance.
   //
-  // Three constructions were tried and none discriminates:
-  //   - "read to EOF after stop()" fails because stop() shuts the write side
-  //     immediately instead of draining, so pending work is discarded, not
-  //     emitted.
-  //   - "a sentinel must come first" fails because sentinels are queued and
-  //     queue_ drains before transitions_, so a wrongly reserved envelope
-  //     simply arrives afterwards.
-  //   - "two sentinels must be adjacent" fails for the same reason: a
-  //     reservation drains after the WHOLE queue, so it can never land between
-  //     two queued frames.
-  //   - dropped() cannot separate the cases either; both paths refuse and both
-  //     increment it.
-  //
-  // Observing the absence of a reservation therefore needs either a drain that
-  // stop() actually performs, or a way to inspect the reservation set. Both are
-  // interface changes and belong to review, not to an assertion that would pass
-  // whatever the code did.
-  //
-  // The oversized-payload sibling above IS discriminating, because such an
-  // envelope becomes the gap and the assertion is on the frame that does
-  // arrive rather than on one that does not.
+  // The absence of a reservation cannot be observed directly: stop() shuts the
+  // write side instead of draining, reservations drain after the whole queue so
+  // no sentinel can bracket them, and dropped() increments on both paths. So
+  // this asserts a POSITIVE consequence instead. The allowance is aggregate, so
+  // a wrongly reserved over-width envelope eats part of it; sizing a legitimate
+  // transition to fit the allowance alone but not alongside that envelope turns
+  // "was it reserved?" into "did the legitimate one reach the wire?", which is
+  // bounded and deterministic.
   {
     int pair[2]{};
     check(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0, "socketpair failed");
-    seeon::AuSender width(pair[0], 8, seeon::kMaxAuFrameBytes);
+    int tiny = 4096;
+    setsockopt(pair[0], SOL_SOCKET, SO_SNDBUF, &tiny, sizeof(tiny));
+    setsockopt(pair[1], SOL_SOCKET, SO_RCVBUF, &tiny, sizeof(tiny));
+    timeval timeout{};
+    timeout.tv_sec = 3;
+    setsockopt(pair[1], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    const std::size_t budget = 8 * 1024 * 1024;  // allowance = 1 MiB
+    seeon::AuSender width(pair[0], 8, budget);
+
+    // Congest, so transitions are reserved rather than queued.
+    auto pinned = envelope_for(1, 1, 400 * 1024);
+    pinned.camera = "camera-w";
+    check(width.enqueue(std::move(pinned)), "pinning unit admitted");
+    std::vector<std::uint8_t> head(kAuHeaderBytes);
+    std::size_t got = 0;
+    while (got < kAuHeaderBytes) {
+      const auto count = recv(pair[1], head.data() + got, kAuHeaderBytes - got, 0);
+      check(count > 0, "sender never began writing");
+      got += static_cast<std::size_t>(count);
+    }
+    const auto pinned_body = body_size_of(head);
+    auto ballast = envelope_for(1, 2, 7800 * 1024);
+    ballast.camera = "camera-w";
+    check(width.enqueue(std::move(ballast)), "ballast admitted");
+
+    // ~64 KiB of over-width identity. It must be refused and must NOT be
+    // reserved; if it were, it would consume that much of the 1 MiB allowance.
     auto wide = envelope_for(4, 1, 64);
     wide.camera = std::string(static_cast<std::size_t>(UINT16_MAX) + 1, 'c');
     const auto before = width.dropped();
     check(!width.enqueue(std::move(wide)),
           "an over-width camera identity must be refused");
-    check(width.dropped() == before + 1,
-          "the refusal must be counted exactly once");
+    check(width.dropped() == before + 1, "the refusal must be counted once");
+
+    // 1000 KiB fits the allowance alone, but not alongside a wrongly reserved
+    // 64 KiB over-width envelope.
+    auto legitimate = envelope_for(2, 1, 1000 * 1024);
+    legitimate.camera = "camera-v";
+    check(!width.enqueue(std::move(legitimate)), "legitimate transition reserved");
+
+    std::vector<std::uint8_t> discard(pinned_body);
+    std::size_t off = 0;
+    while (off < pinned_body) {
+      const auto count = recv(pair[1], discard.data() + off, pinned_body - off, 0);
+      check(count > 0, "pinned body truncated");
+      off += static_cast<std::size_t>(count);
+    }
+
+    bool saw_legitimate = false;
+    for (int index = 0; index < 64 && !saw_legitimate; ++index) {
+      std::vector<std::uint8_t> header(kAuHeaderBytes);
+      std::size_t offset = 0;
+      bool complete = true;
+      while (offset < kAuHeaderBytes) {
+        const auto count =
+            recv(pair[1], header.data() + offset, kAuHeaderBytes - offset, 0);
+        if (count <= 0) { complete = false; break; }
+        offset += static_cast<std::size_t>(count);
+      }
+      if (!complete) break;
+      const auto body = body_size_of(header);
+      std::vector<std::uint8_t> payload(body);
+      std::size_t body_offset = 0;
+      while (body_offset < body) {
+        const auto count =
+            recv(pair[1], payload.data() + body_offset, body - body_offset, 0);
+        if (count <= 0) break;
+        body_offset += static_cast<std::size_t>(count);
+      }
+      if (header[8] != 2 && payload.size() >= 8 &&
+          std::string(payload.begin(), payload.begin() + 8) == "camera-v") {
+        saw_legitimate = true;
+      }
+    }
     width.stop();
     close(pair[1]);
+    check(saw_legitimate,
+          "the legitimate transition never reached the wire, which means the "
+          "over-width envelope consumed the reservation allowance: an invalid "
+          "envelope must be refused outright, never reserved");
   }
 
   // Draining a reservation must CREDIT its bytes. Without that the allowance
