@@ -130,22 +130,32 @@ bool AuSender::enqueue(AuEnvelope envelope) {
     ++dropped_;
     // The gap slot holds one envelope and, while it is occupied, refuses
     // everything. That is correct backpressure for ordinary units but it
-    // silently destroys a stream-epoch transition: a source rebuild fills the
-    // queue, the overflow claims the slot, and the very next unit produced is
-    // the new epoch's sequence 1. Losing it leaves the receiver to see that
-    // epoch begin at sequence 2, report a discontinuity, request another
-    // rebuild, and repeat -- the ring never advances and clip evidence for
-    // the live epoch cannot be selected (#429).
+    // destroys a stream-epoch transition: a source rebuild fills the queue,
+    // the overflow claims the slot, and the very next unit produced is the
+    // new epoch's sequence 1. Losing it leaves the receiver to see that epoch
+    // begin at sequence 2, report a discontinuity, request another rebuild,
+    // and repeat (#429).
     //
-    // The gap marker's job is to tell the receiver that something was lost
-    // and where the stream is now, so when the choice is between an older
-    // dropped unit and one that opens a newer epoch, the newer one is
-    // strictly more useful: it carries the loss AND the transition. Ordinary
-    // same-epoch backpressure is unchanged, so the slot still keeps the first
-    // dropped unit within an epoch.
-    if (!gap_.has_value() || envelope.epoch > gap_->epoch) {
-      gap_ = std::move(envelope);
-    }
+    // Preserving the newest epoch here was tried and does NOT work, for two
+    // independent reasons, and both are worth recording so the option is not
+    // re-proposed:
+    //
+    //   1. This sender is one per child and shared by every camera, while
+    //      epochs are per camera and restart at 1 on a higher-generation
+    //      re-add. A scalar epoch comparison therefore lets camera A at epoch
+    //      7 suppress camera B at epoch 2, and lets a stale generation's
+    //      epoch 7 suppress the same camera's fresh epoch 1.
+    //   2. Even with a correct per-camera comparison the receiver discards it:
+    //      NativeAuReceiver returns immediately on AuKind.GAP and never adopts
+    //      the epoch a gap marker carries, so the transition would be
+    //      delivered to something that does not read it.
+    //
+    // The remedy therefore has to change what a gap means to the receiver, or
+    // reserve capacity so the transition is never refused in the first place.
+    // Both are transport-contract decisions; the mechanism is pinned by
+    // au_transport_test.cpp and test_native_au_receiver.py so a reviewer can
+    // choose with evidence.
+    if (!gap_.has_value()) gap_ = std::move(envelope);
     ready_.notify_one();
     return false;
   }
