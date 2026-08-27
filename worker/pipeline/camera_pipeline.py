@@ -325,4 +325,4 @@ class CameraPipelinePump:
         )
 
 
-__all__ = ["CameraPipelinePump", "DEFAULT_POLL_TIMEOUT_SEC"]
+__all__ = ["DEFAULT_POLL_TIMEOUT_SEC", "CameraPipelinePump"]

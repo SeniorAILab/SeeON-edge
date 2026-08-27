@@ -133,45 +133,40 @@ class SnapshotStore(SnapshotFiles):
             edge_event_id=edge_event_id,
         )
         identity_key = self._identity_key(snapshot_id)
-        with self._lock("admission.lock"):
-            with self._lock(f"{identity_key[:2]}.lock"):
-                existing = self._load_identity(identity_key)
-                if existing is not None:
-                    self._require_same(existing, expected)
-                    self._require_bytes(Path(existing.path), existing)
-                    self._refresh_pending_stats()
-                    return existing
-                staged = self._load_staged(identity_key)
-                if staged is not None:
-                    self._require_same(staged, expected)
-                    blob = self._read_file(self._staged_blob(identity_key))
-                    if blob is None:
-                        final = self._read_file(Path(expected.path))
-                        if final is None:
-                            self._write_atomic(
-                                self.store_dir / self._staged_blob(identity_key), jpeg
-                            )
-                        else:
-                            self._require_content(final, expected)
-                    elif hashlib.sha256(blob).hexdigest() != expected.sha256 or len(blob) != len(
-                        jpeg
-                    ):
-                        raise SnapshotConflictError(snapshot_id)
-                    self._refresh_pending_stats()
-                    return staged
-                orphan_blob = self._read_file(self._staged_blob(identity_key))
-                if orphan_blob is not None and orphan_blob != jpeg:
-                    raise SnapshotConflictError(snapshot_id)
-                self._enforce_capacity(expected)
-                self._write_atomic(
-                    self.store_dir / self._staged_metadata(identity_key),
-                    self._encode(expected),
-                )
-                if orphan_blob is None:
-                    self._write_atomic(self.store_dir / self._staged_blob(identity_key), jpeg)
-                self.stats.staged += 1
+        with self._lock("admission.lock"), self._lock(f"{identity_key[:2]}.lock"):
+            existing = self._load_identity(identity_key)
+            if existing is not None:
+                self._require_same(existing, expected)
+                self._require_bytes(Path(existing.path), existing)
                 self._refresh_pending_stats()
-                return expected
+                return existing
+            staged = self._load_staged(identity_key)
+            if staged is not None:
+                self._require_same(staged, expected)
+                blob = self._read_file(self._staged_blob(identity_key))
+                if blob is None:
+                    final = self._read_file(Path(expected.path))
+                    if final is None:
+                        self._write_atomic(self.store_dir / self._staged_blob(identity_key), jpeg)
+                    else:
+                        self._require_content(final, expected)
+                elif hashlib.sha256(blob).hexdigest() != expected.sha256 or len(blob) != len(jpeg):
+                    raise SnapshotConflictError(snapshot_id)
+                self._refresh_pending_stats()
+                return staged
+            orphan_blob = self._read_file(self._staged_blob(identity_key))
+            if orphan_blob is not None and orphan_blob != jpeg:
+                raise SnapshotConflictError(snapshot_id)
+            self._enforce_capacity(expected)
+            self._write_atomic(
+                self.store_dir / self._staged_metadata(identity_key),
+                self._encode(expected),
+            )
+            if orphan_blob is None:
+                self._write_atomic(self.store_dir / self._staged_blob(identity_key), jpeg)
+            self.stats.staged += 1
+            self._refresh_pending_stats()
+            return expected
 
     def publish(self, snapshot: StoredSnapshot) -> None:
         """Atomically publish validated staged bytes while retaining transition metadata."""
@@ -602,7 +597,7 @@ class SnapshotStore(SnapshotFiles):
 
 def _parse_utc(value: str) -> datetime | None:
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
     if parsed.tzinfo is None:

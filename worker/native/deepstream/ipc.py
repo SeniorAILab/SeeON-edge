@@ -130,12 +130,12 @@ def decode_metadata(data: bytes) -> MetadataFrame:
 
 
 __all__ = [
+    "PROTOCOL_VERSION",
     "ControlMessage",
     "IpcProtocolError",
     "MessageKind",
     "MetadataCounters",
     "MetadataFrame",
-    "PROTOCOL_VERSION",
     "decode_control_message",
     "decode_metadata",
     "encode_message",

@@ -81,22 +81,21 @@ def render_scene(image: NDArray[np.uint8], scene: OverlayScene) -> NDArray[np.ui
     """Render the canonical scene with stable global ordering and no policy lookup."""
     if image.shape[:2] != (scene.transform.target_height, scene.transform.target_width):
         raise ValueError("overlay target dimensions do not match the rendered frame")
-    commands: list[_DrawCommand] = []
-    for bed in scene.beds:
-        commands.append(
-            _DrawCommand(bed.z_order, 0, bed.ordinal, lambda bed=bed: _draw_bed(image, scene, bed))
+    commands: list[_DrawCommand] = [
+        _DrawCommand(bed.z_order, 0, bed.ordinal, lambda bed=bed: _draw_bed(image, scene, bed))
+        for bed in scene.beds
+    ]
+    commands.extend(
+        _DrawCommand(
+            person.z_order,
+            1,
+            person.ordinal,
+            lambda person=person: _draw_person(
+                image, scene, person.keypoints, person.box, person.confidence, person.color
+            ),
         )
-    for person in scene.persons:
-        commands.append(
-            _DrawCommand(
-                person.z_order,
-                1,
-                person.ordinal,
-                lambda person=person: _draw_person(
-                    image, scene, person.keypoints, person.box, person.confidence, person.color
-                ),
-            )
-        )
+        for person in scene.persons
+    )
     panel_layout = semantic_panel_layout(scene, image.shape[1], image.shape[0])
     occupied_labels = [_rectangle(item.x, item.y, item.width, item.height) for item in panel_layout]
     for ordinal, label in enumerate(scene.labels):
@@ -198,7 +197,7 @@ def semantic_panel_layout(
         panels = (
             _SemanticPanel(
                 selected.identity,
-                selected.lines + (f"P{page + 1}/{len(_semantic_panels(scene))}",),
+                (*selected.lines, f"P{page + 1}/{len(_semantic_panels(scene))}"),
                 selected.color,
                 selected.triggered,
             ),
@@ -310,10 +309,7 @@ def _draw_text_plate(
     occupied: tuple[tuple[int, int, int, int], ...],
 ) -> tuple[int, int, int, int] | None:
     text = text[:96]
-    if text.isascii():
-        size = _ascii_size(text)
-    else:
-        size = _unicode_size(text)
+    size = _ascii_size(text) if text.isascii() else _unicode_size(text)
     position = _label_position(image.shape[1], image.shape[0], x, y, size, occupied)
     if position is None:
         return None

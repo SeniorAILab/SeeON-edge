@@ -17,7 +17,6 @@ from types import MappingProxyType
 from typing import Any, Final, Protocol, TypeAlias, cast, final, runtime_checkable
 
 import worker.pipeline.ingest.lifecycle as ingest
-import worker.runtime.bootstrap as bootstrap
 import worker.runtime.telemetry.runtime_status_sender as runtime_status_sender_module
 from contracts.decode_diagnostics import DecodeSelection
 from contracts.observation import BoundingBox
@@ -111,6 +110,7 @@ from worker.pipeline.output.mjpeg_server import (
 from worker.pipeline.output.overlay import OverlayMode, OverlayRenderer
 from worker.pipeline.perception import GreedyIouTracker, SceneState
 from worker.pipeline.trace import BoundedTraceWriter, TraceCapture, TraceIdentity
+from worker.runtime import bootstrap
 from worker.runtime.clip_deletion_control import ClipDeletionControlService
 from worker.runtime.config import (
     RELAY_HEARTBEAT_PATH,
