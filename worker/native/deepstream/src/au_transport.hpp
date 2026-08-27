@@ -97,6 +97,11 @@ class AuSender {
   // Bounded by the child's own camera-identity limit; one small envelope per
   // camera, replaced rather than accumulated.
   std::map<std::string, AuEnvelope> transitions_;
+  // Reservations are charged against their own budget. They are not in
+  // queue_ and so are not covered by bytes_; without this a camera-sized set
+  // of near-maximum sequence-1 envelopes would bypass the sender's aggregate
+  // limit entirely.
+  std::size_t transition_bytes_ = 0;
   bool stopped_ = false;
   mutable std::mutex mutex_;
   std::condition_variable ready_;

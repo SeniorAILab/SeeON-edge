@@ -131,35 +131,52 @@ bool AuSender::enqueue(AuEnvelope envelope) {
   const bool invalid = size > kMaxAuFrameBytes || size > max_bytes_ ||
                        envelope.camera.size() > UINT16_MAX ||
                        envelope.unit.parser_caps.size() > UINT16_MAX;
+  // A camera with a pending reservation must not enqueue anything further.
+  // run() always drains queue_ before transitions_, so a later unit admitted
+  // now would reach the wire AHEAD of the reserved sequence 1 and recreate the
+  // very discontinuity the reservation exists to prevent.
+  const bool awaiting_transition =
+      !invalid && transitions_.find(envelope.camera) != transitions_.end();
   const bool congested =
       gap_.has_value() || queue_.size() >= max_items_ || bytes_ + size > max_bytes_;
-  if (invalid || congested) {
+  if (invalid || congested || awaiting_transition) {
     ++dropped_;
     // A unit that opens a stream epoch is reserved rather than destroyed, but
-    // only when it was refused for congestion. The gap slot holds one envelope
-    // and, while occupied, refuses everything - including the new epoch's
-    // sequence 1, whose loss strands the receiver on the dead epoch
-    // permanently (#429). Everything enqueued here is an access unit; gap
-    // markers are synthesised at send time, so sequence 1 is exactly the unit
-    // that opens an epoch.
+    // only when it is legally framable and was refused for congestion. A
+    // reservation is later emitted as an ORDINARY access unit, so admitting an
+    // invalid one here would bypass the limit that rejected it.
     //
     // Held per camera and keyed by (generation, epoch) so a higher generation
     // wins even though its epoch restarts at 1 - this sender is shared by every
-    // camera, so a scalar epoch comparison could not express that. Drained
-    // ahead of the gap as an ORDINARY unit, which is what makes it effective:
-    // the receiver adopts an epoch from a normal sequence-1 unit and discards
-    // gap markers before adoption.
-    if (!invalid && envelope.sequence == 1) {
+    // camera, so a scalar epoch comparison could not express that. Delivering
+    // it as an ordinary unit is what makes it effective: the receiver adopts an
+    // epoch from a normal sequence-1 unit and discards gap markers before
+    // adoption.
+    if (!invalid && envelope.sequence == 1 && transition_bytes_ + size <= max_bytes_) {
       const auto existing = transitions_.find(envelope.camera);
       const bool newer =
           existing == transitions_.end() ||
           std::make_pair(envelope.generation, envelope.epoch) >
               std::make_pair(existing->second.generation, existing->second.epoch);
-      if (newer) transitions_[envelope.camera] = std::move(envelope);
+      if (newer) {
+        if (existing != transitions_.end()) {
+          transition_bytes_ -= existing->second.camera.size() +
+                               existing->second.unit.parser_caps.size() +
+                               existing->second.unit.payload.size() +
+                               existing->second.unit.codec_data.size();
+        }
+        transition_bytes_ += size;
+        transitions_[envelope.camera] = std::move(envelope);
+      }
       ready_.notify_one();
       return false;
     }
-    if (!gap_.has_value()) gap_ = std::move(envelope);
+    // An envelope whose identity fields overflow the wire's uint16 lengths
+    // cannot be encoded even as a gap marker, so it is dropped outright rather
+    // than silently truncated into one.
+    const bool encodable_as_gap = envelope.camera.size() <= UINT16_MAX &&
+                                  envelope.unit.parser_caps.size() <= UINT16_MAX;
+    if (!gap_.has_value() && encodable_as_gap) gap_ = std::move(envelope);
     ready_.notify_one();
     return false;
   }
@@ -189,6 +206,8 @@ void AuSender::run() {
         // epoch from a normal sequence-1 access unit, never from a gap marker.
         const auto first = transitions_.begin();
         envelope = std::move(first->second);
+        transition_bytes_ -= envelope.camera.size() + envelope.unit.parser_caps.size() +
+                             envelope.unit.payload.size() + envelope.unit.codec_data.size();
         transitions_.erase(first);
       } else {
         envelope = std::move(*gap_);
@@ -202,6 +221,7 @@ void AuSender::run() {
       queue_.clear();
       gap_.reset();
       transitions_.clear();
+      transition_bytes_ = 0;
       return;
     }
   }

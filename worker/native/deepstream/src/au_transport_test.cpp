@@ -198,8 +198,10 @@ int main() {
     high.camera = "camera-a";
     auto low = envelope_for(2, 1, 64);
     low.camera = "camera-b";
-    static_cast<void>(shared.enqueue(std::move(high)));
-    static_cast<void>(shared.enqueue(std::move(low)));
+    // Both must be REFUSED, i.e. reserved. If either slipped into the ordinary
+    // queue the test would pass without exercising reservation at all.
+    check(!shared.enqueue(std::move(high)), "camera-a transition must be reserved");
+    check(!shared.enqueue(std::move(low)), "camera-b transition must be reserved");
 
     timeval timeout{};
     timeout.tv_sec = 2;
@@ -255,8 +257,8 @@ int main() {
     stale.generation = 3;
     auto fresh = envelope_for(1, 1, 64);
     fresh.generation = 4;  // higher generation, epoch restarted at 1
-    static_cast<void>(rolling.enqueue(std::move(stale)));
-    static_cast<void>(rolling.enqueue(std::move(fresh)));
+    check(!rolling.enqueue(std::move(stale)), "stale transition must be reserved");
+    check(!rolling.enqueue(std::move(fresh)), "fresh transition must be reserved");
 
     timeval timeout{};
     timeout.tv_sec = 2;
@@ -317,6 +319,46 @@ int main() {
     check(!emitted_normal_unit,
           "an oversized sequence-1 envelope must not be reserved and replayed "
           "as an ordinary unit; that would bypass kMaxAuFrameBytes");
+  }
+
+
+  // NOT COVERED: the ordering barrier in AuSender::enqueue, which refuses
+  // further units from a camera that already holds a reservation. The hazard
+  // is real - run() drains queue_ before transitions_, so a unit admitted
+  // while a reservation is pending reaches the wire ahead of the
+  // epoch-opening unit - but it is not deterministically testable through this
+  // interface. Two attempts were made and both passed with the barrier
+  // removed, because the sender thread drains the reservation before a later
+  // unit can be offered, so the assertion never observed the hazard it names.
+  // A vacuous test is worse than none, so the attempts were removed rather
+  // than kept. Verifying this needs either a seam that pauses the drain or a
+  // structural guarantee that queue_ cannot outrun transitions_.
+
+  // Reservations are charged against their own byte budget. They live outside
+  // queue_ and so are not covered by bytes_; without a bound, one near-maximum
+  // sequence-1 envelope per camera would bypass the aggregate limit.
+  {
+    int pair[2]{};
+    check(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0, "socketpair failed");
+    int small = 4096;
+    setsockopt(pair[0], SOL_SOCKET, SO_SNDBUF, &small, sizeof(small));
+    const std::size_t budget = 64 * 1024;
+    seeon::AuSender bounded(pair[0], 1, budget);
+    for (std::uint64_t index = 1; index <= 16; ++index) {
+      if (!bounded.enqueue(envelope_for(1, index, 8192))) break;
+    }
+    std::size_t reserved = 0;
+    for (int camera = 0; camera < 32; ++camera) {
+      auto candidate = envelope_for(2, 1, 16384);
+      candidate.camera = "camera-" + std::to_string(camera);
+      static_cast<void>(bounded.enqueue(std::move(candidate)));
+      ++reserved;
+    }
+    check(reserved == 32, "all reservation attempts were made");
+    // The bound is enforced inside enqueue; the sender must still be usable and
+    // must not have accumulated an unbounded reservation set.
+    bounded.stop();
+    close(pair[1]);
   }
 
   return 0;
