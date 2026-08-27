@@ -2292,6 +2292,43 @@ class WorkerRuntime:
         enabled, version = self._clip_export_policy.snapshot()
         self.diagnostics.set_clip_export_applied(enabled=enabled, version=version)
         self._refresh_clip_recorder_telemetry()
+        self._log_native_metadata_counters()
+
+    def _log_native_metadata_counters(self) -> None:
+        """Surface the native metadata slot's accept/reject tally.
+
+        ``LatestMetadataSlot`` counts exactly why a published perception frame
+        was refused -- one counter per identity field checked by ``_matches``
+        plus ``late``/``malformed``/``pull_failures`` -- and exposes them via
+        ``counters()``. Nothing read that accessor, so a pump that never
+        receives an accepted frame was indistinguishable from a child that
+        never publishes one: both present as silent logs and zero decisions.
+
+        Rendered into the message string rather than ``extra=`` because the
+        worker's ``basicConfig`` format is ``%(message)s`` only, so ``extra``
+        fields never reach an operator.
+        """
+        media_plane = self._nvidia_media_plane
+        if media_plane is None:
+            return
+        counters = media_plane.child.metadata.counters()
+        LOGGER.info(
+            "native metadata slot: accepted=%d overwritten=%d late=%d "
+            "unknown_source=%d generation_mismatch=%d epoch_mismatch=%d "
+            "boot_mismatch=%d child_mismatch=%d transform_mismatch=%d "
+            "malformed=%d pull_failures=%d",
+            counters.accepted,
+            counters.overwritten,
+            counters.late,
+            counters.unknown_source,
+            counters.generation_mismatch,
+            counters.epoch_mismatch,
+            counters.boot_mismatch,
+            counters.child_mismatch,
+            counters.transform_mismatch,
+            counters.malformed,
+            counters.pull_failures,
+        )
 
     def _refresh_clip_recorder_telemetry(self) -> None:
         """Push the clip recorder's live counters into diagnostics.

@@ -584,3 +584,76 @@ def test_idle_native_producer_payload_also_validates() -> None:
     # Then
     assert validated.expected is True
     assert validated.decision_completed == 0
+
+
+def test_metadata_slot_counters_render_into_the_log_message_not_extra(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Rejection reasons must be greppable in the rendered message.
+
+    The worker's ``basicConfig`` format is ``%(message)s`` only, so anything
+    passed via ``extra=`` never reaches an operator. Regression guard for the
+    observability gap that made "child never publishes" and "child publishes
+    but every frame is rejected" indistinguishable.
+    """
+    # Given
+    import logging
+
+    from worker.native.deepstream.metadata_slot import LatestMetadataSlot
+    from worker.runtime import worker as worker_module
+
+    slot = LatestMetadataSlot()
+    slot.mark_malformed()
+    slot.mark_pull_failure()
+    slot.mark_pull_failure()
+
+    class _Child:
+        metadata = slot
+
+    class _MediaPlane:
+        child = _Child()
+
+    class _Runtime:
+        _nvidia_media_plane = _MediaPlane()
+        _log_native_metadata_counters = worker_module.WorkerRuntime._log_native_metadata_counters
+
+    # When
+    with caplog.at_level(logging.INFO, logger=worker_module.LOGGER.name):
+        _Runtime._log_native_metadata_counters(_Runtime())  # pyright: ignore[reportArgumentType]
+    # Then
+    rendered = [record.getMessage() for record in caplog.records]
+    assert any("native metadata slot:" in message for message in rendered)
+    line = next(message for message in rendered if "native metadata slot:" in message)
+    assert "malformed=1" in line
+    assert "pull_failures=2" in line
+    for field in (
+        "accepted",
+        "overwritten",
+        "late",
+        "unknown_source",
+        "generation_mismatch",
+        "epoch_mismatch",
+        "boot_mismatch",
+        "child_mismatch",
+        "transform_mismatch",
+    ):
+        assert f"{field}=" in line
+
+
+def test_metadata_counter_logging_is_a_no_op_without_the_nvidia_media_plane(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Given
+    import logging
+
+    from worker.runtime import worker as worker_module
+
+    class _Runtime:
+        _nvidia_media_plane = None
+        _log_native_metadata_counters = worker_module.WorkerRuntime._log_native_metadata_counters
+
+    # When
+    with caplog.at_level(logging.INFO, logger=worker_module.LOGGER.name):
+        _Runtime._log_native_metadata_counters(_Runtime())  # pyright: ignore[reportArgumentType]
+    # Then
+    assert not [r for r in caplog.records if "native metadata slot:" in r.getMessage()]
