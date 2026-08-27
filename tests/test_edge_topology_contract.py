@@ -28,7 +28,6 @@ EDGE_RUNTIME_SERVICES: Final = {
 EDGE_OPS_SERVICES: Final = {"edge-refused-evidence"}
 
 EDGE_SERVICES: Final = {
-    "edge-filesystem-inventory",
     "edge-db-migrator",
     *EDGE_OPS_SERVICES,
     *EDGE_RUNTIME_SERVICES,
@@ -122,7 +121,7 @@ def test_edge_worker_runtime_status_environment_contract() -> None:
     assert "API_FACILITY_ID" not in worker_environment
 
 
-def test_edge_compose_contains_inventory_migrator_api_and_worker() -> None:
+def test_edge_compose_contains_migrator_api_and_worker() -> None:
     services = _compose_services(EDGE_COMPOSE_FILE)
 
     assert set(services) == EDGE_SERVICES, sorted(services)
@@ -130,43 +129,21 @@ def test_edge_compose_contains_inventory_migrator_api_and_worker() -> None:
 
 def test_edge_db_migrator_owns_schema_lifecycle_before_runtime_start() -> None:
     services = _compose_services(EDGE_COMPOSE_FILE)
-    inventory = services["edge-filesystem-inventory"]
     migrator = services["edge-db-migrator"]
     api_depends_on = _mapping_field(services["ml-api"], "depends_on")
     worker_depends_on = _mapping_field(services["ml-worker"], "depends_on")
 
-    assert inventory["restart"] == "no"
-    assert inventory["command"] == ["python", "-m", "backend.app.edge_db.inventory"]
-    assert "edge-state:/var/lib/seeon-state:ro" in _list_field(inventory, "volumes")
-    assert "worker-local-state:/var/lib/seeon-worker-state:ro" in _list_field(
-        inventory, "volumes"
-    )
-    assert any(
-        str(volume).endswith(":/var/lib/clip-store:ro")
-        for volume in _list_field(inventory, "volumes")
-    )
-    assert migrator["depends_on"] == {
-        "edge-filesystem-inventory": {"condition": "service_completed_successfully"}
-    }
+    assert "depends_on" not in migrator
     assert migrator["restart"] == "no"
+    # Create-only: the bootstrap mounts nothing but the one state volume it
+    # creates schema 18 in. There is no legacy state to import or gate on.
+    assert _list_field(migrator, "volumes") == ["edge-state:/var/lib/seeon-state"]
     assert migrator["command"] == [
         "python",
         "-m",
-        "backend.app.edge_db.compact_cutover",
-        "--source",
+        "backend.app.edge_db",
+        "--database",
         "/var/lib/seeon-state/edge.sqlite3",
-        "--live",
-        "/var/lib/seeon-state/edge.sqlite3",
-        "--archive",
-        "/var/lib/seeon-state/edge-v17-archive.sqlite3",
-        "--candidate",
-        "/var/lib/seeon-state/edge-v18-candidate.sqlite3",
-        "--receipt",
-        "/var/lib/seeon-state/schema18-cutover-receipts.jsonl",
-        "--clip-store",
-        "/var/lib/clip-store",
-        "--worker-state",
-        "/var/lib/seeon-worker-state",
     ]
     assert api_depends_on == {"edge-db-migrator": {"condition": "service_completed_successfully"}}
     assert worker_depends_on == {"ml-api": {"condition": "service_healthy"}}
@@ -263,8 +240,6 @@ def test_edge_runtime_state_volumes_follow_backend_ownership() -> None:
     )
     assert set(compose.get("volumes", {})) == {
         "edge-state",
-        "ml-api-state",
-        "ml-worker-state",
         "worker-engine-cache",
         "worker-local-state",
     }
