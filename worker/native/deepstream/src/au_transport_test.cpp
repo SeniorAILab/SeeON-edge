@@ -463,8 +463,12 @@ int main() {
 
     // A DIFFERENT camera's transition of the same size would take the total to
     // 1.8 MiB, beyond the allowance, so it must not be reserved.
+    // Named to sort BEFORE camera-x: transitions_ is a std::map keyed by
+    // camera, so if this one were reserved it would drain first. Seeing
+    // camera-x without having seen it is therefore proof it was never
+    // reserved, and needs no timeout.
     auto over = envelope_for(2, 1, 900 * 1024);
-    over.camera = "camera-z";
+    over.camera = "camera-a";
     check(!capped.enqueue(std::move(over)), "over-allowance transition refused");
 
     // Drain and observe: camera-x epoch 3 must arrive as an ordinary unit,
@@ -477,10 +481,13 @@ int main() {
       check(count > 0, "pinned body truncated");
       off += static_cast<std::size_t>(count);
     }
+    // The fence is transitions_' own ordering: camera-a would drain before
+    // camera-x. Reading until camera-x arrives therefore settles both
+    // negatives without relying on a timeout.
     bool saw_replacement = false;
     bool saw_replaced = false;
     bool saw_over = false;
-    for (int index = 0; index < 64; ++index) {
+    for (int index = 0; index < 256 && !saw_replacement; ++index) {
       std::vector<std::uint8_t> header(kAuHeaderBytes);
       std::size_t offset = 0;
       bool complete = true;
@@ -505,13 +512,14 @@ int main() {
       const auto epoch = decode_epoch(header);
       if (camera == "camera-x" && epoch == 3) saw_replacement = true;
       if (camera == "camera-x" && epoch == 2) saw_replaced = true;
-      if (camera == "camera-z") saw_over = true;
+      if (camera == "camera-a") saw_over = true;
     }
     capped.stop();
     close(pair[1]);
     check(saw_replacement,
           "the replacing transition must reach the wire; crediting the "
-          "reservation it displaces is what keeps it inside the allowance");
+          "reservation it displaces is what keeps it inside the allowance. "
+          "Its arrival is also the fence for the two negatives below");
     check(!saw_replaced,
           "the replaced transition must not also reach the wire");
     check(!saw_over,
@@ -530,16 +538,139 @@ int main() {
     wide.camera = std::string(static_cast<std::size_t>(UINT16_MAX) + 1, 'c');
     check(!guard.enqueue(std::move(wide)),
           "an over-width camera identity must be refused");
+    // Fence: a sentinel enqueued AFTER the over-width envelope must be the
+    // first frame on the wire. Waiting for a timeout would only prove nothing
+    // arrived quickly.
+    auto sentinel = envelope_for(4, 5, 128);
+    sentinel.camera = "sentinel";
+    check(guard.enqueue(std::move(sentinel)), "sentinel must be admitted");
     timeval timeout{};
-    timeout.tv_usec = 300000;
+    timeout.tv_sec = 3;
     setsockopt(pair[1], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     std::vector<std::uint8_t> header(kAuHeaderBytes);
-    const auto count = recv(pair[1], header.data(), kAuHeaderBytes, 0);
+    std::size_t got = 0;
+    while (got < kAuHeaderBytes) {
+      const auto count = recv(pair[1], header.data() + got, kAuHeaderBytes - got, 0);
+      check(count > 0, "sentinel never arrived");
+      got += static_cast<std::size_t>(count);
+    }
+    const auto body = body_size_of(header);
+    std::vector<std::uint8_t> payload(body);
+    std::size_t body_offset = 0;
+    while (body_offset < body) {
+      const auto count =
+          recv(pair[1], payload.data() + body_offset, body - body_offset, 0);
+      check(count > 0, "sentinel body truncated");
+      body_offset += static_cast<std::size_t>(count);
+    }
     guard.stop();
     close(pair[1]);
-    check(count <= 0,
-          "an over-width envelope must produce no frame at all: as an ordinary "
-          "unit it bypasses the width limit, as a gap it is truncated");
+    check(payload.size() >= 8 && std::string(payload.begin(), payload.begin() + 8) == "sentinel",
+          "the first frame on the wire must be the sentinel: an over-width "
+          "envelope must produce no frame at all, as an ordinary unit it "
+          "bypasses the width limit and as a gap it is truncated");
+  }
+
+  // Draining a reservation must CREDIT its bytes. Without that the allowance
+  // is consumed permanently and a camera can never reserve again, so every
+  // subsequent epoch roll loses its transition - the original defect, returned
+  // by a slow leak instead of an instant one.
+  {
+    int pair[2]{};
+    check(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0, "socketpair failed");
+    int tiny = 4096;
+    setsockopt(pair[0], SOL_SOCKET, SO_SNDBUF, &tiny, sizeof(tiny));
+    setsockopt(pair[1], SOL_SOCKET, SO_RCVBUF, &tiny, sizeof(tiny));
+    timeval timeout{};
+    timeout.tv_sec = 3;
+    setsockopt(pair[1], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    const std::size_t budget = 8 * 1024 * 1024;  // allowance = 1 MiB
+    seeon::AuSender cycling(pair[0], 8, budget);
+
+    const auto drain_until = [&](const std::string& camera, std::uint64_t epoch) {
+      for (int index = 0; index < 256; ++index) {
+        std::vector<std::uint8_t> header(kAuHeaderBytes);
+        std::size_t offset = 0;
+        while (offset < kAuHeaderBytes) {
+          const auto count =
+              recv(pair[1], header.data() + offset, kAuHeaderBytes - offset, 0);
+          check(count > 0, "wire ended before the expected frame");
+          offset += static_cast<std::size_t>(count);
+        }
+        const auto body = body_size_of(header);
+        std::vector<std::uint8_t> payload(body);
+        std::size_t body_offset = 0;
+        while (body_offset < body) {
+          const auto count =
+              recv(pair[1], payload.data() + body_offset, body - body_offset, 0);
+          check(count > 0, "body truncated");
+          body_offset += static_cast<std::size_t>(count);
+        }
+        if (header[8] == 2 || payload.size() < camera.size()) continue;
+        if (std::string(payload.begin(),
+                        payload.begin() + static_cast<long>(camera.size())) == camera &&
+            decode_epoch(header) == epoch) {
+          return;
+        }
+      }
+      check(false, "the expected frame never arrived");
+    };
+
+    // Round one: congest, reserve 900 KiB, then let everything drain.
+    auto pinned = envelope_for(1, 1, 400 * 1024);
+    pinned.camera = "camera-r";
+    check(cycling.enqueue(std::move(pinned)), "pinning unit admitted");
+    std::vector<std::uint8_t> head(kAuHeaderBytes);
+    std::size_t got = 0;
+    while (got < kAuHeaderBytes) {
+      const auto count = recv(pair[1], head.data() + got, kAuHeaderBytes - got, 0);
+      check(count > 0, "sender never began writing");
+      got += static_cast<std::size_t>(count);
+    }
+    const auto pinned_body = body_size_of(head);
+    auto ballast = envelope_for(1, 2, 7800 * 1024);
+    ballast.camera = "camera-r";
+    check(cycling.enqueue(std::move(ballast)), "ballast admitted");
+    auto first = envelope_for(2, 1, 900 * 1024);
+    first.camera = "camera-r";
+    check(!cycling.enqueue(std::move(first)), "first transition reserved");
+    std::vector<std::uint8_t> discard(pinned_body);
+    std::size_t off = 0;
+    while (off < pinned_body) {
+      const auto count = recv(pair[1], discard.data() + off, pinned_body - off, 0);
+      check(count > 0, "pinned body truncated");
+      off += static_cast<std::size_t>(count);
+    }
+    drain_until("camera-r", 2);
+
+    // Round two: congest again and reserve for a DIFFERENT camera. This only
+    // fits if round one's reservation was credited when it drained.
+    auto pinned2 = envelope_for(1, 1, 400 * 1024);
+    pinned2.camera = "camera-r";
+    check(cycling.enqueue(std::move(pinned2)), "second pinning unit admitted");
+    std::size_t got2 = 0;
+    while (got2 < kAuHeaderBytes) {
+      const auto count = recv(pair[1], head.data() + got2, kAuHeaderBytes - got2, 0);
+      check(count > 0, "sender never began the second round");
+      got2 += static_cast<std::size_t>(count);
+    }
+    const auto pinned2_body = body_size_of(head);
+    auto ballast2 = envelope_for(1, 2, 7800 * 1024);
+    ballast2.camera = "camera-r";
+    check(cycling.enqueue(std::move(ballast2)), "second ballast admitted");
+    auto second = envelope_for(3, 1, 900 * 1024);
+    second.camera = "camera-q";
+    check(!cycling.enqueue(std::move(second)), "second transition refused");
+    std::vector<std::uint8_t> discard2(pinned2_body);
+    std::size_t off2 = 0;
+    while (off2 < pinned2_body) {
+      const auto count = recv(pair[1], discard2.data() + off2, pinned2_body - off2, 0);
+      check(count > 0, "second pinned body truncated");
+      off2 += static_cast<std::size_t>(count);
+    }
+    drain_until("camera-q", 3);
+    cycling.stop();
+    close(pair[1]);
   }
 
   return 0;
