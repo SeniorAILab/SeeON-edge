@@ -164,13 +164,7 @@ class SourcePacketRing:
                 raise ValueError("packet ring epoch cannot move backwards")
             removed_packets = len(self._entries)
             removed_bytes = sum(entry.packet.size_bytes for entry in self._entries)
-            self._retired_entries.extend(
-                entry for entry in self._entries if entry.lease_count > 0
-            )
-            self._entries.clear()
-            self._total_bytes = sum(
-                entry.packet.size_bytes for entry in self._retired_entries
-            )
+            self._retire_live_entries()
             self._active_epoch = epoch
             self._newest_video_pts = None
             self.metrics.epoch_rolls += 1
@@ -452,13 +446,13 @@ class SourcePacketRing:
     def close(self) -> None:
         with self._lock:
             self._closed = True
-            self._retired_entries.extend(
-                entry for entry in self._entries if entry.lease_count > 0
-            )
-            self._entries.clear()
-            self._total_bytes = sum(
-                entry.packet.size_bytes for entry in self._retired_entries
-            )
+            self._retire_live_entries()
+
+    def _retire_live_entries(self) -> None:
+        """Move leased entries to the retired set and drop the rest; caller holds the lock."""
+        self._retired_entries.extend(entry for entry in self._entries if entry.lease_count > 0)
+        self._entries.clear()
+        self._total_bytes = sum(entry.packet.size_bytes for entry in self._retired_entries)
 
     def _release(self, entries: tuple[_Entry, ...]) -> None:
         with self._lock:

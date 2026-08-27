@@ -33,10 +33,7 @@ from worker.types.overlay_scene import (
 _SPACE: Final = 4
 _PANEL_MARGIN: Final = _SPACE * 2
 _PANEL_GAP: Final = _SPACE
-_PANEL_WIDTH: Final = _SPACE * 66
-_PANEL_LINE: Final = _SPACE * 4
 _PANEL_BACKGROUND: Final = (20, 20, 20)
-_PANEL_BORDER: Final = (235, 235, 235)
 _TEXT: Final = (255, 255, 255)
 _OUTLINE: Final = (0, 0, 0)
 _FONT_CANDIDATES: Final = (
@@ -197,7 +194,7 @@ def semantic_panel_layout(
         panels = (
             _SemanticPanel(
                 selected.identity,
-                (*selected.lines, f"P{page + 1}/{len(_semantic_panels(scene))}"),
+                (*selected.lines, f"P{page + 1}/{len(panels)}"),
                 selected.color,
                 selected.triggered,
             ),
@@ -411,13 +408,6 @@ def _unicode_font() -> ImageFont.FreeTypeFont:
             except OSError:
                 continue
     raise OverlayFontUnavailable("a real CJK overlay font is unavailable")
-
-
-def _ellipsize(text: str, available: int) -> str:
-    result = text
-    while result and _ascii_size(result)[0] > available:
-        result = result[:-4] + "..." if len(result) > 3 else ""
-    return result
 
 
 def _box_points(box: tuple[float, float, float, float]) -> tuple[tuple[float, float], ...]:

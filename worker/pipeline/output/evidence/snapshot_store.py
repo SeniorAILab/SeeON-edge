@@ -244,15 +244,7 @@ class SnapshotStore(SnapshotFiles):
         return snapshot
 
     def staged_records(self) -> tuple[StoredSnapshot, ...]:
-        root = self.store_dir / ".snapshot-staging"
-        if not root.exists():
-            return ()
-        records: list[StoredSnapshot] = []
-        for metadata in sorted(root.glob("*.json")):
-            record = self._decode_file(metadata)
-            if record is not None:
-                records.append(record)
-        return tuple(records)
+        return self._records_in(Path(".snapshot-staging"))
 
     def identity_records(self) -> tuple[StoredSnapshot, ...]:
         return self._records_in(Path(".snapshot-identities"))

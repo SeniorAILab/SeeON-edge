@@ -27,12 +27,13 @@ from worker.types.source_packet import SourcePacket, SourceStreamConfiguration, 
 
 def _components_of(envelope: AuEnvelope) -> tuple[object, ...]:
     """Signature inputs in the same order native_configuration_signature hashes."""
+    parameter_sets = distinct_parameter_sets(envelope.codec_data)
     return (
         envelope.codec,
         envelope.framing,
         envelope.parser_caps,
-        len(distinct_parameter_sets(envelope.codec_data)),
-        hashlib.sha256(distinct_parameter_sets(envelope.codec_data)).hexdigest()[:8],
+        len(parameter_sets),
+        hashlib.sha256(parameter_sets).hexdigest()[:8],
         envelope.width,
         envelope.height,
         str(envelope.time_base),
