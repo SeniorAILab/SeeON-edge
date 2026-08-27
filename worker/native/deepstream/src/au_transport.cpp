@@ -152,24 +152,45 @@ bool AuSender::enqueue(AuEnvelope envelope) {
     // it as an ordinary unit is what makes it effective: the receiver adopts an
     // epoch from a normal sequence-1 unit and discards gap markers before
     // adoption.
-    if (!invalid && envelope.sequence == 1 && transition_bytes_ + size <= max_bytes_) {
+    if (!invalid && envelope.sequence == 1) {
       const auto existing = transitions_.find(envelope.camera);
       const bool newer =
           existing == transitions_.end() ||
           std::make_pair(envelope.generation, envelope.epoch) >
               std::make_pair(existing->second.generation, existing->second.epoch);
-      if (newer) {
-        if (existing != transitions_.end()) {
-          transition_bytes_ -= existing->second.camera.size() +
-                               existing->second.unit.parser_caps.size() +
-                               existing->second.unit.payload.size() +
-                               existing->second.unit.codec_data.size();
-        }
-        transition_bytes_ += size;
-        transitions_[envelope.camera] = std::move(envelope);
+      // Budget the projected total AFTER replacement. Charging the newcomer
+      // before crediting the reservation it replaces would reject a newer
+      // transition that plainly fits, and it would then fall through to the
+      // gap slot - which the receiver discards before adoption, reintroducing
+      // exactly the stranding this reservation exists to prevent.
+      std::size_t replaced = 0;
+      if (existing != transitions_.end()) {
+        replaced = existing->second.camera.size() +
+                   existing->second.unit.parser_caps.size() +
+                   existing->second.unit.payload.size() +
+                   existing->second.unit.codec_data.size();
       }
-      ready_.notify_one();
-      return false;
+      // Reservations need their own allowance, not a share of the queue's.
+      // A transition is refused precisely BECAUSE the queue is full or its
+      // bytes are exhausted, so budgeting it against the same total would make
+      // it unreservable in exactly the situation the reservation exists for.
+      //
+      // The allowance is deliberately small - an eighth of the aggregate - so
+      // the sender's real ceiling is max_bytes_ * 9/8 rather than twice it,
+      // and it is still a hard bound: one small envelope per camera, replaced
+      // rather than accumulated.
+      const std::size_t transition_allowance = max_bytes_ / 8;
+      const std::size_t projected = transition_bytes_ - replaced + size;
+      if (newer && projected <= transition_allowance) {
+        transition_bytes_ = projected;
+        transitions_[envelope.camera] = std::move(envelope);
+        ready_.notify_one();
+        return false;
+      }
+      if (!newer) {
+        ready_.notify_one();
+        return false;
+      }
     }
     // An envelope whose identity fields overflow the wire's uint16 lengths
     // cannot be encoded even as a gap marker, so it is dropped outright rather

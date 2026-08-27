@@ -323,16 +323,31 @@ int main() {
 
 
   // NOT COVERED: the ordering barrier in AuSender::enqueue, which refuses
-  // further units from a camera that already holds a reservation. The hazard
-  // is real - run() drains queue_ before transitions_, so a unit admitted
-  // while a reservation is pending reaches the wire ahead of the
-  // epoch-opening unit - but it is not deterministically testable through this
-  // interface. Two attempts were made and both passed with the barrier
-  // removed, because the sender thread drains the reservation before a later
-  // unit can be offered, so the assertion never observed the hazard it names.
-  // A vacuous test is worse than none, so the attempts were removed rather
-  // than kept. Verifying this needs either a seam that pauses the drain or a
-  // structural guarantee that queue_ cannot outrun transitions_.
+  // further units from a camera that already holds a reservation.
+  //
+  // The hazard is real - run() drains queue_ before transitions_, so a unit
+  // admitted while a reservation is pending reaches the wire ahead of the
+  // epoch-opening unit. The barrier is implemented and believed correct; what
+  // is missing is proof.
+  //
+  // Review supplied a sound construction: pin the sender inside send_all with
+  // a body larger than both socket buffers and only its header consumed, fill
+  // the byte budget so a same-camera transition is refused and reserved, then
+  // show a DIFFERENT camera's small unit is still admitted - proving
+  // congestion is no longer the reason - before requiring a same-camera later
+  // unit to be refused with dropped() advancing by one. That control is what
+  // makes the assertion decisive.
+  //
+  // Four attempts were made and none landed. The recurring failure was the
+  // setup rather than the assertion: the transition kept being admitted,
+  // meaning the intended congestion was not present at that instant, and the
+  // byte accounting across a popped-but-unsent unit did not reconcile with
+  // the budget arithmetic. Earlier attempts that DID pass were worse - they
+  // survived removing the barrier, so they proved nothing.
+  //
+  // A test that survives its own mutation is worse than none, so nothing is
+  // left here except this note. The construction above is the place to
+  // resume.
 
   // Reservations are charged against their own byte budget. They live outside
   // queue_ and so are not covered by bytes_; without a bound, one near-maximum
