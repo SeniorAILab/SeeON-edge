@@ -128,7 +128,24 @@ bool AuSender::enqueue(AuEnvelope envelope) {
       envelope.camera.size() > UINT16_MAX || envelope.unit.parser_caps.size() > UINT16_MAX ||
       queue_.size() >= max_items_ || bytes_ + size > max_bytes_) {
     ++dropped_;
-    if (!gap_.has_value()) gap_ = std::move(envelope);
+    // The gap slot holds one envelope and, while it is occupied, refuses
+    // everything. That is correct backpressure for ordinary units but it
+    // silently destroys a stream-epoch transition: a source rebuild fills the
+    // queue, the overflow claims the slot, and the very next unit produced is
+    // the new epoch's sequence 1. Losing it leaves the receiver to see that
+    // epoch begin at sequence 2, report a discontinuity, request another
+    // rebuild, and repeat -- the ring never advances and clip evidence for
+    // the live epoch cannot be selected (#429).
+    //
+    // The gap marker's job is to tell the receiver that something was lost
+    // and where the stream is now, so when the choice is between an older
+    // dropped unit and one that opens a newer epoch, the newer one is
+    // strictly more useful: it carries the loss AND the transition. Ordinary
+    // same-epoch backpressure is unchanged, so the slot still keeps the first
+    // dropped unit within an epoch.
+    if (!gap_.has_value() || envelope.epoch > gap_->epoch) {
+      gap_ = std::move(envelope);
+    }
     ready_.notify_one();
     return false;
   }

@@ -29,6 +29,25 @@ seeon::AuEnvelope envelope(std::uint64_t sequence, std::size_t size) {
           {seeon::AuCodec::kH264, seeon::AuFraming::kAnnexB, 1, 1, 1, 1, 90000,
            640, 360, sequence == 1, "caps", {}, std::vector<std::uint8_t>(size, 0x41)}};
 }
+constexpr std::size_t kAuHeaderBytes = 84;
+
+// Packed header layout: magic[4], body_size u32, kind u8, codec u8,
+// framing u8, keyframe u8, generation u32, epoch u64 at offset 16.
+std::size_t body_size_of(const std::vector<std::uint8_t>& header) {
+  return static_cast<std::size_t>(header[4]) |
+         static_cast<std::size_t>(header[5]) << 8U |
+         static_cast<std::size_t>(header[6]) << 16U |
+         static_cast<std::size_t>(header[7]) << 24U;
+}
+
+std::uint64_t decode_epoch(const std::vector<std::uint8_t>& header) {
+  std::uint64_t epoch = 0;
+  for (std::size_t index = 0; index < 8; ++index) {
+    epoch |= static_cast<std::uint64_t>(header[16 + index]) << (8U * index);
+  }
+  return epoch;
+}
+
 seeon::AuEnvelope envelope_for(std::uint64_t epoch, std::uint64_t sequence,
                                 std::size_t size) {
   return {"camera-a", 1, epoch, sequence,
@@ -114,13 +133,52 @@ int main() {
     // occupied gap slot -- a cumulative dropped() count alone would not
     // establish that, which is why the size is chosen to rule out the other
     // refusal conditions.
+    // Still refused - backpressure is real and the unit is not queued.
     const bool transition_admitted = gapped.enqueue(envelope_for(2, 1, 64));
-    check(!transition_admitted,
-          "expected the occupied gap slot to swallow the epoch transition; if "
-          "this now passes the transport contract changed and the receiver's "
-          "sequence expectation must be revisited");
+    check(!transition_admitted, "an overflowing sender must still refuse");
     check(gapped.dropped() == dropped_after_overflow + 1,
           "the epoch transition was refused without being counted as dropped");
+
+    // But it must not be LOST: the gap slot now carries the newest epoch, so
+    // the receiver learns about the transition instead of seeing the new
+    // epoch begin at sequence 2 and stranding on the old one.
+    //
+    // Drained with a receive timeout rather than receive_exact, which aborts
+    // on EOF; the sender is still running so the gap is flushed behind the
+    // queued units.
+    timeval timeout{};
+    timeout.tv_sec = 2;
+    setsockopt(pair[1], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    bool saw_epoch_two_gap = false;
+    for (int index = 0; index < 256 && !saw_epoch_two_gap; ++index) {
+      std::vector<std::uint8_t> header(kAuHeaderBytes);
+      std::size_t offset = 0;
+      bool complete = true;
+      while (offset < kAuHeaderBytes) {
+        const auto count =
+            recv(pair[1], header.data() + offset, kAuHeaderBytes - offset, 0);
+        if (count <= 0) {
+          complete = false;
+          break;
+        }
+        offset += static_cast<std::size_t>(count);
+      }
+      if (!complete) break;
+      const auto body = body_size_of(header);
+      std::vector<std::uint8_t> sink_body(body);
+      std::size_t body_offset = 0;
+      while (body_offset < body) {
+        const auto count =
+            recv(pair[1], sink_body.data() + body_offset, body - body_offset, 0);
+        if (count <= 0) break;
+        body_offset += static_cast<std::size_t>(count);
+      }
+      if (header[8] == 2 && decode_epoch(header) == 2) saw_epoch_two_gap = true;
+    }
+    gapped.stop();
+    check(saw_epoch_two_gap,
+          "the epoch transition was destroyed by backpressure: the gap slot "
+          "must carry the newest epoch so the receiver is not stranded (#429)");
     gapped.stop();
     close(pair[1]);
   }
