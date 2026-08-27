@@ -21,7 +21,7 @@ def run_actor_loop(
     actor: ClipActor,
     messages: queue.Queue[RecorderMessage],
     stop: threading.Event,
-    rotate: Callable[[], None],
+    rotate: Callable[..., None],
 ) -> None:
     try:
         while True:
@@ -31,6 +31,20 @@ def run_actor_loop(
                 if stop.is_set() and messages.empty():
                     break
                 actor.expire()
+                # Re-evaluate retention here, NOT only on flush below.
+                # `rotate` is what clears disk-pressure suspension, and while
+                # suspended no clip is admitted, so none finalizes, so no
+                # FlushMessage is ever queued -- the only path that used to
+                # call this. Crossing the high watermark once therefore
+                # latched recording off permanently, and freeing the disk did
+                # not restore it; only a worker restart did. Observed live:
+                # the store sat at 80.68% and every fall for ninety minutes
+                # recorded no footage while detection, snapshots and delivery
+                # all looked healthy.
+                #
+                # Unforced, so the interval guard inside rotate() bounds the
+                # real work; this tick is 100 ms and must stay cheap.
+                rotate(force=False)
                 continue
             try:
                 match message:
@@ -46,7 +60,7 @@ def run_actor_loop(
                     case FlushMessage(done=done):
                         try:
                             actor.flush()
-                            rotate()
+                            rotate(force=True)
                         finally:
                             done.set()
                     case unreachable:
