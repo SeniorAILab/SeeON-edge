@@ -223,7 +223,7 @@ class SourcePacketRing:
                     active_generation=self._active_epoch.source_generation,
                 )
                 raise PacketSelectionError(
-                    PacketTruncationReason.KEYFRAME_UNAVAILABLE,
+                    PacketTruncationReason.STREAM_EPOCH_MISMATCH,
                     "trigger stream epoch is no longer active",
                 )
             epoch_entries = tuple(

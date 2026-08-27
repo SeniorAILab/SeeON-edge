@@ -421,3 +421,30 @@ def test_missing_keyframe_failure_reports_the_discriminating_counts(
     failure = next(line for line in lines if "packet selection failed:" in line)
     for field in ("ring_entries=", "epoch_entries=", "epoch_video=", "trigger_pts="):
         assert field in failure
+
+
+def test_epoch_skew_is_reported_as_its_own_reason_not_as_a_missing_keyframe() -> None:
+    """An inter-plane epoch skew must not masquerade as KEYFRAME_UNAVAILABLE.
+
+    On the live nvidia stack 90% of clip failures took this branch while the
+    manifest showed only KEYFRAME_UNAVAILABLE, which is shared with four
+    unrelated conditions. Measurement had already shown the cameras emit a
+    keyframe about once per second and the ring is many times oversized, so the
+    code was actively misleading: selection never reached keyframe search.
+    """
+    # Given
+    ring = SourcePacketRing("camera-1", PacketRingLimits(64, 4_096, 60.0))
+    _append_gop(ring, start=0, stop=12)
+    ring.roll_epoch(StreamEpoch("boot-1", "camera-1", 1))
+    # When: the trigger names a newer epoch than the ring holds
+    with pytest.raises(PacketSelectionError) as caught:
+        with ring.select(
+            trigger_epoch=StreamEpoch("boot-1", "camera-1", 2),
+            trigger_pts=Fraction(7),
+            pre_seconds=Fraction(2),
+            post_seconds=Fraction(3),
+        ):
+            pass
+    # Then
+    assert caught.value.reason is PacketTruncationReason.STREAM_EPOCH_MISMATCH
+    assert caught.value.reason is not PacketTruncationReason.KEYFRAME_UNAVAILABLE
