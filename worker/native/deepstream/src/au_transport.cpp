@@ -13,6 +13,11 @@ namespace {
 constexpr std::array<char, 4> kMagic{'S', 'A', 'U', '1'};
 constexpr std::uint8_t kAccessUnit = 1;
 constexpr std::uint8_t kGap = 2;
+
+std::size_t envelope_bytes(const AuEnvelope& envelope) {
+  return envelope.camera.size() + envelope.unit.parser_caps.size() +
+         envelope.unit.payload.size() + envelope.unit.codec_data.size();
+}
 #pragma pack(push, 1)
 struct Header {
   std::array<char, 4> magic;
@@ -120,23 +125,24 @@ AuSender::AuSender(int descriptor, std::size_t max_items, std::size_t max_bytes)
 AuSender::~AuSender() { stop(); }
 
 bool AuSender::enqueue(AuEnvelope envelope) {
-  const auto size = envelope.camera.size() + envelope.unit.parser_caps.size() +
-                    envelope.unit.payload.size() + envelope.unit.codec_data.size();
+  const auto size = envelope_bytes(envelope);
   std::lock_guard lock{mutex_};
   if (stopped_) return false;
   // Validity limits are absolute: an envelope that cannot legally be framed is
   // refused outright and is never eligible for reservation, because a reserved
   // unit is later emitted as an ordinary access unit and would otherwise
   // bypass the very limit that rejected it.
-  const bool invalid = size > kMaxAuFrameBytes || size > max_bytes_ ||
-                       envelope.camera.size() > UINT16_MAX ||
-                       envelope.unit.parser_caps.size() > UINT16_MAX;
+  // Identity fields that overflow the wire's uint16 lengths cannot be encoded
+  // even as a gap marker, so such an envelope is dropped outright below.
+  const bool identity_too_long = envelope.camera.size() > UINT16_MAX ||
+                                 envelope.unit.parser_caps.size() > UINT16_MAX;
+  const bool invalid = size > kMaxAuFrameBytes || size > max_bytes_ || identity_too_long;
+  const auto existing = transitions_.find(envelope.camera);
   // A camera with a pending reservation must not enqueue anything further.
   // run() always drains queue_ before transitions_, so a later unit admitted
   // now would reach the wire AHEAD of the reserved sequence 1 and recreate the
   // very discontinuity the reservation exists to prevent.
-  const bool awaiting_transition =
-      !invalid && transitions_.find(envelope.camera) != transitions_.end();
+  const bool awaiting_transition = !invalid && existing != transitions_.end();
   const bool congested =
       gap_.has_value() || queue_.size() >= max_items_ || bytes_ + size > max_bytes_;
   if (invalid || congested || awaiting_transition) {
@@ -153,7 +159,6 @@ bool AuSender::enqueue(AuEnvelope envelope) {
     // epoch from a normal sequence-1 unit and discards gap markers before
     // adoption.
     if (!invalid && envelope.sequence == 1) {
-      const auto existing = transitions_.find(envelope.camera);
       const bool newer =
           existing == transitions_.end() ||
           std::make_pair(envelope.generation, envelope.epoch) >
@@ -164,12 +169,7 @@ bool AuSender::enqueue(AuEnvelope envelope) {
       // gap slot - which the receiver discards before adoption, reintroducing
       // exactly the stranding this reservation exists to prevent.
       std::size_t replaced = 0;
-      if (existing != transitions_.end()) {
-        replaced = existing->second.camera.size() +
-                   existing->second.unit.parser_caps.size() +
-                   existing->second.unit.payload.size() +
-                   existing->second.unit.codec_data.size();
-      }
+      if (existing != transitions_.end()) replaced = envelope_bytes(existing->second);
       // Reservations need their own allowance, not a share of the queue's.
       // A transition is refused precisely BECAUSE the queue is full or its
       // bytes are exhausted, so budgeting it against the same total would make
@@ -197,12 +197,7 @@ bool AuSender::enqueue(AuEnvelope envelope) {
         return false;
       }
     }
-    // An envelope whose identity fields overflow the wire's uint16 lengths
-    // cannot be encoded even as a gap marker, so it is dropped outright rather
-    // than silently truncated into one.
-    const bool encodable_as_gap = envelope.camera.size() <= UINT16_MAX &&
-                                  envelope.unit.parser_caps.size() <= UINT16_MAX;
-    if (!gap_.has_value() && encodable_as_gap) gap_ = std::move(envelope);
+    if (!gap_.has_value() && !identity_too_long) gap_ = std::move(envelope);
     ready_.notify_one();
     return false;
   }
@@ -224,16 +219,14 @@ void AuSender::run() {
       if (stopped_ && !gap_.has_value() && queue_.empty() && transitions_.empty()) return;
       if (!queue_.empty()) {
         envelope = std::move(queue_.front());
-        bytes_ -= envelope.camera.size() + envelope.unit.parser_caps.size() +
-                  envelope.unit.payload.size() + envelope.unit.codec_data.size();
+        bytes_ -= envelope_bytes(envelope);
         queue_.pop_front();
       } else if (!transitions_.empty()) {
         // Ahead of the gap, and as an ordinary unit: the receiver adopts an
         // epoch from a normal sequence-1 access unit, never from a gap marker.
         const auto first = transitions_.begin();
         envelope = std::move(first->second);
-        transition_bytes_ -= envelope.camera.size() + envelope.unit.parser_caps.size() +
-                             envelope.unit.payload.size() + envelope.unit.codec_data.size();
+        transition_bytes_ -= envelope_bytes(envelope);
         transitions_.erase(first);
       } else {
         envelope = std::move(*gap_);

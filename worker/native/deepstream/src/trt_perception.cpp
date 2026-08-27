@@ -1,12 +1,11 @@
-#include <atomic>
-#include <mutex>
-#include <condition_variable>
-#include <vector>
-#include <chrono>
-#include <cstdio>
 #include "trt_perception.hpp"
 
 #include "workspace_pool.hpp"
+
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <vector>
 
 #include <NvInfer.h>
 #include <cuda_runtime_api.h>
@@ -356,26 +355,6 @@ bool TrtPerception::infer(const std::uint8_t* rgba, int width, int height, int s
                         workspace.host_bed_prototypes.data(), error)) {
     return false;
   }
-  {
-    // Diagnostic: attribute the inference cost. pool_wait is time spent waiting
-    // for a free workspace and is the signal that kInferenceWorkspaces is too
-    // small; gpu is the work itself. Keeping these separable is the only reason
-    // the previous serialization was measured rather than guessed at.
-    const auto t_gpu = std::chrono::steady_clock::now();
-    static std::atomic<std::uint64_t> infer_calls{0};
-    if ((++infer_calls % 64) == 0) {
-      const auto us = [](auto a, auto b) {
-        return static_cast<long long>(
-            std::chrono::duration_cast<std::chrono::microseconds>(b - a).count());
-      };
-      std::fprintf(stderr,
-                   "seeon-infer: pool_wait_us=%lld preprocess_us=%lld gpu_us=%lld "
-                   "total_us=%lld person_engine=%d calls=%llu\n",
-                   us(t_pre, t_lock), us(t_wait0, t_pre), us(t_lock, t_gpu),
-                   us(t_wait0, t_gpu), run_person_engine ? 1 : 0,
-                   static_cast<unsigned long long>(infer_calls.load()));
-    }
-  }
   const std::vector<double> pose_rows{workspace.host_pose.begin(),
                                       workspace.host_pose.end()};
   const std::vector<double> bed_rows{workspace.host_bed.begin(),
@@ -393,6 +372,27 @@ bool TrtPerception::infer(const std::uint8_t* rgba, int width, int height, int s
   result->bed = perception::parse_bed_rows(bed_rows, prototypes, affine, kBedConfidence);
   result->source_width = width;
   result->source_height = height;
+  {
+    // Diagnostic: attribute the inference cost. pool_wait is time spent waiting
+    // for a free workspace and is the signal that kInferenceWorkspaces is too
+    // small; gpu covers the engines plus the host-side row parsing that
+    // follows them, so total_us is the whole per-call critical path. Keeping these separable is the only reason
+    // the previous serialization was measured rather than guessed at.
+    const auto t_gpu = std::chrono::steady_clock::now();
+    static std::atomic<std::uint64_t> infer_calls{0};
+    if ((++infer_calls % 64) == 0) {
+      const auto us = [](auto a, auto b) {
+        return static_cast<long long>(
+            std::chrono::duration_cast<std::chrono::microseconds>(b - a).count());
+      };
+      std::fprintf(stderr,
+                   "seeon-infer: pool_wait_us=%lld preprocess_us=%lld gpu_us=%lld "
+                   "total_us=%lld person_engine=%d calls=%llu\n",
+                   us(t_pre, t_lock), us(t_wait0, t_pre), us(t_lock, t_gpu),
+                   us(t_wait0, t_gpu), run_person_engine ? 1 : 0,
+                   static_cast<unsigned long long>(infer_calls.load()));
+    }
+  }
   return true;
 }
 

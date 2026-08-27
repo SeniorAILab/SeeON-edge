@@ -1688,13 +1688,11 @@ class WorkerRuntime:
         # camera at construction and the dashboard shows every camera offline
         # forever while it streams and detects normally (#426).
         heartbeat = NativeHeartbeatLoop(self.config, self.config.cameras, pumps)
-        self._native_heartbeat = heartbeat
         handler.register_loop(heartbeat)
         heartbeat_thread = threading.Thread(
             target=heartbeat.run, name="native-heartbeat", daemon=True
         )
         heartbeat_thread.start()
-        self._native_heartbeat_thread = heartbeat_thread
         self._supervisor = ingest.IngestSupervisor(
             pumps,
             restart_check=self._restart_check,

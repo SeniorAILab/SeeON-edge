@@ -17,7 +17,10 @@ from worker.adapters.decode.native_au_codec import (
     receive_envelope,
     stream_configuration,
 )
-from worker.adapters.decode.native_au_mux_template import native_configuration_signature
+from worker.adapters.decode.native_au_mux_template import (
+    distinct_parameter_sets,
+    native_configuration_signature,
+)
 from worker.adapters.decode.native_au_progress import NativeAuProgress
 from worker.types.source_packet import SourcePacket, SourceStreamConfiguration, StreamEpoch
 
@@ -28,8 +31,8 @@ def _components_of(envelope: AuEnvelope) -> tuple[object, ...]:
         envelope.codec,
         envelope.framing,
         envelope.parser_caps,
-        len(envelope.codec_data),
-        hashlib.sha256(envelope.codec_data).hexdigest()[:8],
+        len(distinct_parameter_sets(envelope.codec_data)),
+        hashlib.sha256(distinct_parameter_sets(envelope.codec_data)).hexdigest()[:8],
         envelope.width,
         envelope.height,
         str(envelope.time_base),
@@ -105,14 +108,6 @@ class NativeAuReceiver:
         # the same identity is a duplicate; one on a newer identity is proof
         # the rebuild landed and something else went wrong, so it is not.
         self._gaps_active: dict[str, tuple[int, int]] = {}
-        # Units that opened a rebuilt epoch mid-stream because the sequence-1
-        # unit never reached this process. Counted so a lossy transport stays
-        # visible even though the ring recovers.
-        self._adopted_mid_epoch: dict[str, int] = {}
-        # Units dropped because they belonged to an epoch the receiver has
-        # already moved past. Counted rather than silent so a rebuild storm
-        # stays visible without being self-sustaining.
-        self._superseded_units: dict[str, int] = {}
         # Components behind each configuration signature, kept so a signature
         # change can name the field that actually moved instead of reporting an
         # opaque digest mismatch.
@@ -281,9 +276,6 @@ class NativeAuReceiver:
             # rebuilds in five minutes with zero child-reported failures.
             # Retired generations are already dropped silently a few lines up;
             # a superseded epoch gets the same treatment.
-            self._superseded_units[envelope.camera_id] = (
-                self._superseded_units.get(envelope.camera_id, 0) + 1
-            )
             return
         identity = StreamEpoch(
             self._worker_boot_id, envelope.camera_id, envelope.epoch, envelope.generation
@@ -307,9 +299,6 @@ class NativeAuReceiver:
             # pending-gap suppression, then stranded ten of thirteen rings for
             # half an hour. Adopt it: the ring starts at the next keyframe
             # regardless of which unit opened the epoch.
-            self._adopted_mid_epoch[envelope.camera_id] = (
-                self._adopted_mid_epoch.get(envelope.camera_id, 0) + 1
-            )
             LOGGER.warning(
                 "native au epoch adopted mid-stream: camera_id=%s generation=%d "
                 "epoch=%d first_sequence=%d",

@@ -556,8 +556,8 @@ def _detection_for_camera(
     inference: CameraInferenceTelemetry | None,
     decision_completed: int,
     *,
-    native_producer: bool = False,
-    native_attempts: int = 0,
+    native_producer: bool,
+    native_attempts: int,
 ) -> RelayDetectionPayload:
     """Report detection telemetry for whichever producer owns this camera.
 

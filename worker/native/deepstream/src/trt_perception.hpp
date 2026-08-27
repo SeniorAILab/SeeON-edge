@@ -6,14 +6,13 @@
 // engine cache, the C3-parity preprocessing (letterbox 640-side, stride 32,
 // pad 114, BGR planes, FP32/255 -- see parity/preprocess.py), and the parse +
 // association stage (native_perception.hpp). One instance per child process;
-// infer() is serialized internally (one GPU, one execution context per task).
+// infer() is thread-safe and bounded-concurrent (see infer()).
 
 #include "native_perception.hpp"
 
 #include <cstdint>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <vector>
 

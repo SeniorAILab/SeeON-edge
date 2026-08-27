@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import io
-import re
 from dataclasses import dataclass
 from fractions import Fraction
 
@@ -14,7 +13,7 @@ from worker.types.source_packet import SourceStreamDescriptor
 
 # Annex B start codes are 3- or 4-byte; the 4-byte form is the 3-byte form
 # with a leading zero, so one pattern covers both.
-_ANNEX_B_START_CODE = re.compile(rb"\x00\x00\x01")
+_ANNEX_B_START_CODE = b"\x00\x00\x01"
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,7 +23,7 @@ class NativeAuTemplateInput:
     keyframe: bool
 
 
-def _distinct_parameter_sets(codec_data: bytes) -> bytes:
+def distinct_parameter_sets(codec_data: bytes) -> bytes:
     """Collapse a repeated parameter-set blob to its distinct units, in order.
 
     Cameras retransmit VPS/SPS/PPS periodically, and an access unit sometimes
@@ -47,17 +46,10 @@ def _distinct_parameter_sets(codec_data: bytes) -> bytes:
     """
     units = [
         stripped
-        for unit in _ANNEX_B_START_CODE.split(codec_data)
+        for unit in codec_data.split(_ANNEX_B_START_CODE)
         if (stripped := unit.rstrip(b"\x00"))
     ]
-    seen: set[bytes] = set()
-    distinct: list[bytes] = []
-    for unit in units:
-        if unit in seen:
-            continue
-        seen.add(unit)
-        distinct.append(unit)
-    return b"\x00\x00\x01".join(distinct)
+    return _ANNEX_B_START_CODE.join(dict.fromkeys(units))
 
 
 def native_configuration_signature(
@@ -73,7 +65,7 @@ def native_configuration_signature(
     for payload in (
         bytes((codec, framing)),
         parser_caps.encode(),
-        _distinct_parameter_sets(codec_data),
+        distinct_parameter_sets(codec_data),
         width.to_bytes(4, "little"),
         height.to_bytes(4, "little"),
         time_base.numerator.to_bytes(4, "little", signed=True),
@@ -120,5 +112,6 @@ def build_native_au_mux_template(
 __all__ = [
     "NativeAuTemplateInput",
     "build_native_au_mux_template",
+    "distinct_parameter_sets",
     "native_configuration_signature",
 ]

@@ -124,7 +124,7 @@ class PacketClipRecordingCoordinator:
         # the ring and every clip came back without video. Waiting here costs
         # nothing on the hot path: finalize already runs after the post-event
         # window, by which point the ring has usually caught up anyway.
-        _ = ring.wait_until_ready(
+        ring.wait_until_ready(
             epoch=epoch,
             through_pts=trigger_pts,
             timeout_sec=_RING_ALIGNMENT_TIMEOUT_SEC,

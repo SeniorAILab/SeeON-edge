@@ -50,8 +50,8 @@ class BoundedPool {
     free_.reserve(capacity);
   }
 
-  // Diagnostic only. A caller must not branch on this to decide whether to
-  // acquire: the answer is stale the moment it is returned, and acquire()
+  // Test observability only; not part of the production interface. A caller
+  // must not branch on this to decide whether to acquire: the answer is stale the moment it is returned, and acquire()
   // already blocks correctly.
   [[nodiscard]] std::size_t available() {
     std::lock_guard lock{mutex_};

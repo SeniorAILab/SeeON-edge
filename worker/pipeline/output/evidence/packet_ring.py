@@ -19,11 +19,18 @@ from worker.types.source_packet import (
 _LOGGER = logging.getLogger(__name__)
 
 
-def _describe_pts(entry: object) -> float | None:
+def _describe_video_pts(packet: SourcePacket) -> Fraction | None:
+    try:
+        return _safe_pts(packet)
+    except PacketSelectionError:
+        return None
+
+
+def _describe_pts(entry: _Entry) -> float | None:
     """Best-effort PTS for a diagnostic line; never raises."""
     try:
-        return round(_safe_pts(entry.packet), 3)  # pyright: ignore[reportAttributeAccessIssue]
-    except Exception:  # noqa: BLE001 - diagnostics must not mask the real failure
+        return round(_safe_pts(entry.packet), 3)
+    except PacketSelectionError:
         return None
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +120,9 @@ class SourcePacketRing:
         self._retired_entries: deque[_Entry] = deque()
         self._total_bytes = 0
         self._active_epoch: StreamEpoch | None = None
+        # Newest video PTS admitted for the active epoch, so the alignment
+        # barrier answers in O(1) instead of rescanning the ring per packet.
+        self._newest_video_pts: Fraction | None = None
         self._closed = False
         self._lock = threading.RLock()
         # Signalled whenever the active epoch rolls or a packet lands, so an
@@ -162,6 +172,7 @@ class SourcePacketRing:
                 entry.packet.size_bytes for entry in self._retired_entries
             )
             self._active_epoch = epoch
+            self._newest_video_pts = None
             self.metrics.epoch_rolls += 1
             self.metrics.evicted_packets += removed_packets
             self.metrics.evicted_bytes += removed_bytes
@@ -199,11 +210,9 @@ class SourcePacketRing:
                 return True
             if self._active_epoch != epoch:
                 return False
-            return any(
-                entry.packet.epoch == epoch
-                and entry.packet.stream.media_type == "video"
-                and _safe_pts(entry.packet) >= through_pts
-                for entry in reversed(self._entries)
+            return (
+                self._newest_video_pts is not None
+                and self._newest_video_pts >= through_pts
             )
 
         with self._advanced:
@@ -225,13 +234,19 @@ class SourcePacketRing:
                 return False
             entry = _Entry(packet)
             self._entries.append(entry)
-            self._advanced.notify_all()
             self._total_bytes += packet.size_bytes
             if not self._trim_to_limits():
                 removed = self._entries.pop()
                 self._total_bytes -= removed.packet.size_bytes
                 self._drop(packet, lease_pressure=True)
                 return False
+            if packet.stream.media_type == "video":
+                pts = _describe_video_pts(packet)
+                if pts is not None and (
+                    self._newest_video_pts is None or pts > self._newest_video_pts
+                ):
+                    self._newest_video_pts = pts
+                    self._advanced.notify_all()
             self.metrics.accepted_packets += 1
             self.metrics.accepted_bytes += packet.size_bytes
             return True
