@@ -117,29 +117,40 @@ def test_native_au_receiver_adapts_parser_facts_into_source_packet() -> None:
     assert accepted == [("camera-a", 3_000, 1, 3)]
 
 
-def test_native_au_receiver_reports_gap_without_appending_across_epoch() -> None:
-    # Given: an AU receiver with an exact gap callback subscribed.
+def test_a_sender_gap_marker_is_a_hole_not_a_rebuild() -> None:
+    """The child's sender shedding units is the same event as this side shedding them.
+
+    A marker used to request a source rebuild. On the live fleet the rebuild's
+    opening burst congested the sender again, which emitted the next marker:
+    five rebuilds a minute, each stalling the processing thread long enough
+    to shed a second of every camera's units, and no clip with video. The
+    marker admits nothing; the next unit's sequence jump marks the hole.
+    """
     parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
     sink = _Sink()
-    gap_seen = threading.Event()
     gaps: list[tuple[str, str]] = []
-
-    def record_gap(camera_id: str, reason: str) -> None:
-        gaps.append((camera_id, reason))
-        gap_seen.set()
-
-    receiver = NativeAuReceiver(parent, "boot-1", sink, record_gap)
+    receiver = NativeAuReceiver(
+        parent, "boot-1", sink, lambda camera, reason: gaps.append((camera, reason))
+    )
     receiver.start()
-
-    # When: the bounded native sender declares an AU gap.
-    child.sendall(_frame(epoch=7, sequence=2, kind=2, payload=b""))
-
-    # Then: no packet is admitted and the source epoch owner is asked to rebuild.
-    assert gap_seen.wait(timeout=2.0)
-    receiver.close()
-    child.close()
-    assert gaps == [("camera-a", "parser")]
-    assert sink.packets == []
+    try:
+        child.sendall(_frame(epoch=7, sequence=1))
+        # When: the bounded native sender declares it shed sequences 2-3.
+        child.sendall(_frame(epoch=7, sequence=2, kind=2, payload=b""))
+        child.sendall(_frame(epoch=7, sequence=4))
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and len(sink.packets) < 2:
+            time.sleep(0.01)
+        time.sleep(0.2)
+        # Then: the marker admitted nothing, nothing asked for a rebuild, and
+        # the unit after the hole carries the mark.
+        assert gaps == [], gaps
+        assert [p.arrival_index for p in sink.packets] == [0, 3]
+        assert sink.packets[-1].discontinuity == "sequence_gap:2->4"
+    finally:
+        receiver.close()
+        child.close()
+        parent.close()
 
 
 def test_malformed_camera_au_does_not_kill_other_camera_drain() -> None:
@@ -504,8 +515,9 @@ def test_a_newer_epoch_is_adopted_even_when_its_opening_unit_was_lost() -> None:
             time.sleep(0.01)
         assert len(sink.packets) == 2, f"epoch 1 baseline failed: {gaps}"
 
-        # Step 1: the storm reports a gap on epoch 1 and a rebuild is requested.
-        child.sendall(_frame(epoch=1, sequence=3, kind=2, payload=b""))
+        # Step 1: a rebuild is outstanding for epoch 1 (a timestamp jump is
+        # one of the conditions that still asks for one).
+        child.sendall(_frame(epoch=1, sequence=3, pts=900_000))
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline and not gaps:
             time.sleep(0.01)

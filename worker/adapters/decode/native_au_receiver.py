@@ -115,6 +115,9 @@ class NativeAuReceiver:
             tuple[str, int, int], tuple[object, ...]
         ] = {}
         self._retired_generations: dict[str, int] = {}
+        # Gap markers the child's sender emitted per camera; the holes they
+        # announce are marked by the sequence check, so this is a tally only.
+        self._sender_gap_markers: dict[str, int] = {}
         self._progress = NativeAuProgress()
 
     def start(self) -> None:
@@ -291,7 +294,15 @@ class NativeAuReceiver:
         key = (envelope.camera_id, envelope.generation, envelope.epoch)
         observed = (envelope.generation, envelope.epoch)
         if envelope.kind is AuKind.GAP:
-            self._report_gap(envelope.camera_id, "gap_marker", observed)
+            # The child's sender shed units under backpressure. That is a hole,
+            # and the sequence check marks it on the next unit exactly as it
+            # does for units shed on this side. Rebuilding for it restarted the
+            # source, whose opening burst congested the sender again, which
+            # emitted the next marker: five rebuilds a minute, each stalling
+            # this thread long enough to shed a second of every camera.
+            self._sender_gap_markers[envelope.camera_id] = (
+                self._sender_gap_markers.get(envelope.camera_id, 0) + 1
+            )
             return
         expected = self._sequences.get(key, 0) + 1
         discontinuity: str | None = None
@@ -311,20 +322,21 @@ class NativeAuReceiver:
                     envelope.camera_id, envelope.generation, envelope.epoch,
                     expected, envelope.sequence,
                 )
-            # A unit for an identity newer than anything adopted, arriving
-            # after sequence 1. The identity itself proves the rebuild landed;
-            # only the opening unit was lost, and the sender-side reservation
-            # cannot protect it once it is inside this process (the drain
-            # queue overflows under a fleet-wide rebuild storm). Refusing it
-            # and asking for another rebuild fed that storm and, with the
-            # pending-gap suppression, then stranded ten of thirteen rings for
-            # half an hour. Adopt it: the ring starts at the next keyframe
-            # regardless of which unit opened the epoch.
-            LOGGER.warning(
-                "native au epoch adopted mid-stream: camera_id=%s generation=%d "
-                "epoch=%d first_sequence=%d",
-                envelope.camera_id, envelope.generation, envelope.epoch, envelope.sequence,
-            )
+            else:
+                # A unit for an identity newer than anything adopted, arriving
+                # after sequence 1. The identity itself proves the rebuild
+                # landed; only the opening unit was lost, and the sender-side
+                # reservation cannot protect it once it is inside this
+                # process. Refusing it and asking for another rebuild fed the
+                # storm and, with the old pending-gap suppression, stranded
+                # ten of thirteen rings for half an hour. Adopt it: the ring
+                # starts at the next keyframe regardless.
+                LOGGER.warning(
+                    "native au epoch adopted mid-stream: camera_id=%s generation=%d "
+                    "epoch=%d first_sequence=%d",
+                    envelope.camera_id, envelope.generation, envelope.epoch,
+                    envelope.sequence,
+                )
         if self._timestamp_discontinuous(key, envelope):
             self._report_gap(envelope.camera_id, "timestamp_discontinuity", observed)
             return
