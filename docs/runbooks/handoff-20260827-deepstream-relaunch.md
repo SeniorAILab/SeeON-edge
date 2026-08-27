@@ -10,7 +10,7 @@
 
 ```
 ml-worker   seeon-edge-final:495b97d-upkeep      재시작 0
-ml-api      seeon-edge-api:74d1d01-relayfix      healthy
+ml-api      seeon-edge-api (tag 74d1d01-relayfix)  healthy
 카메라       13/13 스트리밍, 판정 정상
 디스크       59%   (임계 80%)
 배달 큐      1     (오늘 아침 3,691)
