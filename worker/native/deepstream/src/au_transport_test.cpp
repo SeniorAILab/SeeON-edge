@@ -182,8 +182,9 @@ int main() {
   }
 
   // Cross-camera isolation: this sender is shared by every camera, so one
-  // camera's transition must never suppress another's. A scalar epoch
-  // comparison got this wrong.
+  // camera's transition must never suppress another's, and BOTH must reach the
+  // wire. Asserting only that dropped() advanced would pass even if camera B
+  // were silently suppressed.
   {
     int pair[2]{};
     check(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0, "socketpair failed");
@@ -198,12 +199,124 @@ int main() {
     auto low = envelope_for(2, 1, 64);
     low.camera = "camera-b";
     static_cast<void>(shared.enqueue(std::move(high)));
-    const auto before = shared.dropped();
     static_cast<void>(shared.enqueue(std::move(low)));
-    check(shared.dropped() == before + 1,
-          "camera-b's transition must be accounted separately from camera-a's");
+
+    timeval timeout{};
+    timeout.tv_sec = 2;
+    setsockopt(pair[1], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    bool saw_a = false;
+    bool saw_b = false;
+    for (int index = 0; index < 512 && !(saw_a && saw_b); ++index) {
+      std::vector<std::uint8_t> header(kAuHeaderBytes);
+      std::size_t offset = 0;
+      bool complete = true;
+      while (offset < kAuHeaderBytes) {
+        const auto count =
+            recv(pair[1], header.data() + offset, kAuHeaderBytes - offset, 0);
+        if (count <= 0) { complete = false; break; }
+        offset += static_cast<std::size_t>(count);
+      }
+      if (!complete) break;
+      const auto body = body_size_of(header);
+      std::vector<std::uint8_t> payload(body);
+      std::size_t body_offset = 0;
+      while (body_offset < body) {
+        const auto count =
+            recv(pair[1], payload.data() + body_offset, body - body_offset, 0);
+        if (count <= 0) break;
+        body_offset += static_cast<std::size_t>(count);
+      }
+      if (header[8] == 2) continue;  // gap marker
+      const std::string camera(payload.begin(),
+                               payload.begin() + std::min<std::size_t>(8, payload.size()));
+      if (decode_epoch(header) == 7 && camera.rfind("camera-a", 0) == 0) saw_a = true;
+      if (decode_epoch(header) == 2 && camera.rfind("camera-b", 0) == 0) saw_b = true;
+    }
     shared.stop();
     close(pair[1]);
+    check(saw_a, "camera-a's transition must reach the wire");
+    check(saw_b,
+          "camera-b's transition must reach the wire too: a shared sender must "
+          "not let one camera's higher epoch suppress another's");
+  }
+
+  // Generation reset: a higher generation restarts the epoch at 1, so it must
+  // REPLACE a reservation holding an older generation's higher epoch.
+  {
+    int pair[2]{};
+    check(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0, "socketpair failed");
+    int small = 4096;
+    setsockopt(pair[0], SOL_SOCKET, SO_SNDBUF, &small, sizeof(small));
+    seeon::AuSender rolling(pair[0], 1, seeon::kMaxAuFrameBytes);
+    for (std::uint64_t index = 1; index <= 64; ++index) {
+      if (!rolling.enqueue(envelope_for(1, index, 8192))) break;
+    }
+    auto stale = envelope_for(7, 1, 64);
+    stale.generation = 3;
+    auto fresh = envelope_for(1, 1, 64);
+    fresh.generation = 4;  // higher generation, epoch restarted at 1
+    static_cast<void>(rolling.enqueue(std::move(stale)));
+    static_cast<void>(rolling.enqueue(std::move(fresh)));
+
+    timeval timeout{};
+    timeout.tv_sec = 2;
+    setsockopt(pair[1], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    bool saw_fresh_generation = false;
+    for (int index = 0; index < 512 && !saw_fresh_generation; ++index) {
+      std::vector<std::uint8_t> header(kAuHeaderBytes);
+      std::size_t offset = 0;
+      bool complete = true;
+      while (offset < kAuHeaderBytes) {
+        const auto count =
+            recv(pair[1], header.data() + offset, kAuHeaderBytes - offset, 0);
+        if (count <= 0) { complete = false; break; }
+        offset += static_cast<std::size_t>(count);
+      }
+      if (!complete) break;
+      const auto body = body_size_of(header);
+      std::vector<std::uint8_t> discard(body);
+      std::size_t body_offset = 0;
+      while (body_offset < body) {
+        const auto count =
+            recv(pair[1], discard.data() + body_offset, body - body_offset, 0);
+        if (count <= 0) break;
+        body_offset += static_cast<std::size_t>(count);
+      }
+      const std::uint32_t generation = static_cast<std::uint32_t>(header[12]) |
+                                       static_cast<std::uint32_t>(header[13]) << 8U |
+                                       static_cast<std::uint32_t>(header[14]) << 16U |
+                                       static_cast<std::uint32_t>(header[15]) << 24U;
+      if (header[8] != 2 && generation == 4) saw_fresh_generation = true;
+    }
+    rolling.stop();
+    close(pair[1]);
+    check(saw_fresh_generation,
+          "a higher generation restarts the epoch at 1 and must replace a "
+          "reservation holding an older generation's higher epoch");
+  }
+
+  // An envelope refused for a VALIDITY limit must never be reserved: a
+  // reservation is later emitted as an ordinary unit and would otherwise
+  // bypass the limit that rejected it.
+  {
+    int pair[2]{};
+    check(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0, "socketpair failed");
+    seeon::AuSender guard(pair[0], 4, seeon::kMaxAuFrameBytes);
+    check(!guard.enqueue(envelope_for(9, 1, seeon::kMaxAuFrameBytes + 1)),
+          "an oversized envelope must be refused");
+
+    timeval timeout{};
+    timeout.tv_usec = 300000;
+    setsockopt(pair[1], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    std::vector<std::uint8_t> header(kAuHeaderBytes);
+    const auto count = recv(pair[1], header.data(), kAuHeaderBytes, 0);
+    const bool emitted_normal_unit =
+        count == static_cast<ssize_t>(kAuHeaderBytes) && header[8] != 2;
+    guard.stop();
+    close(pair[1]);
+    check(!emitted_normal_unit,
+          "an oversized sequence-1 envelope must not be reserved and replayed "
+          "as an ordinary unit; that would bypass kMaxAuFrameBytes");
   }
 
   return 0;

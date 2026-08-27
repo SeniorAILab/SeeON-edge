@@ -124,55 +124,38 @@ bool AuSender::enqueue(AuEnvelope envelope) {
                     envelope.unit.payload.size() + envelope.unit.codec_data.size();
   std::lock_guard lock{mutex_};
   if (stopped_) return false;
-  if (gap_.has_value() || size > kMaxAuFrameBytes || size > max_bytes_ ||
-      envelope.camera.size() > UINT16_MAX || envelope.unit.parser_caps.size() > UINT16_MAX ||
-      queue_.size() >= max_items_ || bytes_ + size > max_bytes_) {
+  // Validity limits are absolute: an envelope that cannot legally be framed is
+  // refused outright and is never eligible for reservation, because a reserved
+  // unit is later emitted as an ordinary access unit and would otherwise
+  // bypass the very limit that rejected it.
+  const bool invalid = size > kMaxAuFrameBytes || size > max_bytes_ ||
+                       envelope.camera.size() > UINT16_MAX ||
+                       envelope.unit.parser_caps.size() > UINT16_MAX;
+  const bool congested =
+      gap_.has_value() || queue_.size() >= max_items_ || bytes_ + size > max_bytes_;
+  if (invalid || congested) {
     ++dropped_;
-    // The gap slot holds one envelope and, while it is occupied, refuses
-    // everything. That is correct backpressure for ordinary units but it
-    // destroys a stream-epoch transition: a source rebuild fills the queue,
-    // the overflow claims the slot, and the very next unit produced is the
-    // new epoch's sequence 1. Losing it leaves the receiver to see that epoch
-    // begin at sequence 2, report a discontinuity, request another rebuild,
-    // and repeat (#429).
+    // A unit that opens a stream epoch is reserved rather than destroyed, but
+    // only when it was refused for congestion. The gap slot holds one envelope
+    // and, while occupied, refuses everything - including the new epoch's
+    // sequence 1, whose loss strands the receiver on the dead epoch
+    // permanently (#429). Everything enqueued here is an access unit; gap
+    // markers are synthesised at send time, so sequence 1 is exactly the unit
+    // that opens an epoch.
     //
-    // Preserving the newest epoch here was tried and does NOT work, for two
-    // independent reasons, and both are worth recording so the option is not
-    // re-proposed:
-    //
-    //   1. This sender is one per child and shared by every camera, while
-    //      epochs are per camera and restart at 1 on a higher-generation
-    //      re-add. A scalar epoch comparison therefore lets camera A at epoch
-    //      7 suppress camera B at epoch 2, and lets a stale generation's
-    //      epoch 7 suppress the same camera's fresh epoch 1.
-    //   2. Even with a correct per-camera comparison the receiver discards it:
-    //      NativeAuReceiver returns immediately on AuKind.GAP and never adopts
-    //      the epoch a gap marker carries, so the transition would be
-    //      delivered to something that does not read it.
-    //
-    // The remedy therefore has to change what a gap means to the receiver, or
-    // reserve capacity so the transition is never refused in the first place.
-    // Both are transport-contract decisions; the mechanism is pinned by
-    // au_transport_test.cpp and test_native_au_receiver.py so a reviewer can
-    // choose with evidence.
-    // A unit opening a stream epoch is reserved rather than destroyed. It is
-    // held per camera and keyed by (generation, epoch) so a higher generation
-    // wins even though its epoch restarts at 1, which a scalar epoch
-    // comparison across this shared sender could not express.
-    // Everything enqueued here is an access unit; gap markers are synthesised
-    // at send time. Sequence 1 is therefore exactly the unit that opens an
-    // epoch.
-    if (envelope.sequence == 1) {
+    // Held per camera and keyed by (generation, epoch) so a higher generation
+    // wins even though its epoch restarts at 1 - this sender is shared by every
+    // camera, so a scalar epoch comparison could not express that. Drained
+    // ahead of the gap as an ORDINARY unit, which is what makes it effective:
+    // the receiver adopts an epoch from a normal sequence-1 unit and discards
+    // gap markers before adoption.
+    if (!invalid && envelope.sequence == 1) {
       const auto existing = transitions_.find(envelope.camera);
       const bool newer =
           existing == transitions_.end() ||
           std::make_pair(envelope.generation, envelope.epoch) >
               std::make_pair(existing->second.generation, existing->second.epoch);
-      if (newer) {
-        transitions_[envelope.camera] = std::move(envelope);
-        ready_.notify_one();
-        return false;
-      }
+      if (newer) transitions_[envelope.camera] = std::move(envelope);
       ready_.notify_one();
       return false;
     }
