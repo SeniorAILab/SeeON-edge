@@ -7,13 +7,22 @@ FROM nvcr.io/nvidia/deepstream@sha256:f6fa0247da9290979cbb05749e7da9435d089c93db
 
 WORKDIR /src
 COPY worker/native/deepstream/CMakeLists.txt ./CMakeLists.txt
+COPY worker/native/deepstream/runtime-ctest.cmake.in ./runtime-ctest.cmake.in
 COPY worker/native/deepstream/src ./src
 RUN test -d /opt/nvidia/deepstream/deepstream/sources \
     && find /opt/nvidia/deepstream/deepstream/sources -type f -name 'nvds*.h' -print -quit | grep -q . \
     && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build --parallel \
+    && ctest --test-dir build --output-on-failure \
     && cmake --install build --prefix /opt/seeon-native \
-    && sha256sum /opt/seeon-native/bin/seeon-deepstream-preflight
+    && cmake -S . -B build-sanitized \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DSEEON_ENABLE_SANITIZERS=ON \
+    && cmake --build build-sanitized --parallel \
+    && ctest --test-dir build-sanitized --output-on-failure \
+    && sha256sum \
+        /opt/seeon-native/bin/seeon-deepstream-preflight \
+        /opt/seeon-native/bin/seeon-deepstream-child
 
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58 AS uv-bin
 
@@ -21,12 +30,17 @@ FROM nvcr.io/nvidia/deepstream@sha256:f6fa0247da9290979cbb05749e7da9435d089c93db
 
 COPY --from=uv-bin /usr/local/bin/uv /usr/local/bin/uv
 COPY --from=deepstream-native-build /opt/seeon-native/bin/seeon-deepstream-preflight /usr/local/bin/seeon-deepstream-preflight
+COPY --from=deepstream-native-build /opt/seeon-native/bin/seeon-deepstream-child /usr/local/bin/seeon-deepstream-child
+COPY --from=deepstream-native-build /opt/seeon-native/native-build /opt/seeon/native-build
+RUN ctest --test-dir /opt/seeon/native-build --output-on-failure
 
 ENV UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:${PATH}" \
+    GST_PLUGIN_PATH=/opt/nvidia/deepstream/deepstream/lib/gst-plugins \
+    LD_LIBRARY_PATH="/opt/nvidia/deepstream/deepstream/lib:${LD_LIBRARY_PATH}" \
     SEEON_DEEPSTREAM_MANIFEST=/opt/seeon/deepstream-manifest.json \
     SEEON_DEEPSTREAM_FIRST_FAULT=/var/lib/seeon-state/deepstream-first-fault.json
 
@@ -50,9 +64,26 @@ RUN apt-get update \
         libx264-164 \
         libx265-199 \
         vainfo \
-    && rm -rf /var/lib/apt/lists/* \
+    && apt-get purge -y --auto-remove \
+        build-essential \
+        cpp \
+        cpp-13 \
+        cuda-crt-13-2 \
+        cuda-nvcc-13-2 \
+        cuda-tileiras-13-2 \
+        g++ \
+        g++-13 \
+        gcc \
+        gcc-13 \
+        libtool \
+    && rm -rf \
+        /opt/nvidia/deepstream/deepstream/sources \
+        /var/lib/apt/lists/* \
+    && test ! -e /usr/bin/g++ \
+    && test ! -d /opt/nvidia/deepstream/deepstream/sources \
     && ffmpeg -version \
-    && test -f /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+    && test -f /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc \
+    && test -f /opt/nvidia/deepstream/deepstream/lib/gst-plugins/libnvdsgst_multistream.so
 
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -61,6 +92,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY contracts ./contracts
 COPY shared ./shared
 COPY worker ./worker
+# C8 canary orchestration is a host-side operator tool. .dockerignore removes
+# it from the COPY context; this assertion makes accidental product shipment a
+# build failure rather than a documentation promise.
+RUN test ! -e /app/worker/tools/deepstream_canary
 # No operational SQLite CLI ships in this image. ADR 0005 gives the
 # inference-runtime slot no database, so clip-consistency repair is
 # backend-owned (scripts/ops/repair-clip-consistency.py against
@@ -84,8 +119,10 @@ RUN mkdir -p \
     && chmod 0444 /opt/seeon/deepstream-manifest.json \
     && sha256sum \
         /opt/seeon/deepstream-manifest.json \
-        /usr/local/bin/seeon-deepstream-preflight
+        /usr/local/bin/seeon-deepstream-preflight \
+        /usr/local/bin/seeon-deepstream-child
 
+ARG EDGE_DATABASE_SCHEMA_VERSION=18
 ARG SOURCE_REVISION
 RUN if [ "$SOURCE_REVISION" = "0000000000000000000000000000000000000000" ] \
       || [ "${#SOURCE_REVISION}" -ne 40 ] \
@@ -95,9 +132,11 @@ RUN if [ "$SOURCE_REVISION" = "0000000000000000000000000000000000000000" ] \
     fi; \
     install -d -m 0755 /opt/seeon; \
     printf '%s\n' "$SOURCE_REVISION" > /opt/seeon/ml-worker-image-revision; \
-    chmod 0444 /opt/seeon/ml-worker-image-revision
+    printf '%s\n' "$EDGE_DATABASE_SCHEMA_VERSION" > /opt/seeon/edge-database-schema-version; \
+    chmod 0444 /opt/seeon/ml-worker-image-revision /opt/seeon/edge-database-schema-version
 LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.opencontainers.image.source="SeniorAILab/eldercare-fall-ml-v2" \
+      seeon.edge.database.schema-version="${EDGE_DATABASE_SCHEMA_VERSION}" \
       com.seniorailab.seeon.deepstream.image="nvcr.io/nvidia/deepstream@sha256:f6fa0247da9290979cbb05749e7da9435d089c93db7c4dcfe85ba2488b5f4994"
 ENV ML_WORKER_BUILD_REVISION="${SOURCE_REVISION}"
 

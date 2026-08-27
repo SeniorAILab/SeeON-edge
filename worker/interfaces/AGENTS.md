@@ -24,13 +24,15 @@ Always-fail stubs belong in tests only.
 - `bus.py`: named, bounded, per-camera `FrameBus.subscribe` / `publish`. `publish` consumes the caller's lease. `FrameSubscription.take` / `close`.
 - `extract.py`: `Extractor.extract(FramePacket) -> ModuleResult`.
 - `decision.py`: `Decider.update(DecisionInput) -> tuple[BusinessEvent, ...]`. No pixels.
+- `perception.py`: `PerceptionFrameAdapter` adapts capability outputs or compact
+  payloads into worker-internal `PerceptionFrameV1` envelopes or typed failures.
+  This C1 boundary is not a `contracts` type or a backend/public wire.
 
-## Serving and device batch
+## Serving
 
 - `serving.py`: `ServingClient.create(task, ...) -> RunnerProtocol`.
 - `BatchServingClient.infer_batch(task, frames) -> tuple[RunnerResult, ...]`. Batch-input contract so a future networked serving service can swap in. That swap is deferred (ADR-0002). Do not land Triton or HTTP serving here.
 - `BatchServingProvider.batch_serving_client` exposes a model-sharing batch view. A wrapper without it silently downgrades.
-- `device_batch.py` is not serving. `DeviceResidentPool` acquires or recycles bounded device slots and raises on overflow. `DeviceResidentBatcher.form_batch` groups leases only. No inference, no task policy, no host round-trip, no per-frame synchronize.
 
 ## Encode, frame, output
 
@@ -63,6 +65,8 @@ Implicit host-device transfer is a leak; name a materializer instead.
 ## Tests
 
 - `tests/test_worker_interfaces.py`: checkable fakes, envelope types, one-caller swap.
+- `tests/test_perception_frame_v1.py`: `PerceptionFrameAdapter` exports,
+  signature, substitutability, and worker-internal envelope behavior.
 - `tests/test_import_dependency_ladder.py` and `uv run --group lint lint-imports`.
 - `tests/test_serving_batch_client.py`, `tests/test_worker_model_serving.py`: batch vs single-frame.
-- `tests/test_nvidia_device_resident_prototype.py`: pool and batcher ports.
+- `tests/test_nvidia_device_resident_prototype.py`: surviving experimental adapter prototypes.

@@ -12,7 +12,6 @@ from typing import Self, final
 
 import pytest
 
-from worker.pipeline.output.evidence.evidence_outbox_schema import SCHEMA_VERSION
 from worker.runtime.config import (
     ConfigSource,
     JsonObject,
@@ -262,7 +261,9 @@ def test_race_loss_with_corrupt_stored_lkg_clears_current_and_returns_fresh(
     assert str(store.database_path) in error
 
 
-def test_offline_without_lkg_falls_back_to_yaml(tmp_path: Path) -> None:
+def test_offline_without_lkg_falls_back_to_yaml(
+    tmp_path: Path, packaged_lstm_artifact: Path
+) -> None:
     store = WorkerConfigLkgStore(tmp_path / "worker-config.sqlite3")
 
     def offline(_request: urllib.request.Request, _timeout: float) -> FakeResponse:
@@ -365,7 +366,7 @@ def test_load_ignores_unrelated_database_files(
     database_path = tmp_path / "worker-state.sqlite3"
     connection = sqlite3.connect(database_path)
     try:
-        connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+        connection.execute("PRAGMA user_version = 99")
         connection.commit()
     finally:
         connection.close()

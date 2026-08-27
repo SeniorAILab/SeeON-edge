@@ -15,6 +15,7 @@ from worker.runtime.config.pull_models import BackendWorkerConfigPayload
 REPO_ROOT: Final = Path(__file__).resolve().parents[1]
 EDGE_COMPOSE_FILE: Final = "compose.edge.yaml"
 EDGE_IMAGES_WORKFLOW: Final = ".github/workflows/edge-images.yml"
+EDGE_WORKER_IMAGE_WORKFLOW: Final = ".github/workflows/edge-worker-image.yml"
 EDGE_PREFLIGHT_SCRIPT: Final = "scripts/edge-preflight/check-nvidia-runtime.sh"
 EDGE_RUNTIME_SERVICES: Final = {
     "ml-api": "Dockerfile.backend",
@@ -148,7 +149,25 @@ def test_edge_db_migrator_owns_schema_lifecycle_before_runtime_start() -> None:
         "edge-filesystem-inventory": {"condition": "service_completed_successfully"}
     }
     assert migrator["restart"] == "no"
-    assert migrator["command"] == ["python", "-m", "backend.app.edge_db.importer"]
+    assert migrator["command"] == [
+        "python",
+        "-m",
+        "backend.app.edge_db.compact_cutover",
+        "--source",
+        "/var/lib/seeon-state/edge.sqlite3",
+        "--live",
+        "/var/lib/seeon-state/edge.sqlite3",
+        "--archive",
+        "/var/lib/seeon-state/edge-v17-archive.sqlite3",
+        "--candidate",
+        "/var/lib/seeon-state/edge-v18-candidate.sqlite3",
+        "--receipt",
+        "/var/lib/seeon-state/schema18-cutover-receipts.jsonl",
+        "--clip-store",
+        "/var/lib/clip-store",
+        "--worker-state",
+        "/var/lib/seeon-worker-state",
+    ]
     assert api_depends_on == {"edge-db-migrator": {"condition": "service_completed_successfully"}}
     assert worker_depends_on == {"ml-api": {"condition": "service_healthy"}}
 
@@ -205,6 +224,17 @@ def test_edge_image_release_workflow_publishes_digest_env_artifact() -> None:
     assert "ML_API_IMAGE=" in source
     assert "ML_WORKER_IMAGE=" in source
     assert "edge-ml-image-refs.env" in source
+
+
+def test_edge_worker_image_gate_does_not_export_the_release_cache() -> None:
+    source = (REPO_ROOT / EDGE_WORKER_IMAGE_WORKFLOW).read_text(encoding="utf-8")
+
+    assert _workflow(EDGE_WORKER_IMAGE_WORKFLOW)
+    assert "load: true" in source
+    assert "cache-from: type=gha,scope=edge-ml-worker" in source
+    assert "cache-to:" not in source
+    assert "docker run --rm" in source
+    assert "python -m worker --check-config" in source
 
 
 def test_legacy_multi_target_ml_dockerfile_is_removed() -> None:

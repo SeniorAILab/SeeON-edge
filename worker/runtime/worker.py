@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import threading
@@ -36,7 +37,6 @@ from worker.adapters.decode.cpu_av.adapter import CpuAvAdapter
 from worker.adapters.decode.cpu_av.models import CpuAvConfig
 from worker.adapters.decode.cpu_av.probe import probe_opencv_ffmpeg_capability
 from worker.adapters.decode.nvdec_cuvid.probe import probe_nvdec_cuvid_capability
-from worker.adapters.decode.nvdec_device.capability import probe_device_resident_capability
 from worker.adapters.decode.vaapi.probe import probe_vaapi_capability
 from worker.adapters.device.cuda.probe import probe_cuda_capability, probe_nvenc_capability
 from worker.adapters.device.mps.probe import probe_mps_capability
@@ -54,13 +54,17 @@ from worker.domains import (
     CameraModuleContext,
     CompiledDetectionModuleRegistry,
     DetectionModuleDefinition,
+    SharedComponentIdentity,
 )
 from worker.domains.detection_window import DetectionWindow
 from worker.domains.fall import FallModelProtocol
 from worker.interfaces.decision import Decider
 from worker.interfaces.output import EventSink
 from worker.interfaces.serving import ServingClient
+from worker.native.deepstream.control import ChildControlError
+from worker.native.deepstream.engine_cache import verify_plan_cache
 from worker.native.deepstream.preflight import (
+    MANIFEST_ENV,
     DeepStreamPreflightError,
     run_configured_deepstream_preflight,
 )
@@ -104,7 +108,7 @@ from worker.pipeline.output.mjpeg_server import (
     dev_mjpeg_config,
     start_optional_mjpeg_server,
 )
-from worker.pipeline.output.overlay import OverlayRenderer
+from worker.pipeline.output.overlay import OverlayMode, OverlayRenderer
 from worker.pipeline.perception import GreedyIouTracker, SceneState
 from worker.pipeline.trace import BoundedTraceWriter, TraceCapture, TraceIdentity
 from worker.runtime.clip_deletion_control import ClipDeletionControlService
@@ -114,9 +118,15 @@ from worker.runtime.config import (
     LiveClipExportPolicy,
     WorkerConfig,
 )
-from worker.runtime.derivative_runtime import (
-    DerivativeCommandExecutor,
-    DerivativeControlService,
+from worker.runtime.deepstream.config import ChildConfig
+from worker.runtime.deepstream.native_policy_pump import (
+    NativeEventSink,
+    NativePolicyContext,
+    NativePolicyPump,
+)
+from worker.runtime.deepstream.nvidia_media_plane import (
+    NvidiaMediaPlane,
+    NvidiaMediaResources,
 )
 from worker.runtime.faults.handler import FaultHandler
 from worker.runtime.faults.record import make_fault_record
@@ -151,7 +161,6 @@ from worker.runtime.provenance import (
 )
 from worker.runtime.provenance.environment import collect_runtime_environment_facts
 from worker.runtime.state_dir import resolve_state_dir
-from worker.runtime.telemetry.analysis_trace_sender import AnalysisTraceSender
 from worker.runtime.telemetry.runtime_diagnostics import WorkerDiagnostics
 from worker.runtime.telemetry.runtime_status_sender import (
     RelayRuntimeStatusTransport,
@@ -167,7 +176,7 @@ from worker.types import (
     CURRENT_TEMPORAL_PROFILE,
     BusinessEvent,
     DecisionInput,
-    FramePacket,
+    EvidenceTrigger,
     TemporalProfile,
 )
 
@@ -288,6 +297,12 @@ def _debug_snapshots_provider(
         return tuple(snapshots)
 
     return provider
+
+
+@dataclass(frozen=True, slots=True)
+class _NativeEngineComponent:
+    artifact_digest: str
+    preprocessing_identity: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -432,7 +447,7 @@ class _NullClipRecorder:
 
     def on_event(
         self,
-        trigger_packet: FramePacket,
+        trigger_packet: EvidenceTrigger,
         event: BusinessEvent,
         *,
         allow_new_clip: bool = True,
@@ -460,7 +475,7 @@ class _CameraClipRecorderView:
 
     def on_event(
         self,
-        trigger_packet: FramePacket,
+        trigger_packet: EvidenceTrigger,
         event: BusinessEvent,
         *,
         allow_new_clip: bool = True,
@@ -621,8 +636,7 @@ def _production_device_resident_source() -> VerifyResult:
         _ = run_configured_deepstream_preflight()
     except DeepStreamPreflightError as error:
         return VerifyResult(False, "nvidia", "deepstream_preflight", str(error))
-    capability = probe_device_resident_capability()
-    return VerifyResult(capability.available, "nvidia", "device", capability.reason)
+    return VerifyResult(True, "nvidia", "device", "pinned DeepStream preflight passed")
 
 
 def production_boot_dependencies() -> bootstrap.BootDependencies:
@@ -669,7 +683,7 @@ def production_boot_dependencies() -> bootstrap.BootDependencies:
     )
 
 
-def _production_gpu_status() -> RelayGpuPayload:
+def _production_gpu_status(*, probe_python_cuda: bool = True) -> RelayGpuPayload:
     """The real GPU-telemetry producer `WorkerRuntime.__init__` calls once at boot.
 
     Issue #132: `RelayGpuPayload` (`worker/runtime/telemetry/wire.py:56-64`) and
@@ -699,16 +713,85 @@ def _production_gpu_status() -> RelayGpuPayload:
     rather than breaking boot.
     """
     nvml_status = probe_nvml_gpu_status()
-    cuda_capability = probe_cuda_capability()
+    cuda_context_ok = probe_cuda_capability().available if probe_python_cuda else False
     return RelayGpuPayload(
         nvml_available=nvml_status.nvml_available,
-        cuda_context_ok=cuda_capability.available,
+        cuda_context_ok=cuda_context_ok,
         driver_version=nvml_status.driver_version,
         device_name=nvml_status.device_name,
         captured_at_sec=time.time(),
         nvml_error=None if nvml_status.nvml_available else nvml_status.reason,
     )
 
+
+@final
+class NativeHeartbeatLoop:
+    """Periodic per-camera liveness for the nvidia path.
+
+    On the host path the ingest lifecycle calls ``mark_ready`` on every READY
+    transition, so liveness keeps flowing for as long as frames do. The native
+    path has no such transition after construction: it reported liveness once,
+    from a throwaway reporter, and never again (#426). The consequence is not
+    cosmetic - the dashboard renders a camera's snapshot only while its status
+    is ``online``, so thirteen cameras that were streaming and detecting
+    correctly showed an operator nothing but grey tiles.
+
+    Liveness here is observed, not assumed: a camera is reported ready only
+    when its pump's ``processed_count`` advanced since the previous tick, so a
+    stalled camera stops heartbeating instead of being pinned online by a
+    timer.
+
+    This deliberately runs off the decision path. The policy pump is the sole
+    consumer of a capacity-one metadata slot; blocking I/O inside it stalls
+    fall detection and overwrites frames.
+    """
+
+    def __init__(
+        self,
+        worker: WorkerConfig,
+        cameras: Sequence[CameraRuntimeConfig],
+        pumps: Sequence[NativePolicyPump],
+        *,
+        tick_sec: float = 5.0,
+    ) -> None:
+        by_id = {camera.camera_id: camera for camera in cameras}
+        self._pumps = tuple(pump for pump in pumps if pump.camera_id in by_id)
+        self._reporters = {
+            pump.camera_id: HeartbeatReporter(worker, by_id[pump.camera_id])
+            for pump in self._pumps
+        }
+        # The reporter rate-limits to camera.heartbeat_interval_sec on its own,
+        # so ticking faster only shortens how long a newly live camera waits to
+        # appear; it does not increase relay traffic.
+        self._tick_sec = tick_sec
+        # Seeded from the live counter, not from a sentinel below zero: a
+        # camera that has processed nothing must not be reported live by the
+        # very first tick.
+        self._seen: dict[str, int] = {
+            pump.camera_id: pump.processed_count for pump in self._pumps
+        }
+        self._stop = threading.Event()
+
+    def run(self) -> None:
+        while not self._stop.wait(self._tick_sec):
+            for pump in self._pumps:
+                camera_id = pump.camera_id
+                processed = pump.processed_count
+                advanced = processed > self._seen[camera_id]
+                self._seen[camera_id] = processed
+                if not advanced:
+                    continue
+                try:
+                    self._reporters[camera_id].mark_ready(camera_id)
+                except FatalAcceleratorError:
+                    raise
+                except Exception:  # noqa: BLE001 - relay I/O is a non-fatal boundary
+                    LOGGER.warning(
+                        "native heartbeat failed: camera_id=%s", camera_id, exc_info=True
+                    )
+
+    def stop(self) -> None:
+        self._stop.set()
 
 @final
 class WorkerRuntime:
@@ -747,7 +830,8 @@ class WorkerRuntime:
         self._restart_generation = restart_generation
         self._build_revision = build_revision
         self._environment_facts_factory = environment_facts_factory
-        self._boot_instance_id = f"worker:{uuid.uuid4()}"
+        self._worker_boot_uuid = uuid.uuid4()
+        self._boot_instance_id = f"worker:{self._worker_boot_uuid}"
         self._runtime_manifest: AppliedRuntimeManifest | None = None
         self._trace_writer: BoundedTraceWriter | None = None
         self._camera_trace_captures: dict[str, TraceCapture] = {}
@@ -808,7 +892,6 @@ class WorkerRuntime:
         self._clip_recorder: ClipRecorder | None = None
         self._packet_repository: PacketRingRepository | None = None
         self._evidence_export_runtime: EvidenceExportRuntime | None = None
-        self._derivative_control: DerivativeControlService | None = None
         self._clip_deletion_control: ClipDeletionControlService | None = None
         self._runtime_status_sender: RuntimeStatusSender | None = None
         self._clip_frame_feeders: tuple[ClipFrameFeeder, ...] = ()
@@ -824,7 +907,11 @@ class WorkerRuntime:
         # recording once here (not per-camera, not periodically refreshed --
         # see `_production_gpu_status`'s docstring for the follow-up note)
         # mirrors `_boot_dependencies`' own eager probe call two lines above.
-        self.diagnostics.set_gpu_status(_production_gpu_status())
+        self.diagnostics.set_gpu_status(
+            _production_gpu_status(
+                probe_python_cuda=self._env.get("ML_WORKER_PROFILE", "cpu").strip() != "nvidia"
+            )
+        )
         # Explicit non-default mode: this renderer also feeds
         # `AlertEvidenceAttacher` alert snapshots (fall + bed_exit), where
         # `OverlayRenderer`'s new default `mode="none"` would silently render
@@ -864,6 +951,9 @@ class WorkerRuntime:
         self._live_view_pump_threads: tuple[threading.Thread, ...] = ()
         self._camera_debug_snapshots: dict[str, Callable[[int], tuple[Any, ...]]] = {}
         self._camera_inference_results: dict[str, InferenceResultSlot] = {}
+        self._nvidia_media_plane: NvidiaMediaPlane | None = None
+        self._nvidia_plans: Mapping[str, CameraDetectionPlan] = MappingProxyType({})
+        self._native_policy_pumps: tuple[NativePolicyPump, ...] = ()
 
     def _resolve_mjpeg_config(self) -> MjpegServerConfig:
         """Settle the live view's two switches into one answer.
@@ -897,10 +987,17 @@ class WorkerRuntime:
     def run(self) -> None:
         self._trace_writer = BoundedTraceWriter(
             self._state_dir / "runtime-analysis",
-            publisher=AnalysisTraceSender(
-                self.config.relay.url,
-                self.config.relay.token.get_secret_value(),
-            ).send,
+        )
+        nvidia = self._env.get("ML_WORKER_PROFILE", "cpu").strip() == "nvidia"
+        decode_probe = (
+            (lambda _decode: VerifyResult(True, "nvidia", "decode", "DeepStream preflight"))
+            if nvidia
+            else self._decode_probe
+        )
+        encode_probe = (
+            (lambda: VerifyResult(True, "nvidia", "encode", "native encoded media plane"))
+            if nvidia
+            else self._encode_probe
         )
         stages = bootstrap.named_stages(
             self._context,
@@ -908,8 +1005,8 @@ class WorkerRuntime:
             initializers={"models": self._initialize_models},
             warmups={"models": lambda _models: self._warm_models()},
             activate=self._activate,
-            decode_probe=self._decode_probe,
-            encode_probe=self._encode_probe,
+            decode_probe=decode_probe,
+            encode_probe=encode_probe,
             deps=self._boot_dependencies,
             acquire=self._acquire,
         )
@@ -928,7 +1025,6 @@ class WorkerRuntime:
             )
             self._trace_writer.start()
             self._start_export_sender()
-            self._start_derivative_runtime()
             self._start_runtime_status_sender()
             self._start_clip_frame_feeders()
             self._start_live_view_pumps()
@@ -966,6 +1062,10 @@ class WorkerRuntime:
     def stop(self) -> None:
         if self._supervisor is not None:
             self._supervisor.stop()
+        if self._nvidia_media_plane is not None:
+            self._live_frames.set_demand_listener(None)
+            self._nvidia_media_plane.stop()
+            self._nvidia_media_plane = None
         if self.watchdog is not None:
             self.watchdog.stop()
         if self._evidence_export_runtime is not None:
@@ -980,7 +1080,6 @@ class WorkerRuntime:
         for live_thread in self._live_view_pump_threads:
             live_thread.join(timeout=5.0)
         self._live_view_pump_threads = ()
-        self._derivative_control = None
         self._clip_deletion_control = None
         for feeder in self._clip_frame_feeders:
             feeder.stop()
@@ -1010,7 +1109,6 @@ class WorkerRuntime:
         """
         if (
             self._live_view is None
-            and self._derivative_control is None
             and self._clip_deletion_control is None
             and self.fall_model is None
         ):
@@ -1018,8 +1116,7 @@ class WorkerRuntime:
             return
         server_config = self._mjpeg_config
         if (
-            self._derivative_control is not None
-            or self._clip_deletion_control is not None
+            self._clip_deletion_control is not None
             or self.fall_model is not None
         ) and not server_config.enabled:
             server_config = replace(server_config, enabled=True)
@@ -1027,8 +1124,11 @@ class WorkerRuntime:
             self._live_frames,
             server_config,
             probe=self._rtsp_probe,
-            bed_zone_recognizer=self._bed_zone_recognizer,
-            derivative_control=self._derivative_control,
+            bed_zone_recognizer=(
+                None
+                if self._boot is not None and self._boot.profile.name == "nvidia"
+                else self._bed_zone_recognizer
+            ),
             clip_deletion_control=self._clip_deletion_control,
             replay_fall_model=self.fall_model,
         )
@@ -1043,7 +1143,7 @@ class WorkerRuntime:
                 },
             )
         else:
-            surface = "live view" if self._live_view is not None else "derivative control"
+            surface = "live view" if self._live_view is not None else "clip deletion"
             LOGGER.info(
                 "%s server bound: host=%s port=%d",
                 surface,
@@ -1180,10 +1280,6 @@ class WorkerRuntime:
                 "evidence export sender failed to start; staged alerts would not reach the relay"
             ) from exc
 
-    def _start_derivative_runtime(self) -> None:
-        executor = DerivativeCommandExecutor(self._resolved_clip_store_dir())
-        self._derivative_control = DerivativeControlService(executor)
-
     def _start_runtime_status_sender(self) -> None:
         """Start periodic runtime-status relay delivery (default 5s cadence).
 
@@ -1287,6 +1383,8 @@ class WorkerRuntime:
             boot.profile.name, hard_exit=self._hard_exit, state_dir=self._state_dir
         )
         self.watchdog = InferenceWatchdog(self.fault_handler, profile=boot.profile.name)
+        if boot.profile.name == "nvidia":
+            return self._initialize_nvidia_media_plane(boot)
         flags = {"person-box-source": self.config.models.box_source == "person"}
         graph = compose_shared_components(
             self._module_registry,
@@ -1304,11 +1402,7 @@ class WorkerRuntime:
         )
         self._shared_graph = graph
         fall_component = graph.components.get("fall-classifier")
-        self.fall_model = (
-            fall_component
-            if isinstance(fall_component, FallModelProtocol)
-            else None
-        )
+        self.fall_model = fall_component if isinstance(fall_component, FallModelProtocol) else None
         pose = graph.components.get("pose")
         bed = graph.components.get("bed")
         person = graph.components.get("person")
@@ -1319,6 +1413,117 @@ class WorkerRuntime:
                 bed=bed,
             )
         return graph
+
+    def _initialize_nvidia_media_plane(self, boot: BootContext) -> SharedComponentGraph:
+        """Compose native engines and the CPU-only temporal policy before sources."""
+        flags = {"person-box-source": self.config.models.box_source == "person"}
+        bindings = self._module_registry.shared_bindings(self._module_versions, flags=flags)
+        components: dict[str, object] = {}
+        identities: list[SharedComponentIdentity] = []
+        fall_model = self._create_fall_model("cpu")
+        for binding in bindings:
+            digest = binding.artifact_digest
+            preprocessing = binding.preprocessing_identity
+            if not digest or not preprocessing:
+                raise RuntimeError(f"native component {binding.component_id!r} has no identity")
+            component = (
+                fall_model
+                if binding.component_id == "fall-classifier"
+                else _NativeEngineComponent(digest, preprocessing)
+            )
+            components[binding.component_id] = component
+            identities.append(
+                SharedComponentIdentity(
+                    binding.component_id,
+                    digest,
+                    "tensorrt-native" if binding.component_kind == "extractor" else "cpu-policy",
+                    boot.device if binding.component_kind == "extractor" else "cpu",
+                    preprocessing,
+                )
+            )
+        graph = SharedComponentGraph(
+            MappingProxyType(components),
+            (),
+            tuple(identities),
+            None,
+        )
+        self._shared_graph = graph
+        self.fall_model = fall_model
+        self.shared_yolo = None
+        self._warmed_component_ids = frozenset(components)
+        plans = {
+            camera.camera_id: self._preflight_camera_graph(camera) for camera in self.config.cameras
+        }
+        self._nvidia_plans = MappingProxyType(plans)
+        self._apply_runtime_manifest(boot, plans)
+        self._compose_evidence_export(boot)
+        if self._packet_repository is None:
+            clip_config = ClipRecorderConfig(store_dir=self._resolved_clip_store_dir())
+            self._packet_repository = PacketRingRepository(
+                tuple(camera.camera_id for camera in self.config.cameras),
+                per_camera_limits=PacketRingLimits(
+                    clip_config.packet_ring_max_packets,
+                    clip_config.packet_ring_max_bytes_per_camera,
+                    clip_config.pre_event_seconds
+                    + clip_config.post_event_seconds
+                    + clip_config.finalize_grace_seconds,
+                ),
+                global_max_bytes=clip_config.packet_ring_global_max_bytes,
+            )
+        manifest = Path(self._env[MANIFEST_ENV])
+        loaded_manifest = json.loads(manifest.read_text(encoding="utf-8"))
+        engine_cache = verify_plan_cache(loaded_manifest)
+        socket_dir = self._state_dir / "deepstream-ipc" / "gpu-0"
+        fault_dir = self._state_dir / "deepstream"
+        socket_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+        fault_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+        child = ChildConfig(
+            executable=Path("/usr/local/bin/seeon-deepstream-child"),
+            worker_boot_id=self._worker_boot_uuid,
+            socket_dir=socket_dir,
+            first_fault_path=fault_dir / "deepstream-gpu-0.fault",
+            engine_cache=engine_cache,
+            box_source=self.config.models.box_source,
+            target_fps=int(self.temporal_profile.target_fps),
+        )
+        media_plane = NvidiaMediaPlane(
+            child,
+            NvidiaMediaResources(
+                self._packet_repository,
+                self._live_frames,
+                self._hard_exit,
+            ),
+        )
+        media_plane.start()
+        self._nvidia_media_plane = media_plane
+        self._live_frames.set_demand_listener(self._forward_native_preview_demand)
+        return graph
+
+    def _forward_native_preview_demand(
+        self,
+        camera_id: str,
+        viewers: int,
+        mode: OverlayMode,
+        snapshot_requested: bool,
+    ) -> None:
+        media_plane = self._nvidia_media_plane
+        if media_plane is None:
+            return
+        try:
+            media_plane.child.control.set_preview_viewers(
+                camera_id,
+                viewers + int(snapshot_requested),
+                mode,
+            )
+            if snapshot_requested:
+                jpeg = media_plane.child.control.snapshot(camera_id)
+                self._live_frames.publish_jpeg(camera_id, jpeg, frame_index=0)
+        except ChildControlError:
+            LOGGER.warning(
+                "native preview demand failed: camera_id=%s",
+                camera_id,
+                exc_info=True,
+            )
 
     def _create_fall_model(self, device: str) -> FallModelProtocol:
         """Construct the fall model, fail closed if none or unknown is configured.
@@ -1349,6 +1554,17 @@ class WorkerRuntime:
     def _warm_models(self) -> tuple[str, ...]:
         if self._shared_graph is None or self._boot is None:
             raise RuntimeError("models cannot warm before initialization")
+        if self._boot.profile.name == "nvidia":
+            if self.fall_model is None or self._nvidia_media_plane is None:
+                raise RuntimeError("nvidia media plane is not initialized")
+            self._warm_one(self.fall_model, "cpu")
+            warmup = self._nvidia_media_plane.child.sources.add(
+                "_bootstrap_warmup", "loopback://bootstrap"
+            )
+            if warmup.stream_epoch != 1:
+                raise RuntimeError("native child warmup did not start epoch one")
+            _ = self._nvidia_media_plane.child.sources.remove("_bootstrap_warmup")
+            return tuple(sorted(self._warmed_component_ids))
         required_bindings = self._module_registry.shared_bindings(
             self._module_versions,
             flags={"person-box-source": self.config.models.box_source == "person"},
@@ -1372,6 +1588,8 @@ class WorkerRuntime:
         graph, handler, watchdog = self._shared_graph, self.fault_handler, self.watchdog
         if graph is None or handler is None or watchdog is None:
             raise RuntimeError("camera activation requires initialized shared state")
+        if boot.profile.name == "nvidia":
+            return self._activate_nvidia(boot, handler)
         # Structural graph failures are global boot failures. Build every complete
         # camera plan before entering the camera-local degradation boundary.
         plans = {
@@ -1442,6 +1660,107 @@ class WorkerRuntime:
         self._supervisor.start()
         return tuple(outcomes)
 
+    def _activate_nvidia(
+        self,
+        boot: BootContext,
+        handler: FaultHandler,
+    ) -> tuple[bootstrap.CameraStageOutcome, ...]:
+        """Activate only child sources and image-free policy pumps for nvidia."""
+        if self._nvidia_media_plane is None:
+            raise RuntimeError("nvidia media plane is not initialized")
+        pumps: list[NativePolicyPump] = []
+        outcomes = tuple(
+            bootstrap.run_camera_stage(
+                camera.camera_id,
+                partial(
+                    self._build_nvidia_camera,
+                    camera,
+                    self._nvidia_plans[camera.camera_id],
+                    pumps,
+                ),
+            )
+            for camera in self.config.cameras
+        )
+        self._native_policy_pumps = tuple(pumps)
+        for pump in pumps:
+            handler.register_loop(pump)
+        # Periodic liveness. Without this the native path heartbeats once per
+        # camera at construction and the dashboard shows every camera offline
+        # forever while it streams and detects normally (#426).
+        heartbeat = NativeHeartbeatLoop(self.config, self.config.cameras, pumps)
+        self._native_heartbeat = heartbeat
+        handler.register_loop(heartbeat)
+        heartbeat_thread = threading.Thread(
+            target=heartbeat.run, name="native-heartbeat", daemon=True
+        )
+        heartbeat_thread.start()
+        self._native_heartbeat_thread = heartbeat_thread
+        self._supervisor = ingest.IngestSupervisor(
+            pumps,
+            restart_check=self._restart_check,
+            completion_check=(
+                None if self._max_frames_per_camera is None else self._max_frames_completion_check
+            ),
+        )
+        self._supervisor.start()
+        return outcomes
+
+    def _build_nvidia_camera(
+        self,
+        camera: CameraRuntimeConfig,
+        plan: CameraDetectionPlan,
+        pumps: list[NativePolicyPump],
+    ) -> None:
+        from shared.rtsp_url_policy import assert_rtsp_endpoint_allowed
+
+        if camera.decode_backend not in {None, "auto", "nvdec"}:
+            raise RuntimeError("nvidia cameras cannot override decode to a host backend")
+        media_plane = self._nvidia_media_plane
+        if media_plane is None:
+            raise RuntimeError("nvidia media plane is not initialized")
+        endpoint = assert_rtsp_endpoint_allowed(camera.inference_rtsp_url)
+        self.diagnostics.register_decode(camera.camera_id, camera.decode_backend or "auto")
+        self._record_decode_selection(camera, "nvdec")
+        self._live_frames.register_camera(camera.camera_id)
+        scene = SceneState(
+            camera.camera_id,
+            persisted_bed_regions=_persisted_bed_regions(camera),
+            bed_zone_image_width=camera.bed_zone_image_width,
+            bed_zone_image_height=camera.bed_zone_image_height,
+        )
+        debug_snapshots = _debug_snapshots_provider(plan.domain_deciders, plan.definitions)
+        attacher = AlertEvidenceAttacher(
+            domain_audit=plan.domain_audit,
+            overlay_renderer=None,
+            debug_snapshots_provider=debug_snapshots,
+            runtime_manifest_sha256=(
+                None if self._runtime_manifest is None else self._runtime_manifest.sha256
+            ),
+        )
+        self._camera_evidence_attachers[camera.camera_id] = attacher
+        sink = self._sink_factory(camera)
+        if not isinstance(sink, NativeEventSink):
+            raise TypeError("nvidia event sink lacks the native evidence trigger seam")
+        _ = media_plane.child.sources.add(camera.camera_id, endpoint.pinned_url)
+        binding = media_plane.child.metadata.expected_binding(camera.camera_id)
+        if binding is None:
+            raise RuntimeError("native source became ready without an acceptance binding")
+        pump = NativePolicyPump(
+            binding,
+            NativePolicyContext(
+                media_plane.child.metadata,
+                media_plane.child.control,
+                scene,
+                plan.decision,
+                sink,
+                attacher,
+                self.diagnostics,
+                plan.schedule.get("bed", self.temporal_profile.decision_interval_frames("bed")),
+            ),
+        )
+        pumps.append(pump)
+        HeartbeatReporter(self.config, camera).mark_ready(camera.camera_id)
+
     def _compose_inference_coordinator(
         self,
         graph: SharedComponentGraph,
@@ -1503,8 +1822,7 @@ class WorkerRuntime:
                             if window is None
                             else AppliedDetectionWindow(window.start, window.end, window.tz)
                         )
-                        for module_id, window in plans[camera.camera_id]
-                        .detection_windows.items()
+                        for module_id, window in plans[camera.camera_id].detection_windows.items()
                     },
                     policies=MappingProxyType(
                         {
@@ -1540,7 +1858,6 @@ class WorkerRuntime:
                 "runtime provenance could not be applied; continuing without it",
                 exc_info=True,
             )
-
 
     def _append_built_camera(
         self,
@@ -1796,7 +2113,11 @@ class WorkerRuntime:
         never-complete rather than breaking unrelated tests.
         """
         cap = self._max_frames_per_camera
-        if cap is None or not self.cameras:
+        if cap is None:
+            return False
+        if self._native_policy_pumps:
+            return all(pump.processed_count >= cap for pump in self._native_policy_pumps)
+        if not self.cameras:
             return False
         return all(_processed_count(context.pump) >= cap for context in self.cameras)
 
@@ -2038,11 +2359,8 @@ class WorkerRuntime:
             return
         self._clip_recorder = recorder
         self._clip_deletion_control = ClipDeletionControlService(
+            preflight_clip=recorder.preflight_clip_deletion,
             delete_clip=recorder.delete_clip,
-            # Retention is backend intent. The slot holds no retention index, so
-            # it reports no local state and never completes a purge on its own.
-            retention_state=lambda _clip_id: None,
-            complete_pending_purge=None,
         )
         self.diagnostics.set_clip_recorder_status(ClipRecorderStatus(available=True))
 
