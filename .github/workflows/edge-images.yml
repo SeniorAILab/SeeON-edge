@@ -263,9 +263,19 @@ jobs:
           # boot smoke below; `push` additionally exports it to GHCR on the
           # publishing paths. One build, two exporters -- Dockerfile.edge is
           # never built twice for one commit.
-          load: true
+          #
+          # Except on a release, where the two exporters are mutually
+          # exclusive: a release's digest is the one a LATER release may reuse,
+          # and re-tagging only preserves a digest when the manifest is an OCI
+          # index, which means attaching provenance -- and the docker exporter
+          # cannot export a manifest list ("docker exporter does not currently
+          # support exporting manifest lists"). So a release pushes the index
+          # and the boot smoke pulls it back by digest, which is in any case
+          # stronger evidence: it boots the bytes that were actually published.
+          # Every other event keeps the cheap local load.
+          load: ${{ github.event_name != 'release' }}
           push: ${{ env.PUSH_IMAGES == 'true' }}
-          provenance: true
+          provenance: ${{ github.event_name == 'release' }}
           build-args: |
             SOURCE_REVISION=${{ env.DEPLOY_SHA }}
           tags: ${{ env.ML_WORKER_TAGS }}
@@ -368,9 +378,12 @@ jobs:
         # run.
         run: |
           set -euo pipefail
-          if [ "$BUILD_ML_WORKER" = "true" ]; then
+          if [ "$BUILD_ML_WORKER" = "true" ] && [ "$GITHUB_EVENT_NAME" != "release" ]; then
+            # Built and loaded into this runner's daemon by the step above.
             SMOKE_REF="$IMAGE_NAMESPACE/ml-worker:$DEPLOY_SHA"
           else
+            # Either reused, or built on a release (which pushes an index and
+            # does not load). Both cases pull the exact bytes this run pins.
             SMOKE_REF="$IMAGE_NAMESPACE/ml-worker@$ML_WORKER_DIGEST"
             docker pull "$SMOKE_REF"
           fi

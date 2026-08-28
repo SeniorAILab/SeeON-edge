@@ -152,13 +152,22 @@ The boot smoke test always runs against the image that would be deployed. When
 `ml-worker` was reused rather than rebuilt it is **pulled by digest** and booted,
 so the seal never carries a worker digest that was not booted in that run.
 
+A release therefore builds `ml-worker` **without** `load:` and pulls it back by
+digest for the smoke. A digest that a later release may reuse has to be an OCI
+index (see below), and the docker exporter cannot export a manifest list, so the
+two are mutually exclusive on that path. Every other event keeps the cheap local
+load. A consequence worth knowing: `ml-worker` digests published *before* this
+landed are plain manifests and cannot be reused — the guard below detects that
+and rebuilds, and the next release publishes an index that later releases can
+reuse.
+
 Two failure modes are deliberately loud rather than silent:
 
 - `imagetools create` preserves a digest when the source manifest is an OCI
-  index (what `docker/build-push-action` pushes) but **re-wraps a plain
-  manifest** into a new index under a new digest. The re-tag is therefore always
-  re-inspected, and a changed digest fails the release instead of landing in the
-  seal labelled "reused".
+  index (what `docker/build-push-action` pushes when it attaches provenance) but
+  **re-wraps a plain manifest** into a new index under a new digest. The re-tag
+  is therefore always re-inspected, and a changed digest fails the release
+  instead of landing in the seal labelled "reused".
 - Every way of *not* knowing — no previous tag, a reference the registry does
   not resolve, a missing or unusable revision label, a label naming a commit
   this repository does not have — resolves to "build".

@@ -316,7 +316,17 @@ def test_edge_worker_boot_smoke_runs_on_the_single_build() -> None:
     )
 
     assert not (REPO_ROOT / ".github/workflows/edge-worker-image.yml").exists()
-    assert worker_step["with"]["load"] == "true"  # BaseLoader keeps scalars as text
+    # Loaded into the runner's daemon on every event EXCEPT a release. A
+    # release's digest is the one a later release may reuse, so it must be
+    # pushed as an OCI index (provenance attached), and the docker exporter
+    # cannot export a manifest list -- the two exporters are mutually exclusive
+    # there. See docs/runbooks/edge-image-publish.md.
+    assert worker_step["with"]["load"] == "${{ github.event_name != 'release' }}"
+    assert worker_step["with"]["provenance"] == "${{ github.event_name == 'release' }}"
+    # ...and the boot smoke must therefore still reach the image on the path
+    # where it was NOT loaded: it pulls the exact digest this run pins.
+    assert "docker pull" in source
+    assert '$IMAGE_NAMESPACE/ml-worker@$ML_WORKER_DIGEST' in source
     assert worker_step["with"]["cache-from"] == "type=gha,scope=edge-ml-worker"
     assert worker_step["with"]["cache-to"] == (
         "${{ env.PUSH_IMAGES == 'true' && 'type=gha,scope=edge-ml-worker,mode=max' || '' }}"
