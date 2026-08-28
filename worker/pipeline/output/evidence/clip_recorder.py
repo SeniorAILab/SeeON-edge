@@ -18,13 +18,11 @@ from worker.pipeline.output.evidence.clip_maintenance import (
     finalized_clips,
 )
 from worker.pipeline.output.evidence.clip_recorder_models import (
-    ActiveClip,
     ClipRecorderConfig,
     ClipRecorderStats,
     EpochRollMessage,
     EventMessage,
     FlushMessage,
-    FrameMessage,
     RecorderMessage,
 )
 from worker.pipeline.output.evidence.clip_recorder_services import ClipRecorderServices
@@ -242,7 +240,7 @@ class ClipRecorder:
     def _run(self) -> None:
         actor = self._actor
         if actor is not None:
-            run_actor_loop(actor, self._queue, self._stop_event, lambda: self._rotate(force=True))
+            run_actor_loop(actor, self._queue, self._stop_event, self._rotate)
 
     def _on_epoch_roll(self, previous: StreamEpoch, current: StreamEpoch) -> None:
         thread = self._thread
@@ -255,10 +253,6 @@ class ClipRecorder:
             raise RuntimeError("epoch roll could not seal active clip") from error
         if not done.wait(timeout=5.0):
             raise RuntimeError("epoch roll active clip seal timed out")
-
-    def _handle_frame(self, message: FrameMessage) -> None:
-        if self._actor is not None:
-            self._actor.handle_frame(message)
 
     def _handle_event(self, message: EventMessage) -> None:
         if self._actor is not None:
@@ -274,9 +268,6 @@ class ClipRecorder:
         self._maintenance.rotate(force=force)
 
 
-_ActiveClip = ActiveClip
-_EventMessage = EventMessage
-_FrameMessage = FrameMessage
 _finalized_clips = finalized_clips
 
 __all__ = ["ClipRecorder", "ClipRecorderConfig", "ClipRecorderServices"]

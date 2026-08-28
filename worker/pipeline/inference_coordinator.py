@@ -274,8 +274,8 @@ class CapabilityInferenceCoordinator:
 
 
 __all__ = [
-    "CapabilityInferenceCoordinator",
     "CameraInferenceTelemetry",
+    "CapabilityInferenceCoordinator",
     "CoordinatedInference",
     "InferenceResultSlot",
     "InferenceTelemetrySnapshot",
