@@ -17,7 +17,6 @@ from types import MappingProxyType
 from typing import Any, Final, Protocol, TypeAlias, cast, final, runtime_checkable
 
 import worker.pipeline.ingest.lifecycle as ingest
-import worker.runtime.bootstrap as bootstrap
 import worker.runtime.telemetry.runtime_status_sender as runtime_status_sender_module
 from contracts.decode_diagnostics import DecodeSelection
 from contracts.observation import BoundingBox
@@ -97,10 +96,10 @@ from worker.pipeline.output.evidence.packet_ring import PacketRingLimits
 from worker.pipeline.output.evidence.snapshot_store import SnapshotStore
 from worker.pipeline.output.evidence_attacher import AlertEvidenceAttacher
 from worker.pipeline.output.live_view import LatestFrameStore, LiveViewSubscriber
+from worker.pipeline.output.live_view_api import BedZoneRecognizeResponse
 from worker.pipeline.output.live_view_pump import LatestObservationStore, LiveViewPump
 from worker.pipeline.output.mjpeg_server import (
     BedZoneNotFoundError,
-    BedZonePayload,
     MjpegProbeError,
     MjpegProbePayload,
     MjpegServer,
@@ -111,6 +110,7 @@ from worker.pipeline.output.mjpeg_server import (
 from worker.pipeline.output.overlay import OverlayMode, OverlayRenderer
 from worker.pipeline.perception import GreedyIouTracker, SceneState
 from worker.pipeline.trace import BoundedTraceWriter, TraceCapture, TraceIdentity
+from worker.runtime import bootstrap
 from worker.runtime.clip_deletion_control import ClipDeletionControlService
 from worker.runtime.config import (
     RELAY_HEARTBEAT_PATH,
@@ -757,8 +757,7 @@ class NativeHeartbeatLoop:
         by_id = {camera.camera_id: camera for camera in cameras}
         self._pumps = tuple(pump for pump in pumps if pump.camera_id in by_id)
         self._reporters = {
-            pump.camera_id: HeartbeatReporter(worker, by_id[pump.camera_id])
-            for pump in self._pumps
+            pump.camera_id: HeartbeatReporter(worker, by_id[pump.camera_id]) for pump in self._pumps
         }
         # The reporter rate-limits to camera.heartbeat_interval_sec on its own,
         # so ticking faster only shortens how long a newly live camera waits to
@@ -767,9 +766,7 @@ class NativeHeartbeatLoop:
         # Seeded from the live counter, not from a sentinel below zero: a
         # camera that has processed nothing must not be reported live by the
         # very first tick.
-        self._seen: dict[str, int] = {
-            pump.camera_id: pump.processed_count for pump in self._pumps
-        }
+        self._seen: dict[str, int] = {pump.camera_id: pump.processed_count for pump in self._pumps}
         self._stop = threading.Event()
 
     def run(self) -> None:
@@ -792,6 +789,7 @@ class NativeHeartbeatLoop:
 
     def stop(self) -> None:
         self._stop.set()
+
 
 @final
 class WorkerRuntime:
@@ -1116,8 +1114,7 @@ class WorkerRuntime:
             return
         server_config = self._mjpeg_config
         if (
-            self._clip_deletion_control is not None
-            or self.fall_model is not None
+            self._clip_deletion_control is not None or self.fall_model is not None
         ) and not server_config.enabled:
             server_config = replace(server_config, enabled=True)
         self._mjpeg_server = start_optional_mjpeg_server(
@@ -1201,7 +1198,7 @@ class WorkerRuntime:
             raise MjpegProbeError(exc.error_class) from exc
         return result.as_dict()
 
-    def _bed_zone_recognizer(self, image: Image) -> BedZonePayload:
+    def _bed_zone_recognizer(self, image: Image) -> BedZoneRecognizeResponse:
         """Run one on-demand bed-segmentation pass for the recognize endpoint.
 
         Reuses the shared bed-seg runner directly (``self.shared_yolo.bed.runner``)
@@ -1255,7 +1252,11 @@ class WorkerRuntime:
                 int(coordinates[3]),
             )
             polygon = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
-        return {"polygon": polygon, "image_width": width, "image_height": height}
+        return BedZoneRecognizeResponse(
+            polygon=tuple((point[0], point[1]) for point in polygon),
+            image_width=width,
+            image_height=height,
+        )
 
     def _start_export_sender(self) -> None:
         """Start delivering staged evidence to the relay.
@@ -1459,17 +1460,7 @@ class WorkerRuntime:
         self._compose_evidence_export(boot)
         if self._packet_repository is None:
             clip_config = ClipRecorderConfig(store_dir=self._resolved_clip_store_dir())
-            self._packet_repository = PacketRingRepository(
-                tuple(camera.camera_id for camera in self.config.cameras),
-                per_camera_limits=PacketRingLimits(
-                    clip_config.packet_ring_max_packets,
-                    clip_config.packet_ring_max_bytes_per_camera,
-                    clip_config.pre_event_seconds
-                    + clip_config.post_event_seconds
-                    + clip_config.finalize_grace_seconds,
-                ),
-                global_max_bytes=clip_config.packet_ring_global_max_bytes,
-            )
+            self._packet_repository = self._build_packet_repository(clip_config)
         manifest = Path(self._env[MANIFEST_ENV])
         loaded_manifest = json.loads(manifest.read_text(encoding="utf-8"))
         engine_cache = verify_plan_cache(loaded_manifest)
@@ -1688,13 +1679,11 @@ class WorkerRuntime:
         # camera at construction and the dashboard shows every camera offline
         # forever while it streams and detects normally (#426).
         heartbeat = NativeHeartbeatLoop(self.config, self.config.cameras, pumps)
-        self._native_heartbeat = heartbeat
         handler.register_loop(heartbeat)
         heartbeat_thread = threading.Thread(
             target=heartbeat.run, name="native-heartbeat", daemon=True
         )
         heartbeat_thread.start()
-        self._native_heartbeat_thread = heartbeat_thread
         self._supervisor = ingest.IngestSupervisor(
             pumps,
             restart_check=self._restart_check,
@@ -1759,6 +1748,10 @@ class WorkerRuntime:
             ),
         )
         pumps.append(pump)
+        # The native pump, not the host inference coordinator, owns this
+        # camera's detection. Declare it so the relay payload reports the
+        # producer as present instead of falling through to "disabled".
+        self.diagnostics.register_native_detection(camera.camera_id)
         HeartbeatReporter(self.config, camera).mark_ready(camera.camera_id)
 
     def _compose_inference_coordinator(
@@ -2298,17 +2291,7 @@ class WorkerRuntime:
                     "evidence delivery failed to initialize under the clip-store lock"
                 ) from exc
 
-        packet_repository = PacketRingRepository(
-            tuple(camera.camera_id for camera in self.config.cameras),
-            per_camera_limits=PacketRingLimits(
-                clip_config.packet_ring_max_packets,
-                clip_config.packet_ring_max_bytes_per_camera,
-                clip_config.pre_event_seconds
-                + clip_config.post_event_seconds
-                + clip_config.finalize_grace_seconds,
-            ),
-            global_max_bytes=clip_config.packet_ring_global_max_bytes,
-        )
+        packet_repository = self._build_packet_repository(clip_config)
         self._packet_repository = packet_repository
         recorder = ClipRecorder(
             clip_config,
@@ -2368,6 +2351,43 @@ class WorkerRuntime:
         enabled, version = self._clip_export_policy.snapshot()
         self.diagnostics.set_clip_export_applied(enabled=enabled, version=version)
         self._refresh_clip_recorder_telemetry()
+        self._log_native_metadata_counters()
+
+    def _log_native_metadata_counters(self) -> None:
+        """Surface the native metadata slot's accept/reject tally.
+
+        ``LatestMetadataSlot`` counts exactly why a published perception frame
+        was refused -- one counter per identity field checked by ``_matches``
+        plus ``late``/``malformed``/``pull_failures`` -- and exposes them via
+        ``counters()``. Nothing read that accessor, so a pump that never
+        receives an accepted frame was indistinguishable from a child that
+        never publishes one: both present as silent logs and zero decisions.
+
+        Rendered into the message string rather than ``extra=`` because the
+        worker's ``basicConfig`` format is ``%(message)s`` only, so ``extra``
+        fields never reach an operator.
+        """
+        media_plane = self._nvidia_media_plane
+        if media_plane is None:
+            return
+        counters = media_plane.child.metadata.counters()
+        LOGGER.info(
+            "native metadata slot: accepted=%d overwritten=%d late=%d "
+            "unknown_source=%d generation_mismatch=%d epoch_mismatch=%d "
+            "boot_mismatch=%d child_mismatch=%d transform_mismatch=%d "
+            "malformed=%d pull_failures=%d",
+            counters.accepted,
+            counters.overwritten,
+            counters.late,
+            counters.unknown_source,
+            counters.generation_mismatch,
+            counters.epoch_mismatch,
+            counters.boot_mismatch,
+            counters.child_mismatch,
+            counters.transform_mismatch,
+            counters.malformed,
+            counters.pull_failures,
+        )
 
     def _refresh_clip_recorder_telemetry(self) -> None:
         """Push the clip recorder's live counters into diagnostics.
@@ -2559,11 +2579,18 @@ class WorkerRuntime:
             definitions=MappingProxyType(definitions),
         )
 
-    def _build_decision_stage(
-        self, camera: CameraRuntimeConfig, tracker: GreedyIouTracker
-    ) -> tuple[EventAggregator, Mapping[str, Mapping[str, object]], Mapping[str, Decider]]:
-        plan = self._preflight_camera_graph(camera, tracker)
-        return plan.decision, plan.domain_audit, plan.domain_deciders
+    def _build_packet_repository(self, clip_config: ClipRecorderConfig) -> PacketRingRepository:
+        return PacketRingRepository(
+            tuple(camera.camera_id for camera in self.config.cameras),
+            per_camera_limits=PacketRingLimits(
+                clip_config.packet_ring_max_packets,
+                clip_config.packet_ring_max_bytes_per_camera,
+                clip_config.pre_event_seconds
+                + clip_config.post_event_seconds
+                + clip_config.finalize_grace_seconds,
+            ),
+            global_max_bytes=clip_config.packet_ring_global_max_bytes,
+        )
 
     def _build_decider(
         self,

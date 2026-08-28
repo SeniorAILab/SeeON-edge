@@ -56,9 +56,50 @@ docker build --platform linux/amd64 -f Dockerfile.edge \
   -t "local/ml-worker:$SEALED_ML_SHA" .
 ```
 
+Neither image carries model weights. Models are a pinned external artifact:
+`worker/tools/fetch_models/manifest.json` names every file, its upstream
+(Hugging Face `Berom0227/eldercare-fall-models` at a 40-hex revision for the
+LSTM fall model; `ultralytics/assets` release `v8.4.0` for the YOLO pose,
+person, and bed weights), its size, and its SHA-256. The one-shot
+`edge-model-fetch` compose service runs `python -m worker.tools.fetch_models`
+from the sealed worker image into the `worker-models` named volume on every
+`up`; `ml-worker` starts only after it exits 0, so a hash mismatch or a broken
+pin holds the worker back instead of loading an unverified weight. Changing a
+weight means changing the manifest in the sealed SHA, never editing the volume
+by hand. The optional `HF_TOKEN` in `.env.edge.prod` reaches this service
+only; leave it empty for the public pins. There is no host `./models` bind
+mount any more.
+
 Publish only through `.github/workflows/edge-images.yml` for the sealed SHA.
 Download the exact-SHA artifact and compare both digests with the seal before
 updating the deployment receipt.
+
+### What the image workflow builds and when
+
+`edge-images.yml` is the single build path for both images. Exactly two images
+exist: `Dockerfile.backend` -> `ml-api` (front + backend; the one-shot
+migrator/consistency services run the same image) and `Dockerfile.edge` ->
+`ml-worker`. Models are never baked into either image.
+
+| Event                 | Builds both | Boot smoke | Pushes to GHCR | Tags pushed                          | Writes build cache |
+|-----------------------|-------------|------------|----------------|--------------------------------------|--------------------|
+| `pull_request`        | yes         | yes        | never          | none                                 | no (read-only)     |
+| `push` to `main`      | yes         | yes        | yes            | `<full-sha>`, `main-<12-char sha>`   | yes (`mode=max`)   |
+| `release` (published) | yes         | yes        | yes            | `<full-sha>`                         | yes (`mode=max`)   |
+| `workflow_dispatch`   | yes         | yes        | yes            | `<full-sha>`                         | yes (`mode=max`)   |
+
+`main-<short-sha>` is a staging tag for trying a pre-release build on a bench
+device. It is not a deployment reference: the seal and `.env.edge.prod` pin
+`@sha256:` digests only, never a tag. Every run prints both digests in the job
+step summary and exposes them as job outputs (`ml-api-digest`,
+`ml-worker-digest`, `deploy-sha`); the `edge-ml-image-refs-<sha>` artifact is
+uploaded only by runs that pushed, because a digest that was never pushed
+cannot be pulled.
+
+Cache: `type=gha` scoped per image (`edge-ml-api`, `edge-ml-worker`). Pull
+requests only read it. `uv sync` / `pnpm i --frozen-lockfile` layers sit before
+the source `COPY` in both Dockerfiles, so a code-only change re-runs only the
+copy and the image-identity layers.
 
 The host updater owns image replacement. It must run under the deployment lock,
 preserve volumes, and reject a concurrent updater. Do not run `docker compose
@@ -75,7 +116,10 @@ sh scripts/ops/cloud-enrollment-smoke.sh \
 ```
 
 The wrapper verifies independently anchored plan, seal, host-key, and execution
-receipt bytes before invoking the updater. After both services restart it parses
+receipt bytes before invoking the updater. On restart, `edge-model-fetch` must
+show `done: 7 file(s) verified, nothing to do` (or `fetched N file(s)` on a
+fresh volume) in `docker compose logs edge-model-fetch` before `ml-worker`
+is considered up. After both services restart it parses
 the actual `/api/v1/status` and `/api/v1/system` schemas, verifies running image
 references, scans rendered Compose for facility identity residue, and revalidates
 the complete post-restart state. Enrollment then occurs through local versioned

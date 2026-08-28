@@ -19,7 +19,7 @@ def packaged_lstm_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Path:
     """Route packaged-default tests to a valid per-test real LSTM artifact."""
-    import worker.runtime.config.local_env as local_env
+    from worker.runtime.config import local_env
 
     artifact = write_test_lstm_artifact(tmp_path / "models/fall/lstm")
     monkeypatch.setattr(local_env, "_DEFAULT_ARTIFACT_DIR", str(artifact))
@@ -180,7 +180,7 @@ def stub_rtsp_hostname_resolution(monkeypatch: pytest.MonkeyPatch) -> Iterator[N
     without this stub.
     """
 
-    import shared.rtsp_url_policy as rtsp_url_policy
+    from shared import rtsp_url_policy
 
     def _stub(hostname: str) -> tuple[str, ...]:
         host = hostname.strip().lower().rstrip(".")

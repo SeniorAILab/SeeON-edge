@@ -33,6 +33,10 @@ EXTERNAL_COMPOSE_KEYS = {
     # Required, never defaulted: it selects which edge-state volume the stack
     # binds, and this host carries several similarly named ones.
     "COMPOSE_PROJECT_NAME",
+    # Optional; consumed only by the one-shot edge-model-fetch service for
+    # Hugging Face pulls. Empty in the example because the pinned sources are
+    # public. Never projected into ml-api or ml-worker.
+    "HF_TOKEN",
     "ML_API_IMAGE",
     "ML_RTSP_ALLOW_LOCAL_DESTINATIONS",
     "ML_RTSP_ALLOW_PRIVATE_DESTINATIONS",
@@ -93,7 +97,7 @@ def test_machine_inventory_accounts_for_every_historical_compose_example_key() -
     assert isinstance(entries, list)
     by_name = {entry["name"]: entry for entry in entries}
 
-    assert HISTORICAL_COMPOSE_EXAMPLE_KEYS <= set(by_name)
+    assert set(by_name) >= HISTORICAL_COMPOSE_EXAMPLE_KEYS
     assert all(
         entry["category"]
         in {

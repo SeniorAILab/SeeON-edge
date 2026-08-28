@@ -180,7 +180,7 @@ def test_forward_backward_compatibility_matrix_is_explicit() -> None:
         ("minimum <= database_version <= maximum", CompatibilityDisposition.COMPATIBLE),
         ("database_version > maximum", CompatibilityDisposition.NEWER_SCHEMA),
     )
-    assert CURRENT_SCHEMA_RANGE == SchemaCompatibility(minimum=18, maximum=18)
+    assert SchemaCompatibility(minimum=18, maximum=18) == CURRENT_SCHEMA_RANGE
     supported = SchemaCompatibility(minimum=3, maximum=4)
     assert classify_schema(2, supported) is CompatibilityDisposition.MIGRATION_REQUIRED
     assert classify_schema(3, supported) is CompatibilityDisposition.COMPATIBLE

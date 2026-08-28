@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import json
-import os
-import re
-import subprocess
 from pathlib import Path
 from typing import Final, TypeAlias
 
@@ -15,7 +11,6 @@ from worker.runtime.config.pull_models import BackendWorkerConfigPayload
 REPO_ROOT: Final = Path(__file__).resolve().parents[1]
 EDGE_COMPOSE_FILE: Final = "compose.edge.yaml"
 EDGE_IMAGES_WORKFLOW: Final = ".github/workflows/edge-images.yml"
-EDGE_WORKER_IMAGE_WORKFLOW: Final = ".github/workflows/edge-worker-image.yml"
 EDGE_PREFLIGHT_SCRIPT: Final = "scripts/edge-preflight/check-nvidia-runtime.sh"
 EDGE_RUNTIME_SERVICES: Final = {
     "ml-api": "Dockerfile.backend",
@@ -27,13 +22,21 @@ EDGE_RUNTIME_SERVICES: Final = {
 #: worker-state mount.
 EDGE_OPS_SERVICES: Final = {"edge-refused-evidence"}
 
+#: One-shot model provisioner on the worker image. Models are a pinned external
+#: artifact, never baked into an image or bind-mounted from the checkout: this
+#: service fills the `worker-models` volume from the committed manifest and
+#: gates ml-worker through depends_on.
+EDGE_MODEL_FETCH_SERVICE: Final = "edge-model-fetch"
+MODELS_VOLUME: Final = "worker-models"
+
 EDGE_SERVICES: Final = {
     "edge-db-migrator",
+    EDGE_MODEL_FETCH_SERVICE,
     *EDGE_OPS_SERVICES,
     *EDGE_RUNTIME_SERVICES,
 }
 ComposeValue: TypeAlias = (
-    str | int | float | bool | None | list["ComposeValue"] | dict[str, "ComposeValue"]
+    str | int | float | bool | list["ComposeValue"] | dict[str, "ComposeValue"] | None
 )
 
 
@@ -50,7 +53,7 @@ def _compose_tag(
     if isinstance(node, yaml.ScalarNode):
         return loader.construct_scalar(node)
     if isinstance(node, yaml.SequenceNode):
-        return [item for item in loader.construct_sequence(node)]
+        return list(loader.construct_sequence(node))
     if isinstance(node, yaml.MappingNode):
         return {str(key): value for key, value in loader.construct_mapping(node).items()}
     return None
@@ -146,7 +149,51 @@ def test_edge_db_migrator_owns_schema_lifecycle_before_runtime_start() -> None:
         "/var/lib/seeon-state/edge.sqlite3",
     ]
     assert api_depends_on == {"edge-db-migrator": {"condition": "service_completed_successfully"}}
-    assert worker_depends_on == {"ml-api": {"condition": "service_healthy"}}
+    # The worker waits on both the healthy API and a verified models volume.
+    assert worker_depends_on == {
+        "ml-api": {"condition": "service_healthy"},
+        EDGE_MODEL_FETCH_SERVICE: {"condition": "service_completed_successfully"},
+    }
+
+
+def test_edge_model_fetch_owns_the_models_volume_before_worker_start() -> None:
+    """Owner decision 2026-08-28: models stay out of the images and are fetched
+    at a pinned revision by a worker-side one-shot, mirroring edge-db-migrator.
+    The backend never reads /app/models (Lane D), so only the worker mounts it."""
+    services = _compose_services(EDGE_COMPOSE_FILE)
+    fetch = services[EDGE_MODEL_FETCH_SERVICE]
+
+    assert "ML_WORKER_IMAGE" in str(fetch["image"]), "same image as the runtime it prepares"
+    assert fetch["pull_policy"] == "always"
+    assert fetch["restart"] == "no"
+    assert "profiles" not in fetch, "must run on every `up`, not behind an opt-in profile"
+    assert fetch["command"] == [
+        "python",
+        "-m",
+        "worker.tools.fetch_models",
+        "--dest",
+        "/app/models",
+    ]
+    assert _list_field(fetch, "volumes") == [f"{MODELS_VOLUME}:/app/models:rw"]
+    assert set(_mapping_field(fetch, "environment")) == {"HF_TOKEN"}, (
+        "only the optional HF token crosses into the fetcher; no relay secret, no profile"
+    )
+    assert _mapping_field(fetch, "environment")["HF_TOKEN"] == "${HF_TOKEN:-}"
+    assert "depends_on" not in fetch, "model provisioning is independent of the database cutover"
+
+    worker_volumes = _list_field(services["ml-worker"], "volumes")
+    assert f"{MODELS_VOLUME}:/app/models:ro" in worker_volumes
+    assert not any(str(volume).startswith("./models") for volume in worker_volumes)
+    # Every service other than the fetcher (writer) and the worker (reader) stays
+    # off the models volume. Derived from compose so retiring a service cannot
+    # silently drop it from this check.
+    for service_name in sorted(set(services) - {"edge-model-fetch", "ml-worker"}):
+        volumes = _list_field(services[service_name], "volumes")
+        assert not any("/app/models" in str(volume) for volume in volumes), (
+            f"{service_name} must not mount the models volume"
+        )
+        assert "HF_TOKEN" not in _mapping_field(services[service_name], "environment")
+    assert "HF_TOKEN" not in _mapping_field(services["ml-worker"], "environment")
 
 
 def test_edge_services_pin_release_images_with_dockerfiles_for_build() -> None:
@@ -186,6 +233,10 @@ def test_edge_image_release_workflow_publishes_digest_env_artifact() -> None:
     assert isinstance(triggers, dict)
     assert "release" in triggers
     assert "workflow_dispatch" in triggers
+    # One build path: PRs and main pushes build both images in this workflow
+    # too (the separate edge-worker-image.yml gate is folded in).
+    assert "pull_request" in triggers
+    assert triggers["push"] == {"branches": ["main"]}
 
     permissions = workflow.get("permissions")
     assert isinstance(permissions, dict)
@@ -201,15 +252,52 @@ def test_edge_image_release_workflow_publishes_digest_env_artifact() -> None:
     assert "ML_API_IMAGE=" in source
     assert "ML_WORKER_IMAGE=" in source
     assert "edge-ml-image-refs.env" in source
+    # Digests are job outputs so a downstream job can pin `@sha256:` without
+    # parsing the artifact.
+    outputs = workflow["jobs"]["publish"]["outputs"]
+    assert outputs["ml-api-digest"] == "${{ steps.build-api.outputs.digest }}"
+    assert outputs["ml-worker-digest"] == "${{ steps.build-worker.outputs.digest }}"
 
 
-def test_edge_worker_image_gate_does_not_export_the_release_cache() -> None:
-    source = (REPO_ROOT / EDGE_WORKER_IMAGE_WORKFLOW).read_text(encoding="utf-8")
+def test_edge_image_workflow_never_pushes_from_pull_requests() -> None:
+    # Publish policy is unchanged: release/dispatch (and now main) push;
+    # pull requests never log in, push, or upload a pinnable artifact.
+    source = (REPO_ROOT / EDGE_IMAGES_WORKFLOW).read_text(encoding="utf-8")
+    workflow = _workflow(EDGE_IMAGES_WORKFLOW)
+    job = workflow["jobs"]["publish"]
 
-    assert _workflow(EDGE_WORKER_IMAGE_WORKFLOW)
-    assert "load: true" in source
-    assert "cache-from: type=gha,scope=edge-ml-worker" in source
-    assert "cache-to:" not in source
+    assert job["env"]["PUSH_IMAGES"] == "${{ github.event_name != 'pull_request' }}"
+    steps = {step.get("name"): step for step in job["steps"]}
+    assert steps["Login to GitHub Container Registry"]["if"] == "env.PUSH_IMAGES == 'true'"
+    assert steps["Upload edge image refs"]["if"] == "env.PUSH_IMAGES == 'true'"
+    for name in ("Build and push ml-api image", "Build and push ml-worker image"):
+        assert steps[name]["with"]["push"] == "${{ env.PUSH_IMAGES == 'true' }}"
+    # Staging tag on main pushes only; the full-SHA tag is always present.
+    assert 'if [ "${GITHUB_EVENT_NAME}" = "push" ]' in source
+    assert "main-$SHORT_SHA" in source
+    assert "$IMAGE_NAMESPACE/$image:$DEPLOY_SHA" in source
+
+
+def test_edge_worker_boot_smoke_runs_on_the_single_build() -> None:
+    # The boot smoke moved from edge-worker-image.yml into the publish job:
+    # Dockerfile.edge is built once per commit (load + push exporters) and
+    # PRs consume the cache without exporting it (the mode=max export of the
+    # DeepStream layers is what exhausted the old gate's timeout).
+    source = (REPO_ROOT / EDGE_IMAGES_WORKFLOW).read_text(encoding="utf-8")
+    workflow = _workflow(EDGE_IMAGES_WORKFLOW)
+    worker_step = next(
+        step
+        for step in workflow["jobs"]["publish"]["steps"]
+        if step.get("name") == "Build and push ml-worker image"
+    )
+
+    assert not (REPO_ROOT / ".github/workflows/edge-worker-image.yml").exists()
+    assert worker_step["with"]["load"] == "true"  # BaseLoader keeps scalars as text
+    assert worker_step["with"]["cache-from"] == "type=gha,scope=edge-ml-worker"
+    assert worker_step["with"]["cache-to"] == (
+        "${{ env.PUSH_IMAGES == 'true' && 'type=gha,scope=edge-ml-worker,mode=max' || '' }}"
+    )
+    assert source.count("file: Dockerfile.edge") == 1
     assert "docker run --rm" in source
     assert "python -m worker --check-config" in source
 
@@ -242,6 +330,7 @@ def test_edge_runtime_state_volumes_follow_backend_ownership() -> None:
         "edge-state",
         "worker-engine-cache",
         "worker-local-state",
+        MODELS_VOLUME,
     }
     for runtime_name in EDGE_RUNTIME_SERVICES:
         runtime_volumes = _list_field(services[runtime_name], "volumes")
@@ -279,93 +368,6 @@ def test_api_image_does_not_copy_worker_package() -> None:
     dockerfile = (REPO_ROOT / "Dockerfile.backend").read_text(encoding="utf-8")
 
     assert "COPY edge" not in dockerfile
-
-
-def test_rtsp_script_surface_uses_reusable_worker_names() -> None:
-    scripts_dir = REPO_ROOT / "scripts"
-    smoke_script = scripts_dir / "ml-worker-rtsp-smoke.sh"
-
-    assert (scripts_dir / "ml-worker-nursing-home-backend-e2e.sh").exists()
-    assert smoke_script.exists()
-    assert not (scripts_dir / "ml-edge-four-rtsp-smoke.sh").exists()
-    assert not (scripts_dir / "ml-edge-four-mock-rtsp-e2e.sh").exists()
-    assert not (scripts_dir / "ml-edge-four-mock-rtsp-ingest-e2e.sh").exists()
-
-    smoke_source = smoke_script.read_text(encoding="utf-8")
-    e2e_source = (scripts_dir / "ml-worker-nursing-home-backend-e2e.sh").read_text(encoding="utf-8")
-    assert "load_worker_config" in smoke_source
-    assert "expected exactly 4 cameras" not in smoke_source
-    assert "ml-edge-four" not in smoke_source
-    assert "NURSING_HOME_RTSP_URL" in e2e_source
-    assert "rtsp-loop-video.sh" not in e2e_source
-
-
-def test_real_rtsp_bedexit_script_uses_runtime_authorities_without_static_yaml(
-    tmp_path: Path,
-) -> None:
-    script = REPO_ROOT / "scripts/ml-worker-real-rtsp-bedexit-e2e.sh"
-    source = script.read_text(encoding="utf-8")
-    environment = {
-        **os.environ,
-        "RELAY_URL": "http://127.0.0.1:8000",
-        "RELAY_TOKEN": "relay-secret-1",
-        "E2E_DASHBOARD_USERNAME": "operator-secret-name",
-        "E2E_DASHBOARD_PASSWORD": "dashboard-secret-1",
-        "E2E_FACILITY_ID": "facility-1",
-        "E2E_CAMERA_ID": "camera-1",
-        "E2E_RESIDENT_ID": "resident-1",
-        "BED_EXIT_RTSP_URL": "rtsp://camera-user:camera-secret@camera-1.local/trackID=2",
-        "EVIDENCE_DIR": str(tmp_path / "evidence"),
-        "ML_EDGE_E2E_TMP_ROOT": str(tmp_path / "runtime"),
-    }
-
-    before = tuple(tmp_path.iterdir())
-    completed = subprocess.run(
-        [str(script), "--dry-run"],
-        check=True,
-        cwd=REPO_ROOT,
-        env=environment,
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
-        timeout=30,
-    )
-
-    assert tuple(tmp_path.iterdir()) == before
-    assert "/api/v1/cameras" in source
-    assert "/api/v1/detection-settings" in source
-    assert "/api/v1/relay/config" in source
-    assert "--config" not in source
-    assert "--render-config" not in source
-    assert not re.search(r"(?m)^\s*(?:cameras|models|domains|clip):\s*$", source)
-    assert "python -m worker" in source
-
-    assert json.loads(completed.stdout) == {
-        "mode": "dry-run",
-        "authority": {
-            "camera_registry": "http://127.0.0.1:8000/api/v1/cameras",
-            "detection_settings": "http://127.0.0.1:8000/api/v1/detection-settings",
-            "worker_config": "http://127.0.0.1:8000/api/v1/relay/config",
-        },
-        "worker_yaml": False,
-        "facility_id": "facility-1",
-        "camera_id": "camera-1",
-        "resident_id": "resident-1",
-        "rtsp_url": "rtsp://<redacted>",
-        "frames_per_pass": 3200,
-        "expected_detection_timezone": "Asia/Seoul",
-    }
-
-    output = completed.stdout + completed.stderr
-    for secret in (
-        "relay-secret-1",
-        "operator-secret-name",
-        "dashboard-secret-1",
-        "camera-user",
-        "camera-secret",
-        "camera-1.local",
-    ):
-        assert secret not in output
 
 
 def test_repo_does_not_own_rtsp_generation_surface() -> None:

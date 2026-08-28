@@ -26,7 +26,9 @@ _COMPOSE = (_ROOT / "compose.edge.yaml").read_text(encoding="utf-8")
 
 
 def _service_block(name: str) -> str:
-    match = re.search(rf"^  {re.escape(name)}:\n(.*?)(?=^  \S|\Z)", _COMPOSE, re.M | re.S)
+    match = re.search(
+        rf"^  {re.escape(name)}:\n(.*?)(?=^  \S|\Z)", _COMPOSE, re.MULTILINE | re.DOTALL
+    )
     assert match, f"compose.edge.yaml declares no service named {name!r}"
     return match.group(1)
 

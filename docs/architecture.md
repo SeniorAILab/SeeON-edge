@@ -143,6 +143,33 @@ work, and never duplicate or shadow a vendored type inside `worker/`.
 | `DecisionInput` | `worker/types/decision_input.py` | no |
 | `BusinessEvent` | `worker/types/business_event.py` | no |
 
+## Provider/consumer contract between backend and worker
+
+`backend` and `worker` are deployed independently and never import each
+other (import-linter keeps both directions forbidden). They still meet at two
+runtime seams -- the ml-api proxies calling the worker's live-view server on
+`ml-worker:8090` (stream, snapshot, pose overlay, bed-zone recognize, RTSP
+probe, clip-deletion preflight/command), and the `clips/<clip_id>/manifest.json`
+sidecar the worker writes and ml-api reads back.
+
+The rule for both: **each side owns its own definition of the interface, and
+a test -- not a shared module -- catches drift.** The provider owns the schema
+it serves or writes; the consumer owns the schema it expects. `contracts/` is
+the ADR-0006 byte-mirrored ML vocabulary shared with eldercare-dataset-ops,
+not an edge-internal interface package, so neither seam is defined there.
+
+| Seam | Provider (worker) | Consumer (backend) |
+| --- | --- | --- |
+| `:8090` HTTP | `worker/pipeline/output/live_view_api.py` -- route matchers, relay-token header, MJPEG media type, request/response bodies | `backend/app/features/cameras/streams_router.py`, `bed_zone_router.py`, `router.py` (probe), `backend/app/features/clips/deletion_control.py` -- path builders and response parsers |
+| `manifest.json` | `worker/pipeline/output/evidence/manifest_models.py` + `clip_manifest_payload.py` -- the fields the writer emits | `backend/app/features/clips/manifest.py` (lenient serving parser), `catalog.py` `_MANIFEST_FIELDS` (strict migration reader) |
+
+`tests/test_backend_worker_runtime_contracts.py` is the drift guard and the
+one sanctioned place that imports both packages: it publishes a manifest with
+the worker writer and parses it with both backend readers, asserts every path
+the backend builds is matched by the worker's route and by no other, and
+round-trips each worker response body (probe, pose overlay, bed zone) through
+the backend parser. A field either side adds must pass there before it ships.
+
 ## Raw-image vs numeric fan-out
 
 `FramePacket` is the only envelope permitted to carry an image. Four
@@ -189,6 +216,20 @@ guards both halves.
 Sharing a per-camera row across cameras is a correctness bug, not an
 optimisation: it leaks one resident's motion history into another's fall
 decision.
+
+## Model artifacts
+
+Model weights are a pinned external artifact owned by the worker side, never
+part of an image and never a host bind mount. `worker/tools/fetch_models/
+manifest.json` pins each file to an upstream revision (Hugging Face commit or
+GitHub release tag), a byte size, and a SHA-256; the one-shot `edge-model-fetch`
+compose service runs `python -m worker.tools.fetch_models` from the worker
+image into the `worker-models` named volume before `ml-worker` starts, skips
+files that already verify, and exits non-zero on any mismatch. `ml-worker`
+mounts that volume read-only at `/app/models`; `ml-api` does not mount it at
+all. `worker/tools/` is out-of-band operator tooling, not a worker entrypoint:
+import-linter forbids every runtime layer from importing it, and the fetcher is
+stdlib-only so it runs before torch or any adapter is loaded.
 
 ## Entrypoint
 
@@ -488,18 +529,18 @@ Bash 5.3.15 writes a heredoc body into a pipe before exec'ing the reader, so a
 body over `PIPE_BUF` blocks forever against a pipe nobody is draining — bash
 never execs the command. The boundary is exact: on macOS (`PIPE_BUF` 512) a
 512-byte body passes and 513 hangs; bash 3.2.57 stages heredocs in a temp file
-and is unaffected at any size. Four bash scripts under `scripts/` pin
-`#!/bin/bash` for this reason, which on macOS resolves to 3.2.57.
+and is unaffected at any size. The bash scripts under `scripts/` that pin
+`#!/bin/bash` do so for this reason, which on macOS resolves to 3.2.57.
 
 **That pin does not help on Linux.** There `PIPE_BUF` is 4096 and `/bin/bash` is
-itself a modern bash, so only the threshold moves. Measured at 4096, one script
-is exposed on a Linux edge host: `ml-worker-single-rtsp-bedexit-e2e.sh:139`
-carries a 7162-byte heredoc. Moving that body into a file is the durable fix.
+itself a modern bash, so only the threshold moves. Any heredoc body large enough
+to cross the platform `PIPE_BUF` is exposed on a Linux edge host; moving such a
+body into a file is the durable fix.
 
 `tests/test_shell_script_heredoc_contract.py` enforces the rule at the 512-byte
-threshold. CI is unaffected: the only script a test executes is
-`ml-worker-real-rtsp-bedexit-e2e.sh --render-config`, whose two heredocs on that
-path are 527 B and 797 B, both under the Linux threshold. Tracked in
+threshold. It is a general contract: it walks every remaining `scripts/**/*.sh`
+rather than naming individual scripts, so it keeps holding as the script surface
+changes. Tracked in
 [#9](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/9), which
 carries the reproduction and the measured size census.
 
