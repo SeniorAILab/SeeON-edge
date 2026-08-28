@@ -336,6 +336,7 @@ def plan(
     repo: str,
     reuse_eligible: bool,
     run: Runner | None = None,
+    previous: str | None = None,
 ) -> dict[str, object]:
     """The full per-image decision, registry lookup and all.
 
@@ -364,7 +365,11 @@ def plan(
             "boot-smoke gate must exercise a freshly built image)"
         )
 
-    previous = previous_tag(release_tag)
+    # Resolved from the repository's tags unless the caller names one. Tests
+    # name it so they do not depend on the checkout having fetched tags; the
+    # workflow lets it resolve (its checkout uses `fetch-depth: 0`).
+    if previous is None:
+        previous = previous_tag(release_tag)
     if not previous:
         return build(f"no previous {TAG_GLOB} tag exists, so there is no digest to reuse")
 

@@ -303,6 +303,10 @@ def _decide_in(repo: Path, image: str, base: str, head: str) -> dict[str, object
 _SOURCE_DIGEST = "sha256:" + "a" * 64
 _WRAPPED_DIGEST = "sha256:" + "b" * 64
 _REPO = "ghcr.io/seniorailab/eldercare-fall-ml/ml-api"
+#: Named explicitly so these tests do not depend on the checkout having fetched
+#: release tags -- the CI test job does not, and an unfetched tag would make the
+#: plan short-circuit before reaching the branch under test.
+_PREVIOUS = "seeon-edge-v0.1.0"
 
 
 def test_reuse_emits_a_digest_identical_to_the_source_digest() -> None:
@@ -361,11 +365,20 @@ def test_an_ineligible_event_always_builds() -> None:
     assert "always builds" in str(decision["reason"])
 
 
+def test_no_previous_release_builds() -> None:
+    decision = plan(ML_API, "HEAD", "seeon-edge-v9.9.9", _REPO, reuse_eligible=True, previous="")
+    assert decision["build"] is True
+    assert "no previous" in str(decision["reason"])
+
+
 def test_an_unresolvable_registry_reference_builds() -> None:
     def run(argv: list[str]) -> str:
         raise OSError("no registry here")
 
-    decision = plan(ML_API, "HEAD", "seeon-edge-v9.9.9", _REPO, reuse_eligible=True, run=run)
+    decision = plan(
+        ML_API, "HEAD", "seeon-edge-v9.9.9", _REPO,
+        reuse_eligible=True, run=run, previous=_PREVIOUS,
+    )
     assert decision["build"] is True
     assert "resolves none of" in str(decision["reason"])
 
@@ -376,7 +389,10 @@ def test_a_missing_revision_label_builds() -> None:
             return _SOURCE_DIGEST + "\n"
         return "{}"  # an image config carrying no labels at all
 
-    decision = plan(ML_API, "HEAD", "seeon-edge-v9.9.9", _REPO, reuse_eligible=True, run=run)
+    decision = plan(
+        ML_API, "HEAD", "seeon-edge-v9.9.9", _REPO,
+        reuse_eligible=True, run=run, previous=_PREVIOUS,
+    )
     assert decision["build"] is True
     assert "revision label" in str(decision["reason"])
 
@@ -390,7 +406,10 @@ def test_a_revision_naming_an_unknown_commit_builds() -> None:
             return _SOURCE_DIGEST + "\n"
         return _config_with_revision(unknown)
 
-    decision = plan(ML_API, "HEAD", "seeon-edge-v9.9.9", _REPO, reuse_eligible=True, run=run)
+    decision = plan(
+        ML_API, "HEAD", "seeon-edge-v9.9.9", _REPO,
+        reuse_eligible=True, run=run, previous=_PREVIOUS,
+    )
     assert decision["build"] is True
     assert "not in this repository's history" in str(decision["reason"])
 
@@ -414,7 +433,10 @@ def test_the_comparison_base_is_the_build_commit_not_the_release_commit() -> Non
             return _SOURCE_DIGEST + "\n"
         return _config_with_revision(head)
 
-    decision = plan(ML_API, head, "seeon-edge-v9.9.9", _REPO, reuse_eligible=True, run=run)
+    decision = plan(
+        ML_API, head, "seeon-edge-v9.9.9", _REPO,
+        reuse_eligible=True, run=run, previous=_PREVIOUS,
+    )
     # The label named HEAD, so the range is empty and the image is reused --
     # regardless of what the previous release's own commit was.
     assert decision["base"] == head
