@@ -25,6 +25,7 @@ from worker.pipeline.inference_coordinator import (
     CoordinatedInference,
     InferenceResultSlot,
 )
+from worker.pipeline.inference_telemetry import InferenceGeometryTelemetry
 from worker.pipeline.perception import GreedyIouTracker, SceneState
 from worker.runtime.telemetry.runtime_diagnostics import WorkerDiagnostics
 from worker.types import BusinessEvent, DecisionInput, FramePacket, ModuleResult
@@ -304,6 +305,67 @@ def test_mixed_geometry_cycle_dispatches_one_batch_per_first_seen_key() -> None:
             assert delivered.packet.camera_id == camera_id
             assert delivered.pose.result.boxes[0][0] == expected  # type: ignore[union-attr]
             delivered.packet.release()
+    finally:
+        coordinator.stop()
+
+
+def test_geometry_observation_failure_releases_every_selected_packet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    coordinator, client, _watchdog, _clock, lanes = _coordinator(("camera-a", "camera-b"))
+    held = {
+        "camera-a": _packet("camera-a", 11, height=360, width=640),
+        "camera-b": _packet("camera-b", 22, height=480, width=640),
+    }
+    observations = 0
+
+    def fail_observation(
+        _telemetry: InferenceGeometryTelemetry,
+        camera_id: str,
+        geometry: tuple[int, int],
+    ) -> None:
+        nonlocal observations
+        del camera_id, geometry
+        observations += 1
+        if observations == 2:
+            raise OSError("telemetry handler failed")
+
+    monkeypatch.setattr(InferenceGeometryTelemetry, "observe_geometry", fail_observation)
+    try:
+        for camera_id, packet in held.items():
+            lanes[camera_id][0].publish(packet)
+
+        with pytest.raises(OSError, match="telemetry handler failed"):
+            coordinator.run_cycle()
+
+        assert observations == 2
+        assert client.batches == []
+        assert all(packet.released for packet in held.values())
+        assert all(results.take(timeout_sec=0) is None for _source, results in lanes.values())
+    finally:
+        coordinator.stop()
+
+
+def test_base_exception_during_forward_releases_every_selected_packet() -> None:
+    coordinator, client, _watchdog, _clock, lanes = _coordinator(("camera-a", "camera-b"))
+    held = {
+        "camera-a": _packet("camera-a", 11, height=360, width=640),
+        "camera-b": _packet("camera-b", 22, height=360, width=640),
+    }
+
+    def interrupt(*_args: object, **_kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    client.infer_batch = interrupt  # type: ignore[method-assign]
+    try:
+        for camera_id, packet in held.items():
+            lanes[camera_id][0].publish(packet)
+
+        with pytest.raises(KeyboardInterrupt):
+            coordinator.run_cycle()
+
+        assert all(packet.released for packet in held.values())
+        assert all(results.take(timeout_sec=0) is None for _source, results in lanes.values())
     finally:
         coordinator.stop()
 
@@ -984,7 +1046,7 @@ def test_zero_ready_cycle_preserves_fairness_cursor_and_waits_once() -> None:
         first = [camera_id for camera_id, _seq in client.batches[0]]
         assert first == [f"camera-{index}" for index in range(16)]
         _release_results(lanes)
-        for _camera_id, (source, _results) in lanes.items():
+        for (source, _results) in lanes.values():
             leftover = source.take(timeout_sec=0)
             if leftover is not None:
                 leftover.release()
