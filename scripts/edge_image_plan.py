@@ -178,6 +178,13 @@ def affected_images(path: str) -> frozenset[str]:
 # ---------------------------------------------------------------------------
 
 
+def _short(reference: str) -> str:
+    """Abbreviate a 40-hex commit; leave tags and refs like HEAD intact."""
+    if len(reference) == 40 and all(c in "0123456789abcdef" for c in reference):
+        return reference[:12]
+    return reference
+
+
 def _git(*args: str) -> str:
     return subprocess.run(
         ("git", *args),
@@ -414,12 +421,12 @@ def plan(
             "previous_tag": previous,
             "previous_digest": digest,
             "reason": (
-                f"{decision['input_changed']} input path(s) changed since {base[:12]}, "
+                f"{decision['input_changed']} input path(s) changed since {_short(base)}, "
                 f"which built {previous}"
             )
             if decision["build"]
             else (
-                f"no input path changed since {base[:12]}, which built {previous}; "
+                f"no input path changed since {_short(base)}, which built {previous}; "
                 "re-tagging that digest instead of rebuilding"
             ),
         }
@@ -529,7 +536,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "decide":
         decision = decide(args.image, args.base, args.head)
-        decision["reason"] = f"inputs compared against {args.base[:12]}"
+        decision["reason"] = f"inputs compared against {_short(args.base)}"
         print(render_decision(decision))
         return 0
 
