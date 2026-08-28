@@ -269,10 +269,18 @@ def test_edge_image_release_workflow_publishes_digest_env_artifact() -> None:
     assert "ML_WORKER_IMAGE=" in source
     assert "edge-ml-image-refs.env" in source
     # Digests are job outputs so a downstream job can pin `@sha256:` without
-    # parsing the artifact.
+    # parsing the artifact. They come from the resolve step rather than straight
+    # off a build, because a release may REUSE an already-published digest
+    # instead of building (docs/runbooks/edge-image-publish.md, "Per-image
+    # isolation at release time"). The build digests are still what that step
+    # consumes on the build path -- asserted above.
     outputs = workflow["jobs"]["publish"]["outputs"]
-    assert outputs["ml-api-digest"] == "${{ steps.build-api.outputs.digest }}"
-    assert outputs["ml-worker-digest"] == "${{ steps.build-worker.outputs.digest }}"
+    assert outputs["ml-api-digest"] == "${{ steps.digests.outputs.ml-api }}"
+    assert outputs["ml-worker-digest"] == "${{ steps.digests.outputs.ml-worker }}"
+    # Whether each image was built or reused travels with the digests, so a
+    # reviewer never has to infer it from the digest alone.
+    assert outputs["ml-api-origin"] == "${{ steps.digests.outputs.ml-api-origin }}"
+    assert outputs["ml-worker-origin"] == "${{ steps.digests.outputs.ml-worker-origin }}"
 
 
 def test_edge_image_workflow_never_pushes_from_pull_requests() -> None:
