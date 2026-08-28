@@ -50,11 +50,17 @@ name: Edge ML Images
 # every "then build" fallback; tests/test_edge_image_isolation.py owns the
 # input sets and proves them against both Dockerfiles' COPY instructions.
 #
-# Only a `release` reuses. A pull_request must exercise real builds (that is
-# the gate); a push to main is the BuildKit cache writer (#365); and
-# workflow_dispatch stays the deliberate "rebuild this ref" escape hatch. The
-# decision is made INSIDE the job and printed on every run, including the runs
-# that do not reuse -- see the hard constraint below.
+# Only a run that is PUBLISHING A RELEASE reuses -- which is not the same as
+# the `release` event. release.yml dispatches this workflow on the release tag,
+# because a release it creates with GITHUB_TOKEN raises no event that starts a
+# run (#460). So `RELEASE_BUILD` below counts both shapes: the `release` event,
+# and a dispatch whose ref is a `seeon-edge-v*` tag. A pull_request must
+# exercise real builds (that is the gate, and it is also what catches drift in
+# the floating apt packages Dockerfile.edge installs); a push to main is the
+# BuildKit cache writer (#365); and a dispatch on any other ref stays the
+# deliberate "rebuild this ref" escape hatch. The decision is made INSIDE the
+# job and printed on every run, including the runs that do not reuse -- see the
+# hard constraint below.
 #
 # Every run exposes both image digests as job outputs and in the step
 # summary so operators pin `@sha256:` (runbook rule); pushing runs also
@@ -132,9 +138,24 @@ jobs:
       IMAGE_NAMESPACE: ghcr.io/seniorailab/eldercare-fall-ml
       # PRs never push. Everything else (main push, release, dispatch) does.
       PUSH_IMAGES: ${{ github.event_name != 'pull_request' }}
-      # Only a published release may reuse a digest instead of rebuilding.
-      RELEASE_TAG: ${{ github.event.release.tag_name || '' }}
-      REUSE_ELIGIBLE: ${{ github.event_name == 'release' }}
+      # "This run is publishing a release." That is NOT the same as the
+      # `release` event. A release created by release.yml with the default
+      # GITHUB_TOKEN raises no event that starts a workflow run (GitHub's rule,
+      # quoted in release.yml's header; the first release proved it), so
+      # release.yml dispatches this workflow on the tag instead. Keying reuse on
+      # `github.event_name == 'release'` alone would therefore never once be
+      # true in practice, and the isolation would silently never engage.
+      #
+      # Both shapes count: the `release` event (still real for a release a human
+      # or a PAT publishes) and a dispatch whose ref is a release tag.
+      RELEASE_TAG: >-
+        ${{ github.event.release.tag_name
+            || (startsWith(inputs.ref, 'seeon-edge-v') && inputs.ref)
+            || '' }}
+      RELEASE_BUILD: >-
+        ${{ github.event_name == 'release'
+            || (github.event_name == 'workflow_dispatch'
+                && startsWith(inputs.ref, 'seeon-edge-v')) }}
     outputs:
       ml-api-digest: ${{ steps.digests.outputs.ml-api }}
       ml-worker-digest: ${{ steps.digests.outputs.ml-worker }}
@@ -207,7 +228,7 @@ jobs:
                  --head "$DEPLOY_SHA" \
                  --release-tag "${RELEASE_TAG:-none}" \
                  --repo "$IMAGE_NAMESPACE/$image" \
-                 --reuse-eligible "$REUSE_ELIGIBLE" \
+                 --reuse-eligible "$RELEASE_BUILD" \
                  --json-out "plan-$image.json" \
                  | tee "plan-$image.txt"; then
               build="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["build"])' "plan-$image.json")"
@@ -273,9 +294,9 @@ jobs:
           # and the boot smoke pulls it back by digest, which is in any case
           # stronger evidence: it boots the bytes that were actually published.
           # Every other event keeps the cheap local load.
-          load: ${{ github.event_name != 'release' }}
+          load: ${{ env.RELEASE_BUILD != 'true' }}
           push: ${{ env.PUSH_IMAGES == 'true' }}
-          provenance: ${{ github.event_name == 'release' }}
+          provenance: ${{ env.RELEASE_BUILD == 'true' }}
           build-args: |
             SOURCE_REVISION=${{ env.DEPLOY_SHA }}
           tags: ${{ env.ML_WORKER_TAGS }}
@@ -387,7 +408,7 @@ jobs:
         # run.
         run: |
           set -euo pipefail
-          if [ "$BUILD_ML_WORKER" = "true" ] && [ "$GITHUB_EVENT_NAME" != "release" ]; then
+          if [ "$BUILD_ML_WORKER" = "true" ] && [ "$RELEASE_BUILD" != "true" ]; then
             # Built and loaded into this runner's daemon by the step above.
             SMOKE_REF="$IMAGE_NAMESPACE/ml-worker:$DEPLOY_SHA"
           else

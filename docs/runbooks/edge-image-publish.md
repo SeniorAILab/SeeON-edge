@@ -86,14 +86,15 @@ migrator/consistency services run the same image) and `Dockerfile.edge` ->
 | `pull_request`        | yes         | yes        | never          | none                                 | no (read-only)     |
 | `push` to `main`      | yes         | yes        | yes            | `<full-sha>`, `main-<12-char sha>`   | yes (`mode=max`)   |
 | `release` (published) | per image   | yes        | yes            | `<full-sha>`, `<release tag>`        | yes (`mode=max`)   |
-| `workflow_dispatch`   | yes         | yes        | yes            | `<full-sha>`                         | yes (`mode=max`)   |
+| `workflow_dispatch` on a release tag | per image | yes | yes       | `<full-sha>`, `<release tag>`        | yes (`mode=max`)   |
+| `workflow_dispatch` on any other ref | yes       | yes | yes       | `<full-sha>`                         | yes (`mode=max`)   |
 
 ### Per-image isolation at release time
 
 A release is ONE version, and its artefact is a manifest pinning BOTH images by
 `@sha256:` — the seal. Isolation is not about versioning; it is about not
-rebuilding an image whose inputs did not move. On a `release` run, each image is
-decided independently:
+rebuilding an image whose inputs did not move. On a run that is publishing a
+release, each image is decided independently:
 
 - **inputs changed** → build and push as usual;
 - **inputs unchanged** → do not build. The digest already published for that
@@ -106,11 +107,21 @@ Dockerfiles take `SOURCE_REVISION` and stamp `org.opencontainers.image.revision`
 so rebuilding an unchanged tree at a new commit still produces a **new** digest.
 The only way to keep a digest is to not rebuild it.
 
-Only a published `release` reuses. `pull_request` builds both (that is the
-gate, and it is also what catches drift in the floating apt packages
-`Dockerfile.edge` installs), `push` to `main` builds both (it is the BuildKit
-cache writer), and `workflow_dispatch` builds both — it is the deliberate
-"rebuild this ref" escape hatch.
+"Publishing a release" is **not** the same as the `release` event. A release
+created by `release.yml` with the default `GITHUB_TOKEN` raises no event that
+starts another workflow run, so `release.yml` dispatches `edge-images.yml` on
+the tag instead. `RELEASE_BUILD` therefore counts both shapes: the `release`
+event (still real for a release a human or a PAT publishes) and a
+`workflow_dispatch` whose `ref` is a `seeon-edge-v*` tag. Keying reuse on the
+event alone would have made the isolation dead code that never once engaged,
+and nothing would have failed to say so —
+`test_release_isolation_keys_on_the_dispatch_not_only_the_release_event` is
+what keeps the two halves wired together.
+
+Everything else builds both: `pull_request` (that is the gate, and it is also
+what catches drift in the floating apt packages `Dockerfile.edge` installs),
+`push` to `main` (it is the BuildKit cache writer), and a dispatch on any ref
+that is not a release tag — the deliberate "rebuild this ref" escape hatch.
 
 **The inputs**, per image, are exactly what each Dockerfile copies out of the
 build context, plus the Dockerfile, plus the files that shape the context:
@@ -152,8 +163,8 @@ The boot smoke test always runs against the image that would be deployed. When
 `ml-worker` was reused rather than rebuilt it is **pulled by digest** and booted,
 so the seal never carries a worker digest that was not booted in that run.
 
-A release therefore builds `ml-worker` **without** `load:` and pulls it back by
-digest for the smoke. A digest that a later release may reuse has to be an OCI
+A release build therefore builds `ml-worker` **without** `load:` and pulls it
+back by digest for the smoke. A digest that a later release may reuse has to be an OCI
 index (see below), and the docker exporter cannot export a manifest list, so the
 two are mutually exclusive on that path. Every other event keeps the cheap local
 load. A consequence worth knowing: `ml-worker` digests published *before* this
