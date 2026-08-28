@@ -1,11 +1,22 @@
 name: CI
 
+# A PR used to trigger this workflow twice: once for `push` (the PR branch) and
+# once for `pull_request`, on the identical commit -- two 19-minute runs of the
+# same checks. Restricting `push` to main leaves exactly one run per PR plus one
+# post-merge run on main.
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # Superseded PR runs are cancelled; main runs are never cancelled so the
+  # default branch keeps an unbroken status history.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:

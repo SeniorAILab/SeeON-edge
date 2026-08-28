@@ -795,9 +795,23 @@ def _workflow(name: str) -> dict[str, object]:
 
 
 def _assert_untrusted_ci_security(workflow: dict[str, object]) -> None:
-    assert set(workflow) == {"jobs", "name", "on", "permissions"}
-    assert workflow["on"] == {"pull_request": "", "push": ""}
+    # `concurrency` is the only top-level key added to the original
+    # {jobs, name, on, permissions} set; anything else (env, defaults, a
+    # workflow-level secret) still fails here.
+    assert set(workflow) == {"concurrency", "jobs", "name", "on", "permissions"}
+    # `push` is branch-filtered to main so a PR stops running this workflow
+    # twice (once for push, once for pull_request) on the identical commit.
+    assert workflow["on"] == {
+        "pull_request": "",
+        "push": {"branches": ["main"]},
+    }
     assert workflow["permissions"] == {"contents": "read"}
+    # Superseded PR runs are cancelled; main runs are never cancelled, so the
+    # default branch keeps an unbroken status history.
+    assert workflow["concurrency"] == {
+        "group": "ci-${{ github.workflow }}-${{ github.ref }}",
+        "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+    }
 
     jobs = workflow["jobs"]
     assert isinstance(jobs, dict)
@@ -944,7 +958,12 @@ def test_untrusted_ci_policy_rejects_security_mutations(
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("on", {"push": "", "pull_request": {"paths": ["src/**"]}}),
+        # Re-widening `push` reinstates the duplicate run per PR.
+        ("on", {"push": "", "pull_request": ""}),
+        ("on", {"push": {"branches": ["main"]}, "pull_request": {"paths": ["src/**"]}}),
+        # Cancelling in-progress runs on main would break the default branch's
+        # status history.
+        ("concurrency", {"group": "ci", "cancel-in-progress": "true"}),
         ("permissions", {"contents": "write"}),
         ("env", {"LEAK": "${{ secrets.DATASET_OPS_TOKEN }}"}),
         ("defaults", {"run": {"shell": "bash"}}),
