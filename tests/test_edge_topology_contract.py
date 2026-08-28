@@ -336,6 +336,26 @@ def test_edge_worker_boot_smoke_runs_on_the_single_build() -> None:
     assert "python -m worker --check-config" in source
 
 
+def test_a_publishing_run_never_records_an_empty_digest() -> None:
+    """The seal must never carry `ml-api@` with nothing after it.
+
+    A pull request builds ml-api with no exporter (no push, no load), so buildx
+    reports no digest -- which the artifact used to interpolate straight into
+    `ML_API_IMAGE=.../ml-api@`, advertising an unpullable ref. That is harmless
+    only because a PR uploads no artifact. On a run that DOES publish, an empty
+    digest means the build did not export what the release is about to pin, and
+    it has to fail loudly instead.
+    """
+    source = (REPO_ROOT / EDGE_IMAGES_WORKFLOW).read_text(encoding="utf-8")
+    assert 'raise SystemExit(f"{image} was built but exported no digest")' in source
+    assert 'if os.environ.get("PUSH_IMAGES") == "true":' in source
+    # ...and the reused branch has the same shape: no digest, no release.
+    assert (
+        'raise SystemExit(f"{image} was reused but no published digest was recorded")'
+        in source
+    )
+
+
 def test_legacy_multi_target_ml_dockerfile_is_removed() -> None:
     assert not (REPO_ROOT / "Dockerfile").exists()
 

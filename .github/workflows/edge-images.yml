@@ -331,9 +331,18 @@ jobs:
               previous = plan.get("previous_digest") or ""
               if plan["build"]:
                   if not built:
-                      raise SystemExit(f"{image} was built but exported no digest")
-                  digest, action = built, "built"
-                  origin = f"built from {os.environ['DEPLOY_SHA']}"
+                      # A pull request build has no exporter for ml-api (no
+                      # push, no load), so buildx reports no digest -- expected,
+                      # and there is nothing pullable to name. On a publishing
+                      # run the same emptiness is a real failure, and used to be
+                      # written into the artifact as `ml-api@` with no digest.
+                      if os.environ.get("PUSH_IMAGES") == "true":
+                          raise SystemExit(f"{image} was built but exported no digest")
+                      digest, action = "(not exported on a pull request build)", "built"
+                      origin = f"built from {os.environ['DEPLOY_SHA']}, not exported"
+                  else:
+                      digest, action = built, "built"
+                      origin = f"built from {os.environ['DEPLOY_SHA']}"
               else:
                   if not previous:
                       raise SystemExit(f"{image} was reused but no published digest was recorded")
