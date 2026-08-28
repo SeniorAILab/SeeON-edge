@@ -123,6 +123,7 @@ class SourcePacketRing:
         # Newest video PTS admitted for the active epoch, so the alignment
         # barrier answers in O(1) instead of rescanning the ring per packet.
         self._newest_video_pts: Fraction | None = None
+        self._max_duration = Fraction(str(limits.max_duration_seconds))
         self._closed = False
         self._lock = threading.RLock()
         # Signalled whenever the active epoch rolls or a packet lands, so an
@@ -164,7 +165,13 @@ class SourcePacketRing:
                 raise ValueError("packet ring epoch cannot move backwards")
             removed_packets = len(self._entries)
             removed_bytes = sum(entry.packet.size_bytes for entry in self._entries)
-            self._retire_live_entries()
+            self._retired_entries.extend(
+                entry for entry in self._entries if entry.lease_count > 0
+            )
+            self._entries.clear()
+            self._total_bytes = sum(
+                entry.packet.size_bytes for entry in self._retired_entries
+            )
             self._active_epoch = epoch
             self._newest_video_pts = None
             self.metrics.epoch_rolls += 1
@@ -231,18 +238,19 @@ class SourcePacketRing:
             entry = _Entry(packet)
             self._entries.append(entry)
             self._total_bytes += packet.size_bytes
-            if not self._trim_to_limits():
+            newest = self._newest_video_pts
+            if packet.stream.media_type == "video":
+                pts = _describe_video_pts(packet)
+                if pts is not None and (newest is None or pts > newest):
+                    newest = pts
+            if not self._trim_to_limits(newest):
                 removed = self._entries.pop()
                 self._total_bytes -= removed.packet.size_bytes
                 self._drop(packet, lease_pressure=True)
                 return False
-            if packet.stream.media_type == "video":
-                pts = _describe_video_pts(packet)
-                if pts is not None and (
-                    self._newest_video_pts is None or pts > self._newest_video_pts
-                ):
-                    self._newest_video_pts = pts
-                    self._advanced.notify_all()
+            if newest is not self._newest_video_pts:
+                self._newest_video_pts = newest
+                self._advanced.notify_all()
             self.metrics.accepted_packets += 1
             self.metrics.accepted_bytes += packet.size_bytes
             return True
@@ -446,13 +454,13 @@ class SourcePacketRing:
     def close(self) -> None:
         with self._lock:
             self._closed = True
-            self._retire_live_entries()
-
-    def _retire_live_entries(self) -> None:
-        """Move leased entries to the retired set and drop the rest; caller holds the lock."""
-        self._retired_entries.extend(entry for entry in self._entries if entry.lease_count > 0)
-        self._entries.clear()
-        self._total_bytes = sum(entry.packet.size_bytes for entry in self._retired_entries)
+            self._retired_entries.extend(
+                entry for entry in self._entries if entry.lease_count > 0
+            )
+            self._entries.clear()
+            self._total_bytes = sum(
+                entry.packet.size_bytes for entry in self._retired_entries
+            )
 
     def _release(self, entries: tuple[_Entry, ...]) -> None:
         with self._lock:
@@ -489,8 +497,8 @@ class SourcePacketRing:
             rendered,
         )
 
-    def _trim_to_limits(self) -> bool:
-        while self._over_limit():
+    def _trim_to_limits(self, newest_video_pts: Fraction | None) -> bool:
+        while self._over_limit(newest_video_pts):
             if len(self._entries) == 1 and self._retired_entries:
                 return False
             oldest = self._entries[0]
@@ -502,20 +510,21 @@ class SourcePacketRing:
             self.metrics.evicted_bytes += removed.packet.size_bytes
         return True
 
-    def _over_limit(self) -> bool:
+    def _over_limit(self, newest_video_pts: Fraction | None) -> bool:
         if len(self._entries) + len(self._retired_entries) > self.limits.max_packets:
             return True
         if self._total_bytes > self.limits.max_bytes:
             return True
-        video_times = [
-            _safe_pts(entry.packet)
-            for entry in self._entries
-            if entry.packet.stream.media_type == "video"
-        ]
-        return bool(
-            video_times
-            and video_times[-1] - video_times[0] > Fraction(str(self.limits.max_duration_seconds))
-        )
+        if newest_video_pts is None:
+            return False
+        # Oldest video entry is at (or next to) the front; the newest PTS is
+        # tracked by append. This used to recompute every entry's PTS on every
+        # append -- 2.5 ms per unit at 1000 entries, 64% of a core at fleet
+        # rate, which is what made the AU thread fall behind (#429).
+        for entry in self._entries:
+            if entry.packet.stream.media_type == "video":
+                return newest_video_pts - _safe_pts(entry.packet) > self._max_duration
+        return False
 
     def _drop(self, packet: SourcePacket, *, lease_pressure: bool) -> None:
         self.metrics.dropped_packets += 1
