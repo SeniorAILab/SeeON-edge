@@ -167,6 +167,15 @@ def test_injected_fatal_makes_runner_exit_four_with_typed_durable_fault(
     # Given
     monkeypatch.setenv("FAKE_DEEPSTREAM_CHILD_MODE", "normal")
     request = _request(tmp_path, _fake_child(tmp_path), fatal="cuda")
+    spawn_count = 0
+    original_spawn = supervisor_mod.spawn_child
+
+    def counting_spawn(config: ChildConfig) -> object:
+        nonlocal spawn_count
+        spawn_count += 1
+        return original_spawn(config)
+
+    monkeypatch.setattr(supervisor_mod, "spawn_child", counting_spawn)
 
     # When
     exit_code = run_dark_child(request)
@@ -174,6 +183,7 @@ def test_injected_fatal_makes_runner_exit_four_with_typed_durable_fault(
     # Then
     fault = TypeAdapter(DarkFirstFault).validate_json(request.child.first_fault_path.read_bytes())
     assert exit_code == 4
+    assert spawn_count == 1
     assert fault.exit_code == 4
     assert fault.stage == "deepstream_child"
     assert fault.category in {"cuda", "ready_failed"}
