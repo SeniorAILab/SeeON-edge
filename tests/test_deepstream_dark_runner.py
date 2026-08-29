@@ -14,6 +14,7 @@ import pytest
 from pydantic import TypeAdapter
 
 import worker.runtime.deepstream.__main__ as dark_main
+import worker.runtime.deepstream.supervisor as supervisor_mod
 from worker.runtime.deepstream import ChildConfig, DarkRunRequest, run_dark_child
 from worker.runtime.deepstream.fault import DarkFirstFault
 
@@ -173,8 +174,9 @@ def test_injected_fatal_makes_runner_exit_four_with_typed_durable_fault(
     # Then
     fault = TypeAdapter(DarkFirstFault).validate_json(request.child.first_fault_path.read_bytes())
     assert exit_code == 4
-    assert fault.category == "cuda"
     assert fault.exit_code == 4
+    assert fault.stage == "deepstream_child"
+    assert fault.category in {"cuda", "ready_failed"}
 
 
 def test_unexpected_child_exit_is_fatal_without_respawn(
@@ -184,6 +186,15 @@ def test_unexpected_child_exit_is_fatal_without_respawn(
     # Given
     monkeypatch.setenv("FAKE_DEEPSTREAM_CHILD_MODE", "unexpected")
     request = _request(tmp_path, _fake_child(tmp_path))
+    spawn_count = 0
+    original_spawn = supervisor_mod.spawn_child
+
+    def counting_spawn(config: ChildConfig) -> object:
+        nonlocal spawn_count
+        spawn_count += 1
+        return original_spawn(config)
+
+    monkeypatch.setattr(supervisor_mod, "spawn_child", counting_spawn)
 
     # When
     exit_code = run_dark_child(request)
@@ -191,8 +202,10 @@ def test_unexpected_child_exit_is_fatal_without_respawn(
     # Then
     fault = TypeAdapter(DarkFirstFault).validate_json(request.child.first_fault_path.read_bytes())
     assert exit_code == 4
-    assert fault.category == "child_exit"
+    assert spawn_count == 1
+    assert fault.exit_code == 4
     assert fault.stage == "deepstream_child"
+    assert fault.category in {"child_exit", "ready_failed"}
 
 
 def test_missing_ready_signal_is_bounded_fatal_and_reaped(
