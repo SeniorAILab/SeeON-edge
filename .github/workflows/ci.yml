@@ -43,12 +43,13 @@ jobs:
           detect --source=/repo --no-git --redact --exit-code=1
 
   # Static checks only. Deliberately carries no ffmpeg/fonts-noto-cjk apt step
-  # and no model fetch: ruff, import-linter, verify_scope_fidelity.py and
-  # `docker compose config` read the repo tree and nothing else, so the ~28s apt
-  # install and the model download buy this job nothing.
+  # and no model fetch: ruff, import-linter, mypy (contracts/shared),
+  # verify_scope_fidelity.py and `docker compose config` read the repo tree
+  # and nothing else, so the ~28s apt install and the model download buy this
+  # job nothing.
   lint:
     runs-on: ubuntu-latest
-    # uv sync + four static checks; measured well under 3 minutes.
+    # uv sync + five static checks; measured well under 3 minutes.
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -72,6 +73,11 @@ jobs:
       # Stage 0 guardrail: declarative architecture contracts (import-linter).
       # Tightened per strangler stage; replaces test_import_dependency_ladder.py at Stage 5.
       - run: uv run --group lint lint-imports
+
+      # Type-boundary enforcement (issue #447). pyproject.toml already locks
+      # contracts.* / shared.* at strict=true; this is the missing CI run.
+      # Backend and worker stay out of argv -- they are outside that boundary.
+      - run: uv run --group lint mypy contracts shared
 
       # Facility identity (facility id / facility token) and the camera roster
       # must never be provisionable through the environment: an env var reaches

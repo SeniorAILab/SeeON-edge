@@ -113,7 +113,7 @@ line-length = 100
 target-version = "py311"
 exclude = [".scratch", ".venv"]
 
-# Stability deny-list (docs/rules/code-stability.md, ADR):
+# Stability deny-list:
 #   B    bugbear — B904 raise-from, B006 mutable defaults
 #   BLE  blind except Exception (boundary catches need `# noqa: BLE001` + reason)
 #   S110/S112  try-except-pass / try-except-continue

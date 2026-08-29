@@ -867,20 +867,22 @@ _SECRETS_STEPS = [
 ]
 
 # Static checks. This job deliberately carries NO apt step and NO model fetch:
-# ruff, import-linter, verify_scope_fidelity.py and `docker compose config` read
-# the repo tree and nothing else, so the ~28s ffmpeg/fonts install and the model
-# download buy it nothing. Scope fidelity runs a tracked in-repo Python script
-# over this same checkout: it greps for env-provisioned facility identity and
-# camera roster residue, fetches nothing, reads no secret, starts no container,
-# and re-checks out no other repository. The compose step only renders config
-# from the tracked, placeholder-only .env.edge.prod.example (never the
-# gitignored real .env.edge.prod), pulls no images and starts no containers.
+# ruff, import-linter, mypy (contracts/shared), verify_scope_fidelity.py and
+# `docker compose config` read the repo tree and nothing else, so the ~28s
+# ffmpeg/fonts install and the model download buy it nothing. Scope fidelity
+# runs a tracked in-repo Python script over this same checkout: it greps for
+# env-provisioned facility identity and camera roster residue, fetches nothing,
+# reads no secret, starts no container, and re-checks out no other repository.
+# The compose step only renders config from the tracked, placeholder-only
+# .env.edge.prod.example (never the gitignored real .env.edge.prod), pulls no
+# images and starts no containers.
 _LINT_STEPS = [
     _CHECKOUT_STEP,
     _SETUP_UV_STEP,
     {"run": "uv sync --frozen --group lint"},
     {"run": "uv run --group lint ruff check ."},
     {"run": "uv run --group lint lint-imports"},
+    {"run": "uv run --group lint mypy contracts shared"},
     {
         "name": (
             "Scope fidelity "
@@ -1100,6 +1102,16 @@ def test_index_policy_rejects_linkage_modes(mode: bytes) -> None:
 
 def test_untrusted_ci_has_no_private_repository_access() -> None:
     _assert_untrusted_ci_security(_workflow("ci.yml"))
+
+
+def test_ci_lint_job_runs_strict_mypy_on_contracts_and_shared() -> None:
+    # Issue #447: pyproject.toml already locks contracts.* / shared.* at
+    # strict=true and mypy is in the lint group, but that is only a local
+    # command until the lint job actually runs it. Backend/worker stay out of
+    # this argv -- they are outside the configured strict boundary.
+    runs = [str(step.get("run", "")) for step in _jobs(_workflow("ci.yml"))["lint"]["steps"]]
+    assert "uv run --group lint mypy contracts shared" in runs
+    assert all("mypy backend" not in run and "mypy worker" not in run for run in runs)
 
 
 @pytest.mark.parametrize(
