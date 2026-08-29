@@ -26,10 +26,6 @@ def _fake_child(tmp_path: Path) -> Path:
         + textwrap.dedent(
             """\
             import os, socket, struct, sys
-            sys.path.insert(0, os.getcwd())
-            from worker.native.deepstream.ipc import (
-                MessageKind, decode_control_message, encode_message,
-            )
 
             args = dict(zip(sys.argv[1::2], sys.argv[2::2], strict=True))
             control = socket.socket(fileno=int(args["--control-fd"]))
@@ -45,6 +41,10 @@ def _fake_child(tmp_path: Path) -> Path:
             if mode == "hung":
                 signal_fd = os.eventfd(0)
                 os.read(signal_fd, 8)
+            sys.path.insert(0, os.getcwd())
+            from worker.native.deepstream.ipc import (
+                MessageKind, decode_control_message, encode_message,
+            )
             while True:
                 raw = control.recv(65535)
                 if not raw:
@@ -186,7 +186,7 @@ def test_injected_fatal_makes_runner_exit_four_with_typed_durable_fault(
     assert spawn_count == 1
     assert fault.exit_code == 4
     assert fault.stage == "deepstream_child"
-    assert fault.category in {"cuda", "ready_failed"}
+    assert fault.category == "cuda"
 
 
 def test_unexpected_child_exit_is_fatal_without_respawn(
@@ -215,7 +215,7 @@ def test_unexpected_child_exit_is_fatal_without_respawn(
     assert spawn_count == 1
     assert fault.exit_code == 4
     assert fault.stage == "deepstream_child"
-    assert fault.category in {"child_exit", "ready_failed"}
+    assert fault.category == "child_exit"
 
 
 def test_missing_ready_signal_is_bounded_fatal_and_reaped(
