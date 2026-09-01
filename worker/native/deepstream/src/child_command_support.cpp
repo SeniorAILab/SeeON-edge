@@ -166,67 +166,113 @@ void ServerState::on_access_unit(const std::string& camera,
       }));
 }
 
-void ServerState::on_frame(const std::string& camera, const PipelineBindingPtr& binding,
-                           const DecodedFrameView& view) {
+namespace {
+bool admit_frame(ServerState& state, const std::string& camera,
+                 const PipelineBindingPtr& binding, const FrameStamp& stamp) {
   // Pace before inference. Decode and the AU tee remain source-rate; only the
   // expensive perception branch is admitted at the configured policy rate.
-  {
-    std::lock_guard lock{slot_mutex};
-    const auto found = sources.find(camera);
-    if (found == sources.end() || found->second.binding != binding) return;
-    const std::uint64_t interval_ns = 1'000'000'000ULL / options.target_fps;
-    const std::uint64_t last_admit = found->second.last_inference_source_time_ns;
-    // Diagnostic: name why a frame was skipped or admitted, so an effective
-    // rate below the configured target can be attributed instead of guessed
-    // at. Sampled so a 30fps source cannot flood the log.
-    const auto log_pace = [&](const char* verb) {
-      std::fprintf(stderr,
-                   "seeon-pace: camera=%s %s target_fps=%u interval_ns=%llu "
-                   "gap_ns=%lld skips=%llu admits=%llu\n",
-                   camera.c_str(), verb, options.target_fps,
-                   static_cast<unsigned long long>(interval_ns),
-                   last_admit == 0 ? -1LL
-                                   : static_cast<long long>(view.source_time_ns) -
-                                         static_cast<long long>(last_admit),
-                   static_cast<unsigned long long>(found->second.pace_skips),
-                   static_cast<unsigned long long>(found->second.pace_admits));
-    };
-    if (last_admit != 0 && view.source_time_ns < last_admit + interval_ns) {
-      if ((++found->second.pace_skips % 128) == 0) log_pace("skip");
-      return;
-    }
-    if ((++found->second.pace_admits % 64) == 0) log_pace("admit");
-    found->second.last_inference_source_time_ns = view.source_time_ns;
+  std::lock_guard lock{state.slot_mutex};
+  const auto found = state.sources.find(camera);
+  if (found == state.sources.end() || found->second.binding != binding) return false;
+  const std::uint64_t interval_ns = 1'000'000'000ULL / state.options.target_fps;
+  const std::uint64_t last_admit = found->second.last_inference_source_time_ns;
+  // Diagnostic: name why a frame was skipped or admitted, so an effective
+  // rate below the configured target can be attributed instead of guessed
+  // at. Sampled so a 30fps source cannot flood the log.
+  const auto log_pace = [&](const char* verb) {
+    std::fprintf(stderr,
+                 "seeon-pace: camera=%s %s target_fps=%u interval_ns=%llu "
+                 "gap_ns=%lld skips=%llu admits=%llu\n",
+                 camera.c_str(), verb, state.options.target_fps,
+                 static_cast<unsigned long long>(interval_ns),
+                 last_admit == 0 ? -1LL
+                                 : static_cast<long long>(stamp.source_time_ns) -
+                                       static_cast<long long>(last_admit),
+                 static_cast<unsigned long long>(found->second.pace_skips),
+                 static_cast<unsigned long long>(found->second.pace_admits));
+  };
+  if (last_admit != 0 && stamp.source_time_ns < last_admit + interval_ns) {
+    if ((++found->second.pace_skips % 128) == 0) log_pace("skip");
+    return false;
   }
+  if ((++found->second.pace_admits % 64) == 0) log_pace("admit");
+  found->second.last_inference_source_time_ns = stamp.source_time_ns;
+  return true;
+}
+
+template <typename FrameView>
+void publish_completed_frame(ServerState& state, const std::string& camera,
+                             const PipelineBindingPtr& binding, const FrameView& view,
+                             const trt::PerceptionResult* result) {
   // Inference runs outside the slot lock: a binding that rolls mid-inference
   // simply drops the stale result at dispatch.
-  trt::PerceptionResult result;
-  const trt::PerceptionResult* published = nullptr;
-  if (perception != nullptr && view.rgba != nullptr) {
-    std::string error;
-    if (!perception->infer(view.rgba, view.width, view.height, view.stride,
-                           options.person_box_from_person_engine, &result, &error)) {
-      on_failure({camera, "tensorrt", FailureScope::kFatal});
-      return;
-    }
-    published = &result;
-  }
   static_cast<void>(binding->dispatch_frame(
-      [this, &camera, &view, &binding, published](std::uint32_t generation,
-                                                  std::uint64_t epoch) {
-        std::lock_guard lock{slot_mutex};
-        const auto found = sources.find(camera);
-        if (found == sources.end() || found->second.binding != binding) return;
+      [&state, &camera, &view, &binding, result](std::uint32_t generation, std::uint64_t epoch) {
+        std::lock_guard lock{state.slot_mutex};
+        const auto found = state.sources.find(camera);
+        if (found == state.sources.end() || found->second.binding != binding) return;
         ipc::Message message{};
-        message.header.worker_boot_id = options.worker_boot_id;
-        message.header.child_instance_id = options.child_instance_id;
+        message.header.worker_boot_id = state.options.worker_boot_id;
+        message.header.child_instance_id = state.options.child_instance_id;
         message.header.source_generation = generation;
         message.header.stream_epoch = epoch;
-        message.header.source_pts = view.pts;
+        message.header.source_pts = view.stamp.pts;
         message.camera = camera;
         message.transform = "seeon-perception-v1";
-        command_support::publish_metadata(*this, message, found->second, published,
-                                          view.source_time_ns);
+        command_support::publish_metadata(state, message, found->second, result,
+                                          view.stamp.source_time_ns);
       }));
+}
+
+void report_busy_drop(ServerState& state, const std::string& camera) {
+  const auto surface_drops = state.surface_drops.fetch_add(1, std::memory_order_relaxed) + 1;
+  std::fprintf(stderr, "seeon-infer: camera=%s dropped_busy surface_drops=%llu\n",
+               camera.c_str(), static_cast<unsigned long long>(surface_drops));
+}
+}  // namespace
+
+void ServerState::on_host_frame(const std::string& camera, const PipelineBindingPtr& binding,
+                                const HostFrameView& view) {
+  if (!admit_frame(*this, camera, binding, view.stamp)) return;
+  trt::PerceptionResult result;
+  if (perception == nullptr) {
+    publish_completed_frame(*this, camera, binding, view, nullptr);
+    return;
+  }
+  std::string error;
+  switch (perception->infer_host(view, options.person_box_from_person_engine, &result, &error)) {
+    case trt::InferStatus::kCompleted:
+      publish_completed_frame(*this, camera, binding, view, &result);
+      return;
+    case trt::InferStatus::kDroppedBusy:
+      report_busy_drop(*this, camera);
+      return;
+    case trt::InferStatus::kFailed:
+      on_failure({camera, "tensorrt", FailureScope::kFatal});
+      return;
+  }
+}
+
+void ServerState::on_device_frame(const std::string& camera, const PipelineBindingPtr& binding,
+                                  const DeviceFrameView& view) {
+  if (!admit_frame(*this, camera, binding, view.stamp)) return;
+  trt::PerceptionResult result;
+  if (perception == nullptr) {
+    on_failure({camera, "tensorrt_unwired", FailureScope::kFatal});
+    return;
+  }
+  std::string error;
+  switch (perception->infer_device(view, options.person_box_from_person_engine, &result,
+                                   &error)) {
+    case trt::InferStatus::kCompleted:
+      publish_completed_frame(*this, camera, binding, view, &result);
+      return;
+    case trt::InferStatus::kDroppedBusy:
+      report_busy_drop(*this, camera);
+      return;
+    case trt::InferStatus::kFailed:
+      on_failure({camera, "tensorrt", FailureScope::kFatal});
+      return;
+  }
 }
 }  // namespace seeon

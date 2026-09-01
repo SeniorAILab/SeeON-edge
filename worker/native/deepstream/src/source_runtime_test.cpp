@@ -33,7 +33,8 @@ int main() {
   std::vector<seeon::NativeFailure> failures;
   seeon::SourceRuntime runtime(
       [&frames](const std::string& camera, const seeon::PipelineBindingPtr&,
-                const seeon::DecodedFrameView&) { frames.push_back(camera); },
+                const seeon::HostFrameView&) { frames.push_back(camera); },
+      seeon::DeviceFrameCallback{},
       [&failures](const seeon::NativeFailure& failure) { failures.push_back(failure); });
   std::string error_code;
   const auto binding = std::make_shared<seeon::PipelineBinding>(1, 1);

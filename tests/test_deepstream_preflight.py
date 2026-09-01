@@ -22,6 +22,11 @@ _WARMUP_RECEIPT = (
     '{"status":"ok","frames":1,"source":"loopback",'
     '"engines":["bed","person","pose"],"inference":"ok"}\n'
 )
+_NATIVE_INTEROP_RECEIPT = (
+    "NVMM_CUDA_INTEROP_RECEIPT cc=12.0 mem_type=CUDA_DEVICE width=64 height=32 "
+    "pitch=256 raw_digest=e243ca928f3b5103 "
+    "preprocess_digest=fec40fdf5acf810f preprocess_match=1\n"
+)
 
 
 def _sha256(path: Path) -> str:
@@ -33,6 +38,9 @@ def _manifest(tmp_path: Path) -> Path:
     plugin.write_bytes(b"pinned-plugin")
     native = tmp_path / "seeon-deepstream-preflight"
     native.write_bytes(b"pinned-native")
+    native_interop = tmp_path / "seeon-deepstream-interop"
+    native_interop.write_bytes(b"pinned-native-interop")
+    native_interop.chmod(0o555)
     model_dir = tmp_path / "models"
     model_dir.mkdir()
     engine_source = tmp_path / "built.engine"
@@ -60,6 +68,10 @@ def _manifest(tmp_path: Path) -> Path:
             }
         ],
         "native": {"path": str(native), "sha256": _sha256(native)},
+        "native_interop": {
+            "path": str(native_interop),
+            "sha256": _sha256(native_interop),
+        },
         "models": {"path": str(model_dir), "require_read_only": True},
         "engine_cache": {
             "path": str(engine_cache),
@@ -118,6 +130,9 @@ def _probe(command: tuple[str, ...], timeout: float) -> str:
         return "10.13.3.9-1+cuda13.2\n"
     if command[0] == "gst-inspect-1.0":
         return "Version                  9.1.0\n"
+    if Path(command[0]).name == "seeon-deepstream-interop":
+        assert len(command) == 1
+        return _NATIVE_INTEROP_RECEIPT
     if len(command) >= 2 and command[1] == "--warmup":
         assert len(command) == 3, "warmup must receive the plan cache directory"
         return _WARMUP_RECEIPT
@@ -305,6 +320,123 @@ def test_preflight_rejects_stale_engine_cache_identity(tmp_path: Path) -> None:
         )
 
     assert excinfo.value.code == "engine_identity_mismatch"
+
+
+@pytest.mark.parametrize("missing", (True, False))
+def test_preflight_rejects_missing_or_tampered_native_interop_before_warmup(
+    tmp_path: Path,
+    missing: bool,
+) -> None:
+    manifest = _manifest(tmp_path)
+    prepare_engine_cache(manifest)
+    _build_plan(manifest)
+    interop = tmp_path / "seeon-deepstream-interop"
+    if missing:
+        interop.unlink()
+    else:
+        interop.chmod(0o755)
+        interop.write_bytes(b"tampered-native-interop")
+    commands: list[tuple[str, ...]] = []
+
+    def recording_probe(command: tuple[str, ...], timeout: float) -> str:
+        commands.append(command)
+        return _probe(command, timeout)
+
+    with pytest.raises(DeepStreamPreflightError) as excinfo:
+        run_deepstream_preflight(
+            manifest,
+            command_runner=recording_probe,
+            mount_is_read_only=lambda _path: True,
+        )
+    assert excinfo.value.code == "native_interop_digest_mismatch"
+    assert not any("--warmup" in command for command in commands)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        subprocess.TimeoutExpired(("seeon-deepstream-interop",), 10),
+        subprocess.CalledProcessError(1, ("seeon-deepstream-interop",)),
+    ),
+)
+def test_preflight_rejects_native_interop_execution_failures(
+    tmp_path: Path,
+    failure: Exception,
+) -> None:
+    manifest = _manifest(tmp_path)
+    prepare_engine_cache(manifest)
+    _build_plan(manifest)
+
+    def failing_interop(command: tuple[str, ...], timeout: float) -> str:
+        if Path(command[0]).name == "seeon-deepstream-interop":
+            raise failure
+        return _probe(command, timeout)
+
+    with pytest.raises(DeepStreamPreflightError) as excinfo:
+        run_deepstream_preflight(
+            manifest,
+            command_runner=failing_interop,
+            mount_is_read_only=lambda _path: True,
+        )
+    assert excinfo.value.code == "native_interop_execution_failed"
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    (
+        _NATIVE_INTEROP_RECEIPT + "misleading-success-line\n",
+        _NATIVE_INTEROP_RECEIPT.replace("e243ca928f3b5103", "0" * 16),
+        _NATIVE_INTEROP_RECEIPT.replace("fec40fdf5acf810f", "0" * 16),
+        _NATIVE_INTEROP_RECEIPT.replace("preprocess_match=1", "preprocess_match=0"),
+    ),
+)
+def test_preflight_rejects_invalid_native_interop_receipts(
+    tmp_path: Path,
+    receipt: str,
+) -> None:
+    manifest = _manifest(tmp_path)
+    prepare_engine_cache(manifest)
+    _build_plan(manifest)
+
+    def invalid_interop(command: tuple[str, ...], timeout: float) -> str:
+        if Path(command[0]).name == "seeon-deepstream-interop":
+            return receipt
+        return _probe(command, timeout)
+
+    with pytest.raises(DeepStreamPreflightError) as excinfo:
+        run_deepstream_preflight(
+            manifest,
+            command_runner=invalid_interop,
+            mount_is_read_only=lambda _path: True,
+        )
+    assert excinfo.value.code == "native_interop_receipt_mismatch"
+
+
+def test_preflight_runs_native_interop_before_warmup(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+    prepare_engine_cache(manifest)
+    _build_plan(manifest)
+    commands: list[tuple[str, ...]] = []
+
+    def recording_probe(command: tuple[str, ...], timeout: float) -> str:
+        commands.append(command)
+        return _probe(command, timeout)
+
+    run_deepstream_preflight(
+        manifest,
+        command_runner=recording_probe,
+        mount_is_read_only=lambda _path: True,
+    )
+
+    interop_index = next(
+        index
+        for index, command in enumerate(commands)
+        if Path(command[0]).name == "seeon-deepstream-interop"
+    )
+    warmup_index = next(
+        index for index, command in enumerate(commands) if "--warmup" in command
+    )
+    assert interop_index < warmup_index
 
 
 def test_preflight_rejects_misleading_success_text_and_hung_warmup(tmp_path: Path) -> None:

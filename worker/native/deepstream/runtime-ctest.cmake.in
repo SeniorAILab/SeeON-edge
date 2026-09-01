@@ -20,3 +20,8 @@ add_test(
   "bin/seeon-deepstream-nvmm-cuda-interop-probe"
 )
 set_tests_properties(seeon-deepstream-nvmm-cuda-interop-probe PROPERTIES LABELS gpu)
+add_test(
+  seeon-deepstream-preprocess-gpu-test
+  "bin/seeon-deepstream-preprocess-gpu-test"
+)
+set_tests_properties(seeon-deepstream-preprocess-gpu-test PROPERTIES LABELS gpu)

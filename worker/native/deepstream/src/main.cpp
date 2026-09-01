@@ -1,4 +1,5 @@
 #include "trt_perception.hpp"
+#include "source_runtime.hpp"
 
 #include <gst/gst.h>
 
@@ -83,8 +84,15 @@ void warmup_inference(const std::string& engine_cache) {
   constexpr int kHeight = 360;
   std::vector<std::uint8_t> frame(static_cast<std::size_t>(kWidth) * kHeight * 4, 114);
   seeon::trt::PerceptionResult result;
-  if (!perception->infer(frame.data(), kWidth, kHeight, kWidth * 4, true, &result,
-                         &error)) {
+  const seeon::HostFrameView view{
+      {},
+      kWidth,
+      kHeight,
+      kWidth * 4,
+      frame.data(),
+  };
+  if (perception->infer_host(view, true, &result, &error) !=
+      seeon::trt::InferStatus::kCompleted) {
     throw std::runtime_error{"inference warmup failed: " + error};
   }
   seeon::perception::LegacyGreedyBboxIou association;

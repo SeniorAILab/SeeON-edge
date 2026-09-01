@@ -42,7 +42,12 @@ find_path(
   REQUIRED
 )
 
-add_executable(seeon-deepstream-nvmm-cuda-interop-probe src/nvmm_cuda_interop_probe.cu)
+add_executable(
+  seeon-deepstream-nvmm-cuda-interop-probe
+  src/nvmm_cuda_interop_probe.cu
+  src/native_perception.cpp
+  src/preprocess_gpu.cu
+)
 set_target_properties(
   seeon-deepstream-nvmm-cuda-interop-probe
   PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON CUDA_EXTENSIONS OFF
@@ -51,7 +56,7 @@ target_compile_features(seeon-deepstream-nvmm-cuda-interop-probe PRIVATE cxx_std
 target_compile_options(
   seeon-deepstream-nvmm-cuda-interop-probe
   PRIVATE
-    $<$<COMPILE_LANGUAGE:CXX>:${SEEON_WARNINGS}>
+    $<$<COMPILE_LANGUAGE:CXX>:${SEEON_WARNINGS};${SEEON_FP_FLAGS}>
     $<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>
 )
 target_include_directories(
@@ -67,10 +72,16 @@ add_executable(
   src/main.cpp
   src/native_perception.cpp
   src/preprocess_cpu.cpp
+  src/preprocess_gpu.cu
   src/trt_perception.cpp
 )
 target_compile_features(seeon-deepstream-preflight PRIVATE cxx_std_20)
-target_compile_options(seeon-deepstream-preflight PRIVATE ${SEEON_WARNINGS} ${SEEON_FP_FLAGS})
+target_compile_options(
+  seeon-deepstream-preflight
+  PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:${SEEON_WARNINGS};${SEEON_FP_FLAGS}>
+    $<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>
+)
 target_include_directories(
   seeon-deepstream-preflight PRIVATE ${SEEON_TRT_INCLUDE} ${SEEON_CUDA_INCLUDE}
 )
@@ -92,6 +103,7 @@ add_executable(
   src/encoded_source_sample.cpp
   src/native_perception.cpp
   src/preprocess_cpu.cpp
+  src/preprocess_gpu.cu
   src/perception_wire.cpp
   src/preview_transport.cpp
   src/source_bus.cpp
@@ -101,9 +113,15 @@ add_executable(
 )
 target_compile_features(seeon-deepstream-child PRIVATE cxx_std_20)
 target_compile_definitions(seeon-deepstream-child PRIVATE SEEON_HAS_GSTREAMER=1)
-target_compile_options(seeon-deepstream-child PRIVATE ${SEEON_WARNINGS} ${SEEON_FP_FLAGS})
+target_compile_options(
+  seeon-deepstream-child
+  PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:${SEEON_WARNINGS};${SEEON_FP_FLAGS}>
+    $<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>
+)
 target_include_directories(
-  seeon-deepstream-child PRIVATE ${SEEON_TRT_INCLUDE} ${SEEON_CUDA_INCLUDE}
+  seeon-deepstream-child
+  PRIVATE ${SEEON_TRT_INCLUDE} ${SEEON_CUDA_INCLUDE} ${SEEON_NVBUFSURFACE_INCLUDE}
 )
 target_link_libraries(
   seeon-deepstream-child PRIVATE PkgConfig::GSTREAMER ${SEEON_NVINFER} ${SEEON_CUDART}
@@ -166,8 +184,13 @@ if(BUILD_TESTING)
   target_compile_options(
     seeon-deepstream-source-runtime-gstreamer-test PRIVATE ${SEEON_WARNINGS}
   )
+  target_include_directories(
+    seeon-deepstream-source-runtime-gstreamer-test
+    PRIVATE ${SEEON_CUDA_INCLUDE} ${SEEON_NVBUFSURFACE_INCLUDE}
+  )
   target_link_libraries(
-    seeon-deepstream-source-runtime-gstreamer-test PRIVATE PkgConfig::GSTREAMER
+    seeon-deepstream-source-runtime-gstreamer-test
+    PRIVATE PkgConfig::GSTREAMER ${SEEON_CUDART}
   )
   add_test(
     NAME seeon-deepstream-source-runtime-gstreamer-test
@@ -210,6 +233,33 @@ if(BUILD_TESTING)
     COMMAND seeon-deepstream-nvmm-cuda-interop-probe
   )
   set_tests_properties(seeon-deepstream-nvmm-cuda-interop-probe PROPERTIES LABELS gpu)
+  add_executable(
+    seeon-deepstream-preprocess-gpu-test
+    src/preprocess_gpu_test.cu
+    src/native_perception.cpp
+    src/preprocess_cpu.cpp
+    src/preprocess_gpu.cu
+  )
+  set_target_properties(
+    seeon-deepstream-preprocess-gpu-test
+    PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON CUDA_EXTENSIONS OFF
+  )
+  target_compile_features(seeon-deepstream-preprocess-gpu-test PRIVATE cxx_std_20)
+  target_compile_options(
+    seeon-deepstream-preprocess-gpu-test
+    PRIVATE
+      $<$<COMPILE_LANGUAGE:CXX>:${SEEON_WARNINGS};${SEEON_FP_FLAGS}>
+      $<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>
+  )
+  target_include_directories(
+    seeon-deepstream-preprocess-gpu-test PRIVATE ${SEEON_CUDA_INCLUDE}
+  )
+  target_link_libraries(seeon-deepstream-preprocess-gpu-test PRIVATE ${SEEON_CUDART})
+  add_test(
+    NAME seeon-deepstream-preprocess-gpu-test
+    COMMAND seeon-deepstream-preprocess-gpu-test
+  )
+  set_tests_properties(seeon-deepstream-preprocess-gpu-test PROPERTIES LABELS gpu)
 
   set(
     SEEON_NATIVE_TEST_TARGETS
@@ -257,6 +307,7 @@ if(BUILD_TESTING)
       seeon-deepstream-au-transport-test
       seeon-deepstream-workspace-pool-test
       seeon-deepstream-nvmm-cuda-interop-probe
+      seeon-deepstream-preprocess-gpu-test
     RUNTIME DESTINATION native-build/bin
   )
   install(

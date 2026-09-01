@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -27,6 +28,12 @@ MountProbe = Callable[[Path], bool]
 MANIFEST_ENV: Final = "SEEON_DEEPSTREAM_MANIFEST"
 FIRST_FAULT_ENV: Final = "SEEON_DEEPSTREAM_FIRST_FAULT"
 ENGINE_IDENTITY_FILENAME: Final = ".identity.json"
+NATIVE_INTEROP_PREPROCESS_DIGEST: Final = "fec40fdf5acf810f"
+NATIVE_INTEROP_RECEIPT: Final = re.compile(
+    r"^NVMM_CUDA_INTEROP_RECEIPT cc=\d+\.\d+ mem_type=CUDA_DEVICE width=64 height=32 "
+    r"pitch=\d+ raw_digest=e243ca928f3b5103 "
+    rf"preprocess_digest={NATIVE_INTEROP_PREPROCESS_DIGEST} preprocess_match=1$"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,6 +248,17 @@ def _run_deepstream_preflight(
     native_path = Path(native["path"])
     if not native_path.is_file() or artifact_sha256(native_path) != native["sha256"]:
         raise DeepStreamPreflightError("native_digest_mismatch", str(native_path))
+    native_interop = manifest.get("native_interop")
+    if not isinstance(native_interop, dict):
+        raise DeepStreamPreflightError("manifest_invalid", "native_interop must be an object")
+    native_interop_path = Path(native_interop.get("path", ""))
+    native_interop_digest = native_interop.get("sha256")
+    if (
+        not native_interop_path.is_file()
+        or not isinstance(native_interop_digest, str)
+        or artifact_sha256(native_interop_path) != native_interop_digest
+    ):
+        raise DeepStreamPreflightError("native_interop_digest_mismatch", str(native_interop_path))
     cache = manifest["engine_cache"]
     cache_path = Path(cache["path"])
     expected_identity = _engine_identity(manifest)
@@ -266,6 +284,15 @@ def _run_deepstream_preflight(
         (plan_cache_dir / ENGINE_IDENTITY_FILENAME).read_text(encoding="utf-8")
     )
     timeout = float(manifest["warmup"]["timeout_seconds"])
+    try:
+        interop_output = command_runner((str(native_interop_path),), timeout)
+    except Exception as exc:  # noqa: BLE001 - normalized into a typed boot refusal
+        raise DeepStreamPreflightError("native_interop_execution_failed", str(exc)) from exc
+    interop_lines = [line for line in interop_output.splitlines() if line]
+    if len(interop_lines) != 1 or NATIVE_INTEROP_RECEIPT.fullmatch(interop_lines[0]) is None:
+        raise DeepStreamPreflightError(
+            "native_interop_receipt_mismatch", "NVMM CUDA interop receipt is invalid"
+        )
     try:
         warmup_text = command_runner(
             (str(native_path), "--warmup", str(plan_cache_dir)), timeout

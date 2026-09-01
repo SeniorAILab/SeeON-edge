@@ -7,6 +7,8 @@
 #include <gst/app/gstappsink.h>
 #include <gst/video/video.h>
 #include <glib.h>
+#include <cuda_runtime_api.h>
+#include <nvbufsurface.h>
 
 #include <algorithm>
 #include <array>
@@ -16,6 +18,54 @@
 
 namespace seeon {
 namespace {
+constexpr int kExpectedGpuId = 0;
+
+class SampleLease {
+ public:
+  explicit SampleLease(GstSample* sample) : sample_(sample) {}
+  ~SampleLease() {
+    if (sample_ != nullptr) gst_sample_unref(sample_);
+  }
+  SampleLease(const SampleLease&) = delete;
+  SampleLease& operator=(const SampleLease&) = delete;
+  [[nodiscard]] GstSample* get() const { return sample_; }
+
+ private:
+  GstSample* sample_;
+};
+
+class BufferMap {
+ public:
+  explicit BufferMap(GstBuffer* buffer) : buffer_(buffer), mapped_(gst_buffer_map(buffer, &info_, GST_MAP_READ)) {}
+  ~BufferMap() {
+    if (mapped_) gst_buffer_unmap(buffer_, &info_);
+  }
+  BufferMap(const BufferMap&) = delete;
+  BufferMap& operator=(const BufferMap&) = delete;
+  [[nodiscard]] bool mapped() const { return mapped_; }
+  [[nodiscard]] const GstMapInfo& info() const { return info_; }
+
+ private:
+  GstBuffer* buffer_;
+  GstMapInfo info_{};
+  bool mapped_;
+};
+
+bool is_nvmm_rgba_caps(const GstCaps* caps) {
+  if (caps == nullptr || gst_caps_get_size(caps) != 1) return false;
+  const GstCapsFeatures* features = gst_caps_get_features(caps, 0);
+  const GstStructure* structure = gst_caps_get_structure(caps, 0);
+  const char* format = structure == nullptr ? nullptr : gst_structure_get_string(structure, "format");
+  return features != nullptr && gst_caps_features_contains(features, "memory:NVMM") &&
+         format != nullptr && g_str_equal(format, "RGBA");
+}
+
+void inference_contract_failure(EncodedSourceContext* context) {
+  if (!context->inference_failure_latched.exchange(true)) {
+    context->failures({context->camera, "nvmm_surface_contract", FailureScope::kFatal});
+  }
+}
+
 GstPadProbeReturn on_preview_encoded(GstPad*, GstPadProbeInfo* info, gpointer raw) {
   auto* context = static_cast<EncodedSourceContext*>(raw);
   GstBuffer* buffer = gst_pad_probe_info_get_buffer(info);
@@ -38,33 +88,85 @@ GstPadProbeReturn on_preview_encoded(GstPad*, GstPadProbeInfo* info, gpointer ra
 
 GstFlowReturn on_inference_sample(GstAppSink* sink, gpointer raw) {
   auto* context = static_cast<EncodedSourceContext*>(raw);
-  GstSample* sample = gst_app_sink_pull_sample(sink);
-  if (sample == nullptr) return GST_FLOW_ERROR;
-  GstCaps* caps = gst_sample_get_caps(sample);
-  GstBuffer* buffer = gst_sample_get_buffer(sample);
-  GstVideoInfo info;
-  gst_video_info_init(&info);
-  if (caps == nullptr || buffer == nullptr || !gst_video_info_from_caps(&info, caps)) {
-    gst_sample_unref(sample);
-    return GST_FLOW_OK;
+  SampleLease sample{gst_app_sink_pull_sample(sink)};
+  if (sample.get() == nullptr) return GST_FLOW_ERROR;
+  InFlightLease callback{context->gate};
+  if (!callback) return GST_FLOW_FLUSHING;
+  GstCaps* caps = gst_sample_get_caps(sample.get());
+  GstBuffer* buffer = gst_sample_get_buffer(sample.get());
+  if (!is_nvmm_rgba_caps(caps) || buffer == nullptr) {
+    inference_contract_failure(context);
+    return GST_FLOW_ERROR;
   }
-  GstVideoFrame frame;
-  if (!gst_video_frame_map(&frame, &info, buffer, GST_MAP_READ)) {
-    gst_sample_unref(sample);
-    return GST_FLOW_OK;
+  const GstStructure* caps_structure = gst_caps_get_structure(caps, 0);
+  gint caps_width = 0;
+  gint caps_height = 0;
+  if (caps_structure == nullptr ||
+      !gst_structure_get_int(caps_structure, "width", &caps_width) ||
+      !gst_structure_get_int(caps_structure, "height", &caps_height) || caps_width <= 0 ||
+      caps_height <= 0) {
+    inference_contract_failure(context);
+    return GST_FLOW_ERROR;
   }
-  const DecodedFrameView view{
-      GST_BUFFER_PTS_IS_VALID(buffer) ? GST_BUFFER_PTS(buffer) : 0,
-      static_cast<std::uint64_t>(g_get_real_time()) * 1000ULL,
-      GST_VIDEO_INFO_WIDTH(&info),
-      GST_VIDEO_INFO_HEIGHT(&info),
-      GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 0),
-      static_cast<const std::uint8_t*>(GST_VIDEO_FRAME_PLANE_DATA(&frame, 0)),
+  BufferMap descriptor{buffer};
+  if (!descriptor.mapped() || descriptor.info().size < sizeof(NvBufSurface)) {
+    inference_contract_failure(context);
+    return GST_FLOW_ERROR;
+  }
+  const auto* surface = reinterpret_cast<const NvBufSurface*>(descriptor.info().data);
+  if (surface == nullptr || surface->surfaceList == nullptr || surface->batchSize != 1 ||
+      surface->numFilled != 1 ||
+      surface->memType != NVBUF_MEM_CUDA_DEVICE || surface->gpuId != kExpectedGpuId) {
+    inference_contract_failure(context);
+    return GST_FLOW_ERROR;
+  }
+  const NvBufSurfaceParams& params = surface->surfaceList[0];
+  if (params.dataPtr == nullptr || params.width != static_cast<guint>(caps_width) ||
+      params.height != static_cast<guint>(caps_height) ||
+      params.pitch < params.width * 4U || params.colorFormat != NVBUF_COLOR_FORMAT_RGBA ||
+      params.layout != NVBUF_LAYOUT_PITCH) {
+    inference_contract_failure(context);
+    return GST_FLOW_ERROR;
+  }
+  cudaPointerAttributes attributes{};
+  if (cudaPointerGetAttributes(&attributes, params.dataPtr) != cudaSuccess) {
+    inference_contract_failure(context);
+    return GST_FLOW_ERROR;
+  }
+#if CUDART_VERSION >= 10000
+  if (attributes.type != cudaMemoryTypeDevice || attributes.device != kExpectedGpuId) {
+#else
+  if (attributes.memoryType != cudaMemoryTypeDevice || attributes.device != kExpectedGpuId) {
+#endif
+    inference_contract_failure(context);
+    return GST_FLOW_ERROR;
+  }
+  const DeviceFrameView view{
+      {GST_BUFFER_PTS_IS_VALID(buffer) ? GST_BUFFER_PTS(buffer) : 0,
+       static_cast<std::uint64_t>(g_get_real_time()) * 1000ULL},
+      static_cast<int>(params.width),
+      static_cast<int>(params.height),
+      params.pitch,
+      params.dataPtr,
+      static_cast<int>(surface->gpuId),
   };
   context->frames(context->camera, context->binding, view);
-  gst_video_frame_unmap(&frame);
-  gst_sample_unref(sample);
   return GST_FLOW_OK;
+}
+
+bool verify_int_property(GstElement* item, const char* name, int expected) {
+  GParamSpec* spec = g_object_class_find_property(G_OBJECT_GET_CLASS(item), name);
+  if (spec == nullptr) return false;
+  GValue value = G_VALUE_INIT;
+  g_value_init(&value, G_PARAM_SPEC_VALUE_TYPE(spec));
+  g_object_get_property(G_OBJECT(item), name, &value);
+  const bool matches = G_VALUE_HOLDS_ENUM(&value) ? g_value_get_enum(&value) == expected
+                       : G_VALUE_HOLDS_INT(&value) ? g_value_get_int(&value) == expected
+                       : G_VALUE_HOLDS_UINT(&value) ? g_value_get_uint(&value) ==
+                                                         static_cast<unsigned int>(expected)
+                                                    : false;
+  g_value_unset(&value);
+  return matches;
 }
 
 GstElement* element(const char* factory) { return gst_element_factory_make(factory, nullptr); }
@@ -141,11 +243,13 @@ void on_rtp_pad(GstElement*, GstPad* output, gpointer raw) {
                "max-size-time", 0U, "leaky", 2, nullptr);
   g_object_set(inference_queue, "max-size-buffers", 1U, "max-size-bytes", 0U,
                "max-size-time", 0U, "leaky", 2, nullptr);
+  g_object_set(decoder, "cudadec-memtype", 0, "num-extra-surfaces", 4U, nullptr);
+  g_object_set(convert, "nvbuf-memory-type", NVBUF_MEM_CUDA_DEVICE, nullptr);
   GstCaps* decoded_rgba = gst_caps_from_string("video/x-raw(memory:NVMM),format=RGBA");
   g_object_set(decoded_caps, "caps", decoded_rgba, nullptr);
   gst_caps_unref(decoded_rgba);
-  GstCaps* inference_rgba = gst_caps_from_string("video/x-raw,format=RGBA");
-  g_object_set(inference_convert, "nvbuf-memory-type", 1, nullptr);
+  GstCaps* inference_rgba = gst_caps_from_string("video/x-raw(memory:NVMM),format=RGBA");
+  g_object_set(inference_convert, "nvbuf-memory-type", NVBUF_MEM_CUDA_DEVICE, nullptr);
   g_object_set(inference_caps, "caps", inference_rgba, nullptr);
   gst_caps_unref(inference_rgba);
   g_object_set(sink, "emit-signals", TRUE, "sync", FALSE, "async", FALSE,
@@ -160,6 +264,14 @@ void on_rtp_pad(GstElement*, GstPad* output, gpointer raw) {
   g_object_set(jpeg_caps, "caps", i420_caps, nullptr);
   gst_caps_unref(i420_caps);
   g_object_set(preview_sink, "sync", FALSE, "async", FALSE, nullptr);
+  if (!verify_int_property(decoder, "cudadec-memtype", 0) ||
+      !verify_int_property(decoder, "num-extra-surfaces", 4) ||
+      !verify_int_property(convert, "nvbuf-memory-type", NVBUF_MEM_CUDA_DEVICE) ||
+      !verify_int_property(inference_convert, "nvbuf-memory-type", NVBUF_MEM_CUDA_DEVICE)) {
+    context->failures({context->camera, "nvmm_graph_contract", FailureScope::kFatal});
+    if (input_caps != nullptr) gst_caps_unref(input_caps);
+    return;
+  }
   context->preview_valve = preview_valve;
   context->decode_queue = decode_queue;
   g_signal_connect(record_sink, "new-sample", G_CALLBACK(on_encoded_sample), context);
@@ -196,15 +308,16 @@ void destroy_branch(gpointer raw) { delete static_cast<EncodedSourceContext*>(ra
 }  // namespace
 
 GstElement* build_encoded_rtsp_pipeline(const std::string& camera, const std::string& uri,
-                                         const FrameCallback& frames,
+                                         const DeviceFrameCallback& frames,
                                          const FailureCallback& failures,
                                          const AccessUnitCallback& access_units,
                                          const PreviewCallback& previews,
                                          const PipelineBindingPtr& binding,
+                                         const std::shared_ptr<InFlightGate>& gate,
                                          std::string* error_code) {
   GstElement* pipeline = gst_pipeline_new(nullptr);
   GstElement* source = element("rtspsrc");
-  if (pipeline == nullptr || source == nullptr || !access_units) {
+  if (pipeline == nullptr || source == nullptr || !frames || !access_units) {
     *error_code = "encoded_source_unavailable";
     if (source != nullptr) gst_object_unref(source);
     if (pipeline != nullptr) gst_object_unref(pipeline);
@@ -212,9 +325,15 @@ GstElement* build_encoded_rtsp_pipeline(const std::string& camera, const std::st
   }
   g_object_set(source, "location", uri.c_str(), "latency", 200U, nullptr);
   gst_bin_add(GST_BIN(pipeline), source);
-  auto* context = new EncodedSourceContext{
-      frames, failures, access_units, previews, binding, camera, pipeline, 0, false, {},
-      nullptr, nullptr, 0, 0, 0, {}, std::nullopt, 0, false, {}, {}, {}};
+  auto* context = new EncodedSourceContext{};
+  context->frames = frames;
+  context->failures = failures;
+  context->access_units = access_units;
+  context->previews = previews;
+  context->binding = binding;
+  context->gate = gate;
+  context->camera = camera;
+  context->pipeline = pipeline;
   g_object_set_data_full(G_OBJECT(pipeline), "seeon-encoded-context", context, destroy_branch);
   attach_encoded_bus_handler(pipeline, camera, failures);
   g_signal_connect(source, "pad-added", G_CALLBACK(on_rtp_pad), context);
@@ -247,7 +366,7 @@ bool wait_encoded_preview(GstElement* pipeline, std::uint64_t target) {
   });
 }
 
-void quiesce_encoded_pipeline(GstElement* pipeline) {
+void flush_encoded_access_units(GstElement* pipeline) {
   auto* context = static_cast<EncodedSourceContext*>(
       g_object_get_data(G_OBJECT(pipeline), "seeon-encoded-context"));
   if (context != nullptr) flush_pending_access_unit(context);

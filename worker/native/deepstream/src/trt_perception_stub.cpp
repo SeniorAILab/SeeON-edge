@@ -18,30 +18,26 @@ std::unique_ptr<TrtPerception> TrtPerception::load(const std::string& cache_dir,
   return nullptr;
 }
 
-bool TrtPerception::infer(const std::uint8_t* rgba, int width, int height, int stride,
-                          bool run_person_engine, PerceptionResult* result,
-                          std::string* error) {
-  static_cast<void>(rgba);
-  static_cast<void>(width);
-  static_cast<void>(height);
-  static_cast<void>(stride);
+InferStatus TrtPerception::infer_host(const seeon::HostFrameView& frame,
+                                      bool run_person_engine, PerceptionResult* result,
+                                      std::string* error) {
+  static_cast<void>(frame);
   static_cast<void>(run_person_engine);
   static_cast<void>(result);
   *error = "tensorrt_unavailable_in_stub_build";
-  return false;
+  return InferStatus::kFailed;
+}
+
+InferStatus TrtPerception::infer_device(const seeon::DeviceFrameView& frame,
+                                        bool run_person_engine, PerceptionResult* result,
+                                        std::string* error) {
+  static_cast<void>(frame);
+  static_cast<void>(run_person_engine);
+  static_cast<void>(result);
+  *error = "tensorrt_unavailable_in_stub_build";
+  return InferStatus::kFailed;
 }
 
 std::vector<std::string> TrtPerception::engine_names() const { return {}; }
-
-void preprocess_rgba_to_bgr_tensor(const std::uint8_t* rgba, int width, int height,
-                                   int stride, const perception::AffineMetadata& affine,
-                                   float* output_chw) {
-  static_cast<void>(rgba);
-  static_cast<void>(width);
-  static_cast<void>(height);
-  static_cast<void>(stride);
-  static_cast<void>(affine);
-  static_cast<void>(output_chw);
-}
 
 }  // namespace seeon::trt

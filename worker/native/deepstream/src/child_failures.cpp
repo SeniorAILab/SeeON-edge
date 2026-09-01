@@ -4,6 +4,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <exception>
 #include <string>
 #include <utility>
 #include <vector>
@@ -13,7 +14,9 @@ ServerState::ServerState(const ChildOptions& options_value)
     : options(options_value),
       runtime(
           [this](const std::string& camera, const PipelineBindingPtr& binding,
-                 const DecodedFrameView& view) { on_frame(camera, binding, view); },
+                 const HostFrameView& view) { on_host_frame(camera, binding, view); },
+          [this](const std::string& camera, const PipelineBindingPtr& binding,
+                 const DeviceFrameView& view) { on_device_frame(camera, binding, view); },
           [this](const NativeFailure& failure) { on_failure(failure); },
           [this](const std::string& camera, const PipelineBindingPtr& binding,
                  ParsedAccessUnit unit) {
@@ -31,7 +34,13 @@ ServerState::ServerState(const ChildOptions& options_value)
       preview_sender(options_value.preview_fd),
       failure_fd(eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK)) {}
 
-ServerState::~ServerState() { close(failure_fd); }
+ServerState::~ServerState() {
+  // Runtime callbacks capture this ServerState and use the senders, slots,
+  // perception, and failure receipt below. Drain them before any collaborator
+  // is destroyed; a retained callback makes ordinary destruction unsafe.
+  if (!runtime.shutdown()) std::terminate();
+  close(failure_fd);
+}
 
 void ServerState::on_failure(const NativeFailure& failure) {
   {

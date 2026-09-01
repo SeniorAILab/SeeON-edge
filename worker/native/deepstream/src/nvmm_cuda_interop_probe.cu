@@ -5,9 +5,14 @@
 #include <gst/gst.h>
 #include <nvbufsurface.h>
 
+#include "native_perception.hpp"
+#include "preprocess_gpu.hpp"
+
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
+#include <vector>
 
 namespace {
 
@@ -15,6 +20,9 @@ constexpr guint kWidth = 64;
 constexpr guint kHeight = 32;
 constexpr guint kBytesPerPixel = 4;
 constexpr guint64 kSampleTimeout = 5 * GST_SECOND;
+constexpr std::uint64_t kExpectedRawDigest = 0xe243ca928f3b5103ULL;
+// FNV-1a over the little-endian FP32 output bytes from the unchanged CPU oracle.
+constexpr std::uint64_t kExpectedPreprocessDigest = 0xfec40fdf5acf810fULL;
 
 __global__ void digest_rgba_kernel(const std::uint8_t* rgba, std::size_t pitch, guint width,
                                    guint height, std::uint64_t* digest) {
@@ -45,6 +53,15 @@ void fill_deterministic_rgba(std::uint8_t* pixels) {
   }
 }
 
+std::uint64_t digest_bytes(const std::uint8_t* bytes, std::size_t size) {
+  std::uint64_t value = 1469598103934665603ULL;
+  for (std::size_t index = 0; index < size; ++index) {
+    value ^= bytes[index];
+    value *= 1099511628211ULL;
+  }
+  return value;
+}
+
 bool cuda_ok(cudaError_t result, const char* action) {
   if (result == cudaSuccess) {
     return true;
@@ -73,6 +90,8 @@ int main() {
   GstMapInfo mapped{};
   bool buffer_mapped = false;
   std::uint64_t* device_digest = nullptr;
+  float* device_tensor = nullptr;
+  cudaStream_t preprocess_stream = nullptr;
   bool kernel_launched = false;
   bool success = false;
 
@@ -203,10 +222,49 @@ int main() {
                  "copying bounded digest result")) {
       break;
     }
+    if (digest != kExpectedRawDigest) {
+      fail("NVMM RGBA digest does not match deterministic source");
+      break;
+    }
+
+    const auto affine = seeon::perception::letterbox_affine(
+        static_cast<int>(params.height), static_cast<int>(params.width));
+    const std::size_t tensor_elements =
+        3ULL * static_cast<std::size_t>(affine.tensor_height) * affine.tensor_width;
+    std::vector<float> host_tensor(tensor_elements);
+    if (!cuda_ok(cudaStreamCreateWithFlags(&preprocess_stream, cudaStreamNonBlocking),
+                 "creating preprocess stream") ||
+        !cuda_ok(cudaMalloc(&device_tensor, tensor_elements * sizeof(*device_tensor)),
+                 "allocating preprocess tensor")) {
+      break;
+    }
+    std::string preprocess_error;
+    if (!seeon::trt::preprocess_rgba_device_to_bgr_tensor(
+            params.dataPtr, static_cast<int>(params.width), static_cast<int>(params.height),
+            params.pitch, affine, device_tensor, preprocess_stream, &preprocess_error)) {
+      std::fprintf(stderr, "nvmm_cuda_interop_probe: preprocess: %s\n",
+                   preprocess_error.c_str());
+      break;
+    }
+    if (!cuda_ok(cudaStreamSynchronize(preprocess_stream), "synchronizing preprocess stream") ||
+        !cuda_ok(cudaMemcpy(host_tensor.data(), device_tensor,
+                            tensor_elements * sizeof(*device_tensor),
+                            cudaMemcpyDeviceToHost),
+                 "copying preprocess tensor")) {
+      break;
+    }
+    const std::uint64_t preprocess_digest = digest_bytes(
+        reinterpret_cast<const std::uint8_t*>(host_tensor.data()),
+        tensor_elements * sizeof(*host_tensor.data()));
+    if (preprocess_digest != kExpectedPreprocessDigest) {
+      fail("preprocess tensor digest does not match CPU oracle");
+      break;
+    }
     std::printf("NVMM_CUDA_INTEROP_RECEIPT cc=%d.%d mem_type=CUDA_DEVICE width=%u height=%u "
-                "pitch=%u digest=%016llx\n",
+                "pitch=%u raw_digest=%016llx preprocess_digest=%016llx preprocess_match=1\n",
                 properties.major, properties.minor, params.width, params.height, params.pitch,
-                static_cast<unsigned long long>(digest));
+                static_cast<unsigned long long>(digest),
+                static_cast<unsigned long long>(preprocess_digest));
     success = true;
   } while (false);
 
@@ -214,6 +272,14 @@ int main() {
     success = false;
   }
   if (device_digest != nullptr && !cuda_ok(cudaFree(device_digest), "freeing device digest")) {
+    success = false;
+  }
+  if (device_tensor != nullptr &&
+      !cuda_ok(cudaFree(device_tensor), "freeing preprocess tensor")) {
+    success = false;
+  }
+  if (preprocess_stream != nullptr &&
+      !cuda_ok(cudaStreamDestroy(preprocess_stream), "destroying preprocess stream")) {
     success = false;
   }
   if (buffer_mapped) {

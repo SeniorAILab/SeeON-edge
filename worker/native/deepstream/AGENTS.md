@@ -9,7 +9,10 @@ CPU, MPS, and iGPU profiles do not run them.
 - `src/` owns per-source RTSP/depay/parser and the encoded-AU tee before decode;
   the decode branch owns `nvv4l2decoder`/NVMM, custom TensorRT inference, tensor
   parse, inverse geometry, association, and bounded preview output. Production
-  uses custom `TrtPerception`, not `nvinfer` or `nvtracker`;
+  RTSP inference accepts CUDA-device NVMM RGBA only and uses custom
+  `TrtPerception::infer_device`; host frames are confined to explicit
+  non-RTSP/preflight paths. There is no host or unified-memory fallback.
+  Production uses custom `TrtPerception`, not `nvinfer` or `nvtracker`;
   `nvstreammux batch-size=1` appears only in the preflight warmup.
 - Python modules here own control/IPC codecs, metadata admission, manifest
   preflight, engine-cache identity, and parity helpers. PID-1 supervision and
@@ -38,9 +41,10 @@ Do not add stock `nvtracker`, a second encoder on the primary path, or a public
 
 `run_configured_deepstream_preflight` runs only when
 `SEEON_DEEPSTREAM_MANIFEST` is set. It checks GPU compatibility, pinned runtime
-and plugin identity, read-only models, native binary identity, both engine-cache
-identities, and one bounded loopback inference receipt. Failure writes the
-configured first-fault JSON and refuses boot.
+and plugin identity, read-only models, native and NVMM/CUDA interop binary
+identity, deterministic GPU-preprocess parity, both engine-cache identities,
+and one bounded loopback inference receipt. Failure writes the configured
+first-fault JSON and refuses boot.
 
 Engine plans are content-addressed from weights, exporter, `fp32` precision,
 and builder identity under `c7-<plan-key[:32]>`. Deploy builds explicitly;
@@ -52,6 +56,9 @@ boot calls `verify_plan_cache` and never builds an engine.
 - Standalone preflight: `uv run python -m worker.native.deepstream.preflight <manifest>`.
 - Native compile and CTest run in `docker build -f Dockerfile.edge --target runtime .`.
   (`--target` matters: the file's last stage is the CI-only `bootsmoke`.)
+- GPU-labelled native tests are excluded from image-build CTest and must be run
+  explicitly on the deployment GPU; they cover NVMM interop and bit-exact
+  preprocess parity.
 - Focused: `uv run pytest -q tests/test_perception_frame_v1.py tests/test_deepstream_full_wire.py tests/test_deepstream_preflight.py tests/test_deepstream_model_parity.py tests/test_native_association_registry.py`.
 - `uv run --group lint lint-imports` checks configured contracts; the native
   types-only ceiling is checked by focused dependency tests and manual import

@@ -33,6 +33,9 @@
   "native": {
     "path": "/usr/local/bin/seeon-deepstream-preflight"
   },
+  "native_interop": {
+    "path": "/opt/seeon/native-build/bin/seeon-deepstream-nvmm-cuda-interop-probe"
+  },
   "models": {
     "path": "/app/models",
     "require_read_only": true

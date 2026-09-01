@@ -1,21 +1,19 @@
 #include "trt_perception.hpp"
 
+#include "preprocess_gpu.hpp"
+#include "source_runtime.hpp"
 #include "workspace_pool.hpp"
-
-#include <atomic>
-#include <chrono>
-#include <cstdio>
-#include <vector>
 
 #include <NvInfer.h>
 #include <cuda_runtime_api.h>
 
 #include <algorithm>
 #include <array>
-#include <cmath>
-#include <cstring>
+#include <cstdio>
 #include <fstream>
 #include <iterator>
+#include <limits>
+#include <vector>
 
 namespace seeon::trt {
 namespace {
@@ -23,11 +21,7 @@ namespace {
 class Logger final : public nvinfer1::ILogger {
  public:
   void log(Severity severity, const char* message) noexcept override {
-    // TensorRT INFO/VERBOSE is build noise; warnings and errors surface on
-    // stderr where the parent's child-monitor captures them.
-    if (severity <= Severity::kWARNING) {
-      std::fprintf(stderr, "tensorrt: %s\n", message);
-    }
+    if (severity <= Severity::kWARNING) std::fprintf(stderr, "tensorrt: %s\n", message);
   }
 };
 
@@ -36,18 +30,12 @@ Logger& logger() {
   return instance;
 }
 
-// Shared, read-only after load. The engine holds the weights; every concurrent
-// inference needs its own execution context, but they all bind against this.
 struct EngineSlot {
   std::unique_ptr<nvinfer1::ICudaEngine> engine;
   std::string input_name;
   std::vector<std::string> output_names;
 };
 
-// Everything one concurrent inference needs that cannot be shared: an execution
-// context per engine, its own CUDA stream, and its own device/host buffers.
-// The engines stay shared, so an extra workspace costs activation memory and
-// buffers - not another copy of the weights.
 struct Workspace {
   std::unique_ptr<nvinfer1::IExecutionContext> pose_context;
   std::unique_ptr<nvinfer1::IExecutionContext> person_context;
@@ -85,19 +73,6 @@ constexpr std::size_t kPoseOutput = 300ULL * 57ULL;
 constexpr std::size_t kPersonOutput = 300ULL * 6ULL;
 constexpr std::size_t kBedOutput = 300ULL * 38ULL;
 constexpr std::size_t kBedPrototypes = 32ULL * 160ULL * 160ULL;
-
-// How many inferences may run concurrently.
-//
-// A single execution context serializes every camera: GPU work measured at
-// ~5.0ms per call caps a 13-camera deployment at 15.4fps against a 15fps
-// target, and the stack measured 11.3fps. TensorRT execution contexts can run
-// concurrently on separate streams, so the pool overlaps compute with the
-// host/device copies and the per-call tensor binding.
-//
-// Four is a deliberate, named capacity rather than a fall-through default:
-// raising it trades GPU memory (roughly 8.3MB of buffers plus one set of
-// TensorRT activation memory per workspace) for concurrency, and the engines
-// themselves are shared so the weights are not duplicated.
 constexpr std::size_t kInferenceWorkspaces = 4;
 
 }  // namespace
@@ -131,8 +106,6 @@ class TrtPerception::Impl {
         slot->output_names.emplace_back(name);
       }
     }
-    // Deterministic output order: ultralytics exports name outputs output0
-    // (rows) and output1 (prototypes); sort so index 0 is always the row plane.
     std::sort(slot->output_names.begin(), slot->output_names.end());
     if (slot->input_name.empty() || slot->output_names.empty()) {
       *error = "engine_tensor_names_invalid: " + path;
@@ -141,12 +114,12 @@ class TrtPerception::Impl {
     return true;
   }
 
-  static bool run_engine(const EngineSlot& slot, nvinfer1::IExecutionContext* context,
-                         Workspace& workspace, int tensor_height, int tensor_width,
-                         float* device_rows, std::size_t rows_capacity, float* host_rows,
-                         float* device_extra, std::size_t extra_capacity,
-                         float* host_extra, std::string* error) {
-    nvinfer1::Dims4 shape{1, 3, tensor_height, tensor_width};
+  static bool enqueue_engine(const EngineSlot& slot, nvinfer1::IExecutionContext* context,
+                             Workspace& workspace, int tensor_height, int tensor_width,
+                             float* device_rows, std::size_t rows_capacity, float* host_rows,
+                             float* device_extra, std::size_t extra_capacity,
+                             float* host_extra, std::string* error) {
+    const nvinfer1::Dims4 shape{1, 3, tensor_height, tensor_width};
     if (!context->setInputShape(slot.input_name.c_str(), shape)) {
       *error = "engine_input_shape_rejected";
       return false;
@@ -159,37 +132,25 @@ class TrtPerception::Impl {
       *error = "engine_output_bind_failed";
       return false;
     }
-    if (slot.output_names.size() > 1) {
-      if (device_extra == nullptr ||
-          !context->setTensorAddress(slot.output_names[1].c_str(), device_extra)) {
-        *error = "engine_prototype_bind_failed";
-        return false;
-      }
+    if (slot.output_names.size() > 1 &&
+        (device_extra == nullptr ||
+         !context->setTensorAddress(slot.output_names[1].c_str(), device_extra))) {
+      *error = "engine_prototype_bind_failed";
+      return false;
     }
     if (!context->enqueueV3(workspace.stream)) {
       *error = "engine_enqueue_failed";
       return false;
     }
-    // After enqueueV3 the workspace's buffers belong to the GPU until the
-    // stream drains. The lease returns them to the pool on any false, so a
-    // failure past this point must synchronize first or the next lessee
-    // overwrites device_input under a kernel that is still reading it.
     if (cudaMemcpyAsync(host_rows, device_rows, rows_capacity * sizeof(float),
                         cudaMemcpyDeviceToHost, workspace.stream) != cudaSuccess) {
-      static_cast<void>(cudaStreamSynchronize(workspace.stream));
       *error = "engine_output_copy_failed";
       return false;
     }
-    if (slot.output_names.size() > 1 && host_extra != nullptr) {
-      if (cudaMemcpyAsync(host_extra, device_extra, extra_capacity * sizeof(float),
-                          cudaMemcpyDeviceToHost, workspace.stream) != cudaSuccess) {
-        static_cast<void>(cudaStreamSynchronize(workspace.stream));
-        *error = "engine_prototype_copy_failed";
-        return false;
-      }
-    }
-    if (cudaStreamSynchronize(workspace.stream) != cudaSuccess) {
-      *error = "engine_stream_sync_failed";
+    if (slot.output_names.size() > 1 &&
+        cudaMemcpyAsync(host_extra, device_extra, extra_capacity * sizeof(float),
+                        cudaMemcpyDeviceToHost, workspace.stream) != cudaSuccess) {
+      *error = "engine_prototype_copy_failed";
       return false;
     }
     return true;
@@ -200,7 +161,7 @@ TrtPerception::TrtPerception() : impl_(std::make_unique<Impl>()) {}
 TrtPerception::~TrtPerception() = default;
 
 std::unique_ptr<TrtPerception> TrtPerception::load(const std::string& cache_dir,
-                                                   std::string* error) {
+                                                    std::string* error) {
   std::unique_ptr<TrtPerception> perception{new TrtPerception()};
   Impl& impl = *perception->impl_;
   impl.runtime.reset(nvinfer1::createInferRuntime(logger()));
@@ -213,10 +174,6 @@ std::unique_ptr<TrtPerception> TrtPerception::load(const std::string& cache_dir,
       !impl.load_engine(cache_dir + "/bed.engine", &impl.bed, error)) {
     return nullptr;
   }
-  // Build the whole pool up front. A workspace that cannot be created is a
-  // hard load failure rather than a silently smaller pool: a deployment that
-  // quietly runs at a fraction of its configured concurrency is exactly the
-  // kind of implicit degradation this change exists to remove.
   impl.workspaces.reserve(kInferenceWorkspaces);
   impl.pool.reserve(kInferenceWorkspaces);
   for (std::size_t index = 0; index < kInferenceWorkspaces; ++index) {
@@ -241,8 +198,7 @@ std::unique_ptr<TrtPerception> TrtPerception::load(const std::string& cache_dir,
         {&workspace->device_bed_prototypes, kBedPrototypes},
     }};
     for (const auto& [pointer, capacity] : allocations) {
-      if (cudaMalloc(reinterpret_cast<void**>(pointer), capacity * sizeof(float)) !=
-          cudaSuccess) {
+      if (cudaMalloc(reinterpret_cast<void**>(pointer), capacity * sizeof(float)) != cudaSuccess) {
         *error = "cuda_alloc_failed: workspace " + std::to_string(index);
         return nullptr;
       }
@@ -257,100 +213,145 @@ std::unique_ptr<TrtPerception> TrtPerception::load(const std::string& cache_dir,
   return perception;
 }
 
-std::vector<std::string> TrtPerception::engine_names() const {
-  return {"bed", "person", "pose"};
-}
+std::vector<std::string> TrtPerception::engine_names() const { return {"bed", "person", "pose"}; }
 
-bool TrtPerception::infer(const std::uint8_t* rgba, int width, int height, int stride,
-                          bool run_person_engine, PerceptionResult* result,
-                          std::string* error) {
-  if (width <= 0 || height <= 0) {
-    *error = "invalid_source_geometry";
-    return false;
+InferStatus TrtPerception::infer_host(const seeon::HostFrameView& frame, bool run_person_engine,
+                                      PerceptionResult* result, std::string* error) {
+  if (error == nullptr || result == nullptr || frame.rgba_host == nullptr || frame.width <= 0 ||
+      frame.height <= 0 || frame.row_stride_bytes < static_cast<std::ptrdiff_t>(frame.width) * 4 ||
+      frame.row_stride_bytes > std::numeric_limits<int>::max()) {
+    if (error != nullptr) *error = "invalid_host_frame";
+    return InferStatus::kFailed;
   }
-  // Every camera serializes through mutex_, so whatever runs inside it sets the
-  // per-camera frame rate for the whole deployment: with N sources the rate is
-  // 1/(N * critical_section). The letterbox is pure CPU over caller-owned
-  // pixels and shares nothing with the CUDA state, so it is hoisted out of the
-  // lock and staged in a per-thread buffer. Measured on the 13-camera stack
-  // before this change: lock_wait 91.1ms, preprocess 1.6ms, gpu 4.9ms.
-  const auto affine = perception::letterbox_affine(height, width);
+  const auto affine = perception::letterbox_affine(frame.height, frame.width);
   const std::size_t tensor_size =
       3ULL * static_cast<std::size_t>(affine.tensor_height) * affine.tensor_width;
-  thread_local std::vector<float> staging_input;
-  staging_input.resize(tensor_size);
-  const auto t_wait0 = std::chrono::steady_clock::now();
-  preprocess_rgba_to_bgr_tensor(rgba, width, height, stride, affine,
+  std::vector<float> staging_input(tensor_size);
+  preprocess_rgba_to_bgr_tensor(frame.rgba_host, frame.width, frame.height,
+                                static_cast<int>(frame.row_stride_bytes), affine,
                                 staging_input.data());
-  const auto t_pre = std::chrono::steady_clock::now();
-  Impl& impl = *impl_;
-  // RAII lease: every early return below hands the workspace back, so a failing
-  // engine cannot leak pool capacity and slowly starve the deployment.
-  Workspace* leased = impl.pool.acquire();
-  const PoolLease<Workspace> lease{&impl.pool, leased};
-  Workspace& workspace = *leased;
-  const auto t_lock = std::chrono::steady_clock::now();
-  if (cudaMemcpyAsync(workspace.device_input, staging_input.data(),
-                      tensor_size * sizeof(float), cudaMemcpyHostToDevice,
-                      workspace.stream) != cudaSuccess) {
+  Workspace* workspace = impl_->pool.try_acquire();
+  if (workspace == nullptr) return InferStatus::kDroppedBusy;
+  const PoolLease<Workspace> lease{impl_->pool, *workspace};
+  bool async_work_enqueued = false;
+  bool complete = false;
+  if (cudaMemcpyAsync(workspace->device_input, staging_input.data(), tensor_size * sizeof(float),
+                      cudaMemcpyHostToDevice, workspace->stream) != cudaSuccess) {
     *error = "input_copy_failed";
-    return false;
+    goto epilogue;
   }
-  if (!Impl::run_engine(impl.pose, workspace.pose_context.get(), workspace,
-                        affine.tensor_height, affine.tensor_width,
-                        workspace.device_pose, kPoseOutput, workspace.host_pose.data(),
-                        nullptr, 0, nullptr, error) ||
+  async_work_enqueued = true;
+  if (!Impl::enqueue_engine(impl_->pose, workspace->pose_context.get(), *workspace,
+                            affine.tensor_height, affine.tensor_width, workspace->device_pose,
+                            kPoseOutput, workspace->host_pose.data(), nullptr, 0, nullptr, error) ||
       (run_person_engine &&
-       !Impl::run_engine(impl.person, workspace.person_context.get(), workspace,
-                         affine.tensor_height, affine.tensor_width,
-                         workspace.device_person, kPersonOutput,
-                         workspace.host_person.data(), nullptr, 0, nullptr, error)) ||
-      !Impl::run_engine(impl.bed, workspace.bed_context.get(), workspace,
-                        affine.tensor_height, affine.tensor_width, workspace.device_bed,
-                        kBedOutput, workspace.host_bed.data(),
-                        workspace.device_bed_prototypes, kBedPrototypes,
-                        workspace.host_bed_prototypes.data(), error)) {
-    return false;
+       !Impl::enqueue_engine(impl_->person, workspace->person_context.get(), *workspace,
+                             affine.tensor_height, affine.tensor_width, workspace->device_person,
+                             kPersonOutput, workspace->host_person.data(), nullptr, 0, nullptr,
+                             error)) ||
+      !Impl::enqueue_engine(impl_->bed, workspace->bed_context.get(), *workspace,
+                            affine.tensor_height, affine.tensor_width, workspace->device_bed,
+                            kBedOutput, workspace->host_bed.data(),
+                            workspace->device_bed_prototypes, kBedPrototypes,
+                            workspace->host_bed_prototypes.data(), error)) {
+    goto epilogue;
   }
-  const std::vector<double> pose_rows{workspace.host_pose.begin(),
-                                      workspace.host_pose.end()};
-  const std::vector<double> bed_rows{workspace.host_bed.begin(),
-                                     workspace.host_bed.end()};
-  const std::vector<double> prototypes{workspace.host_bed_prototypes.begin(),
-                                       workspace.host_bed_prototypes.end()};
+  complete = true;
+
+epilogue:
+  if (async_work_enqueued && cudaStreamSynchronize(workspace->stream) != cudaSuccess) {
+    *error = "engine_stream_sync_failed";
+    complete = false;
+  }
+  if (!complete) return InferStatus::kFailed;
+  const std::vector<double> pose_rows{workspace->host_pose.begin(), workspace->host_pose.end()};
+  const std::vector<double> bed_rows{workspace->host_bed.begin(), workspace->host_bed.end()};
+  const std::vector<double> prototypes{workspace->host_bed_prototypes.begin(),
+                                       workspace->host_bed_prototypes.end()};
   result->pose = perception::parse_pose_rows(pose_rows, affine);
   if (run_person_engine) {
-    const std::vector<double> person_rows{workspace.host_person.begin(),
-                                          workspace.host_person.end()};
+    const std::vector<double> person_rows{workspace->host_person.begin(),
+                                           workspace->host_person.end()};
     result->person = perception::parse_person_rows(person_rows, affine, kPersonConfidence);
   } else {
     result->person.clear();
   }
   result->bed = perception::parse_bed_rows(bed_rows, prototypes, affine, kBedConfidence);
-  result->source_width = width;
-  result->source_height = height;
-  {
-    // Diagnostic: attribute the inference cost. pool_wait is time spent waiting
-    // for a free workspace and is the signal that kInferenceWorkspaces is too
-    // small; gpu covers the engines plus the host-side row parsing that
-    // follows them, so total_us is the whole per-call critical path. Keeping these separable is the only reason
-    // the previous serialization was measured rather than guessed at.
-    const auto t_gpu = std::chrono::steady_clock::now();
-    static std::atomic<std::uint64_t> infer_calls{0};
-    if ((++infer_calls % 64) == 0) {
-      const auto us = [](auto a, auto b) {
-        return static_cast<long long>(
-            std::chrono::duration_cast<std::chrono::microseconds>(b - a).count());
-      };
-      std::fprintf(stderr,
-                   "seeon-infer: pool_wait_us=%lld preprocess_us=%lld gpu_us=%lld "
-                   "total_us=%lld person_engine=%d calls=%llu\n",
-                   us(t_pre, t_lock), us(t_wait0, t_pre), us(t_lock, t_gpu),
-                   us(t_wait0, t_gpu), run_person_engine ? 1 : 0,
-                   static_cast<unsigned long long>(infer_calls.load()));
-    }
+  result->source_width = frame.width;
+  result->source_height = frame.height;
+  return InferStatus::kCompleted;
+}
+
+InferStatus TrtPerception::infer_device(const seeon::DeviceFrameView& frame,
+                                        bool run_person_engine, PerceptionResult* result,
+                                        std::string* error) {
+  if (error == nullptr || result == nullptr || frame.rgba_device == nullptr || frame.width <= 0 ||
+      frame.height <= 0 || frame.pitch_bytes < static_cast<std::size_t>(frame.width) * 4 ||
+      frame.device_ordinal < 0) {
+    if (error != nullptr) *error = "invalid_device_frame";
+    return InferStatus::kFailed;
   }
-  return true;
+  Workspace* available = impl_->pool.try_acquire();
+  if (available == nullptr) return InferStatus::kDroppedBusy;
+  const PoolLease<Workspace> lease{impl_->pool, *available};
+  int current_device = -1;
+  if (cudaGetDevice(&current_device) != cudaSuccess || current_device != frame.device_ordinal) {
+    *error = "device_ordinal_invalid";
+    return InferStatus::kFailed;
+  }
+  const auto affine = perception::letterbox_affine(frame.height, frame.width);
+  bool async_work_enqueued = false;
+  bool complete = false;
+  // The preprocess helper may have submitted work before reporting a launch
+  // failure. Its contract requires the borrowed frame and workspace to remain
+  // live until this stream is synchronized.
+  async_work_enqueued = true;
+  if (!preprocess_rgba_device_to_bgr_tensor(frame.rgba_device, frame.width, frame.height,
+                                            frame.pitch_bytes, affine, available->device_input,
+                                            available->stream, error)) {
+    goto epilogue;
+  }
+  if (!Impl::enqueue_engine(impl_->pose, available->pose_context.get(), *available,
+                            affine.tensor_height, affine.tensor_width, available->device_pose,
+                            kPoseOutput, available->host_pose.data(), nullptr, 0, nullptr, error)) {
+    goto epilogue;
+  }
+  if (run_person_engine &&
+      !Impl::enqueue_engine(impl_->person, available->person_context.get(), *available,
+                            affine.tensor_height, affine.tensor_width, available->device_person,
+                            kPersonOutput, available->host_person.data(), nullptr, 0, nullptr, error)) {
+    goto epilogue;
+  }
+  if (!Impl::enqueue_engine(impl_->bed, available->bed_context.get(), *available,
+                            affine.tensor_height, affine.tensor_width, available->device_bed,
+                            kBedOutput, available->host_bed.data(), available->device_bed_prototypes,
+                            kBedPrototypes, available->host_bed_prototypes.data(), error)) {
+    goto epilogue;
+  }
+  complete = true;
+
+epilogue:
+  if (async_work_enqueued && cudaStreamSynchronize(available->stream) != cudaSuccess) {
+    *error = "engine_stream_sync_failed";
+    complete = false;
+  }
+  if (!complete) return InferStatus::kFailed;
+  const std::vector<double> pose_rows{available->host_pose.begin(), available->host_pose.end()};
+  const std::vector<double> bed_rows{available->host_bed.begin(), available->host_bed.end()};
+  const std::vector<double> prototypes{available->host_bed_prototypes.begin(),
+                                       available->host_bed_prototypes.end()};
+  result->pose = perception::parse_pose_rows(pose_rows, affine);
+  if (run_person_engine) {
+    const std::vector<double> person_rows{available->host_person.begin(),
+                                           available->host_person.end()};
+    result->person = perception::parse_person_rows(person_rows, affine, kPersonConfidence);
+  } else {
+    result->person.clear();
+  }
+  result->bed = perception::parse_bed_rows(bed_rows, prototypes, affine, kBedConfidence);
+  result->source_width = frame.width;
+  result->source_height = frame.height;
+  return InferStatus::kCompleted;
 }
 
 }  // namespace seeon::trt
