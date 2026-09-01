@@ -173,6 +173,9 @@ def test_device_inference_copies_only_compact_pose_and_optional_person_rows() ->
     perception = _source("trt_perception.cpp")
     header = _source("postprocess_gpu.hpp")
     infer_device = _function_region(perception, "TrtPerception::infer_device")
+    validator = _function_region(
+        _source("postprocess_gpu.cu"), "validate_postprocess_channel_headers"
+    )
 
     assert "static_assert(sizeof(PostprocessChannelHeader) == 8);" in header
     for engine, context, device_rows, capacity in (
@@ -187,16 +190,137 @@ def test_device_inference_copies_only_compact_pose_and_optional_person_rows() ->
         )
         assert re.search(pattern, infer_device)
     assert "sizeof(PostprocessChannelHeader), cudaMemcpyDeviceToHost" in infer_device
-    assert "available->host_pose_header.kernel_executed != 1" in infer_device
-    assert "available->host_pose_header.count < 0" in infer_device
-    assert "available->host_pose_header.count > kPostprocessTensorRows" in infer_device
-    assert "run_person_engine &&" in infer_device
-    assert "available->host_person_header.kernel_executed != 1" in infer_device
+    assert "validate_postprocess_channel_headers(" in infer_device
+    assert "valid_required_channel_header(pose)" in validator
+    assert "valid_required_channel_header(bed)" in validator
+    assert "? valid_required_channel_header(person)" in validator
+    assert "person.kernel_executed == 0 && person.count == 0" in validator
     assert "pose_count * kPostprocessPoseRowStride * sizeof(float)" in infer_device
     assert "person_count * kPostprocessPersonRowStride * sizeof(float)" in infer_device
     assert "kPoseOutput * sizeof(float)" not in infer_device
     assert "kPersonOutput * sizeof(float)" not in infer_device
     assert "std::vector<double>" not in perception
+
+
+def test_packed_bed_transfer_abi_and_budget_are_fixed_without_an_envelope() -> None:
+    header = _source("postprocess_gpu.hpp")
+
+    for declaration in (
+        "kPostprocessBedRowStride = 38",
+        "kPostprocessBedMaxPoints = 48",
+        "kBedFinalizeSegments = 300",
+        "kBedFinalizePixels = 160 * 160",
+        "sizeof(PackedBedRecord) == 416",
+        "offsetof(PackedBedRecord, box) == 0",
+        "offsetof(PackedBedRecord, confidence) == 16",
+        "offsetof(PackedBedRecord, point_count) == 24",
+        "offsetof(PackedBedRecord, pad) == 28",
+        "offsetof(PackedBedRecord, points) == 32",
+        "kPostprocessMaxPersonTransferBytes == 200424",
+        "kPostprocessPoseOnlyTransferBytes == 193224",
+    ):
+        assert declaration in header
+    assert "postprocess_bed_transfer_bytes(std::size_t count)" in header
+    assert "count * sizeof(PackedBedRecord)" in header
+    assert "Envelope" not in header
+
+
+def test_production_and_gpu_postprocess_targets_pin_finalizer_math() -> None:
+    cmake = (NATIVE_ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+
+    for target in (
+        "seeon-deepstream-child",
+        "seeon-deepstream-preflight",
+        "seeon-deepstream-postprocess-gpu-test",
+    ):
+        region = _cmake_target_region(cmake, target)
+        assert "src/pinned_host_atan2.cu" in region
+        assert "src/postprocess_gpu.cu" in region
+        assert "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>" in region
+
+
+def test_bed_finalizer_is_device_segmented_and_uses_pinned_host_atan2() -> None:
+    postprocess = _source("postprocess_gpu.cu")
+    finalizer = _function_region(postprocess, "finalize_bed_rows_device")
+
+    assert "#include <cub/device/device_segmented_radix_sort.cuh>" in postprocess
+    assert "pinned_host_atan2(" in postprocess
+    assert "cub::DeviceSegmentedRadixSort::SortPairs(" in finalizer
+    assert "kBedFinalizeSegments" in finalizer
+    assert "points.Current()" in finalizer
+    for forbidden in (
+        "cudaMalloc",
+        "cudaFree",
+        "std::sort",
+        "std::stable_sort",
+        "std::nth_element",
+        "std::partial_sort",
+        "malloc(",
+        "new ",
+    ):
+        assert forbidden not in postprocess
+    assert not re.search(r"(?<![\w:])atan2\s*\(", postprocess)
+
+
+def test_device_bed_path_copies_only_headers_then_count_sized_final_records() -> None:
+    infer_device = _function_region(_source("trt_perception.cpp"), "TrtPerception::infer_device")
+    validator = _function_region(
+        _source("postprocess_gpu.cu"), "validate_postprocess_channel_headers"
+    )
+
+    bed_enqueue = re.search(
+        r"enqueue_engine\(\s*impl_->bed,[\s\S]*?available->device_bed,\s*"
+        r"kBedOutput,\s*nullptr,\s*available->device_bed_prototypes,\s*"
+        r"kBedPrototypes,\s*nullptr,\s*false,\s*error\)",
+        infer_device,
+    )
+    assert bed_enqueue is not None
+    for channel in ("pose", "person", "bed"):
+        assert re.search(
+            rf"&available->host_{channel}_header,\s*available->device_{channel}_header,\s*"
+            r"sizeof\(PostprocessChannelHeader\),\s*cudaMemcpyDeviceToHost",
+            infer_device,
+        )
+    assert "cudaMemsetAsync(available->device_person_header, 0" in infer_device
+    assert not re.search(
+        r"device_person_header[\s\S]{0,160}cudaMemcpyHostToDevice", infer_device
+    )
+    assert re.search(
+        r"host_bed_records\.data\(\),\s*available->device_bed_records,\s*"
+        r"bed_count \* sizeof\(PackedBedRecord\),\s*cudaMemcpyDeviceToHost",
+        infer_device,
+    )
+    for forbidden in (
+        "available->device_bed,",
+        "available->device_bed_prototypes,",
+        "parse_bed_rows",
+    ):
+        assert forbidden not in infer_device[infer_device.index("cudaStreamSynchronize") :]
+    assert "validate_postprocess_channel_headers(" in infer_device
+    assert "valid_required_channel_header(pose)" in validator
+    assert "valid_required_channel_header(bed)" in validator
+    assert "? valid_required_channel_header(person)" in validator
+
+
+def test_bed_finalizer_workspace_is_fixed_and_allocated_only_at_load() -> None:
+    perception = _source("trt_perception.cpp")
+    load = _function_region(perception, "TrtPerception::load")
+    infer_device = _function_region(perception, "TrtPerception::infer_device")
+
+    for allocation in (
+        "kPostprocessTensorRows * sizeof(PackedBedRecord)",
+        "kBedFinalizeEntries * sizeof(std::uint64_t)",
+        "kBedFinalizeEntries * sizeof(std::uint32_t)",
+        "kBedFinalizeSegments * sizeof(std::int32_t)",
+        "(kBedFinalizeSegments + 1) * sizeof(std::int32_t)",
+    ):
+        assert allocation in load
+    assert "offsets[segment] = segment * kBedFinalizePixels" in load
+    assert "cudaMemcpy(workspace->bed_finalize.offsets" in load
+    assert "cudaMemcpyHostToDevice" in load
+    assert "query_bed_finalize_workspace_temp_bytes(&workspace->bed_finalize, error)" in load
+    assert "cudaMalloc(&workspace->bed_finalize.cub_temp" in load
+    assert "cudaMalloc" not in infer_device
 
 
 def test_postprocess_kernel_preserves_source_order_and_current_row_cuts() -> None:

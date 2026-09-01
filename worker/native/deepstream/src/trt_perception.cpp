@@ -49,21 +49,41 @@ struct Workspace {
   float* device_bed_prototypes = nullptr;
   float* device_pose_compact = nullptr;
   float* device_person_compact = nullptr;
+  PackedBedRecord* device_bed_records = nullptr;
+  BedFinalizeWorkspace bed_finalize;
   PostprocessChannelHeader* device_pose_header = nullptr;
   PostprocessChannelHeader* device_person_header = nullptr;
+  PostprocessChannelHeader* device_bed_header = nullptr;
   std::vector<float> host_pose;
   std::vector<float> host_person;
-  std::vector<float> host_bed;
-  std::vector<float> host_bed_prototypes;
   PostprocessChannelHeader host_pose_header{};
   PostprocessChannelHeader host_person_header{};
+  PostprocessChannelHeader host_bed_header{};
+  std::vector<PackedBedRecord> host_bed_records;
 
   ~Workspace() {
     for (float* pointer : {device_input, device_pose, device_person, device_bed,
                            device_bed_prototypes, device_pose_compact, device_person_compact}) {
       if (pointer != nullptr) cudaFree(pointer);
     }
-    for (PostprocessChannelHeader* pointer : {device_pose_header, device_person_header}) {
+    if (device_bed_records != nullptr) cudaFree(device_bed_records);
+    for (std::uint64_t* pointer : {bed_finalize.keys[0], bed_finalize.keys[1]}) {
+      if (pointer != nullptr) cudaFree(pointer);
+    }
+    for (std::uint32_t* pointer : {bed_finalize.points[0], bed_finalize.points[1]}) {
+      if (pointer != nullptr) cudaFree(pointer);
+    }
+    for (void* pointer : {static_cast<void*>(bed_finalize.row_to_record),
+                          static_cast<void*>(bed_finalize.active_count),
+                          static_cast<void*>(bed_finalize.crop),
+                          static_cast<void*>(bed_finalize.sum_y),
+                          static_cast<void*>(bed_finalize.sum_x),
+                          static_cast<void*>(bed_finalize.offsets),
+                          bed_finalize.cub_temp}) {
+      if (pointer != nullptr) cudaFree(pointer);
+    }
+    for (PostprocessChannelHeader* pointer :
+         {device_pose_header, device_person_header, device_bed_header}) {
       if (pointer != nullptr) cudaFree(pointer);
     }
     if (stream != nullptr) cudaStreamDestroy(stream);
@@ -158,7 +178,7 @@ class TrtPerception::Impl {
       *error = "engine_output_copy_failed";
       return false;
     }
-    if (slot.output_names.size() > 1 &&
+    if (slot.output_names.size() > 1 && host_extra != nullptr &&
         cudaMemcpyAsync(host_extra, device_extra, extra_capacity * sizeof(float),
                         cudaMemcpyDeviceToHost, workspace.stream) != cudaSuccess) {
       *error = "engine_prototype_copy_failed";
@@ -216,18 +236,73 @@ std::unique_ptr<TrtPerception> TrtPerception::load(const std::string& cache_dir,
         return nullptr;
       }
     }
+    if (cudaMalloc(reinterpret_cast<void**>(&workspace->device_bed_records),
+                   kPostprocessTensorRows * sizeof(PackedBedRecord)) != cudaSuccess) {
+      *error = "cuda_alloc_failed: workspace " + std::to_string(index);
+      return nullptr;
+    }
     for (PostprocessChannelHeader** pointer :
-         {&workspace->device_pose_header, &workspace->device_person_header}) {
+         {&workspace->device_pose_header, &workspace->device_person_header,
+          &workspace->device_bed_header}) {
       if (cudaMalloc(reinterpret_cast<void**>(pointer), sizeof(PostprocessChannelHeader)) !=
           cudaSuccess) {
         *error = "cuda_alloc_failed: workspace " + std::to_string(index);
         return nullptr;
       }
     }
+    for (std::uint64_t** pointer : {&workspace->bed_finalize.keys[0],
+                                   &workspace->bed_finalize.keys[1]}) {
+      if (cudaMalloc(reinterpret_cast<void**>(pointer),
+                     kBedFinalizeEntries * sizeof(std::uint64_t)) != cudaSuccess) {
+        *error = "cuda_alloc_failed: workspace " + std::to_string(index);
+        return nullptr;
+      }
+    }
+    for (std::uint32_t** pointer : {&workspace->bed_finalize.points[0],
+                                   &workspace->bed_finalize.points[1]}) {
+      if (cudaMalloc(reinterpret_cast<void**>(pointer),
+                     kBedFinalizeEntries * sizeof(std::uint32_t)) != cudaSuccess) {
+        *error = "cuda_alloc_failed: workspace " + std::to_string(index);
+        return nullptr;
+      }
+    }
+    const std::array<std::pair<void**, std::size_t>, 6> bed_finalize_allocations{{
+        {reinterpret_cast<void**>(&workspace->bed_finalize.row_to_record),
+         kBedFinalizeSegments * sizeof(std::int32_t)},
+        {reinterpret_cast<void**>(&workspace->bed_finalize.active_count),
+         kBedFinalizeSegments * sizeof(std::int32_t)},
+        {reinterpret_cast<void**>(&workspace->bed_finalize.crop),
+         kBedFinalizeSegments * sizeof(int4)},
+        {reinterpret_cast<void**>(&workspace->bed_finalize.sum_y),
+         kBedFinalizeSegments * sizeof(std::int64_t)},
+        {reinterpret_cast<void**>(&workspace->bed_finalize.sum_x),
+         kBedFinalizeSegments * sizeof(std::int64_t)},
+        {reinterpret_cast<void**>(&workspace->bed_finalize.offsets),
+         (kBedFinalizeSegments + 1) * sizeof(std::int32_t)},
+    }};
+    for (const auto& [pointer, bytes] : bed_finalize_allocations) {
+      if (cudaMalloc(pointer, bytes) != cudaSuccess) {
+        *error = "cuda_alloc_failed: workspace " + std::to_string(index);
+        return nullptr;
+      }
+    }
+    std::array<std::int32_t, kBedFinalizeSegments + 1> offsets{};
+    for (int segment = 0; segment <= kBedFinalizeSegments; ++segment)
+      offsets[segment] = segment * kBedFinalizePixels;
+    if (cudaMemcpy(workspace->bed_finalize.offsets, offsets.data(), sizeof(offsets),
+                   cudaMemcpyHostToDevice) != cudaSuccess) {
+      *error = "cuda_alloc_failed: workspace " + std::to_string(index);
+      return nullptr;
+    }
+    if (!query_bed_finalize_workspace_temp_bytes(&workspace->bed_finalize, error)) return nullptr;
+    if (cudaMalloc(&workspace->bed_finalize.cub_temp, workspace->bed_finalize.cub_temp_bytes) !=
+        cudaSuccess) {
+      *error = "cuda_alloc_failed: workspace " + std::to_string(index);
+      return nullptr;
+    }
     workspace->host_pose.resize(kPoseOutput);
     workspace->host_person.resize(kPersonOutput);
-    workspace->host_bed.resize(kBedOutput);
-    workspace->host_bed_prototypes.resize(kBedPrototypes);
+    workspace->host_bed_records.resize(kPostprocessTensorRows);
     impl.pool.add(workspace.get());
     impl.workspaces.push_back(std::move(workspace));
   }
@@ -256,6 +331,10 @@ InferStatus TrtPerception::infer_host(const seeon::HostFrameView& frame, bool ru
   const PoolLease<Workspace> lease{impl_->pool, *workspace};
   bool async_work_enqueued = false;
   bool complete = false;
+  std::size_t pose_count = 0;
+  std::size_t person_count = 0;
+  std::size_t bed_count = 0;
+  std::size_t transfer_bytes = 0;
   if (cudaMemcpyAsync(workspace->device_input, staging_input.data(), tensor_size * sizeof(float),
                       cudaMemcpyHostToDevice, workspace->stream) != cudaSuccess) {
     *error = "input_copy_failed";
@@ -264,18 +343,75 @@ InferStatus TrtPerception::infer_host(const seeon::HostFrameView& frame, bool ru
   async_work_enqueued = true;
   if (!Impl::enqueue_engine(impl_->pose, workspace->pose_context.get(), *workspace,
                             affine.tensor_height, affine.tensor_width, workspace->device_pose,
-                            kPoseOutput, workspace->host_pose.data(), nullptr, 0, nullptr, true,
-                            error) ||
+                            kPoseOutput, nullptr, nullptr, 0, nullptr, false, error) ||
+      !compact_pose_rows_device(workspace->device_pose, workspace->device_pose_compact,
+                                workspace->device_pose_header, workspace->stream, error) ||
       (run_person_engine &&
        !Impl::enqueue_engine(impl_->person, workspace->person_context.get(), *workspace,
                              affine.tensor_height, affine.tensor_width, workspace->device_person,
-                             kPersonOutput, workspace->host_person.data(), nullptr, 0, nullptr,
-                             true, error)) ||
+                             kPersonOutput, nullptr, nullptr, 0, nullptr, false, error)) ||
+      (run_person_engine &&
+       !compact_person_rows_device(workspace->device_person, workspace->device_person_compact,
+                                   workspace->device_person_header, workspace->stream, error)) ||
       !Impl::enqueue_engine(impl_->bed, workspace->bed_context.get(), *workspace,
                             affine.tensor_height, affine.tensor_width, workspace->device_bed,
-                            kBedOutput, workspace->host_bed.data(),
-                            workspace->device_bed_prototypes, kBedPrototypes,
-                            workspace->host_bed_prototypes.data(), true, error)) {
+                            kBedOutput, nullptr, workspace->device_bed_prototypes, kBedPrototypes,
+                            nullptr, false, error) ||
+      !finalize_bed_rows_device(
+          workspace->device_bed, workspace->device_bed_prototypes, workspace->device_bed_records,
+          workspace->device_bed_header, &workspace->bed_finalize,
+          BedFinalizeGeometry{frame.height, frame.width, affine.tensor_height, affine.tensor_width,
+                              affine.gain, affine.box_pad_x, affine.box_pad_y,
+                              affine.keypoint_pad_x, affine.keypoint_pad_y},
+          workspace->stream, error)) {
+    goto epilogue;
+  }
+  if (!run_person_engine &&
+      cudaMemsetAsync(workspace->device_person_header, 0, sizeof(PostprocessChannelHeader),
+                      workspace->stream) != cudaSuccess) {
+    *error = "postprocess_person_skipped_header_failed";
+    goto epilogue;
+  }
+  if (cudaMemcpyAsync(&workspace->host_pose_header, workspace->device_pose_header,
+                      sizeof(PostprocessChannelHeader), cudaMemcpyDeviceToHost,
+                      workspace->stream) != cudaSuccess ||
+      cudaMemcpyAsync(&workspace->host_person_header, workspace->device_person_header,
+                      sizeof(PostprocessChannelHeader), cudaMemcpyDeviceToHost,
+                      workspace->stream) != cudaSuccess ||
+      cudaMemcpyAsync(&workspace->host_bed_header, workspace->device_bed_header,
+                      sizeof(PostprocessChannelHeader), cudaMemcpyDeviceToHost,
+                      workspace->stream) != cudaSuccess) {
+    *error = "postprocess_header_copy_failed";
+    goto epilogue;
+  }
+  if (cudaStreamSynchronize(workspace->stream) != cudaSuccess) {
+    *error = "postprocess_header_sync_failed";
+    goto epilogue;
+  }
+  if (!validate_postprocess_channel_headers(
+          workspace->host_pose_header, workspace->host_person_header, workspace->host_bed_header,
+          run_person_engine, error))
+    goto epilogue;
+  pose_count = static_cast<std::size_t>(workspace->host_pose_header.count);
+  person_count = run_person_engine
+                     ? static_cast<std::size_t>(workspace->host_person_header.count)
+                     : 0;
+  bed_count = static_cast<std::size_t>(workspace->host_bed_header.count);
+  if (!postprocess_transfer_bytes(pose_count, person_count, bed_count, &transfer_bytes)) {
+    *error = "postprocess_header_invalid";
+    goto epilogue;
+  }
+  if (cudaMemcpyAsync(workspace->host_pose.data(), workspace->device_pose_compact,
+                      pose_count * kPostprocessPoseRowStride * sizeof(float),
+                      cudaMemcpyDeviceToHost, workspace->stream) != cudaSuccess ||
+      (run_person_engine &&
+       cudaMemcpyAsync(workspace->host_person.data(), workspace->device_person_compact,
+                       person_count * kPostprocessPersonRowStride * sizeof(float),
+                       cudaMemcpyDeviceToHost, workspace->stream) != cudaSuccess) ||
+      cudaMemcpyAsync(workspace->host_bed_records.data(), workspace->device_bed_records,
+                      bed_count * sizeof(PackedBedRecord), cudaMemcpyDeviceToHost,
+                      workspace->stream) != cudaSuccess) {
+    *error = "postprocess_rows_copy_failed";
     goto epilogue;
   }
   complete = true;
@@ -286,17 +422,35 @@ epilogue:
     complete = false;
   }
   if (!complete) return InferStatus::kFailed;
-  result->pose = perception::parse_pose_rows(std::span<const float>{workspace->host_pose}, affine);
+  result->pose = perception::parse_pose_rows(
+      std::span<const float>{workspace->host_pose.data(),
+                             pose_count * kPostprocessPoseRowStride},
+      affine);
   if (run_person_engine) {
-    result->person = perception::parse_person_rows(std::span<const float>{workspace->host_person},
-                                                    affine, kPersonConfidence);
+    result->person = perception::parse_person_rows(
+        std::span<const float>{workspace->host_person.data(),
+                               person_count * kPostprocessPersonRowStride},
+        affine, kPersonConfidence);
   } else {
     result->person.clear();
   }
-  result->bed = perception::parse_bed_rows(std::span<const float>{workspace->host_bed},
-                                            std::span<const float>{
-                                                workspace->host_bed_prototypes},
-                                            affine, kBedConfidence);
+  result->bed.clear();
+  result->bed.reserve(bed_count);
+  for (std::size_t index = 0; index < bed_count; ++index) {
+    const PackedBedRecord& packed = workspace->host_bed_records[index];
+    if (packed.point_count < 0 || packed.point_count > kPostprocessBedMaxPoints) {
+      *error = "bed_postprocess_record_invalid";
+      return InferStatus::kFailed;
+    }
+    perception::ParsedBedRegion region{
+        perception::ParsedBox{packed.box[0], packed.box[1], packed.box[2], packed.box[3],
+                               packed.confidence},
+        {}};
+    region.polygon.reserve(static_cast<std::size_t>(packed.point_count));
+    for (int point = 0; point < packed.point_count; ++point)
+      region.polygon.emplace_back(packed.points[point][0], packed.points[point][1]);
+    result->bed.push_back(std::move(region));
+  }
   result->source_width = frame.width;
   result->source_height = frame.height;
   return InferStatus::kCompleted;
@@ -324,6 +478,8 @@ InferStatus TrtPerception::infer_device(const seeon::DeviceFrameView& frame,
   bool complete = false;
   std::size_t pose_count = 0;
   std::size_t person_count = 0;
+  std::size_t bed_count = 0;
+  std::size_t transfer_bytes = 0;
   // The preprocess helper may have submitted work before reporting a launch
   // failure. Its contract requires the borrowed frame and workspace to remain
   // live until this stream is synchronized.
@@ -355,17 +511,32 @@ InferStatus TrtPerception::infer_device(const seeon::DeviceFrameView& frame,
   }
   if (!Impl::enqueue_engine(impl_->bed, available->bed_context.get(), *available,
                             affine.tensor_height, affine.tensor_width, available->device_bed,
-                            kBedOutput, available->host_bed.data(), available->device_bed_prototypes,
-                            kBedPrototypes, available->host_bed_prototypes.data(), true, error)) {
+                            kBedOutput, nullptr, available->device_bed_prototypes,
+                            kBedPrototypes, nullptr, false, error) ||
+      !finalize_bed_rows_device(
+          available->device_bed, available->device_bed_prototypes, available->device_bed_records,
+          available->device_bed_header, &available->bed_finalize,
+          BedFinalizeGeometry{frame.height, frame.width, affine.tensor_height, affine.tensor_width,
+                              affine.gain, affine.box_pad_x, affine.box_pad_y,
+                              affine.keypoint_pad_x, affine.keypoint_pad_y},
+          available->stream, error)) {
+    goto epilogue;
+  }
+  if (!run_person_engine &&
+      cudaMemsetAsync(available->device_person_header, 0, sizeof(PostprocessChannelHeader),
+                      available->stream) != cudaSuccess) {
+    *error = "postprocess_person_skipped_header_failed";
     goto epilogue;
   }
   if (cudaMemcpyAsync(&available->host_pose_header, available->device_pose_header,
                       sizeof(PostprocessChannelHeader), cudaMemcpyDeviceToHost,
                       available->stream) != cudaSuccess ||
-      (run_person_engine &&
-       cudaMemcpyAsync(&available->host_person_header, available->device_person_header,
-                       sizeof(PostprocessChannelHeader), cudaMemcpyDeviceToHost,
-                       available->stream) != cudaSuccess)) {
+      cudaMemcpyAsync(&available->host_person_header, available->device_person_header,
+                      sizeof(PostprocessChannelHeader), cudaMemcpyDeviceToHost,
+                      available->stream) != cudaSuccess ||
+      cudaMemcpyAsync(&available->host_bed_header, available->device_bed_header,
+                      sizeof(PostprocessChannelHeader), cudaMemcpyDeviceToHost,
+                      available->stream) != cudaSuccess) {
     *error = "postprocess_header_copy_failed";
     goto epilogue;
   }
@@ -373,27 +544,29 @@ InferStatus TrtPerception::infer_device(const seeon::DeviceFrameView& frame,
     *error = "postprocess_header_sync_failed";
     goto epilogue;
   }
-  if (available->host_pose_header.kernel_executed != 1 ||
-      available->host_pose_header.count < 0 ||
-      available->host_pose_header.count > kPostprocessTensorRows ||
-      (run_person_engine &&
-       (available->host_person_header.kernel_executed != 1 ||
-        available->host_person_header.count < 0 ||
-        available->host_person_header.count > kPostprocessTensorRows))) {
-    *error = "postprocess_header_invalid";
+  if (!validate_postprocess_channel_headers(
+          available->host_pose_header, available->host_person_header, available->host_bed_header,
+          run_person_engine, error))
     goto epilogue;
-  }
   pose_count = static_cast<std::size_t>(available->host_pose_header.count);
   person_count = run_person_engine
                      ? static_cast<std::size_t>(available->host_person_header.count)
                      : 0;
+  bed_count = static_cast<std::size_t>(available->host_bed_header.count);
+  if (!postprocess_transfer_bytes(pose_count, person_count, bed_count, &transfer_bytes)) {
+    *error = "postprocess_header_invalid";
+    goto epilogue;
+  }
   if (cudaMemcpyAsync(available->host_pose.data(), available->device_pose_compact,
                       pose_count * kPostprocessPoseRowStride * sizeof(float),
                       cudaMemcpyDeviceToHost, available->stream) != cudaSuccess ||
       (run_person_engine &&
        cudaMemcpyAsync(available->host_person.data(), available->device_person_compact,
                        person_count * kPostprocessPersonRowStride * sizeof(float),
-                       cudaMemcpyDeviceToHost, available->stream) != cudaSuccess)) {
+                       cudaMemcpyDeviceToHost, available->stream) != cudaSuccess) ||
+      cudaMemcpyAsync(available->host_bed_records.data(), available->device_bed_records,
+                      bed_count * sizeof(PackedBedRecord), cudaMemcpyDeviceToHost,
+                      available->stream) != cudaSuccess) {
     *error = "postprocess_rows_copy_failed";
     goto epilogue;
   }
@@ -417,10 +590,23 @@ epilogue:
   } else {
     result->person.clear();
   }
-  result->bed = perception::parse_bed_rows(std::span<const float>{available->host_bed},
-                                            std::span<const float>{
-                                                available->host_bed_prototypes},
-                                            affine, kBedConfidence);
+  result->bed.clear();
+  result->bed.reserve(bed_count);
+  for (std::size_t index = 0; index < bed_count; ++index) {
+    const PackedBedRecord& packed = available->host_bed_records[index];
+    if (packed.point_count < 0 || packed.point_count > kPostprocessBedMaxPoints) {
+      *error = "bed_postprocess_record_invalid";
+      return InferStatus::kFailed;
+    }
+    perception::ParsedBedRegion region{
+        perception::ParsedBox{packed.box[0], packed.box[1], packed.box[2], packed.box[3],
+                               packed.confidence},
+        {}};
+    region.polygon.reserve(static_cast<std::size_t>(packed.point_count));
+    for (int point = 0; point < packed.point_count; ++point)
+      region.polygon.emplace_back(packed.points[point][0], packed.points[point][1]);
+    result->bed.push_back(std::move(region));
+  }
   result->source_width = frame.width;
   result->source_height = frame.height;
   return InferStatus::kCompleted;

@@ -71,12 +71,17 @@ add_executable(
   seeon-deepstream-preflight
   src/main.cpp
   src/native_perception.cpp
+  src/pinned_host_atan2.cu
   src/postprocess_gpu.cu
   src/preprocess_cpu.cpp
   src/preprocess_gpu.cu
   src/trt_perception.cpp
 )
 target_compile_features(seeon-deepstream-preflight PRIVATE cxx_std_20)
+set_target_properties(
+  seeon-deepstream-preflight
+  PROPERTIES CUDA_SEPARABLE_COMPILATION ON CUDA_RESOLVE_DEVICE_SYMBOLS ON
+)
 target_compile_options(
   seeon-deepstream-preflight
   PRIVATE
@@ -103,6 +108,7 @@ add_executable(
   src/encoded_source_branch.cpp
   src/encoded_source_sample.cpp
   src/native_perception.cpp
+  src/pinned_host_atan2.cu
   src/postprocess_gpu.cu
   src/preprocess_cpu.cpp
   src/preprocess_gpu.cu
@@ -114,6 +120,10 @@ add_executable(
   src/trt_perception.cpp
 )
 target_compile_features(seeon-deepstream-child PRIVATE cxx_std_20)
+set_target_properties(
+  seeon-deepstream-child
+  PROPERTIES CUDA_SEPARABLE_COMPILATION ON CUDA_RESOLVE_DEVICE_SYMBOLS ON
+)
 target_compile_definitions(seeon-deepstream-child PRIVATE SEEON_HAS_GSTREAMER=1)
 target_compile_options(
   seeon-deepstream-child
@@ -278,11 +288,14 @@ if(BUILD_TESTING)
   add_executable(
     seeon-deepstream-postprocess-gpu-test
     src/postprocess_gpu_test.cu
+    src/native_perception.cpp
+    src/pinned_host_atan2.cu
     src/postprocess_gpu.cu
   )
   set_target_properties(
     seeon-deepstream-postprocess-gpu-test
     PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON CUDA_EXTENSIONS OFF
+               CUDA_SEPARABLE_COMPILATION ON CUDA_RESOLVE_DEVICE_SYMBOLS ON
   )
   target_compile_features(seeon-deepstream-postprocess-gpu-test PRIVATE cxx_std_20)
   target_compile_options(

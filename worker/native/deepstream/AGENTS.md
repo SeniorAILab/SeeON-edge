@@ -35,9 +35,11 @@ rule unless a separate behavior change is approved.
 Device contour ordering uses the private pinned-host `atan2` compatibility
 component, not CUDA `atan2`. Its glibc/libm/table identities and raw-bit/order
 corpus are boot-gated; changing the host image or expression graph without a
-zero-mismatch replacement must refuse rollout.
-source-order compaction are device-owned; only compact survivors cross to the
-host. Do not add a second NMS. Bed remains pending device finalization.
+zero-mismatch replacement must refuse rollout. Device owns bed thresholding,
+mask/prototype evaluation, contour finalization, linspace sampling, inverse
+geometry, and source-order compaction. Bed crosses to CPU only as the exact
+count-sized `PackedBedRecord` transfer after device finalization; CPU owns
+policy and conversion only. Do not add a second NMS.
 
 The encoded-AU tee is source-primary and precedes decode. Primary evidence
 remuxes that stream; preview JPEGs are bounded derivatives.
