@@ -52,6 +52,7 @@ from worker.native.deepstream.parity.preprocess import (
     preprocess_batch,
     preprocess_tensor,
 )
+from worker.native.deepstream.parity.preprocess_native import preprocess_rgba_to_bgr_tensor
 
 __all__ = [
     "BED_PROTOTYPE_SHAPE",
@@ -82,5 +83,6 @@ __all__ = [
     "parse_person_rows",
     "parse_pose_rows",
     "preprocess_batch",
+    "preprocess_rgba_to_bgr_tensor",
     "preprocess_tensor",
 ]

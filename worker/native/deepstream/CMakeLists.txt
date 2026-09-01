@@ -37,6 +37,7 @@ add_executable(
   seeon-deepstream-preflight
   src/main.cpp
   src/native_perception.cpp
+  src/preprocess_cpu.cpp
   src/trt_perception.cpp
 )
 target_compile_features(seeon-deepstream-preflight PRIVATE cxx_std_20)
@@ -61,6 +62,7 @@ add_executable(
   src/encoded_source_branch.cpp
   src/encoded_source_sample.cpp
   src/native_perception.cpp
+  src/preprocess_cpu.cpp
   src/perception_wire.cpp
   src/preview_transport.cpp
   src/source_bus.cpp
@@ -122,6 +124,7 @@ if(BUILD_TESTING)
     seeon-deepstream-native-perception-driver
     src/native_perception_driver.cpp
     src/native_perception.cpp
+    src/preprocess_cpu.cpp
   )
   target_compile_features(seeon-deepstream-native-perception-driver PRIVATE cxx_std_20)
   target_compile_options(

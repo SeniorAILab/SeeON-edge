@@ -17,6 +17,7 @@ the native perception path.
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 import subprocess
 from collections.abc import Iterator
@@ -36,6 +37,7 @@ from worker.native.deepstream.parity.parse import (
     parse_person_rows,
     parse_pose_rows,
 )
+from worker.native.deepstream.parity.preprocess_native import preprocess_rgba_to_bgr_tensor
 from worker.types.perception_frame import (
     PerceptionFrameIdentity,
     PersonBox,
@@ -98,6 +100,7 @@ def driver() -> Iterator[_Driver]:
         f"-I{_SRC}",
         str(_SRC / "native_perception_driver.cpp"),
         str(_SRC / "native_perception.cpp"),
+        str(_SRC / "preprocess_cpu.cpp"),
         "-o",
         str(binary),
     )
@@ -137,6 +140,42 @@ def _normalized_hexfloats(line: str) -> tuple[str, ...]:
         else:
             tokens.append(token)
     return tuple(tokens)
+
+
+def _tensor_digest(tensor: np.ndarray) -> str:
+    return hashlib.sha256(np.asarray(tensor, dtype="<f4").tobytes()).hexdigest()
+
+
+def test_cpu_preprocess_matches_float64_oracle_for_geometry_seed_and_stride(
+    driver: _Driver,
+) -> None:
+    for height, width in _GEOMETRIES:
+        for seed in (20260901, 20260902, 20260903):
+            rng = np.random.default_rng(seed)
+            for stride in (width * 4, width * 4 + 64):
+                rgba = rng.integers(0, 256, size=(height, stride), dtype=np.uint8)
+                reference = preprocess_rgba_to_bgr_tensor(
+                    rgba.tobytes(), width=width, height=height, stride=stride
+                )
+                driver.send(f"PREPROC {height} {width} {stride} {rgba.tobytes().hex()}")
+                assert driver.receive() == f"PREPROC {_tensor_digest(reference)}"
+
+
+def test_cpu_preprocess_preserves_pad_value_and_bgr_plane_order() -> None:
+    height, width = 360, 640
+    rgba = np.zeros((height, width * 4), dtype=np.uint8)
+    rgba.reshape(height, width, 4)[0, 0] = (10, 20, 30, 255)
+    tensor = preprocess_rgba_to_bgr_tensor(
+        rgba.tobytes(), width=width, height=height, stride=width * 4
+    )
+    affine = letterbox_affine(height, width)
+    pad = np.float32(114.0 / 255.0)
+    assert np.all(tensor[:, : affine.pad_top, :] == pad)
+    assert tuple(tensor[:, affine.pad_top, affine.pad_left]) == (
+        np.float32(30.0 / 255.0),
+        np.float32(20.0 / 255.0),
+        np.float32(10.0 / 255.0),
+    )
 
 
 def test_letterbox_affine_matches_reference_when_geometry_varies(driver: _Driver) -> None:

@@ -9,6 +9,7 @@
 // infer() is thread-safe and bounded-concurrent (see infer()).
 
 #include "native_perception.hpp"
+#include "preprocess_cpu.hpp"
 
 #include <cstdint>
 #include <map>
@@ -66,13 +67,5 @@ class TrtPerception {
   class Impl;
   std::unique_ptr<Impl> impl_;
 };
-
-// C3-parity preprocessing on the host: float bilinear resize with the OpenCV
-// coordinate convention, value-114 letterbox padding, RGBA -> BGR plane order
-// ("the shipped second flip"), FP32/255, NCHW. Exposed for the warmup receipt
-// and for unit probes; production callers go through TrtPerception::infer.
-void preprocess_rgba_to_bgr_tensor(const std::uint8_t* rgba, int width, int height,
-                                   int stride, const perception::AffineMetadata& affine,
-                                   float* output_chw);
 
 }  // namespace seeon::trt
