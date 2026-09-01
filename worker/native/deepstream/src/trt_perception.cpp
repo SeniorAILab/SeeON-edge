@@ -1,5 +1,6 @@
 #include "trt_perception.hpp"
 
+#include "postprocess_gpu.hpp"
 #include "preprocess_gpu.hpp"
 #include "source_runtime.hpp"
 #include "workspace_pool.hpp"
@@ -46,14 +47,23 @@ struct Workspace {
   float* device_person = nullptr;
   float* device_bed = nullptr;
   float* device_bed_prototypes = nullptr;
+  float* device_pose_compact = nullptr;
+  float* device_person_compact = nullptr;
+  PostprocessChannelHeader* device_pose_header = nullptr;
+  PostprocessChannelHeader* device_person_header = nullptr;
   std::vector<float> host_pose;
   std::vector<float> host_person;
   std::vector<float> host_bed;
   std::vector<float> host_bed_prototypes;
+  PostprocessChannelHeader host_pose_header{};
+  PostprocessChannelHeader host_person_header{};
 
   ~Workspace() {
     for (float* pointer : {device_input, device_pose, device_person, device_bed,
-                           device_bed_prototypes}) {
+                           device_bed_prototypes, device_pose_compact, device_person_compact}) {
+      if (pointer != nullptr) cudaFree(pointer);
+    }
+    for (PostprocessChannelHeader* pointer : {device_pose_header, device_person_header}) {
       if (pointer != nullptr) cudaFree(pointer);
     }
     if (stream != nullptr) cudaStreamDestroy(stream);
@@ -118,7 +128,7 @@ class TrtPerception::Impl {
                              Workspace& workspace, int tensor_height, int tensor_width,
                              float* device_rows, std::size_t rows_capacity, float* host_rows,
                              float* device_extra, std::size_t extra_capacity,
-                             float* host_extra, std::string* error) {
+                             float* host_extra, bool copy_rows, std::string* error) {
     const nvinfer1::Dims4 shape{1, 3, tensor_height, tensor_width};
     if (!context->setInputShape(slot.input_name.c_str(), shape)) {
       *error = "engine_input_shape_rejected";
@@ -142,7 +152,8 @@ class TrtPerception::Impl {
       *error = "engine_enqueue_failed";
       return false;
     }
-    if (cudaMemcpyAsync(host_rows, device_rows, rows_capacity * sizeof(float),
+    if (copy_rows &&
+        cudaMemcpyAsync(host_rows, device_rows, rows_capacity * sizeof(float),
                         cudaMemcpyDeviceToHost, workspace.stream) != cudaSuccess) {
       *error = "engine_output_copy_failed";
       return false;
@@ -190,15 +201,25 @@ std::unique_ptr<TrtPerception> TrtPerception::load(const std::string& cache_dir,
       *error = "cuda_stream_failed: workspace " + std::to_string(index);
       return nullptr;
     }
-    const std::array<std::pair<float**, std::size_t>, 5> allocations{{
+    const std::array<std::pair<float**, std::size_t>, 7> allocations{{
         {&workspace->device_input, kInputCapacity},
         {&workspace->device_pose, kPoseOutput},
         {&workspace->device_person, kPersonOutput},
         {&workspace->device_bed, kBedOutput},
         {&workspace->device_bed_prototypes, kBedPrototypes},
+        {&workspace->device_pose_compact, kPoseOutput},
+        {&workspace->device_person_compact, kPersonOutput},
     }};
     for (const auto& [pointer, capacity] : allocations) {
       if (cudaMalloc(reinterpret_cast<void**>(pointer), capacity * sizeof(float)) != cudaSuccess) {
+        *error = "cuda_alloc_failed: workspace " + std::to_string(index);
+        return nullptr;
+      }
+    }
+    for (PostprocessChannelHeader** pointer :
+         {&workspace->device_pose_header, &workspace->device_person_header}) {
+      if (cudaMalloc(reinterpret_cast<void**>(pointer), sizeof(PostprocessChannelHeader)) !=
+          cudaSuccess) {
         *error = "cuda_alloc_failed: workspace " + std::to_string(index);
         return nullptr;
       }
@@ -243,17 +264,18 @@ InferStatus TrtPerception::infer_host(const seeon::HostFrameView& frame, bool ru
   async_work_enqueued = true;
   if (!Impl::enqueue_engine(impl_->pose, workspace->pose_context.get(), *workspace,
                             affine.tensor_height, affine.tensor_width, workspace->device_pose,
-                            kPoseOutput, workspace->host_pose.data(), nullptr, 0, nullptr, error) ||
+                            kPoseOutput, workspace->host_pose.data(), nullptr, 0, nullptr, true,
+                            error) ||
       (run_person_engine &&
        !Impl::enqueue_engine(impl_->person, workspace->person_context.get(), *workspace,
                              affine.tensor_height, affine.tensor_width, workspace->device_person,
                              kPersonOutput, workspace->host_person.data(), nullptr, 0, nullptr,
-                             error)) ||
+                             true, error)) ||
       !Impl::enqueue_engine(impl_->bed, workspace->bed_context.get(), *workspace,
                             affine.tensor_height, affine.tensor_width, workspace->device_bed,
                             kBedOutput, workspace->host_bed.data(),
                             workspace->device_bed_prototypes, kBedPrototypes,
-                            workspace->host_bed_prototypes.data(), error)) {
+                            workspace->host_bed_prototypes.data(), true, error)) {
     goto epilogue;
   }
   complete = true;
@@ -264,19 +286,17 @@ epilogue:
     complete = false;
   }
   if (!complete) return InferStatus::kFailed;
-  const std::vector<double> pose_rows{workspace->host_pose.begin(), workspace->host_pose.end()};
-  const std::vector<double> bed_rows{workspace->host_bed.begin(), workspace->host_bed.end()};
-  const std::vector<double> prototypes{workspace->host_bed_prototypes.begin(),
-                                       workspace->host_bed_prototypes.end()};
-  result->pose = perception::parse_pose_rows(pose_rows, affine);
+  result->pose = perception::parse_pose_rows(std::span<const float>{workspace->host_pose}, affine);
   if (run_person_engine) {
-    const std::vector<double> person_rows{workspace->host_person.begin(),
-                                           workspace->host_person.end()};
-    result->person = perception::parse_person_rows(person_rows, affine, kPersonConfidence);
+    result->person = perception::parse_person_rows(std::span<const float>{workspace->host_person},
+                                                    affine, kPersonConfidence);
   } else {
     result->person.clear();
   }
-  result->bed = perception::parse_bed_rows(bed_rows, prototypes, affine, kBedConfidence);
+  result->bed = perception::parse_bed_rows(std::span<const float>{workspace->host_bed},
+                                            std::span<const float>{
+                                                workspace->host_bed_prototypes},
+                                            affine, kBedConfidence);
   result->source_width = frame.width;
   result->source_height = frame.height;
   return InferStatus::kCompleted;
@@ -302,6 +322,8 @@ InferStatus TrtPerception::infer_device(const seeon::DeviceFrameView& frame,
   const auto affine = perception::letterbox_affine(frame.height, frame.width);
   bool async_work_enqueued = false;
   bool complete = false;
+  std::size_t pose_count = 0;
+  std::size_t person_count = 0;
   // The preprocess helper may have submitted work before reporting a launch
   // failure. Its contract requires the borrowed frame and workspace to remain
   // live until this stream is synchronized.
@@ -313,19 +335,66 @@ InferStatus TrtPerception::infer_device(const seeon::DeviceFrameView& frame,
   }
   if (!Impl::enqueue_engine(impl_->pose, available->pose_context.get(), *available,
                             affine.tensor_height, affine.tensor_width, available->device_pose,
-                            kPoseOutput, available->host_pose.data(), nullptr, 0, nullptr, error)) {
+                            kPoseOutput, available->host_pose.data(), nullptr, 0, nullptr, false,
+                            error) ||
+      !compact_pose_rows_device(available->device_pose, available->device_pose_compact,
+                                available->device_pose_header, available->stream, error)) {
     goto epilogue;
   }
   if (run_person_engine &&
       !Impl::enqueue_engine(impl_->person, available->person_context.get(), *available,
                             affine.tensor_height, affine.tensor_width, available->device_person,
-                            kPersonOutput, available->host_person.data(), nullptr, 0, nullptr, error)) {
+                            kPersonOutput, available->host_person.data(), nullptr, 0, nullptr,
+                            false, error)) {
+    goto epilogue;
+  }
+  if (run_person_engine &&
+      !compact_person_rows_device(available->device_person, available->device_person_compact,
+                                  available->device_person_header, available->stream, error)) {
     goto epilogue;
   }
   if (!Impl::enqueue_engine(impl_->bed, available->bed_context.get(), *available,
                             affine.tensor_height, affine.tensor_width, available->device_bed,
                             kBedOutput, available->host_bed.data(), available->device_bed_prototypes,
-                            kBedPrototypes, available->host_bed_prototypes.data(), error)) {
+                            kBedPrototypes, available->host_bed_prototypes.data(), true, error)) {
+    goto epilogue;
+  }
+  if (cudaMemcpyAsync(&available->host_pose_header, available->device_pose_header,
+                      sizeof(PostprocessChannelHeader), cudaMemcpyDeviceToHost,
+                      available->stream) != cudaSuccess ||
+      (run_person_engine &&
+       cudaMemcpyAsync(&available->host_person_header, available->device_person_header,
+                       sizeof(PostprocessChannelHeader), cudaMemcpyDeviceToHost,
+                       available->stream) != cudaSuccess)) {
+    *error = "postprocess_header_copy_failed";
+    goto epilogue;
+  }
+  if (cudaStreamSynchronize(available->stream) != cudaSuccess) {
+    *error = "postprocess_header_sync_failed";
+    goto epilogue;
+  }
+  if (available->host_pose_header.kernel_executed != 1 ||
+      available->host_pose_header.count < 0 ||
+      available->host_pose_header.count > kPostprocessTensorRows ||
+      (run_person_engine &&
+       (available->host_person_header.kernel_executed != 1 ||
+        available->host_person_header.count < 0 ||
+        available->host_person_header.count > kPostprocessTensorRows))) {
+    *error = "postprocess_header_invalid";
+    goto epilogue;
+  }
+  pose_count = static_cast<std::size_t>(available->host_pose_header.count);
+  person_count = run_person_engine
+                     ? static_cast<std::size_t>(available->host_person_header.count)
+                     : 0;
+  if (cudaMemcpyAsync(available->host_pose.data(), available->device_pose_compact,
+                      pose_count * kPostprocessPoseRowStride * sizeof(float),
+                      cudaMemcpyDeviceToHost, available->stream) != cudaSuccess ||
+      (run_person_engine &&
+       cudaMemcpyAsync(available->host_person.data(), available->device_person_compact,
+                       person_count * kPostprocessPersonRowStride * sizeof(float),
+                       cudaMemcpyDeviceToHost, available->stream) != cudaSuccess)) {
+    *error = "postprocess_rows_copy_failed";
     goto epilogue;
   }
   complete = true;
@@ -336,19 +405,22 @@ epilogue:
     complete = false;
   }
   if (!complete) return InferStatus::kFailed;
-  const std::vector<double> pose_rows{available->host_pose.begin(), available->host_pose.end()};
-  const std::vector<double> bed_rows{available->host_bed.begin(), available->host_bed.end()};
-  const std::vector<double> prototypes{available->host_bed_prototypes.begin(),
-                                       available->host_bed_prototypes.end()};
-  result->pose = perception::parse_pose_rows(pose_rows, affine);
+  result->pose = perception::parse_pose_rows(
+      std::span<const float>{available->host_pose.data(),
+                             pose_count * kPostprocessPoseRowStride},
+      affine);
   if (run_person_engine) {
-    const std::vector<double> person_rows{available->host_person.begin(),
-                                           available->host_person.end()};
-    result->person = perception::parse_person_rows(person_rows, affine, kPersonConfidence);
+    result->person = perception::parse_person_rows(
+        std::span<const float>{available->host_person.data(),
+                               person_count * kPostprocessPersonRowStride},
+        affine, kPersonConfidence);
   } else {
     result->person.clear();
   }
-  result->bed = perception::parse_bed_rows(bed_rows, prototypes, affine, kBedConfidence);
+  result->bed = perception::parse_bed_rows(std::span<const float>{available->host_bed},
+                                            std::span<const float>{
+                                                available->host_bed_prototypes},
+                                            affine, kBedConfidence);
   result->source_width = frame.width;
   result->source_height = frame.height;
   return InferStatus::kCompleted;

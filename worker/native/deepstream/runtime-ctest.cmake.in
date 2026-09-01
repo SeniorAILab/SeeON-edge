@@ -16,6 +16,10 @@ add_test(seeon-deepstream-au-parser-test "bin/seeon-deepstream-au-parser-test")
 add_test(seeon-deepstream-au-transport-test "bin/seeon-deepstream-au-transport-test")
 add_test(seeon-deepstream-workspace-pool-test "bin/seeon-deepstream-workspace-pool-test")
 add_test(
+  seeon-deepstream-native-perception-float-test
+  "bin/seeon-deepstream-native-perception-float-test"
+)
+add_test(
   seeon-deepstream-nvmm-cuda-interop-probe
   "bin/seeon-deepstream-nvmm-cuda-interop-probe"
 )
@@ -25,3 +29,8 @@ add_test(
   "bin/seeon-deepstream-preprocess-gpu-test"
 )
 set_tests_properties(seeon-deepstream-preprocess-gpu-test PROPERTIES LABELS gpu)
+add_test(
+  seeon-deepstream-postprocess-gpu-test
+  "bin/seeon-deepstream-postprocess-gpu-test"
+)
+set_tests_properties(seeon-deepstream-postprocess-gpu-test PROPERTIES LABELS gpu)

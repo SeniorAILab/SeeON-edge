@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <optional>
 #include <set>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -103,12 +104,21 @@ struct ParsedBedRegion {
 // Source order preserved; strict score > 0.05; no second NMS (parse.py).
 [[nodiscard]] ParsedPose parse_pose_rows(const std::vector<double>& rows,
                                          const AffineMetadata& affine);
+[[nodiscard]] ParsedPose parse_pose_rows(std::span<const float> rows,
+                                         const AffineMetadata& affine);
 [[nodiscard]] std::vector<ParsedBox> parse_person_rows(const std::vector<double>& rows,
+                                                       const AffineMetadata& affine,
+                                                       double confidence);
+[[nodiscard]] std::vector<ParsedBox> parse_person_rows(std::span<const float> rows,
                                                        const AffineMetadata& affine,
                                                        double confidence);
 // prototypes: row-major [32, 160, 160].
 [[nodiscard]] std::vector<ParsedBedRegion> parse_bed_rows(
     const std::vector<double>& rows, const std::vector<double>& prototypes,
+    const AffineMetadata& affine, double confidence,
+    int max_points = kBedMaskMaxPoints);
+[[nodiscard]] std::vector<ParsedBedRegion> parse_bed_rows(
+    std::span<const float> rows, std::span<const float> prototypes,
     const AffineMetadata& affine, double confidence,
     int max_points = kBedMaskMaxPoints);
 

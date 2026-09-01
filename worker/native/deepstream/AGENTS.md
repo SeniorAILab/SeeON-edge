@@ -30,7 +30,9 @@ CPU, MPS, and iGPU profiles do not run them.
 `association/registry.py` enables only `legacy-greedy-bbox-iou.v1`.
 `pose-aware-bbox-iou.v1` is registered but disabled. Keep source-order pose
 rows, the legacy score threshold/integer conversion, and the no-second-NMS
-rule unless a separate behavior change is approved.
+rule unless a separate behavior change is approved. Pose/person row cuts and
+source-order compaction are device-owned; only compact survivors cross to the
+host. Do not add a second NMS. Bed remains pending device finalization.
 
 The encoded-AU tee is source-primary and precedes decode. Primary evidence
 remuxes that stream; preview JPEGs are bounded derivatives.

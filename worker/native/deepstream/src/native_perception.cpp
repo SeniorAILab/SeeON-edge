@@ -25,7 +25,8 @@ double python_round(double value) {
   return std::fmod(floor_value, 2.0) == 0.0 ? floor_value : floor_value + 1.0;
 }
 
-void validate_rows(const std::vector<double>& rows, int stride, const char* task) {
+template <typename Scalar>
+void validate_rows(std::span<const Scalar> rows, int stride, const char* task) {
   if (stride <= 0 || rows.size() % static_cast<std::size_t>(stride) != 0) {
     throw std::invalid_argument{std::string{task} + " tensor rows have a partial row"};
   }
@@ -84,45 +85,57 @@ AffineMetadata letterbox_affine(int source_height, int source_width, int size,
   };
 }
 
-ParsedPose parse_pose_rows(const std::vector<double>& rows, const AffineMetadata& affine) {
+namespace {
+
+template <typename Scalar>
+ParsedPose parse_pose_rows_impl(std::span<const Scalar> rows, const AffineMetadata& affine) {
   validate_rows(rows, kPoseRowStride, "pose");
   ParsedPose parsed;
   for (std::size_t offset = 0; offset < rows.size();
        offset += static_cast<std::size_t>(kPoseRowStride)) {
-    const double* row = rows.data() + offset;
-    const double score = row[4];
+    const auto row = rows.subspan(offset, kPoseRowStride);
+    const double score = static_cast<double>(row[4]);
     if (!(score > kPoseScoreThreshold)) continue;
-    const auto box = affine.invert_box(row[0], row[1], row[2], row[3]);
+    const auto box = affine.invert_box(static_cast<double>(row[0]),
+                                       static_cast<double>(row[1]),
+                                       static_cast<double>(row[2]),
+                                       static_cast<double>(row[3]));
     parsed.boxes.push_back(ParsedBox{box.x1, box.y1, box.x2, box.y2, score});
     std::vector<ParsedKeypoint> keypoints;
     keypoints.reserve(kCocoKeypointCount);
     for (int index = 0; index < kCocoKeypointCount; ++index) {
       const int base = kPersonRowStride + index * 3;
-      const auto [x, y] = affine.invert_keypoint(row[base], row[base + 1]);
-      keypoints.push_back(ParsedKeypoint{x, y, row[base + 2]});
+      const auto [x, y] = affine.invert_keypoint(static_cast<double>(row[base]),
+                                                  static_cast<double>(row[base + 1]));
+      keypoints.push_back(ParsedKeypoint{x, y, static_cast<double>(row[base + 2])});
     }
     parsed.poses.push_back(std::move(keypoints));
   }
   return parsed;
 }
 
-std::vector<ParsedBox> parse_person_rows(const std::vector<double>& rows,
-                                         const AffineMetadata& affine,
-                                         double confidence) {
+template <typename Scalar>
+std::vector<ParsedBox> parse_person_rows_impl(std::span<const Scalar> rows,
+                                              const AffineMetadata& affine,
+                                              double confidence) {
   validate_rows(rows, kPersonRowStride, "person");
   std::vector<ParsedBox> boxes;
   for (std::size_t offset = 0; offset < rows.size();
        offset += static_cast<std::size_t>(kPersonRowStride)) {
-    const double* row = rows.data() + offset;
-    const double score = row[4];
-    if (static_cast<int>(row[5]) != kCocoPersonClassId || score < confidence) continue;
-    const auto box = affine.invert_box(row[0], row[1], row[2], row[3]);
+    const auto row = rows.subspan(offset, kPersonRowStride);
+    const double score = static_cast<double>(row[4]);
+    if (static_cast<int>(static_cast<double>(row[5])) != kCocoPersonClassId ||
+        score < confidence) {
+      continue;
+    }
+    const auto box = affine.invert_box(static_cast<double>(row[0]),
+                                       static_cast<double>(row[1]),
+                                       static_cast<double>(row[2]),
+                                       static_cast<double>(row[3]));
     boxes.push_back(ParsedBox{box.x1, box.y1, box.x2, box.y2, score});
   }
   return boxes;
 }
-
-namespace {
 
 // Mirrors parse.py::_trace_contour: deterministic boundary walk ordered by
 // (angle around the centroid, y, x) with numpy lexsort's stable semantics.
@@ -174,12 +187,11 @@ std::vector<std::size_t> linspace_indexes(std::size_t count, int max_points) {
   return indexes;
 }
 
-}  // namespace
-
-std::vector<ParsedBedRegion> parse_bed_rows(const std::vector<double>& rows,
-                                            const std::vector<double>& prototypes,
-                                            const AffineMetadata& affine,
-                                            double confidence, int max_points) {
+template <typename Scalar>
+std::vector<ParsedBedRegion> parse_bed_rows_impl(std::span<const Scalar> rows,
+                                                 std::span<const Scalar> prototypes,
+                                                 const AffineMetadata& affine,
+                                                 double confidence, int max_points) {
   validate_rows(rows, kBedRowStride, "bed");
   constexpr int kChannels = kBedPrototypeChannels;
   constexpr int kMaskHeight = kBedPrototypeHeight;
@@ -192,13 +204,16 @@ std::vector<ParsedBedRegion> parse_bed_rows(const std::vector<double>& rows,
   std::vector<ParsedBedRegion> regions;
   for (std::size_t offset = 0; offset < rows.size();
        offset += static_cast<std::size_t>(kBedRowStride)) {
-    const double* row = rows.data() + offset;
-    const double score = row[4];
-    if (static_cast<int>(row[5]) != kCocoBedClassId || score < confidence) continue;
-    const double tx1 = row[0];
-    const double ty1 = row[1];
-    const double tx2 = row[2];
-    const double ty2 = row[3];
+    const auto row = rows.subspan(offset, kBedRowStride);
+    const double score = static_cast<double>(row[4]);
+    if (static_cast<int>(static_cast<double>(row[5])) != kCocoBedClassId ||
+        score < confidence) {
+      continue;
+    }
+    const double tx1 = static_cast<double>(row[0]);
+    const double ty1 = static_cast<double>(row[1]);
+    const double tx2 = static_cast<double>(row[2]);
+    const double ty2 = static_cast<double>(row[3]);
     const auto box = affine.invert_box(tx1, ty1, tx2, ty2);
     // Crop bounds in prototype space (parse.py::_mask_polygon).
     const int left = std::max(0, static_cast<int>(std::floor(tx1 * width_ratio)));
@@ -211,10 +226,13 @@ std::vector<ParsedBedRegion> parse_bed_rows(const std::vector<double>& rows,
         for (int x = left; x < right; ++x) {
           double value = 0.0;
           for (int channel = 0; channel < kChannels; ++channel) {
-            value += row[kPersonRowStride + channel] *
-                     prototypes[static_cast<std::size_t>(channel) * kMaskHeight * kMaskWidth +
-                                static_cast<std::size_t>(y) * kMaskWidth +
-                                static_cast<std::size_t>(x)];
+            const double coefficient =
+                static_cast<double>(row[kPersonRowStride + channel]);
+            const double prototype = static_cast<double>(
+                prototypes[static_cast<std::size_t>(channel) * kMaskHeight * kMaskWidth +
+                           static_cast<std::size_t>(y) * kMaskWidth +
+                           static_cast<std::size_t>(x)]);
+            value += coefficient * prototype;
           }
           if (value > 0.0) active_yx.emplace_back(y, x);
         }
@@ -240,6 +258,42 @@ std::vector<ParsedBedRegion> parse_bed_rows(const std::vector<double>& rows,
     regions.push_back(std::move(region));
   }
   return regions;
+}
+
+}  // namespace
+
+ParsedPose parse_pose_rows(const std::vector<double>& rows, const AffineMetadata& affine) {
+  return parse_pose_rows_impl<double>(rows, affine);
+}
+
+ParsedPose parse_pose_rows(std::span<const float> rows, const AffineMetadata& affine) {
+  return parse_pose_rows_impl<float>(rows, affine);
+}
+
+std::vector<ParsedBox> parse_person_rows(const std::vector<double>& rows,
+                                         const AffineMetadata& affine,
+                                         double confidence) {
+  return parse_person_rows_impl<double>(rows, affine, confidence);
+}
+
+std::vector<ParsedBox> parse_person_rows(std::span<const float> rows,
+                                         const AffineMetadata& affine,
+                                         double confidence) {
+  return parse_person_rows_impl<float>(rows, affine, confidence);
+}
+
+std::vector<ParsedBedRegion> parse_bed_rows(const std::vector<double>& rows,
+                                            const std::vector<double>& prototypes,
+                                            const AffineMetadata& affine,
+                                            double confidence, int max_points) {
+  return parse_bed_rows_impl<double>(rows, prototypes, affine, confidence, max_points);
+}
+
+std::vector<ParsedBedRegion> parse_bed_rows(std::span<const float> rows,
+                                            std::span<const float> prototypes,
+                                            const AffineMetadata& affine,
+                                            double confidence, int max_points) {
+  return parse_bed_rows_impl<float>(rows, prototypes, affine, confidence, max_points);
 }
 
 namespace {

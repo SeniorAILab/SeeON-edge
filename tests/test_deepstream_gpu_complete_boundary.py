@@ -161,6 +161,52 @@ def test_production_tensorrt_inference_uses_nonblocking_workspace_acquisition_on
     assert re.search(r"\.available\s*\(", perception) is None
 
 
+def test_device_inference_copies_only_compact_pose_and_optional_person_rows() -> None:
+    perception = _source("trt_perception.cpp")
+    header = _source("postprocess_gpu.hpp")
+    infer_device = _function_region(perception, "TrtPerception::infer_device")
+
+    assert "static_assert(sizeof(PostprocessChannelHeader) == 8);" in header
+    for engine, context, device_rows, capacity in (
+        ("pose", "pose_context", "device_pose", "kPoseOutput"),
+        ("person", "person_context", "device_person", "kPersonOutput"),
+    ):
+        pattern = (
+            rf"impl_->{engine},\s+available->{context}\.get\(\),\s+\*available,\s+"
+            rf"affine\.tensor_height,\s+affine\.tensor_width,\s+"
+            rf"available->{device_rows},\s+{capacity},\s+"
+            rf"available->host_{engine}\.data\(\),\s+nullptr,\s+0,\s+nullptr,\s+false,"
+        )
+        assert re.search(pattern, infer_device)
+    assert "sizeof(PostprocessChannelHeader), cudaMemcpyDeviceToHost" in infer_device
+    assert "available->host_pose_header.kernel_executed != 1" in infer_device
+    assert "available->host_pose_header.count < 0" in infer_device
+    assert "available->host_pose_header.count > kPostprocessTensorRows" in infer_device
+    assert "run_person_engine &&" in infer_device
+    assert "available->host_person_header.kernel_executed != 1" in infer_device
+    assert "pose_count * kPostprocessPoseRowStride * sizeof(float)" in infer_device
+    assert "person_count * kPostprocessPersonRowStride * sizeof(float)" in infer_device
+    assert "kPoseOutput * sizeof(float)" not in infer_device
+    assert "kPersonOutput * sizeof(float)" not in infer_device
+    assert "std::vector<double>" not in perception
+
+
+def test_postprocess_kernel_preserves_source_order_and_current_row_cuts() -> None:
+    kernel = _source("postprocess_gpu.cu")
+
+    assert "for (int row = 0; row < kPostprocessTensorRows; ++row)" in kernel
+    assert "static_cast<double>(score) > 0.05" in kernel
+    assert (
+        "static_cast<int>(static_cast<double>(\n"
+        "                                 source_rows[row * kStride + 5])) == 0"
+    ) in kernel
+    assert "!(static_cast<double>(score) < 0.25)" in kernel
+    assert kernel.index("const int source_offset = row * kStride;") < kernel.index(
+        "const int compact_offset = count * kStride;"
+    )
+    assert kernel.index("compact_words[compact_offset + column]") < kernel.index("++count;")
+
+
 def test_production_native_sources_have_no_legacy_frame_or_raw_infer_api() -> None:
     production = _production_sources()
     legacy_symbols = {
@@ -214,3 +260,21 @@ def test_cuda_build_contract_pins_blackwell_architecture_and_nonfused_preprocess
     )
     assert "${SEEON_CUDA_INCLUDE}" in gstreamer_test
     assert "${SEEON_CUDART}" in gstreamer_test
+
+
+def test_postprocess_gpu_runtime_ctest_matches_build_install_and_docker_gpu_lanes() -> None:
+    cmake = (NATIVE_ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+    runtime_ctest = (NATIVE_ROOT / "runtime-ctest.cmake.in").read_text(encoding="utf-8")
+    target = "seeon-deepstream-postprocess-gpu-test"
+    target_region = _cmake_target_region(cmake, target)
+
+    assert "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>" in target_region
+    assert f"NAME {target}" in target_region
+    assert f"set_tests_properties({target} PROPERTIES LABELS gpu)" in target_region
+    assert re.search(
+        rf"install\(\s*TARGETS\b[\s\S]*\b{re.escape(target)}\b[\s\S]*?"
+        r"RUNTIME DESTINATION native-build/bin\s*\)",
+        cmake,
+    )
+    assert f'add_test(\n  {target}\n  "bin/{target}"\n)' in runtime_ctest
+    assert f"set_tests_properties({target} PROPERTIES LABELS gpu)" in runtime_ctest
