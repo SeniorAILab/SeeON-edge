@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.22)
-project(seeon_deepstream_preflight VERSION 1.0.0 LANGUAGES CXX)
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+  set(CMAKE_CUDA_ARCHITECTURES "120-real;120-virtual" CACHE STRING
+      "CUDA architectures for the deployment GPU")
+endif()
+project(seeon_deepstream_preflight VERSION 1.0.0 LANGUAGES CXX CUDA)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(
@@ -31,6 +35,31 @@ find_path(
   SEEON_CUDA_INCLUDE cuda_runtime_api.h
   PATHS /usr/local/cuda/include /usr/local/cuda/targets/x86_64-linux/include
   REQUIRED
+)
+find_path(
+  SEEON_NVBUFSURFACE_INCLUDE nvbufsurface.h
+  PATHS /opt/nvidia/deepstream/deepstream/sources/includes
+  REQUIRED
+)
+
+add_executable(seeon-deepstream-nvmm-cuda-interop-probe src/nvmm_cuda_interop_probe.cu)
+set_target_properties(
+  seeon-deepstream-nvmm-cuda-interop-probe
+  PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON CUDA_EXTENSIONS OFF
+)
+target_compile_features(seeon-deepstream-nvmm-cuda-interop-probe PRIVATE cxx_std_20)
+target_compile_options(
+  seeon-deepstream-nvmm-cuda-interop-probe
+  PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:${SEEON_WARNINGS}>
+    $<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>
+)
+target_include_directories(
+  seeon-deepstream-nvmm-cuda-interop-probe
+  PRIVATE ${SEEON_CUDA_INCLUDE} ${SEEON_NVBUFSURFACE_INCLUDE}
+)
+target_link_libraries(
+  seeon-deepstream-nvmm-cuda-interop-probe PRIVATE PkgConfig::GSTREAMER ${SEEON_CUDART}
 )
 
 add_executable(
@@ -176,6 +205,11 @@ if(BUILD_TESTING)
   target_compile_features(seeon-deepstream-au-transport-test PRIVATE cxx_std_20)
   target_compile_options(seeon-deepstream-au-transport-test PRIVATE ${SEEON_WARNINGS})
   add_test(NAME seeon-deepstream-au-transport-test COMMAND seeon-deepstream-au-transport-test)
+  add_test(
+    NAME seeon-deepstream-nvmm-cuda-interop-probe
+    COMMAND seeon-deepstream-nvmm-cuda-interop-probe
+  )
+  set_tests_properties(seeon-deepstream-nvmm-cuda-interop-probe PROPERTIES LABELS gpu)
 
   set(
     SEEON_NATIVE_TEST_TARGETS
@@ -222,6 +256,7 @@ if(BUILD_TESTING)
       seeon-deepstream-au-parser-test
       seeon-deepstream-au-transport-test
       seeon-deepstream-workspace-pool-test
+      seeon-deepstream-nvmm-cuda-interop-probe
     RUNTIME DESTINATION native-build/bin
   )
   install(

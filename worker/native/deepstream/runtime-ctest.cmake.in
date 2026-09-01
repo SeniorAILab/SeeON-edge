@@ -15,3 +15,8 @@ add_test(seeon-deepstream-child-commands-test "bin/seeon-deepstream-child-comman
 add_test(seeon-deepstream-au-parser-test "bin/seeon-deepstream-au-parser-test")
 add_test(seeon-deepstream-au-transport-test "bin/seeon-deepstream-au-transport-test")
 add_test(seeon-deepstream-workspace-pool-test "bin/seeon-deepstream-workspace-pool-test")
+add_test(
+  seeon-deepstream-nvmm-cuda-interop-probe
+  "bin/seeon-deepstream-nvmm-cuda-interop-probe"
+)
+set_tests_properties(seeon-deepstream-nvmm-cuda-interop-probe PROPERTIES LABELS gpu)
