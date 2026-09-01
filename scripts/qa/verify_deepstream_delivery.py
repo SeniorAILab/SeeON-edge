@@ -72,6 +72,10 @@ class DeliveryVerdict(BaseModel):
     schema_version: Literal[1] = 1
     verdict: Literal["PASS", "FAIL", "APPROVE", "REJECT"]
     verifier: Literal["canary", "compliance", "quality", "scope"]
+    # Content identity of the gate semantics that produced this verdict: the
+    # SHA-256 over this verifier plus gates.py, so a stored verdict names the
+    # exact decision rules even when the policy JSON digest is unchanged.
+    verifier_revision: str | None = None
     reports: tuple[GateReport, ...] = ()
     findings: tuple[str, ...] = ()
     artifacts: tuple[str, ...] = ()
@@ -650,6 +654,11 @@ def main() -> int:
             verifier=arguments.verifier,
             findings=(str(error),),
         )
+    revision = hashlib.sha256(
+        Path(__file__).read_bytes()
+        + (REPOSITORY_ROOT / "worker/tools/deepstream_canary/gates.py").read_bytes()
+    ).hexdigest()
+    verdict = verdict.model_copy(update={"verifier_revision": revision})
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
     arguments.output.write_text(verdict.model_dump_json() + "\n", encoding="utf-8")
     print(verdict.model_dump_json())

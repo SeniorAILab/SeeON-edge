@@ -46,9 +46,12 @@ conditions. `PASS` is capacity-claim eligible only in commissioning mode;
 
 Parent `raw/native-telemetry.jsonl` is schema 2. Native child telemetry is the
 separate schema-1 `raw/native-telemetry.child-copy.jsonl` sidecar: do not merge
-it, derive it from stderr, or accept a missing/partial sidecar. Its gate is
-exactly H2D zero, D2H at most 200424 bytes, 30-frame span at most 2.15 seconds,
-and zero surface drops. Synthetic timing is diagnostic only, never a canary
+it, derive it from stderr, or accept a missing/partial sidecar. Its gates are
+exactly H2D zero, D2H at most 200424 bytes, zero surface drops, positive child
+frames, and coverage/contiguity. The AC4 30-frame span bound (2.15 seconds) is
+computed as `30 / fps_windows p05` from parent metadata rate; child
+`frame_window_spans_seconds` stays sealed as diagnostic evidence, never the
+decision variable. Relative baseline comparison applies to digit rungs only. Synthetic timing is diagnostic only, never a canary
 PASS. A failed or partial run is immutable failure evidence: stop escalation,
 do not seal it as a baseline, and clean up only `seeon-ds-canary`.
 

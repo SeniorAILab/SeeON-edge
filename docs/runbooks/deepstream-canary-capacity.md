@@ -96,8 +96,10 @@ directories under `rung-<N>/`.
 
 ## Sealed baselines and replay parity
 
-Every nonzero candidate requires a previously sealed baseline for the same
-rung. The pair must use the identical replay corpus digest, mode, clean
+Every live digit-rung candidate (`1/4/8/13`) requires a previously sealed
+baseline for the same rung; `zero` and `loopback` take no baseline and report
+`relative.baseline` as not applicable. Pre-change (schema-1) baselines are
+rebuilt from raw telemetry and qualified with the pre-copy absolute gates. The pair must use the identical replay corpus digest, mode, clean
 duration, ordered camera IDs/camera count, and workload; changing any of these
 requires a new baseline rather than a comparison exception. Verify the
 candidate with the baseline root explicitly:
@@ -142,10 +144,13 @@ Native child copy telemetry is a distinct sibling sidecar named
 `raw/native-telemetry.child-copy.jsonl` with schema version 1. Never merge,
 rename, or infer one from the other, and never parse child stderr as telemetry.
 For every child-copy camera/window gate require exactly
-`h2d_bytes_max=0`, `d2h_bytes_max<=200424`, a 30-frame span of at most
-2.15 seconds, and `surface_drops=0`. Missing, partial, malformed, or
-wrong-schema telemetry fails the rung; synthetic GPU timing is diagnostic
-evidence only and is never a canary PASS.
+`h2d_bytes_max=0`, `d2h_bytes_max<=200424`, `surface_drops=0`, positive
+child frames, and telemetry coverage/contiguity. The AC4 30-frame span bound
+(`<=2.15` seconds) is `30 / fps_windows p05` computed from parent metadata
+rate; the child `frame_window_spans_seconds` values remain sealed in receipts
+as diagnostic evidence and are not the decision variable. Missing, partial,
+malformed, or wrong-schema telemetry fails the rung; synthetic GPU timing is
+diagnostic evidence only and is never a canary PASS.
 
 ## Binary gates and aborts
 
