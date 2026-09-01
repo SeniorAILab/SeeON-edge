@@ -95,8 +95,8 @@ def test_flood_journal_compacts_to_max_bytes_keeping_newest(tmp_path: Path) -> N
     [
         "{not-json",
         '{"source_key":"truncated","edge_event_id":"',
-        _line("valid", str(uuid4()), 60.0),
-        _line("future", str(uuid4()), 10_000.0),
+        _line("valid", "00000000-0000-4000-8000-000000000001", 60.0),
+        _line("future", "00000000-0000-4000-8000-000000000002", 10_000.0),
     ],
 )
 def test_mixed_valid_and_invalid_journal_fails_closed_without_rewrite(
