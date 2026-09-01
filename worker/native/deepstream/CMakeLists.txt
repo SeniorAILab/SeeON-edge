@@ -300,6 +300,38 @@ if(BUILD_TESTING)
     COMMAND seeon-deepstream-postprocess-gpu-test
   )
   set_tests_properties(seeon-deepstream-postprocess-gpu-test PROPERTIES LABELS gpu)
+  add_executable(
+    seeon-deepstream-pinned-host-atan2-test
+    src/pinned_host_atan2_test.cu
+    src/pinned_host_atan2.cu
+  )
+  set_target_properties(
+    seeon-deepstream-pinned-host-atan2-test
+    PROPERTIES
+      CUDA_STANDARD 20
+      CUDA_STANDARD_REQUIRED ON
+      CUDA_EXTENSIONS OFF
+      CUDA_SEPARABLE_COMPILATION ON
+      CUDA_RESOLVE_DEVICE_SYMBOLS ON
+  )
+  target_compile_features(seeon-deepstream-pinned-host-atan2-test PRIVATE cxx_std_20)
+  target_compile_options(
+    seeon-deepstream-pinned-host-atan2-test
+    PRIVATE
+      $<$<COMPILE_LANGUAGE:CXX>:${SEEON_WARNINGS};${SEEON_FP_FLAGS}>
+      $<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>
+  )
+  target_include_directories(
+    seeon-deepstream-pinned-host-atan2-test PRIVATE ${SEEON_CUDA_INCLUDE}
+  )
+  find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+  target_compile_definitions(seeon-deepstream-pinned-host-atan2-test PRIVATE SEEON_PINNED_HOST_ATAN2_TEST)
+  target_link_libraries(seeon-deepstream-pinned-host-atan2-test PRIVATE ${SEEON_CUDART} OpenSSL::Crypto ${CMAKE_DL_LIBS})
+  add_test(
+    NAME seeon-deepstream-pinned-host-atan2-test
+    COMMAND seeon-deepstream-pinned-host-atan2-test
+  )
+  set_tests_properties(seeon-deepstream-pinned-host-atan2-test PROPERTIES LABELS gpu)
 
   set(
     SEEON_NATIVE_TEST_TARGETS
@@ -352,6 +384,7 @@ if(BUILD_TESTING)
       seeon-deepstream-nvmm-cuda-interop-probe
       seeon-deepstream-preprocess-gpu-test
       seeon-deepstream-postprocess-gpu-test
+      seeon-deepstream-pinned-host-atan2-test
     RUNTIME DESTINATION native-build/bin
   )
   install(
@@ -365,3 +398,7 @@ if(BUILD_TESTING)
 endif()
 
 install(TARGETS seeon-deepstream-preflight seeon-deepstream-child RUNTIME DESTINATION bin)
+install(
+  FILES COPYING.LESSER NOTICE.pinned-host-atan2
+  DESTINATION share/licenses/seeon-deepstream
+)

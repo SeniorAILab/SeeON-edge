@@ -34,3 +34,8 @@ add_test(
   "bin/seeon-deepstream-postprocess-gpu-test"
 )
 set_tests_properties(seeon-deepstream-postprocess-gpu-test PROPERTIES LABELS gpu)
+add_test(
+  seeon-deepstream-pinned-host-atan2-test
+  "bin/seeon-deepstream-pinned-host-atan2-test"
+)
+set_tests_properties(seeon-deepstream-pinned-host-atan2-test PROPERTIES LABELS gpu)

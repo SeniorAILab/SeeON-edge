@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from worker.native.deepstream import preflight as deepstream_preflight
 from worker.native.deepstream.engine_cache import (
     PLAN_IDENTITY_FILENAME,
     build_plan_cache,
@@ -27,10 +28,28 @@ _NATIVE_INTEROP_RECEIPT = (
     "pitch=256 raw_digest=e243ca928f3b5103 "
     "preprocess_digest=fec40fdf5acf810f preprocess_match=1\n"
 )
+_ATAN2_COMPAT_RECEIPT = (
+    "pinned-host-atan2 receipt variant=glibc-2.39-x86_64-fma "
+    "libm=1b87a1a50b496cfead2b0ad134c2ff536705c82608db240c7e8aa48d6c0e4217 "
+    "source=uatan.tbl:8072e14d43f1b897ab7013b70954e18b113ef2fcac942e8a263a579d4baf531a "
+    "table_payload=48e09fcdce6990c03bd03b476de3a3cfdc24d524751623c2e2c140ea3fbd6c3b "
+    "corpus_digest=4bee588f444e6fd596893fb78037ffda4ff67345fdcfd921e3209a7fd145dccb "
+    "angle_cases=324242 order_cases=2004 mismatches=0\n"
+)
 
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.fixture(autouse=True)
+def _pin_host_libm_digest_to_hermetic_fixture(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep fake fixture bytes independent from the production libm preimage."""
+    monkeypatch.setattr(
+        deepstream_preflight,
+        "ATAN2_COMPAT_LIBM_SHA256",
+        hashlib.sha256(b"pinned-host-libm").hexdigest(),
+    )
 
 
 def _manifest(tmp_path: Path) -> Path:
@@ -41,6 +60,11 @@ def _manifest(tmp_path: Path) -> Path:
     native_interop = tmp_path / "seeon-deepstream-interop"
     native_interop.write_bytes(b"pinned-native-interop")
     native_interop.chmod(0o555)
+    atan2_compat = tmp_path / "seeon-deepstream-pinned-host-atan2-test"
+    atan2_compat.write_bytes(b"pinned-host-atan2")
+    atan2_compat.chmod(0o555)
+    host_libm = tmp_path / "libm.so.6"
+    host_libm.write_bytes(b"pinned-host-libm")
     model_dir = tmp_path / "models"
     model_dir.mkdir()
     engine_source = tmp_path / "built.engine"
@@ -71,6 +95,22 @@ def _manifest(tmp_path: Path) -> Path:
         "native_interop": {
             "path": str(native_interop),
             "sha256": _sha256(native_interop),
+        },
+        "atan2_compat": {
+            "path": str(atan2_compat),
+            "sha256": _sha256(atan2_compat),
+            "host_libm_path": str(host_libm),
+            "host_libm_sha256": _sha256(host_libm),
+            "variant": "glibc-2.39-x86_64-fma",
+            "upstream_table_sha256": (
+                "8072e14d43f1b897ab7013b70954e18b113ef2fcac942e8a263a579d4baf531a"
+            ),
+            "table_payload_sha256": (
+                "48e09fcdce6990c03bd03b476de3a3cfdc24d524751623c2e2c140ea3fbd6c3b"
+            ),
+            "corpus_digest": (
+                "4bee588f444e6fd596893fb78037ffda4ff67345fdcfd921e3209a7fd145dccb"
+            ),
         },
         "models": {"path": str(model_dir), "require_read_only": True},
         "engine_cache": {
@@ -133,6 +173,9 @@ def _probe(command: tuple[str, ...], timeout: float) -> str:
     if Path(command[0]).name == "seeon-deepstream-interop":
         assert len(command) == 1
         return _NATIVE_INTEROP_RECEIPT
+    if Path(command[0]).name == "seeon-deepstream-pinned-host-atan2-test":
+        assert len(command) == 1
+        return _ATAN2_COMPAT_RECEIPT
     if len(command) >= 2 and command[1] == "--warmup":
         assert len(command) == 3, "warmup must receive the plan cache directory"
         return _WARMUP_RECEIPT
@@ -322,6 +365,175 @@ def test_preflight_rejects_stale_engine_cache_identity(tmp_path: Path) -> None:
     assert excinfo.value.code == "engine_identity_mismatch"
 
 
+@pytest.mark.parametrize(
+    "tamper", ("executable", "variant", "upstream_table", "table_payload", "corpus")
+)
+def test_preflight_rejects_atan2_compat_identity_before_interop_or_warmup(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    manifest = _manifest(tmp_path)
+    prepare_engine_cache(manifest)
+    _build_plan(manifest)
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    if tamper == "executable":
+        data["atan2_compat"]["sha256"] = "0" * 64
+    elif tamper == "variant":
+        data["atan2_compat"]["variant"] = "glibc-drift"
+    elif tamper == "upstream_table":
+        data["atan2_compat"]["upstream_table_sha256"] = "0" * 64
+    elif tamper == "table_payload":
+        data["atan2_compat"]["table_payload_sha256"] = "0" * 64
+    else:
+        data["atan2_compat"]["corpus_digest"] = "0" * 64
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    commands: list[tuple[str, ...]] = []
+
+    def recording_probe(command: tuple[str, ...], timeout: float) -> str:
+        commands.append(command)
+        return _probe(command, timeout)
+
+    with pytest.raises(DeepStreamPreflightError) as excinfo:
+        run_deepstream_preflight(
+            manifest,
+            command_runner=recording_probe,
+            mount_is_read_only=lambda _path: True,
+        )
+
+    assert excinfo.value.code == "atan2_compat_digest_mismatch"
+    assert not any("interop" in command[0] or "--warmup" in command for command in commands)
+
+
+def test_preflight_rejects_atan2_host_libm_identity_before_interop_or_warmup(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path)
+    prepare_engine_cache(manifest)
+    _build_plan(manifest)
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["atan2_compat"]["host_libm_sha256"] = "0" * 64
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    commands: list[tuple[str, ...]] = []
+
+    def recording_probe(command: tuple[str, ...], timeout: float) -> str:
+        commands.append(command)
+        return _probe(command, timeout)
+
+    with pytest.raises(DeepStreamPreflightError) as excinfo:
+        run_deepstream_preflight(
+            manifest,
+            command_runner=recording_probe,
+            mount_is_read_only=lambda _path: True,
+        )
+
+    assert excinfo.value.code == "atan2_host_libm_mismatch"
+    assert not any("interop" in command[0] or "--warmup" in command for command in commands)
+
+
+def test_preflight_rejects_non_golden_agreeing_host_libm_before_atan2_interop_or_warmup(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path)
+    prepare_engine_cache(manifest)
+    _build_plan(manifest)
+    host_libm = tmp_path / "libm.so.6"
+    host_libm.write_bytes(b"coordinated-but-non-golden-libm")
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["atan2_compat"]["host_libm_sha256"] = _sha256(host_libm)
+    assert (
+        data["atan2_compat"]["host_libm_sha256"]
+        != deepstream_preflight.ATAN2_COMPAT_LIBM_SHA256
+    )
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    commands: list[tuple[str, ...]] = []
+
+    def recording_probe(command: tuple[str, ...], timeout: float) -> str:
+        commands.append(command)
+        return _probe(command, timeout)
+
+    with pytest.raises(DeepStreamPreflightError) as excinfo:
+        run_deepstream_preflight(
+            manifest,
+            command_runner=recording_probe,
+            mount_is_read_only=lambda _path: True,
+        )
+
+    assert excinfo.value.code == "atan2_host_libm_mismatch"
+    assert not any(
+        Path(command[0]).name
+        in {"seeon-deepstream-pinned-host-atan2-test", "seeon-deepstream-interop"}
+        or "--warmup" in command
+        for command in commands
+    )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        subprocess.TimeoutExpired(("seeon-deepstream-pinned-host-atan2-test",), 10),
+        subprocess.CalledProcessError(1, ("seeon-deepstream-pinned-host-atan2-test",)),
+    ),
+)
+def test_preflight_rejects_atan2_compat_execution_failures(
+    tmp_path: Path,
+    failure: Exception,
+) -> None:
+    manifest = _manifest(tmp_path)
+    prepare_engine_cache(manifest)
+    _build_plan(manifest)
+
+    def failing_atan2(command: tuple[str, ...], timeout: float) -> str:
+        if Path(command[0]).name == "seeon-deepstream-pinned-host-atan2-test":
+            raise failure
+        return _probe(command, timeout)
+
+    with pytest.raises(DeepStreamPreflightError) as excinfo:
+        run_deepstream_preflight(
+            manifest,
+            command_runner=failing_atan2,
+            mount_is_read_only=lambda _path: True,
+        )
+
+    assert excinfo.value.code == "atan2_compat_execution_failed"
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    (
+        _ATAN2_COMPAT_RECEIPT + "misleading-success-line\n",
+        "\n" + _ATAN2_COMPAT_RECEIPT,
+        _ATAN2_COMPAT_RECEIPT.replace(
+            "table_payload=48e09fcdce6990c03bd03b476de3a3cfdc24d524751623c2e2c140ea3fbd6c3b",
+            "table_payload=" + "0" * 64,
+        ),
+        _ATAN2_COMPAT_RECEIPT.replace(
+            "corpus_digest=4bee588f444e6fd596893fb78037ffda4ff67345fdcfd921e3209a7fd145dccb",
+            "corpus_digest=" + "0" * 64,
+        ),
+        _ATAN2_COMPAT_RECEIPT.replace("angle_cases=324242", "angle_cases=324241"),
+        _ATAN2_COMPAT_RECEIPT.replace("mismatches=0", "mismatches=1"),
+    ),
+)
+def test_preflight_rejects_invalid_atan2_compat_receipts(tmp_path: Path, receipt: str) -> None:
+    manifest = _manifest(tmp_path)
+    prepare_engine_cache(manifest)
+    _build_plan(manifest)
+
+    def invalid_atan2(command: tuple[str, ...], timeout: float) -> str:
+        if Path(command[0]).name == "seeon-deepstream-pinned-host-atan2-test":
+            return receipt
+        return _probe(command, timeout)
+
+    with pytest.raises(DeepStreamPreflightError) as excinfo:
+        run_deepstream_preflight(
+            manifest,
+            command_runner=invalid_atan2,
+            mount_is_read_only=lambda _path: True,
+        )
+
+    assert excinfo.value.code == "atan2_compat_receipt_mismatch"
+
+
 @pytest.mark.parametrize("missing", (True, False))
 def test_preflight_rejects_missing_or_tampered_native_interop_before_warmup(
     tmp_path: Path,
@@ -412,7 +624,7 @@ def test_preflight_rejects_invalid_native_interop_receipts(
     assert excinfo.value.code == "native_interop_receipt_mismatch"
 
 
-def test_preflight_runs_native_interop_before_warmup(tmp_path: Path) -> None:
+def test_preflight_runs_atan2_compat_before_interop_and_warmup(tmp_path: Path) -> None:
     manifest = _manifest(tmp_path)
     prepare_engine_cache(manifest)
     _build_plan(manifest)
@@ -428,6 +640,11 @@ def test_preflight_runs_native_interop_before_warmup(tmp_path: Path) -> None:
         mount_is_read_only=lambda _path: True,
     )
 
+    atan2_index = next(
+        index
+        for index, command in enumerate(commands)
+        if Path(command[0]).name == "seeon-deepstream-pinned-host-atan2-test"
+    )
     interop_index = next(
         index
         for index, command in enumerate(commands)
@@ -436,7 +653,7 @@ def test_preflight_runs_native_interop_before_warmup(tmp_path: Path) -> None:
     warmup_index = next(
         index for index, command in enumerate(commands) if "--warmup" in command
     )
-    assert interop_index < warmup_index
+    assert atan2_index < interop_index < warmup_index
 
 
 def test_preflight_rejects_misleading_success_text_and_hung_warmup(tmp_path: Path) -> None:

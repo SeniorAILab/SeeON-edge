@@ -29,10 +29,29 @@ MANIFEST_ENV: Final = "SEEON_DEEPSTREAM_MANIFEST"
 FIRST_FAULT_ENV: Final = "SEEON_DEEPSTREAM_FIRST_FAULT"
 ENGINE_IDENTITY_FILENAME: Final = ".identity.json"
 NATIVE_INTEROP_PREPROCESS_DIGEST: Final = "fec40fdf5acf810f"
+ATAN2_COMPAT_VARIANT: Final = "glibc-2.39-x86_64-fma"
+ATAN2_COMPAT_LIBM_SHA256: Final = "1b87a1a50b496cfead2b0ad134c2ff536705c82608db240c7e8aa48d6c0e4217"
+ATAN2_COMPAT_UPSTREAM_TABLE_SHA256: Final = (
+    "8072e14d43f1b897ab7013b70954e18b113ef2fcac942e8a263a579d4baf531a"
+)
+ATAN2_COMPAT_TABLE_PAYLOAD_SHA256: Final = (
+    "48e09fcdce6990c03bd03b476de3a3cfdc24d524751623c2e2c140ea3fbd6c3b"
+)
+ATAN2_COMPAT_CORPUS_DIGEST: Final = (
+    "4bee588f444e6fd596893fb78037ffda4ff67345fdcfd921e3209a7fd145dccb"
+)
 NATIVE_INTEROP_RECEIPT: Final = re.compile(
     r"^NVMM_CUDA_INTEROP_RECEIPT cc=\d+\.\d+ mem_type=CUDA_DEVICE width=64 height=32 "
     r"pitch=\d+ raw_digest=e243ca928f3b5103 "
     rf"preprocess_digest={NATIVE_INTEROP_PREPROCESS_DIGEST} preprocess_match=1$"
+)
+ATAN2_COMPAT_RECEIPT: Final = re.compile(
+    rf"^pinned-host-atan2 receipt variant={ATAN2_COMPAT_VARIANT} "
+    rf"libm={ATAN2_COMPAT_LIBM_SHA256} "
+    rf"source=uatan\.tbl:{ATAN2_COMPAT_UPSTREAM_TABLE_SHA256} "
+    rf"table_payload={ATAN2_COMPAT_TABLE_PAYLOAD_SHA256} "
+    rf"corpus_digest={ATAN2_COMPAT_CORPUS_DIGEST} "
+    r"angle_cases=324242 order_cases=2004 mismatches=0$"
 )
 
 
@@ -259,6 +278,32 @@ def _run_deepstream_preflight(
         or artifact_sha256(native_interop_path) != native_interop_digest
     ):
         raise DeepStreamPreflightError("native_interop_digest_mismatch", str(native_interop_path))
+    atan2_compat = manifest.get("atan2_compat")
+    if not isinstance(atan2_compat, dict):
+        raise DeepStreamPreflightError(
+            "atan2_compat_digest_mismatch", "atan2_compat must be an object"
+        )
+    atan2_path = Path(atan2_compat.get("path", ""))
+    atan2_digest = atan2_compat.get("sha256")
+    if (
+        not atan2_path.is_file()
+        or not isinstance(atan2_digest, str)
+        or atan2_compat.get("variant") != ATAN2_COMPAT_VARIANT
+        or atan2_compat.get("upstream_table_sha256") != ATAN2_COMPAT_UPSTREAM_TABLE_SHA256
+        or atan2_compat.get("table_payload_sha256") != ATAN2_COMPAT_TABLE_PAYLOAD_SHA256
+        or atan2_compat.get("corpus_digest") != ATAN2_COMPAT_CORPUS_DIGEST
+        or artifact_sha256(atan2_path) != atan2_digest
+    ):
+        raise DeepStreamPreflightError("atan2_compat_digest_mismatch", str(atan2_path))
+    host_libm_path = Path(atan2_compat.get("host_libm_path", ""))
+    host_libm_digest = atan2_compat.get("host_libm_sha256")
+    if (
+        not host_libm_path.is_file()
+        or not isinstance(host_libm_digest, str)
+        or host_libm_digest != ATAN2_COMPAT_LIBM_SHA256
+        or artifact_sha256(host_libm_path) != ATAN2_COMPAT_LIBM_SHA256
+    ):
+        raise DeepStreamPreflightError("atan2_host_libm_mismatch", str(host_libm_path))
     cache = manifest["engine_cache"]
     cache_path = Path(cache["path"])
     expected_identity = _engine_identity(manifest)
@@ -284,6 +329,15 @@ def _run_deepstream_preflight(
         (plan_cache_dir / ENGINE_IDENTITY_FILENAME).read_text(encoding="utf-8")
     )
     timeout = float(manifest["warmup"]["timeout_seconds"])
+    try:
+        atan2_output = command_runner((str(atan2_path),), timeout)
+    except Exception as exc:  # noqa: BLE001 - normalized into a typed boot refusal
+        raise DeepStreamPreflightError("atan2_compat_execution_failed", str(exc)) from exc
+    atan2_lines = atan2_output.splitlines()
+    if len(atan2_lines) != 1 or ATAN2_COMPAT_RECEIPT.fullmatch(atan2_lines[0]) is None:
+        raise DeepStreamPreflightError(
+            "atan2_compat_receipt_mismatch", "pinned host atan2 receipt is invalid"
+        )
     try:
         interop_output = command_runner((str(native_interop_path),), timeout)
     except Exception as exc:  # noqa: BLE001 - normalized into a typed boot refusal

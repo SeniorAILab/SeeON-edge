@@ -19,6 +19,7 @@ def main(template_path: Path, output_path: Path) -> None:
         plugin["sha256"] = _sha256(Path(plugin["path"]))
     manifest["native"]["sha256"] = _sha256(Path(manifest["native"]["path"]))
     manifest["native_interop"]["sha256"] = _sha256(Path(manifest["native_interop"]["path"]))
+    manifest["atan2_compat"]["sha256"] = _sha256(Path(manifest["atan2_compat"]["path"]))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",

@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
+
+from worker.native.deepstream.preflight import (
+    ATAN2_COMPAT_CORPUS_DIGEST,
+    ATAN2_COMPAT_LIBM_SHA256,
+    ATAN2_COMPAT_RECEIPT,
+    ATAN2_COMPAT_TABLE_PAYLOAD_SHA256,
+)
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
 NATIVE_ROOT = REPOSITORY_ROOT / "worker/native/deepstream"
@@ -278,3 +286,64 @@ def test_postprocess_gpu_runtime_ctest_matches_build_install_and_docker_gpu_lane
     )
     assert f'add_test(\n  {target}\n  "bin/{target}"\n)' in runtime_ctest
     assert f"set_tests_properties({target} PROPERTIES LABELS gpu)" in runtime_ctest
+
+
+def test_pinned_host_atan2_gpu_contract_is_registered_and_has_no_native_cuda_atan2() -> None:
+    cmake = (NATIVE_ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+    runtime_ctest = (NATIVE_ROOT / "runtime-ctest.cmake.in").read_text(encoding="utf-8")
+    target = "seeon-deepstream-pinned-host-atan2-test"
+    target_region = _cmake_target_region(cmake, target)
+
+    assert "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>" in target_region
+    assert f"NAME {target}" in target_region
+    assert f"set_tests_properties({target} PROPERTIES LABELS gpu)" in target_region
+    assert re.search(
+        rf"install\(\s*TARGETS\b[\s\S]*\b{re.escape(target)}\b[\s\S]*?"
+        r"RUNTIME DESTINATION native-build/bin\s*\)",
+        cmake,
+    )
+    assert f'add_test(\n  {target}\n  "bin/{target}"\n)' in runtime_ctest
+    assert f"set_tests_properties({target} PROPERTIES LABELS gpu)" in runtime_ctest
+
+    for path, source in _production_sources().items():
+        if path.name == "pinned_host_atan2.cu":
+            continue
+        assert not re.search(r"(?<![:\w])atan2\s*\(", source), path
+
+
+def test_pinned_host_libm_golden_digest_binds_manifest_preflight_and_receipt() -> None:
+    production_digest = (
+        "1b87a1a50b496cfead2b0ad134c2ff536705c82608db240c7e8aa48d6c0e4217"
+    )
+    manifest = json.loads(
+        (NATIVE_ROOT / "manifest.template.json").read_text(encoding="utf-8")
+    )
+    preflight_source = (NATIVE_ROOT / "preflight.py").read_text(encoding="utf-8")
+
+    assert production_digest == ATAN2_COMPAT_LIBM_SHA256
+    assert f'ATAN2_COMPAT_LIBM_SHA256: Final = "{production_digest}"' in preflight_source
+    assert manifest["atan2_compat"]["host_libm_sha256"] == production_digest
+    assert f"libm={production_digest}" in ATAN2_COMPAT_RECEIPT.pattern
+    native_test = _source("pinned_host_atan2_test.cu")
+    assert f'kPinnedLibmDigest[] = "{production_digest}"' in native_test
+    assert "libm=%s" in native_test
+    assert "provider_digest.data()" in native_test
+
+
+def test_pinned_host_table_and_corpus_digests_bind_measured_receipt() -> None:
+    manifest = json.loads(
+        (NATIVE_ROOT / "manifest.template.json").read_text(encoding="utf-8")
+    )
+    native_test = _source("pinned_host_atan2_test.cu")
+
+    assert (
+        manifest["atan2_compat"]["table_payload_sha256"]
+        == ATAN2_COMPAT_TABLE_PAYLOAD_SHA256
+    )
+    assert manifest["atan2_compat"]["corpus_digest"] == ATAN2_COMPAT_CORPUS_DIGEST
+    assert f"table_payload={ATAN2_COMPAT_TABLE_PAYLOAD_SHA256}" in (
+        ATAN2_COMPAT_RECEIPT.pattern
+    )
+    assert f"corpus_digest={ATAN2_COMPAT_CORPUS_DIGEST}" in ATAN2_COMPAT_RECEIPT.pattern
+    assert "pinned_host_atan2_copy_table(table)" in native_test
+    assert "SHA256(bytes.data(), bytes.size(), digest.data())" in native_test

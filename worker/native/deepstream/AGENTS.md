@@ -30,7 +30,12 @@ CPU, MPS, and iGPU profiles do not run them.
 `association/registry.py` enables only `legacy-greedy-bbox-iou.v1`.
 `pose-aware-bbox-iou.v1` is registered but disabled. Keep source-order pose
 rows, the legacy score threshold/integer conversion, and the no-second-NMS
-rule unless a separate behavior change is approved. Pose/person row cuts and
+rule unless a separate behavior change is approved.
+
+Device contour ordering uses the private pinned-host `atan2` compatibility
+component, not CUDA `atan2`. Its glibc/libm/table identities and raw-bit/order
+corpus are boot-gated; changing the host image or expression graph without a
+zero-mismatch replacement must refuse rollout.
 source-order compaction are device-owned; only compact survivors cross to the
 host. Do not add a second NMS. Bed remains pending device finalization.
 

@@ -8,6 +8,8 @@ FROM nvcr.io/nvidia/deepstream@sha256:f6fa0247da9290979cbb05749e7da9435d089c93db
 WORKDIR /src
 COPY worker/native/deepstream/CMakeLists.txt ./CMakeLists.txt
 COPY worker/native/deepstream/runtime-ctest.cmake.in ./runtime-ctest.cmake.in
+COPY worker/native/deepstream/COPYING.LESSER ./COPYING.LESSER
+COPY worker/native/deepstream/NOTICE.pinned-host-atan2 ./NOTICE.pinned-host-atan2
 COPY worker/native/deepstream/src ./src
 RUN test -d /opt/nvidia/deepstream/deepstream/sources \
     && find /opt/nvidia/deepstream/deepstream/sources -type f -name 'nvds*.h' -print -quit | grep -q . \
@@ -32,6 +34,7 @@ COPY --from=uv-bin /usr/local/bin/uv /usr/local/bin/uv
 COPY --from=deepstream-native-build /opt/seeon-native/bin/seeon-deepstream-preflight /usr/local/bin/seeon-deepstream-preflight
 COPY --from=deepstream-native-build /opt/seeon-native/bin/seeon-deepstream-child /usr/local/bin/seeon-deepstream-child
 COPY --from=deepstream-native-build /opt/seeon-native/native-build /opt/seeon/native-build
+COPY --from=deepstream-native-build /opt/seeon-native/share/licenses /opt/seeon/licenses
 RUN ctest --test-dir /opt/seeon/native-build --output-on-failure -LE gpu
 
 ENV UV_LINK_MODE=copy \
