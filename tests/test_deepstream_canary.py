@@ -282,6 +282,42 @@ def test_mount_guard_rejects_live_volume_ancestor(tmp_path: Path) -> None:
         refuse_mount_overlap((live / "canary",), snapshot)
 
 
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "expected"),
+    ((1, "", 0), (0, "xid-a\nxid-b\n", 2), (2, "", -1)),
+)
+def test_kernel_xid_monitor_is_bounded_and_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    stdout: str,
+    expected: int,
+) -> None:
+    import worker.tools.deepstream_canary.safety as safety_module
+
+    observed: list[tuple[str, ...]] = []
+
+    def run(command: tuple[str, ...], **_: object) -> SimpleNamespace:
+        observed.append(command)
+        return SimpleNamespace(returncode=returncode, stdout=stdout)
+
+    monkeypatch.setattr(safety_module.subprocess, "run", run)
+
+    assert safety_module._kernel_xid_count() == expected
+    assert observed == [
+        (
+            "journalctl",
+            "--boot",
+            "0",
+            "--dmesg",
+            "--no-pager",
+            "--grep",
+            "NVRM: Xid",
+            "--output",
+            "cat",
+        )
+    ]
+
+
 def test_live_gpu_protection_attributes_container_and_allows_pid_churn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
