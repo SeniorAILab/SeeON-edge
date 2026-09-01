@@ -198,6 +198,38 @@ def test_runner_emits_verifiable_rung_receipt_from_recorded_telemetry(tmp_path: 
     )
     assert verified.returncode == 0, verified.stderr
     assert '"verdict":"PASS"' in verified.stdout
+    # The stored verdict names the exact gate semantics that produced it.
+    stamped = json.loads((evidence / "verified.json").read_text())
+    expected_revision = hashlib.sha256(
+        Path("scripts/qa/verify_deepstream_delivery.py").read_bytes()
+        + Path("worker/tools/deepstream_canary/gates.py").read_bytes()
+    ).hexdigest()
+    assert stamped["verifier_revision"] == expected_revision
+
+
+def test_canonical_report_republish_is_idempotent_only_for_identical_bytes(
+    tmp_path: Path,
+) -> None:
+    import hashlib as _hashlib
+
+    from worker.tools.deepstream_canary.report import canonical_json, write_canonical_report
+
+    value = {"schema_version": 1, "verdict": "PASS", "rung": "zero"}
+
+    # Identical re-verification republish is a no-op returning the same path.
+    first = write_canonical_report(tmp_path, value)
+    second = write_canonical_report(tmp_path, value)
+    assert first == second and first.read_bytes() == canonical_json(value)
+
+    # A tampered file occupying the content-addressed name still fails closed.
+    other = {"schema_version": 1, "verdict": "FAIL", "rung": "zero"}
+    digest = _hashlib.sha256(canonical_json(other)).hexdigest()
+    corrupt = tmp_path / f"gate-report.{digest}.json"
+    corrupt.write_bytes(b"tampered")
+    import pytest
+
+    with pytest.raises(FileExistsError):
+        _ = write_canonical_report(tmp_path, other)
 
 
 def test_authorization_rejects_camera_count_that_does_not_match_rung() -> None:
