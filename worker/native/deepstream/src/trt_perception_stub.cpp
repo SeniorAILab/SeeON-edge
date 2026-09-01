@@ -28,9 +28,11 @@ InferStatus TrtPerception::infer_host(const seeon::HostFrameView& frame,
   return InferStatus::kFailed;
 }
 
-InferStatus TrtPerception::infer_device(const seeon::DeviceFrameView& frame,
+InferStatus TrtPerception::infer_device(std::string_view camera_id,
+                                        const seeon::DeviceFrameView& frame,
                                         bool run_person_engine, PerceptionResult* result,
                                         std::string* error) {
+  static_cast<void>(camera_id);
   static_cast<void>(frame);
   static_cast<void>(run_person_engine);
   static_cast<void>(result);

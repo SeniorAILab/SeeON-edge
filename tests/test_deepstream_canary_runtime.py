@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import subprocess
@@ -129,8 +130,14 @@ def test_runner_emits_verifiable_rung_receipt_from_recorded_telemetry(tmp_path: 
 
     # Given: recorded per-window telemetry and immutable artifact identities.
     evidence = tmp_path / "evidence"
-    evidence.mkdir()
-    telemetry = Path("tests/fixtures_deepstream_canary_telemetry.json")
+    baseline_evidence = tmp_path / "baseline"
+    (evidence / "raw").mkdir(parents=True)
+    (baseline_evidence / "raw").mkdir(parents=True)
+    fixture = Path("tests/fixtures_deepstream_canary_telemetry.json")
+    telemetry = evidence / "raw" / "telemetry-loopback.json"
+    candidate_telemetry = json.loads(fixture.read_text())
+    candidate_telemetry["mode"] = "commissioning"
+    telemetry.write_text(json.dumps(candidate_telemetry) + "\n")
     artifacts = ArtifactBindings(
         worker_image="sha256:" + "1" * 64,
         support_images=("sha256:" + "2" * 64,),
@@ -146,19 +153,32 @@ def test_runner_emits_verifiable_rung_receipt_from_recorded_telemetry(tmp_path: 
 
     # Then: the independent verifier recomputes PASS without trusting execution status.
     assert receipt.name == "rung-loopback.json"
+    emitted = json.loads(receipt.read_text())
+    assert emitted["schema_version"] == 2
+    assert emitted["cameras"][0]["copy_window_frames"] == 450
+    assert max(emitted["cameras"][0]["frame_window_spans_seconds"]) <= 2.15
+    baseline_telemetry = copy.deepcopy(candidate_telemetry)
+    baseline_telemetry["cameras"][0]["latency_samples_ms"] = [
+        value + 1.0 for value in baseline_telemetry["cameras"][0]["latency_samples_ms"]
+    ]
+    baseline_telemetry_path = baseline_evidence / "raw" / "telemetry-loopback.json"
+    baseline_telemetry_path.write_text(json.dumps(baseline_telemetry) + "\n")
+    _ = emit_rung_receipt(baseline_telemetry_path, baseline_evidence, artifacts)
     policy_digest = hashlib.sha256(
         Path("scripts/qa/deepstream-canary/gate-policy.v1.json").read_bytes()
     ).hexdigest()
-    (evidence / "run-request.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "requested_rungs": ["loopback"],
-                "policy_sha256": policy_digest,
-            }
-        )
-        + "\n"
-    )
+    assert json.loads(
+        Path("scripts/qa/deepstream-canary/gate-policy.v1.json").read_text()
+    )["policy_id"].endswith("-v4")
+    run_request = json.dumps(
+        {
+            "schema_version": 1,
+            "requested_rungs": ["loopback"],
+            "policy_sha256": policy_digest,
+        }
+    ) + "\n"
+    (evidence / "run-request.json").write_text(run_request)
+    (baseline_evidence / "run-request.json").write_text(run_request)
     verified = subprocess.run(
         [
             sys.executable,
@@ -166,6 +186,8 @@ def test_runner_emits_verifiable_rung_receipt_from_recorded_telemetry(tmp_path: 
             "canary",
             "--evidence-root",
             str(evidence),
+            "--baseline-evidence-root",
+            str(baseline_evidence),
             "--output",
             str(evidence / "verified.json"),
         ],

@@ -69,6 +69,7 @@ target_link_libraries(
 
 add_executable(
   seeon-deepstream-preflight
+  src/copy_telemetry.cpp
   src/main.cpp
   src/native_perception.cpp
   src/pinned_host_atan2.cu
@@ -104,6 +105,7 @@ add_executable(
   src/child_command_support.cpp
   src/child_failures.cpp
   src/child_server.cpp
+  src/copy_telemetry.cpp
   src/encoded_source_bus.cpp
   src/encoded_source_branch.cpp
   src/encoded_source_sample.cpp
@@ -150,6 +152,19 @@ if(BUILD_TESTING)
   target_compile_features(seeon-deepstream-ipc-test PRIVATE cxx_std_20)
   target_compile_options(seeon-deepstream-ipc-test PRIVATE ${SEEON_WARNINGS})
   add_test(NAME seeon-deepstream-ipc-test COMMAND seeon-deepstream-ipc-test)
+  add_executable(
+    seeon-deepstream-copy-telemetry-test
+    src/copy_telemetry.cpp
+    src/copy_telemetry_test.cpp
+  )
+  target_compile_features(seeon-deepstream-copy-telemetry-test PRIVATE cxx_std_20)
+  target_compile_options(
+    seeon-deepstream-copy-telemetry-test PRIVATE ${SEEON_WARNINGS} ${SEEON_FP_FLAGS}
+  )
+  add_test(
+    NAME seeon-deepstream-copy-telemetry-test
+    COMMAND seeon-deepstream-copy-telemetry-test
+  )
   add_test(
     NAME seeon-deepstream-wire-cross-language-test
     COMMAND
@@ -349,6 +364,7 @@ if(BUILD_TESTING)
   set(
     SEEON_NATIVE_TEST_TARGETS
     seeon-deepstream-ipc-test
+    seeon-deepstream-copy-telemetry-test
     seeon-deepstream-source-runtime-test
     seeon-deepstream-source-runtime-gstreamer-test
     seeon-deepstream-native-perception-driver
@@ -367,6 +383,7 @@ if(BUILD_TESTING)
     endforeach()
     set_tests_properties(
       seeon-deepstream-ipc-test
+      seeon-deepstream-copy-telemetry-test
       seeon-deepstream-wire-cross-language-test
       seeon-deepstream-source-runtime-test
       seeon-deepstream-source-runtime-gstreamer-test
@@ -384,9 +401,14 @@ if(BUILD_TESTING)
   configure_file(
     runtime-ctest.cmake.in runtime-ctest/CTestTestfile.cmake COPYONLY
   )
+  file(
+    APPEND ${CMAKE_CURRENT_BINARY_DIR}/runtime-ctest/CTestTestfile.cmake
+    "add_test(seeon-deepstream-copy-telemetry-test \"bin/seeon-deepstream-copy-telemetry-test\")\n"
+  )
   install(
     TARGETS
       seeon-deepstream-ipc-test
+      seeon-deepstream-copy-telemetry-test
       seeon-deepstream-source-runtime-test
       seeon-deepstream-source-runtime-gstreamer-test
       seeon-deepstream-native-perception-float-test

@@ -24,9 +24,21 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from scripts.qa.deepstream_final_verification import compliance, quality, scope  # noqa: E402
-from worker.tools.deepstream_canary.gates import evaluate_receipt  # noqa: E402
-from worker.tools.deepstream_canary.models import GatePolicy, GateReport, RungReceipt  # noqa: E402
+from worker.tools.deepstream_canary.gates import (  # noqa: E402
+    evaluate_absolute_receipt,
+    evaluate_receipt,
+)
+from worker.tools.deepstream_canary.models import (  # noqa: E402
+    AuthorizationArtifact,
+    GatePolicy,
+    GateReport,
+    RungReceipt,
+)
 from worker.tools.deepstream_canary.report import write_canonical_report  # noqa: E402
+from worker.tools.deepstream_canary.telemetry import (  # noqa: E402
+    RecordedRungTelemetry,
+    build_rung_receipt,
+)
 
 POLICY = Path("scripts/qa/deepstream-canary/gate-policy.v1.json")
 
@@ -40,6 +52,9 @@ class RunRequestReceipt(BaseModel):
     worker_image: str | None = None
     worker_image_digest: str | None = None
     expected_revision: str | None = None
+    appliance_id: str = "unbound-canary-appliance"
+    camera_ids: tuple[str, ...] = ()
+    authorization_sha256: str | None = None
 
 
 class DeliveryVerdict(BaseModel):
@@ -53,16 +68,91 @@ class DeliveryVerdict(BaseModel):
     artifacts: tuple[str, ...] = ()
 
 
-def _canary(root: Path, policy_path: Path) -> DeliveryVerdict:
+def _load_rung_receipts(root: Path) -> tuple[tuple[RungReceipt, bytes], ...]:
+    return tuple(
+        (RungReceipt.model_validate_json(content := path.read_bytes()), content)
+        for path in sorted((root / "raw").glob("rung-*.json"))
+    )
+
+
+def _receipt_evidence_findings(
+    root: Path,
+    request: RunRequestReceipt,
+    receipts: dict[str, RungReceipt],
+    prefix: str,
+) -> list[str]:
+    findings: list[str] = []
+    for rung in request.requested_rungs:
+        receipt = receipts.get(rung)
+        if receipt is None:
+            continue
+        telemetry_path = root / "raw" / f"telemetry-{rung}.json"
+        if not telemetry_path.is_file():
+            findings.append(f"{prefix}raw_telemetry_missing:{rung}")
+            continue
+        try:
+            telemetry = RecordedRungTelemetry.model_validate_json(telemetry_path.read_bytes())
+            rebuilt = build_rung_receipt(telemetry, receipt.artifacts)
+        except (OSError, ValidationError, ValueError) as error:
+            findings.append(f"{prefix}raw_telemetry_invalid:{rung}:{error}")
+            continue
+        if rebuilt != receipt:
+            findings.append(f"{prefix}receipt_raw_mismatch:{rung}")
+    return findings
+
+
+def _authorization_findings(
+    root: Path, request: RunRequestReceipt, rungs: tuple[str, ...], prefix: str
+) -> list[str]:
+    live_rungs = tuple(rung for rung in rungs if rung.isdigit())
+    authorization_path = root / "authorization.json"
+    if not live_rungs:
+        if request.authorization_sha256 is not None or authorization_path.exists():
+            return [f"{prefix}unexpected_authorization_artifact"]
+        return []
+    if request.authorization_sha256 is None:
+        return [f"{prefix}authorization_digest_missing"]
+    if not authorization_path.is_file():
+        return [f"{prefix}authorization_missing"]
+    content = authorization_path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != request.authorization_sha256:
+        return [f"{prefix}authorization_digest_mismatch"]
+    try:
+        artifact = AuthorizationArtifact.model_validate_json(content)
+    except ValidationError as error:
+        return [f"{prefix}authorization_invalid:{error}"]
+    findings: list[str] = []
+    if artifact.appliance_id != request.appliance_id:
+        findings.append(f"{prefix}authorization_appliance_id_mismatch")
+    if artifact.worker_image != request.worker_image_digest:
+        findings.append(f"{prefix}authorization_worker_image_mismatch")
+    if artifact.camera_ids != request.camera_ids:
+        findings.append(f"{prefix}authorization_camera_ids_mismatch")
+    for rung in live_rungs:
+        if int(rung) not in artifact.authorized_rungs:
+            findings.append(f"{prefix}authorization_rung_unauthorized:{rung}")
+    return findings
+
+
+def _canary(
+    root: Path, policy_path: Path, baseline_root: Path | None = None
+) -> DeliveryVerdict:
     policy_content = policy_path.read_bytes()
     policy = GatePolicy.model_validate_json(policy_content)
     request = RunRequestReceipt.model_validate_json((root / "run-request.json").read_bytes())
     policy_digest = hashlib.sha256(policy_content).hexdigest()
-    receipts = tuple(
-        RungReceipt.model_validate_json(path.read_bytes())
-        for path in sorted((root / "raw").glob("rung-*.json"))
-    )
+    receipt_records = _load_rung_receipts(root)
+    receipts = tuple(receipt for receipt, _ in receipt_records)
     by_rung = {receipt.rung: receipt for receipt in receipts}
+    baseline_request = (
+        RunRequestReceipt.model_validate_json((baseline_root / "run-request.json").read_bytes())
+        if baseline_root is not None
+        else None
+    )
+    baseline_records = _load_rung_receipts(baseline_root) if baseline_root is not None else ()
+    baseline_by_rung = {
+        receipt.rung: receipt for receipt, _ in baseline_records
+    }
     findings = [
         f"requested_rung_missing:{rung}"
         for rung in request.requested_rungs
@@ -70,7 +160,54 @@ def _canary(root: Path, policy_path: Path) -> DeliveryVerdict:
     ]
     if request.policy_sha256 != policy_digest:
         findings.append("run_request_policy_digest_mismatch")
-    identity_artifacts: list[str] = []
+    findings.extend(_receipt_evidence_findings(root, request, by_rung, "candidate_"))
+    findings.extend(
+        _authorization_findings(root, request, request.requested_rungs, "candidate_")
+    )
+    if baseline_root is None:
+        findings.extend(
+            f"baseline_evidence_missing:{rung}"
+            for rung in request.requested_rungs
+            if rung.isdigit()
+        )
+    if baseline_root is not None and baseline_request is not None:
+        if baseline_request.policy_sha256 != policy_digest:
+            findings.append("baseline_run_request_policy_digest_mismatch")
+        findings.extend(
+            f"baseline_requested_rung_missing:{rung}"
+            for rung in baseline_request.requested_rungs
+            if rung not in baseline_by_rung
+        )
+        findings.extend(
+            f"baseline_requested_rung_missing:{rung}"
+            for rung in request.requested_rungs
+            if rung.isdigit()
+            and (rung not in baseline_request.requested_rungs or rung not in baseline_by_rung)
+        )
+        findings.extend(
+            _receipt_evidence_findings(
+                baseline_root, baseline_request, baseline_by_rung, "baseline_"
+            )
+        )
+        findings.extend(
+            _authorization_findings(
+                baseline_root,
+                baseline_request,
+                baseline_request.requested_rungs,
+                "baseline_",
+            )
+        )
+    identity_artifacts: list[str] = [
+        f"policy:{policy_digest}",
+        *(
+            f"candidate-rung:{receipt.rung}:{hashlib.sha256(content).hexdigest()}"
+            for receipt, content in receipt_records
+        ),
+        *(
+            f"baseline-rung:{receipt.rung}:{hashlib.sha256(content).hexdigest()}"
+            for receipt, content in baseline_records
+        ),
+    ]
     if request.worker_image_digest is not None:
         expected_suffix = f"@{request.worker_image_digest}"
         if request.worker_image is None or not request.worker_image.endswith(expected_suffix):
@@ -81,12 +218,37 @@ def _canary(root: Path, policy_path: Path) -> DeliveryVerdict:
             for receipt in receipts
             if receipt.artifacts.worker_image != request.worker_image_digest
         )
+        if baseline_request is not None:
+            findings.extend(
+                f"baseline_worker_image_digest_mismatch:{receipt.rung}"
+                for receipt in baseline_by_rung.values()
+                if receipt.artifacts.worker_image != baseline_request.worker_image_digest
+            )
     if request.expected_revision is not None:
         if re.fullmatch(r"[0-9a-f]{40}", request.expected_revision) is None:
             findings.append("run_request_expected_revision_invalid")
         identity_artifacts.append(f"expected-revision:{request.expected_revision}")
+    baseline_reports = tuple(
+        evaluate_absolute_receipt(baseline_by_rung[rung], policy)
+        for rung in request.requested_rungs
+        if rung in baseline_by_rung
+    )
+    if baseline_root is not None:
+        findings.extend(
+            f"baseline_absolute_failure:{report.rung}"
+            for report in baseline_reports
+            if report.verdict != "PASS" or not report.claim_eligible
+        )
+    qualified_baselines = {
+        report.rung: baseline_by_rung[report.rung]
+        for report in baseline_reports
+        if report.verdict == "PASS"
+        and report.claim_eligible
+        and not any(finding.startswith("baseline_") for finding in findings)
+        and not any(finding.endswith(f":{report.rung}") for finding in findings)
+    }
     reports = tuple(
-        evaluate_receipt(by_rung[rung], policy)
+        evaluate_receipt(by_rung[rung], policy, qualified_baselines.get(rung))
         for rung in request.requested_rungs
         if rung in by_rung
     )
@@ -96,7 +258,7 @@ def _canary(root: Path, policy_path: Path) -> DeliveryVerdict:
         not findings
         and bool(reports)
         and len(reports) == len(request.requested_rungs)
-        and all(report.verdict == "PASS" for report in reports)
+        and all(report.verdict == "PASS" and report.claim_eligible for report in reports)
     )
     return DeliveryVerdict(
         verdict="PASS" if passed else "FAIL",
@@ -128,6 +290,7 @@ def _legacy_scope(root: Path) -> tuple[tuple[str, ...], tuple[str, ...]]:
 class VerifyArguments(argparse.Namespace):
     verifier: Literal["canary", "compliance", "quality", "scope"] = "canary"
     evidence_root: Path | None = None
+    baseline_evidence_root: Path | None = None
     output: Path = Path()
     policy: Path = POLICY
     plan: Path | None = None
@@ -145,6 +308,7 @@ def _arguments() -> VerifyArguments:
     parser = argparse.ArgumentParser()
     _ = parser.add_argument("verifier", choices=("canary", "compliance", "quality", "scope"))
     _ = parser.add_argument("--evidence-root", type=Path)
+    _ = parser.add_argument("--baseline-evidence-root", type=Path)
     _ = parser.add_argument("--output", type=Path, required=True)
     _ = parser.add_argument("--policy", type=Path, default=POLICY)
     _ = parser.add_argument("--plan", type=Path)
@@ -181,7 +345,11 @@ def main() -> int:
             case "canary":
                 if arguments.evidence_root is None:
                     raise FileNotFoundError("--evidence-root is required for canary")
-                verdict = _canary(arguments.evidence_root, arguments.policy)
+                verdict = _canary(
+                    arguments.evidence_root,
+                    arguments.policy,
+                    arguments.baseline_evidence_root,
+                )
             case "compliance":
                 if arguments.evidence_root is None:
                     raise FileNotFoundError("--evidence-root is required for compliance")

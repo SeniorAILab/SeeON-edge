@@ -43,6 +43,11 @@ class GatePolicy(BaseModel):
     latency_p95_max_ms: float = Field(gt=0)
     latency_p99_max_ms: float = Field(gt=0)
     latency_absolute_max_ms: float = Field(gt=0)
+    h2d_bytes_max: int = Field(ge=0)
+    d2h_bytes_max: int = Field(ge=0)
+    require_fps_at_least_baseline: bool
+    require_latency_p95_improvement: bool
+    frame_window_span_max_seconds: float = Field(gt=0)
     metadata_overwrite_fraction_max: float = Field(ge=0, le=1)
     gpu_utilization_p95_max: float = Field(gt=0, le=100)
     gpu_utilization_absolute_max: float = Field(gt=0, le=100)
@@ -73,6 +78,15 @@ class CameraSignals(BaseModel):
 
     camera_id: str
     fps_windows: tuple[float, ...] = Field(min_length=1)
+    telemetry_coverage_seconds: float = Field(default=0, ge=0)
+    copy_window_frames: int = Field(ge=0)
+    frame_window_spans_seconds: tuple[float, ...] = Field(min_length=1)
+    h2d_bytes_max: int = Field(ge=0)
+    d2h_bytes_max: int = Field(ge=0)
+    box_source: Literal["pose", "person"]
+    pool_wait_us_p95: float = Field(ge=0)
+    gpu_us_p95: float = Field(ge=0)
+    surface_drops: int = Field(ge=0)
     latency_ms: LatencySignals
     au_gaps: int = Field(ge=0)
     config_discontinuities: int = Field(ge=0)
@@ -153,7 +167,7 @@ class ArtifactBindings(BaseModel):
 class RungReceipt(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     rung: str
     mode: CanaryMode
     camera_count: int = Field(ge=0)

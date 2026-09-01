@@ -1,5 +1,6 @@
 #include "trt_perception.hpp"
 
+#include "copy_telemetry.hpp"
 #include "postprocess_gpu.hpp"
 #include "preprocess_gpu.hpp"
 #include "source_runtime.hpp"
@@ -10,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
@@ -42,6 +44,8 @@ struct Workspace {
   std::unique_ptr<nvinfer1::IExecutionContext> person_context;
   std::unique_ptr<nvinfer1::IExecutionContext> bed_context;
   cudaStream_t stream = nullptr;
+  cudaEvent_t timing_start = nullptr;
+  cudaEvent_t timing_end = nullptr;
   float* device_input = nullptr;
   float* device_pose = nullptr;
   float* device_person = nullptr;
@@ -62,6 +66,8 @@ struct Workspace {
   std::vector<PackedBedRecord> host_bed_records;
 
   ~Workspace() {
+    if (timing_start != nullptr) cudaEventDestroy(timing_start);
+    if (timing_end != nullptr) cudaEventDestroy(timing_end);
     for (float* pointer : {device_input, device_pose, device_person, device_bed,
                            device_bed_prototypes, device_pose_compact, device_person_compact}) {
       if (pointer != nullptr) cudaFree(pointer);
@@ -115,6 +121,7 @@ class TrtPerception::Impl {
   EngineSlot bed;
   std::vector<std::unique_ptr<Workspace>> workspaces;
   BoundedPool<Workspace> pool;
+  deepstream::CopyTelemetry copy_telemetry;
 
   bool load_engine(const std::string& path, EngineSlot* slot, std::string* error) {
     std::vector<char> bytes;
@@ -205,6 +212,9 @@ std::unique_ptr<TrtPerception> TrtPerception::load(const std::string& cache_dir,
       !impl.load_engine(cache_dir + "/bed.engine", &impl.bed, error)) {
     return nullptr;
   }
+  if (!deepstream::CopyTelemetry::from_environment(&impl.copy_telemetry, error)) {
+    return nullptr;
+  }
   impl.workspaces.reserve(kInferenceWorkspaces);
   impl.pool.reserve(kInferenceWorkspaces);
   for (std::size_t index = 0; index < kInferenceWorkspaces; ++index) {
@@ -219,6 +229,12 @@ std::unique_ptr<TrtPerception> TrtPerception::load(const std::string& cache_dir,
     }
     if (cudaStreamCreate(&workspace->stream) != cudaSuccess) {
       *error = "cuda_stream_failed: workspace " + std::to_string(index);
+      return nullptr;
+    }
+    if (impl.copy_telemetry.enabled() &&
+        (cudaEventCreate(&workspace->timing_start) != cudaSuccess ||
+         cudaEventCreate(&workspace->timing_end) != cudaSuccess)) {
+      *error = "copy telemetry: cuda event create failed";
       return nullptr;
     }
     const std::array<std::pair<float**, std::size_t>, 7> allocations{{
@@ -456,7 +472,8 @@ epilogue:
   return InferStatus::kCompleted;
 }
 
-InferStatus TrtPerception::infer_device(const seeon::DeviceFrameView& frame,
+InferStatus TrtPerception::infer_device(std::string_view camera_id,
+                                        const seeon::DeviceFrameView& frame,
                                         bool run_person_engine, PerceptionResult* result,
                                         std::string* error) {
   if (error == nullptr || result == nullptr || frame.rgba_device == nullptr || frame.width <= 0 ||
@@ -465,8 +482,25 @@ InferStatus TrtPerception::infer_device(const seeon::DeviceFrameView& frame,
     if (error != nullptr) *error = "invalid_device_frame";
     return InferStatus::kFailed;
   }
+  const bool telemetry_enabled = impl_->copy_telemetry.enabled();
+  const auto pool_wait_started =
+      telemetry_enabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
   Workspace* available = impl_->pool.try_acquire();
-  if (available == nullptr) return InferStatus::kDroppedBusy;
+  double pool_wait_us = 0.0;
+  if (telemetry_enabled) {
+    pool_wait_us = std::chrono::duration<double, std::micro>(
+                       std::chrono::steady_clock::now() - pool_wait_started)
+                       .count();
+  }
+  const auto box_source = run_person_engine ? deepstream::CopyTelemetry::BoxSource::kPerson
+                                            : deepstream::CopyTelemetry::BoxSource::kPose;
+  if (available == nullptr) {
+    if (telemetry_enabled &&
+        !impl_->copy_telemetry.record_busy_surface_drop(camera_id, box_source, error)) {
+      return InferStatus::kFailed;
+    }
+    return InferStatus::kDroppedBusy;
+  }
   const PoolLease<Workspace> lease{impl_->pool, *available};
   int current_device = -1;
   if (cudaGetDevice(&current_device) != cudaSuccess || current_device != frame.device_ordinal) {
@@ -480,10 +514,16 @@ InferStatus TrtPerception::infer_device(const seeon::DeviceFrameView& frame,
   std::size_t person_count = 0;
   std::size_t bed_count = 0;
   std::size_t transfer_bytes = 0;
+  float gpu_ms = 0.0F;
   // The preprocess helper may have submitted work before reporting a launch
   // failure. Its contract requires the borrowed frame and workspace to remain
   // live until this stream is synchronized.
   async_work_enqueued = true;
+  if (telemetry_enabled &&
+      cudaEventRecord(available->timing_start, available->stream) != cudaSuccess) {
+    *error = "copy telemetry: cuda event record failed";
+    goto epilogue;
+  }
   if (!preprocess_rgba_device_to_bgr_tensor(frame.rgba_device, frame.width, frame.height,
                                             frame.pitch_bytes, affine, available->device_input,
                                             available->stream, error)) {
@@ -528,6 +568,11 @@ InferStatus TrtPerception::infer_device(const seeon::DeviceFrameView& frame,
     *error = "postprocess_person_skipped_header_failed";
     goto epilogue;
   }
+  if (telemetry_enabled &&
+      cudaEventRecord(available->timing_end, available->stream) != cudaSuccess) {
+    *error = "copy telemetry: cuda event record failed";
+    goto epilogue;
+  }
   if (cudaMemcpyAsync(&available->host_pose_header, available->device_pose_header,
                       sizeof(PostprocessChannelHeader), cudaMemcpyDeviceToHost,
                       available->stream) != cudaSuccess ||
@@ -542,6 +587,12 @@ InferStatus TrtPerception::infer_device(const seeon::DeviceFrameView& frame,
   }
   if (cudaStreamSynchronize(available->stream) != cudaSuccess) {
     *error = "postprocess_header_sync_failed";
+    goto epilogue;
+  }
+  if (telemetry_enabled &&
+      cudaEventElapsedTime(&gpu_ms, available->timing_start, available->timing_end) !=
+          cudaSuccess) {
+    *error = "copy telemetry: cuda event elapsed failed";
     goto epilogue;
   }
   if (!validate_postprocess_channel_headers(
@@ -609,6 +660,14 @@ epilogue:
   }
   result->source_width = frame.width;
   result->source_height = frame.height;
+  if (telemetry_enabled &&
+      !impl_->copy_telemetry.record_completed_frame(
+          deepstream::CopyTelemetry::CompletedFrame{
+              camera_id, 0, static_cast<std::uint64_t>(transfer_bytes), box_source, pool_wait_us,
+              static_cast<double>(gpu_ms) * 1000.0},
+          error)) {
+    return InferStatus::kFailed;
+  }
   return InferStatus::kCompleted;
 }
 

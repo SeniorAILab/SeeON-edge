@@ -10,6 +10,7 @@ from pathlib import Path
 from worker.tools.deepstream_canary.models import ArtifactBindings
 from worker.tools.deepstream_canary.safety import CanarySafetyError, LiveSnapshot
 from worker.tools.deepstream_canary.telemetry import (
+    CopyWindowSample,
     NativeWindowSample,
     RuntimeGpuSample,
     emit_rung_receipt,
@@ -137,6 +138,17 @@ def native_windows(path: Path) -> tuple[NativeWindowSample, ...]:
     )
 
 
+def copy_windows(path: Path) -> tuple[CopyWindowSample, ...]:
+    """Parse the child's immutable copy sidecar for a parent telemetry file."""
+    sidecar = path.with_name(f"{path.stem}.child-copy.jsonl")
+    if not sidecar.is_file():
+        return ()
+    lines = sidecar.read_text(encoding="utf-8").splitlines()
+    if any(not line for line in lines):
+        raise ValueError(f"copy telemetry contains an empty JSONL record: {sidecar}")
+    return tuple(CopyWindowSample.model_validate_json(line) for line in lines)
+
+
 def emit_receipts(request: ReceiptEmissionRequest, corpus: Path) -> tuple[Path, ...]:
     run_root = request.evidence_dir / "run"
     bindings = ArtifactBindings(
@@ -160,6 +172,7 @@ def emit_receipts(request: ReceiptEmissionRequest, corpus: Path) -> tuple[Path, 
 __all__ = [
     "ExecutionArtifactSources",
     "ReceiptEmissionRequest",
+    "copy_windows",
     "emit_receipts",
     "generate_corpus",
     "gpu_sample",

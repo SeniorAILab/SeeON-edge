@@ -239,6 +239,75 @@ def test_production_and_gpu_postprocess_targets_pin_finalizer_math() -> None:
         assert "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>" in region
 
 
+def test_copy_telemetry_is_compiled_into_child_and_preflight_with_a_ctest() -> None:
+    cmake = (NATIVE_ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+
+    for target in ("seeon-deepstream-preflight", "seeon-deepstream-child"):
+        assert "src/copy_telemetry.cpp" in _cmake_target_region(cmake, target)
+    test_region = _cmake_target_region(cmake, "seeon-deepstream-copy-telemetry-test")
+    assert "src/copy_telemetry.cpp" in test_region
+    assert "src/copy_telemetry_test.cpp" in test_region
+    assert re.search(
+        r"add_test\(\s*NAME seeon-deepstream-copy-telemetry-test\s+"
+        r"COMMAND seeon-deepstream-copy-telemetry-test\s*\)",
+        cmake,
+    )
+
+
+def test_copy_telemetry_keeps_parent_sidecar_and_public_schema_separate() -> None:
+    telemetry = _source("copy_telemetry.cpp")
+    header = _source("copy_telemetry.hpp")
+    wire = _source("perception_wire.cpp")
+    public_frame = (
+        REPOSITORY_ROOT / "worker/types/perception_frame.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'std::getenv("SEEON_CANARY_TELEMETRY_PATH")' in telemetry
+    assert 'stem + ".child-copy.jsonl"' in telemetry
+    assert 'record.append("{\\"schema_version\\":1,\\"camera_id\\":")' in telemetry
+    assert "native-telemetry.jsonl" not in telemetry
+    assert "stderr" not in telemetry
+    assert "all record calls are no-ops" in header
+    for source in (wire, public_frame):
+        assert "copy_telemetry" not in source
+        assert "h2d_bytes" not in source
+        assert "d2h_bytes" not in source
+        assert "surface_drops" not in source
+
+
+def test_copy_telemetry_is_camera_scoped_and_gates_timing_when_disabled() -> None:
+    perception = _source("trt_perception.cpp")
+    infer_device = _function_region(perception, "TrtPerception::infer_device")
+    load = _function_region(perception, "TrtPerception::load")
+
+    assert "record_busy_surface_drop(camera_id, box_source, error)" in infer_device
+    assert re.search(
+        r"CompletedFrame\{\s*camera_id,\s*0,\s*"
+        r"static_cast<std::uint64_t>\(transfer_bytes\),\s*box_source,",
+        infer_device,
+    )
+    assert "const bool telemetry_enabled = impl_->copy_telemetry.enabled();" in infer_device
+    assert "if (telemetry_enabled &&\n      cudaEventRecord(available->timing_start" in infer_device
+    assert "if (telemetry_enabled &&\n      cudaEventRecord(available->timing_end" in infer_device
+    assert "if (telemetry_enabled &&\n      cudaEventElapsedTime(" in infer_device
+    assert "impl.copy_telemetry.enabled() &&\n        (cudaEventCreate(" in load
+
+
+def test_copy_telemetry_reports_busy_drops_and_exact_device_transfer_contract() -> None:
+    perception = _source("trt_perception.cpp")
+    telemetry = _source("copy_telemetry.cpp")
+    infer_device = _function_region(perception, "TrtPerception::infer_device")
+    busy = _function_region(telemetry, "CopyTelemetry::record_busy_surface_drop_locked")
+
+    assert "if (available == nullptr)" in infer_device
+    assert "return InferStatus::kDroppedBusy;" in infer_device
+    assert "record_busy_surface_drop(camera_id, box_source, error)" in infer_device
+    assert "camera_id, 0, static_cast<std::uint64_t>(transfer_bytes)" in infer_device
+    assert "increment_saturating(&window.surface_drops);" in busy
+    assert 'record.append(",\\"h2d_bytes_max\\":");' in telemetry
+    assert 'record.append(",\\"d2h_bytes_max\\":");' in telemetry
+
+
 def test_bed_finalizer_is_device_segmented_and_uses_pinned_host_atan2() -> None:
     postprocess = _source("postprocess_gpu.cu")
     finalizer = _function_region(postprocess, "finalize_bed_rows_device")

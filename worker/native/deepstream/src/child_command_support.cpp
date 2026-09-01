@@ -262,7 +262,7 @@ void ServerState::on_device_frame(const std::string& camera, const PipelineBindi
     return;
   }
   std::string error;
-  switch (perception->infer_device(view, options.person_box_from_person_engine, &result,
+  switch (perception->infer_device(camera, view, options.person_box_from_person_engine, &result,
                                    &error)) {
     case trt::InferStatus::kCompleted:
       publish_completed_frame(*this, camera, binding, view, &result);

@@ -23,7 +23,9 @@ def _percentile(values: tuple[float, ...], fraction: float) -> float:
     return ordered[lower] * (1 - weight) + ordered[upper] * weight
 
 
-def _check(name: str, passed: bool, actual: float | int | bool, required: str) -> GateCheck:
+def _check(
+    name: str, passed: bool, actual: float | int | bool | str, required: str
+) -> GateCheck:
     return GateCheck(name=name, passed=passed, actual=str(actual), required=required)
 
 
@@ -81,6 +83,42 @@ def _camera_checks(receipt: RungReceipt, policy: GatePolicy) -> Iterable[GateChe
             ("max", camera.latency_ms.max, policy.latency_absolute_max_ms),
         ):
             yield _check(f"{prefix}.latency_{name}", actual <= maximum, actual, f"<={maximum}")
+        yield _check(
+            f"{prefix}.h2d_bytes_max",
+            camera.h2d_bytes_max <= policy.h2d_bytes_max,
+            camera.h2d_bytes_max,
+            f"<={policy.h2d_bytes_max}",
+        )
+        yield _check(
+            f"{prefix}.d2h_bytes_max",
+            camera.d2h_bytes_max <= policy.d2h_bytes_max,
+            camera.d2h_bytes_max,
+            f"<={policy.d2h_bytes_max}",
+        )
+        yield _check(
+            f"{prefix}.copy_window_frames",
+            camera.copy_window_frames > 0,
+            camera.copy_window_frames,
+            ">0",
+        )
+        yield _check(
+            f"{prefix}.frame_window_span_max_seconds",
+            max(camera.frame_window_spans_seconds) <= policy.frame_window_span_max_seconds,
+            max(camera.frame_window_spans_seconds),
+            f"<={policy.frame_window_span_max_seconds}",
+        )
+        yield _check(
+            f"{prefix}.telemetry_coverage_seconds",
+            camera.telemetry_coverage_seconds >= receipt.clean_steady_seconds - 22,
+            camera.telemetry_coverage_seconds,
+            f">={receipt.clean_steady_seconds - 22}",
+        )
+        yield _check(
+            f"{prefix}.surface_drops",
+            camera.surface_drops == 0,
+            camera.surface_drops,
+            "0",
+        )
         yield _check(f"{prefix}.au_gaps", camera.au_gaps == 0, camera.au_gaps, "0")
         yield _check(
             f"{prefix}.config_discontinuities",
@@ -113,8 +151,119 @@ def _camera_checks(receipt: RungReceipt, policy: GatePolicy) -> Iterable[GateChe
         )
 
 
-def evaluate_receipt(receipt: RungReceipt, policy: GatePolicy) -> GateReport:
-    """Recompute a binary verdict; missing required fields fail during parsing."""
+def _relative_checks(
+    receipt: RungReceipt, policy: GatePolicy, baseline: RungReceipt | None
+) -> Iterable[GateCheck]:
+    if receipt.rung == "zero":
+        yield _check("relative.baseline", True, "not_applicable", "zero rung")
+        return
+    if not (
+        policy.require_fps_at_least_baseline
+        or policy.require_latency_p95_improvement
+    ):
+        yield _check("relative.baseline", True, "not_required", "disabled by policy")
+        return
+    if baseline is None:
+        yield _check("relative.baseline", False, "missing", "required for nonzero rung")
+        return
+
+    candidate_ids = tuple(sorted(camera.camera_id for camera in receipt.cameras))
+    baseline_ids = tuple(sorted(camera.camera_id for camera in baseline.cameras))
+    compatibility = (
+        ("relative.baseline.rung", receipt.rung == baseline.rung, receipt.rung, baseline.rung),
+        ("relative.baseline.mode", receipt.mode == baseline.mode, receipt.mode, baseline.mode),
+        (
+            "relative.baseline.camera_count",
+            receipt.camera_count == baseline.camera_count
+            and receipt.camera_count == len(receipt.cameras)
+            and baseline.camera_count == len(baseline.cameras),
+            f"candidate={receipt.camera_count} baseline={baseline.camera_count}",
+            "same declared and observed camera count",
+        ),
+        (
+            "relative.baseline.camera_ids",
+            candidate_ids == baseline_ids,
+            f"candidate={','.join(candidate_ids)} baseline={','.join(baseline_ids)}",
+            "same camera IDs",
+        ),
+        (
+            "relative.baseline.clean_steady_seconds",
+            receipt.clean_steady_seconds == baseline.clean_steady_seconds,
+            f"candidate={receipt.clean_steady_seconds} baseline={baseline.clean_steady_seconds}",
+            "same duration",
+        ),
+        (
+            "relative.baseline.workload",
+            receipt.workload == baseline.workload,
+            (
+                f"candidate={receipt.workload.model_dump_json()} "
+                f"baseline={baseline.workload.model_dump_json()}"
+            ),
+            "same workload facts and phase offsets",
+        ),
+        (
+            "relative.baseline.corpus",
+            receipt.artifacts.corpus == baseline.artifacts.corpus,
+            f"candidate={receipt.artifacts.corpus} baseline={baseline.artifacts.corpus}",
+            "same corpus digest",
+        ),
+    )
+    for name, passed, actual, required in compatibility:
+        yield _check(name, passed, actual, required)
+
+    compatible = all(item[1] for item in compatibility)
+    baseline_by_id = {camera.camera_id: camera for camera in baseline.cameras}
+    for camera in receipt.cameras:
+        prefix = f"camera.{camera.camera_id}.relative"
+        matched = baseline_by_id.get(camera.camera_id)
+        if not compatible or matched is None:
+            if policy.require_fps_at_least_baseline:
+                yield _check(
+                    f"{prefix}.fps_p05",
+                    False,
+                    _percentile(camera.fps_windows, 0.05),
+                    "matched compatible baseline required",
+                )
+                yield _check(
+                    f"{prefix}.fps_p50",
+                    False,
+                    _percentile(camera.fps_windows, 0.50),
+                    "matched compatible baseline required",
+                )
+            if policy.require_latency_p95_improvement:
+                yield _check(
+                    f"{prefix}.latency_p95",
+                    False,
+                    camera.latency_ms.p95,
+                    "strictly less than matched compatible baseline",
+                )
+            continue
+        if policy.require_fps_at_least_baseline:
+            baseline_p05 = _percentile(matched.fps_windows, 0.05)
+            baseline_p50 = _percentile(matched.fps_windows, 0.50)
+            yield _check(
+                f"{prefix}.fps_p05",
+                _percentile(camera.fps_windows, 0.05) >= baseline_p05,
+                _percentile(camera.fps_windows, 0.05),
+                f">={baseline_p05}",
+            )
+            yield _check(
+                f"{prefix}.fps_p50",
+                _percentile(camera.fps_windows, 0.50) >= baseline_p50,
+                _percentile(camera.fps_windows, 0.50),
+                f">={baseline_p50}",
+            )
+        if policy.require_latency_p95_improvement:
+            yield _check(
+                f"{prefix}.latency_p95",
+                camera.latency_ms.p95 < matched.latency_ms.p95,
+                camera.latency_ms.p95,
+                f"<{matched.latency_ms.p95}",
+            )
+
+
+def evaluate_absolute_receipt(receipt: RungReceipt, policy: GatePolicy) -> GateReport:
+    """Evaluate policy facts that do not depend on another rung."""
     expected_count = _expected_camera_count(receipt.rung)
     checks = [
         _check(
@@ -130,6 +279,12 @@ def evaluate_receipt(receipt: RungReceipt, policy: GatePolicy) -> GateReport:
             f">={_required_duration(receipt, policy)}",
         ),
         *_camera_checks(receipt, policy),
+        _check(
+            "fault_windows",
+            not receipt.fault_windows,
+            len(receipt.fault_windows),
+            "0",
+        ),
         _check(
             "workload.phase_offsets",
             len(receipt.workload.camera_phase_offsets_ms) == receipt.camera_count,
@@ -186,27 +341,41 @@ def evaluate_receipt(receipt: RungReceipt, policy: GatePolicy) -> GateReport:
             "0",
         ),
     ]
-    protection_values = (
+    for name, actual in (
         ("container_restarts", receipt.live_protection.container_restarts),
         ("camera_stale_transitions", receipt.live_protection.camera_stale_transitions),
         ("evidence_drop_increase", receipt.live_protection.evidence_drop_increase),
         ("relay_sentinel_leaks", receipt.live_protection.relay_sentinel_leaks),
         ("mount_intersections", receipt.live_protection.mount_intersections),
         ("kernel_faults", receipt.live_protection.kernel_faults),
-    )
-    for name, actual in protection_values:
+    ):
         checks.append(_check(f"live_protection.{name}", actual == 0, actual, "0"))
     timeline_kinds = {entry.kind for entry in receipt.timeline if entry.playable}
-    required_timeline = {"event", "evidence", "preview", "derivative"}
-    timeline_passed = receipt.rung == "zero" or required_timeline <= timeline_kinds
-    checks.append(
-        _check(
-            "timeline.playable_and_hashed",
-            timeline_passed,
-            timeline_passed,
-            "true",
-        )
+    timeline_passed = receipt.rung == "zero" or {
+        "event",
+        "evidence",
+        "preview",
+        "derivative",
+    } <= timeline_kinds
+    checks.append(_check("timeline.playable_and_hashed", timeline_passed, timeline_passed, "true"))
+    verdict = "PASS" if all(check.passed for check in checks) else "FAIL"
+    policy_digest = hashlib.sha256(policy.model_dump_json().encode()).hexdigest()
+    return GateReport(
+        schema_version=1,
+        verdict=verdict,
+        rung=receipt.rung,
+        claim_eligible=verdict == "PASS" and receipt.mode is CanaryMode.COMMISSIONING,
+        gate_policy_sha256=policy_digest,
+        checks=tuple(checks),
     )
+
+
+def evaluate_receipt(
+    receipt: RungReceipt, policy: GatePolicy, baseline: RungReceipt | None = None
+) -> GateReport:
+    """Recompute a binary verdict; missing required fields fail during parsing."""
+    absolute = evaluate_absolute_receipt(receipt, policy)
+    checks = [*absolute.checks, *_relative_checks(receipt, policy, baseline)]
     verdict = "PASS" if all(check.passed for check in checks) else "FAIL"
     policy_digest = hashlib.sha256(policy.model_dump_json().encode()).hexdigest()
     return GateReport(

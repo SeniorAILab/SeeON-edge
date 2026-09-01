@@ -14,6 +14,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace seeon {
@@ -67,7 +68,8 @@ class TrtPerception {
                                        bool run_person_engine,
                                        PerceptionResult* result,
                                        std::string* error);
-  [[nodiscard]] InferStatus infer_device(const seeon::DeviceFrameView& frame,
+  [[nodiscard]] InferStatus infer_device(std::string_view camera_id,
+                                         const seeon::DeviceFrameView& frame,
                                          bool run_person_engine,
                                          PerceptionResult* result,
                                          std::string* error);

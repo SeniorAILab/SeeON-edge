@@ -24,6 +24,15 @@ CPU, MPS, and iGPU profiles do not run them.
   Raw tensors and host frames do not cross this boundary.
 - The child alone receives `CUDA_VISIBLE_DEVICES=0`; the Python parent must not
   create a second CUDA context.
+- `copy_telemetry.cpp` is an opt-in native child/preflight sidecar only. Its
+  `SEEON_CANARY_TELEMETRY_PATH` input derives the distinct
+  `.child-copy.jsonl` sibling; it must never write or alter parent
+  `native-telemetry.jsonl`, public IPC, `PerceptionFrameV1`, or stderr. Disabled
+  telemetry is a no-op and must not allocate, record, or read CUDA timing
+  events. Completed device frames record the caller's explicit `camera_id`,
+  literal zero H2D bytes, exact calculated D2H transfer bytes, and busy-pool
+  drops. Schema-1 sidecar data is qualification evidence, not a production
+  runtime contract.
 
 ## Association and media invariants
 
@@ -72,3 +81,8 @@ boot calls `verify_plan_cache` and never builds an engine.
 - `uv run --group lint lint-imports` checks configured contracts; the native
   types-only ceiling is checked by focused dependency tests and manual import
   path review.
+- `seeon-deepstream-copy-telemetry-test` is a normal CTest registration; retain
+  it with the child/preflight compilation linkage. Static boundary coverage in
+  `tests/test_deepstream_gpu_complete_boundary.py` must fail closed on sidecar
+  separation, exact transfer accounting, disabled timing gating, and public
+  schema isolation.
