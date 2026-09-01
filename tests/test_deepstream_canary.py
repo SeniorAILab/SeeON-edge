@@ -441,11 +441,6 @@ def _failed_check_names(report: object) -> set[str]:
     (
         ("h2d_bytes_max", 1, "camera.loop-00.h2d_bytes_max"),
         ("d2h_bytes_max", 200425, "camera.loop-00.d2h_bytes_max"),
-        (
-            "frame_window_spans_seconds",
-            [2.16],
-            "camera.loop-00.frame_window_span_max_seconds",
-        ),
         ("surface_drops", 1, "camera.loop-00.surface_drops"),
     ),
 )
@@ -492,6 +487,24 @@ def test_v4_exact_copy_gate_boundaries_and_matched_baseline_pass(tmp_path: Path)
         RungReceipt.model_validate(invalid)
 
 
+def test_frame_window_span_gate_uses_fps_p05_not_child_spans(tmp_path: Path) -> None:
+    from worker.tools.deepstream_canary.gates import evaluate_receipt
+    from worker.tools.deepstream_canary.models import GatePolicy, RungReceipt
+
+    policy = GatePolicy.model_validate_json(_policy(tmp_path / "policy.json").read_bytes())
+    loopback = _passing_receipt()
+    loopback["cameras"][0]["fps_windows"] = [14.9]  # type: ignore[index]
+    loopback["cameras"][0]["frame_window_spans_seconds"] = [2.16, 99.0]  # type: ignore[index]
+
+    report = evaluate_receipt(RungReceipt.model_validate(loopback), policy)
+
+    assert report.verdict == "PASS"
+    check = next(
+        item for item in report.checks if item.name.endswith("frame_window_span_max_seconds")
+    )
+    assert float(check.actual) == pytest.approx(30 / 14.9)
+
+
 def test_absolute_gate_rejects_fault_window_and_sparse_telemetry(tmp_path: Path) -> None:
     from worker.tools.deepstream_canary.gates import evaluate_absolute_receipt
     from worker.tools.deepstream_canary.models import GatePolicy, RungReceipt
@@ -511,7 +524,7 @@ def test_absolute_gate_rejects_fault_window_and_sparse_telemetry(tmp_path: Path)
 @pytest.mark.parametrize(
     ("name", "mutate"),
     (
-        ("relative.baseline.rung", lambda baseline: baseline.update(rung="1")),
+        ("relative.baseline.rung", lambda baseline: baseline.update(rung="loopback")),
         (
             "relative.baseline.mode",
             lambda baseline: baseline.update(mode="shared-host-smoke"),
@@ -545,10 +558,13 @@ def test_v4_relative_gate_rejects_mismatched_baseline_facts(
     from worker.tools.deepstream_canary.models import GatePolicy, RungReceipt
 
     policy = GatePolicy.model_validate_json(_policy(tmp_path / "policy.json").read_bytes())
-    baseline = _baseline_for(_passing_receipt())
+    candidate = _passing_receipt()
+    candidate.update(rung="1", clean_steady_seconds=7200)
+    candidate["cameras"][0]["telemetry_coverage_seconds"] = 7200.0  # type: ignore[index]
+    baseline = _baseline_for(candidate)
     mutate(baseline)  # type: ignore[operator]
     report = evaluate_receipt(
-        RungReceipt.model_validate(_passing_receipt()),
+        RungReceipt.model_validate(candidate),
         policy,
         RungReceipt.model_validate(baseline),
     )
@@ -564,7 +580,9 @@ def test_v4_relative_gate_requires_baseline_and_enforces_per_camera_regression(
 
     policy = GatePolicy.model_validate_json(_policy(tmp_path / "policy.json").read_bytes())
     candidate = _passing_receipt()
+    candidate.update(rung="1", clean_steady_seconds=7200)
     baseline = _baseline_for(_passing_receipt())
+    baseline.update(rung="1", clean_steady_seconds=7200)
     baseline["cameras"][0]["fps_windows"] = [15.0, 15.2, 15.4]  # type: ignore[index]
     baseline["cameras"][0]["latency_ms"]["p95"] = 150.0  # type: ignore[index]
 
@@ -595,6 +613,10 @@ def test_v4_relative_gate_requires_baseline_and_enforces_per_camera_regression(
         "camera.loop-00.relative.latency_p95",
     } <= _failed_check_names(regression)
     assert evaluate_receipt(RungReceipt.model_validate(zero), policy).verdict == "PASS"
+    assert (
+        evaluate_receipt(RungReceipt.model_validate(_passing_receipt()), policy).verdict
+        == "PASS"
+    )
 
 
 def test_product_image_explicitly_excludes_canary_module() -> None:

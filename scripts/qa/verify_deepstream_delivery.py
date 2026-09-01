@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 from typing import ClassVar, Literal, assert_never, final
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 if str(REPOSITORY_ROOT) not in sys.path:
@@ -29,10 +29,19 @@ from worker.tools.deepstream_canary.gates import (  # noqa: E402
     evaluate_receipt,
 )
 from worker.tools.deepstream_canary.models import (  # noqa: E402
+    ArtifactBindings,
     AuthorizationArtifact,
+    CameraSignals,
+    CanaryMode,
     GatePolicy,
     GateReport,
+    GpuSignals,
+    LatencySignals,
+    LiveProtectionSignals,
+    NvdecSignals,
     RungReceipt,
+    TimelineEntry,
+    WorkloadFacts,
 )
 from worker.tools.deepstream_canary.report import write_canonical_report  # noqa: E402
 from worker.tools.deepstream_canary.telemetry import (  # noqa: E402
@@ -68,21 +77,179 @@ class DeliveryVerdict(BaseModel):
     artifacts: tuple[str, ...] = ()
 
 
-def _load_rung_receipts(root: Path) -> tuple[tuple[RungReceipt, bytes], ...]:
+class V1RecordedCameraTelemetry(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    camera_id: str
+    decision_window_counts: tuple[int, ...] = Field(min_length=1)
+    decision_window_seconds: float = Field(gt=0)
+    latency_samples_ms: tuple[float, ...] = Field(min_length=1)
+    au_gaps: int = Field(ge=0)
+    config_discontinuities: int = Field(ge=0)
+    timestamp_discontinuities: int = Field(ge=0)
+    metadata_published: int = Field(gt=0)
+    metadata_overwritten: int = Field(ge=0)
+    event_evidence_parity: bool
+    preview_ok: bool
+    derivative_ok: bool
+
+
+class V1RecordedGpuTelemetry(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    child_pid: int = Field(gt=0)
+    warmup_memory_mib: tuple[float, ...] = Field(min_length=1)
+    steady_memory_mib: tuple[float, ...] = Field(min_length=1)
+    recovery_memory_mib: tuple[float, ...] = Field(min_length=1)
+    global_used_mib: float = Field(ge=0)
+    total_mib: float = Field(gt=0)
+    slack_samples_mib: tuple[float, ...] = Field(min_length=1)
+    utilization_samples: tuple[float, ...] = Field(min_length=1)
+    new_xids: tuple[int, ...]
+
+
+class V1RecordedRungTelemetry(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal[1]
+    rung: str
+    mode: CanaryMode
+    camera_count: int = Field(ge=0)
+    clean_steady_seconds: int = Field(ge=0)
+    cameras: tuple[V1RecordedCameraTelemetry, ...]
+    gpu: V1RecordedGpuTelemetry
+    nvdec: NvdecSignals
+    timeline: tuple[TimelineEntry, ...]
+    live_protection: LiveProtectionSignals
+    fault_windows: tuple[str, ...]
+    workload: WorkloadFacts
+
+
+class V1CameraSignals(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    camera_id: str
+    fps_windows: tuple[float, ...] = Field(min_length=1)
+    latency_ms: LatencySignals
+    au_gaps: int = Field(ge=0)
+    config_discontinuities: int = Field(ge=0)
+    timestamp_discontinuities: int = Field(ge=0)
+    metadata_published: int = Field(gt=0)
+    metadata_overwritten: int = Field(ge=0)
+    event_evidence_parity: bool
+    preview_ok: bool
+    derivative_ok: bool
+
+
+class V1RungReceipt(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal[1]
+    rung: str
+    mode: CanaryMode
+    camera_count: int = Field(ge=0)
+    clean_steady_seconds: int = Field(ge=0)
+    cameras: tuple[V1CameraSignals, ...]
+    gpu: GpuSignals
+    nvdec: NvdecSignals
+    timeline: tuple[TimelineEntry, ...]
+    live_protection: LiveProtectionSignals
+    fault_windows: tuple[str, ...]
+    workload: WorkloadFacts
+    artifacts: ArtifactBindings
+
+
+BaselineReceipt = RungReceipt | V1RungReceipt
+
+
+def _percentile(values: tuple[float, ...], fraction: float) -> float:
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * fraction
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = position - lower
+    return ordered[lower] * (1 - weight) + ordered[upper] * weight
+
+
+def _build_v1_rung_receipt(
+    recorded: V1RecordedRungTelemetry, artifacts: ArtifactBindings
+) -> V1RungReceipt:
+    return V1RungReceipt(
+        schema_version=1,
+        rung=recorded.rung,
+        mode=recorded.mode,
+        camera_count=recorded.camera_count,
+        clean_steady_seconds=recorded.clean_steady_seconds,
+        cameras=tuple(
+            V1CameraSignals(
+                camera_id=camera.camera_id,
+                fps_windows=tuple(
+                    count / camera.decision_window_seconds
+                    for count in camera.decision_window_counts
+                ),
+                latency_ms=LatencySignals(
+                    p50=_percentile(camera.latency_samples_ms, 0.50),
+                    p95=_percentile(camera.latency_samples_ms, 0.95),
+                    p99=_percentile(camera.latency_samples_ms, 0.99),
+                    max=max(camera.latency_samples_ms),
+                ),
+                au_gaps=camera.au_gaps,
+                config_discontinuities=camera.config_discontinuities,
+                timestamp_discontinuities=camera.timestamp_discontinuities,
+                metadata_published=camera.metadata_published,
+                metadata_overwritten=camera.metadata_overwritten,
+                event_evidence_parity=camera.event_evidence_parity,
+                preview_ok=camera.preview_ok,
+                derivative_ok=camera.derivative_ok,
+            )
+            for camera in recorded.cameras
+        ),
+        gpu=GpuSignals(
+            child_pid=recorded.gpu.child_pid,
+            warmup_peak_mib=max(recorded.gpu.warmup_memory_mib),
+            steady_p50_mib=_percentile(recorded.gpu.steady_memory_mib, 0.50),
+            steady_p95_mib=_percentile(recorded.gpu.steady_memory_mib, 0.95),
+            recovery_mib=recorded.gpu.recovery_memory_mib[-1],
+            global_used_mib=recorded.gpu.global_used_mib,
+            total_mib=recorded.gpu.total_mib,
+            minimum_slack_mib=min(recorded.gpu.slack_samples_mib),
+            utilization_p50=_percentile(recorded.gpu.utilization_samples, 0.50),
+            utilization_p95=_percentile(recorded.gpu.utilization_samples, 0.95),
+            utilization_max=max(recorded.gpu.utilization_samples),
+            new_xids=recorded.gpu.new_xids,
+        ),
+        nvdec=recorded.nvdec,
+        timeline=recorded.timeline,
+        live_protection=recorded.live_protection,
+        fault_windows=recorded.fault_windows,
+        workload=recorded.workload,
+        artifacts=artifacts,
+    )
+
+
+def _load_rung_receipts(
+    root: Path, *, allow_v1: bool = False
+) -> tuple[tuple[BaselineReceipt, bytes], ...]:
+    def load(path: Path) -> tuple[BaselineReceipt, bytes]:
+        content = path.read_bytes()
+        if allow_v1 and json.loads(content)["schema_version"] == 1:
+            return V1RungReceipt.model_validate_json(content), content
+        return RungReceipt.model_validate_json(content), content
+
     return tuple(
-        (RungReceipt.model_validate_json(content := path.read_bytes()), content)
-        for path in sorted((root / "raw").glob("rung-*.json"))
+        load(path) for path in sorted((root / "raw").glob("rung-*.json"))
     )
 
 
 def _receipt_evidence_findings(
     root: Path,
     request: RunRequestReceipt,
-    receipts: dict[str, RungReceipt],
+    receipts: dict[str, BaselineReceipt],
     prefix: str,
+    rungs: tuple[str, ...] | None = None,
 ) -> list[str]:
     findings: list[str] = []
-    for rung in request.requested_rungs:
+    for rung in rungs or request.requested_rungs:
         receipt = receipts.get(rung)
         if receipt is None:
             continue
@@ -91,14 +258,93 @@ def _receipt_evidence_findings(
             findings.append(f"{prefix}raw_telemetry_missing:{rung}")
             continue
         try:
-            telemetry = RecordedRungTelemetry.model_validate_json(telemetry_path.read_bytes())
-            rebuilt = build_rung_receipt(telemetry, receipt.artifacts)
+            if isinstance(receipt, V1RungReceipt):
+                telemetry = V1RecordedRungTelemetry.model_validate_json(
+                    telemetry_path.read_bytes()
+                )
+                rebuilt = _build_v1_rung_receipt(telemetry, receipt.artifacts)
+            else:
+                telemetry = RecordedRungTelemetry.model_validate_json(
+                    telemetry_path.read_bytes()
+                )
+                rebuilt = build_rung_receipt(telemetry, receipt.artifacts)
         except (OSError, ValidationError, ValueError) as error:
             findings.append(f"{prefix}raw_telemetry_invalid:{rung}:{error}")
             continue
         if rebuilt != receipt:
             findings.append(f"{prefix}receipt_raw_mismatch:{rung}")
     return findings
+
+
+def _v1_as_current(receipt: V1RungReceipt) -> RungReceipt:
+    return RungReceipt(
+        schema_version=2,
+        rung=receipt.rung,
+        mode=receipt.mode,
+        camera_count=receipt.camera_count,
+        clean_steady_seconds=receipt.clean_steady_seconds,
+        cameras=tuple(
+            CameraSignals(
+                camera_id=camera.camera_id,
+                fps_windows=camera.fps_windows,
+                telemetry_coverage_seconds=receipt.clean_steady_seconds,
+                copy_window_frames=1,
+                frame_window_spans_seconds=(0.0,),
+                h2d_bytes_max=0,
+                d2h_bytes_max=0,
+                box_source="pose",
+                pool_wait_us_p95=0,
+                gpu_us_p95=0,
+                surface_drops=0,
+                latency_ms=camera.latency_ms,
+                au_gaps=camera.au_gaps,
+                config_discontinuities=camera.config_discontinuities,
+                timestamp_discontinuities=camera.timestamp_discontinuities,
+                metadata_published=camera.metadata_published,
+                metadata_overwritten=camera.metadata_overwritten,
+                event_evidence_parity=camera.event_evidence_parity,
+                preview_ok=camera.preview_ok,
+                derivative_ok=camera.derivative_ok,
+            )
+            for camera in receipt.cameras
+        ),
+        gpu=receipt.gpu,
+        nvdec=receipt.nvdec,
+        timeline=receipt.timeline,
+        live_protection=receipt.live_protection,
+        fault_windows=receipt.fault_windows,
+        workload=receipt.workload,
+        artifacts=receipt.artifacts,
+    )
+
+
+def _evaluate_baseline(receipt: BaselineReceipt, policy: GatePolicy) -> GateReport:
+    if isinstance(receipt, RungReceipt):
+        return evaluate_absolute_receipt(receipt, policy)
+    report = evaluate_absolute_receipt(_v1_as_current(receipt), policy)
+    candidate_only = (
+        ".h2d_bytes_max",
+        ".d2h_bytes_max",
+        ".copy_window_frames",
+        ".frame_window_span_max_seconds",
+        ".telemetry_coverage_seconds",
+        ".surface_drops",
+        "fault_windows",
+    )
+    checks = tuple(
+        check
+        for check in report.checks
+        if not check.name.endswith(candidate_only) and check.name != "fault_windows"
+    )
+    verdict = "PASS" if all(check.passed for check in checks) else "FAIL"
+    return report.model_copy(
+        update={
+            "verdict": verdict,
+            "claim_eligible": verdict == "PASS"
+            and receipt.mode is CanaryMode.COMMISSIONING,
+            "checks": checks,
+        }
+    )
 
 
 def _authorization_findings(
@@ -144,12 +390,17 @@ def _canary(
     receipt_records = _load_rung_receipts(root)
     receipts = tuple(receipt for receipt, _ in receipt_records)
     by_rung = {receipt.rung: receipt for receipt in receipts}
+    digit_rungs = tuple(rung for rung in request.requested_rungs if rung.isdigit())
     baseline_request = (
         RunRequestReceipt.model_validate_json((baseline_root / "run-request.json").read_bytes())
-        if baseline_root is not None
+        if baseline_root is not None and digit_rungs
         else None
     )
-    baseline_records = _load_rung_receipts(baseline_root) if baseline_root is not None else ()
+    baseline_records = (
+        _load_rung_receipts(baseline_root, allow_v1=True)
+        if baseline_root is not None and digit_rungs
+        else ()
+    )
     baseline_by_rung = {
         receipt.rung: receipt for receipt, _ in baseline_records
     }
@@ -167,10 +418,9 @@ def _canary(
     if baseline_root is None:
         findings.extend(
             f"baseline_evidence_missing:{rung}"
-            for rung in request.requested_rungs
-            if rung.isdigit()
+            for rung in digit_rungs
         )
-    if baseline_root is not None and baseline_request is not None:
+    if baseline_request is not None:
         if baseline_request.policy_sha256 != policy_digest:
             findings.append("baseline_run_request_policy_digest_mismatch")
         findings.extend(
@@ -180,13 +430,16 @@ def _canary(
         )
         findings.extend(
             f"baseline_requested_rung_missing:{rung}"
-            for rung in request.requested_rungs
-            if rung.isdigit()
-            and (rung not in baseline_request.requested_rungs or rung not in baseline_by_rung)
+            for rung in digit_rungs
+            if rung not in baseline_request.requested_rungs or rung not in baseline_by_rung
         )
         findings.extend(
             _receipt_evidence_findings(
-                baseline_root, baseline_request, baseline_by_rung, "baseline_"
+                baseline_root,
+                baseline_request,
+                baseline_by_rung,
+                "baseline_",
+                digit_rungs,
             )
         )
         findings.extend(
@@ -229,18 +482,20 @@ def _canary(
             findings.append("run_request_expected_revision_invalid")
         identity_artifacts.append(f"expected-revision:{request.expected_revision}")
     baseline_reports = tuple(
-        evaluate_absolute_receipt(baseline_by_rung[rung], policy)
-        for rung in request.requested_rungs
+        _evaluate_baseline(baseline_by_rung[rung], policy)
+        for rung in digit_rungs
         if rung in baseline_by_rung
     )
-    if baseline_root is not None:
+    if baseline_request is not None:
         findings.extend(
             f"baseline_absolute_failure:{report.rung}"
             for report in baseline_reports
             if report.verdict != "PASS" or not report.claim_eligible
         )
     qualified_baselines = {
-        report.rung: baseline_by_rung[report.rung]
+        report.rung: _v1_as_current(baseline_by_rung[report.rung])
+        if isinstance(baseline_by_rung[report.rung], V1RungReceipt)
+        else baseline_by_rung[report.rung]
         for report in baseline_reports
         if report.verdict == "PASS"
         and report.claim_eligible

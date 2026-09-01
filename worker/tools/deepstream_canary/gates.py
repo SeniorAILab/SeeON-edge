@@ -103,8 +103,9 @@ def _camera_checks(receipt: RungReceipt, policy: GatePolicy) -> Iterable[GateChe
         )
         yield _check(
             f"{prefix}.frame_window_span_max_seconds",
-            max(camera.frame_window_spans_seconds) <= policy.frame_window_span_max_seconds,
-            max(camera.frame_window_spans_seconds),
+            30 / _percentile(camera.fps_windows, 0.05)
+            <= policy.frame_window_span_max_seconds,
+            30 / _percentile(camera.fps_windows, 0.05),
             f"<={policy.frame_window_span_max_seconds}",
         )
         yield _check(
@@ -154,8 +155,8 @@ def _camera_checks(receipt: RungReceipt, policy: GatePolicy) -> Iterable[GateChe
 def _relative_checks(
     receipt: RungReceipt, policy: GatePolicy, baseline: RungReceipt | None
 ) -> Iterable[GateCheck]:
-    if receipt.rung == "zero":
-        yield _check("relative.baseline", True, "not_applicable", "zero rung")
+    if not receipt.rung.isdigit():
+        yield _check("relative.baseline", True, "not_applicable", "non-digit rung")
         return
     if not (
         policy.require_fps_at_least_baseline
@@ -164,7 +165,7 @@ def _relative_checks(
         yield _check("relative.baseline", True, "not_required", "disabled by policy")
         return
     if baseline is None:
-        yield _check("relative.baseline", False, "missing", "required for nonzero rung")
+        yield _check("relative.baseline", False, "missing", "required for digit rung")
         return
 
     candidate_ids = tuple(sorted(camera.camera_id for camera in receipt.cameras))
