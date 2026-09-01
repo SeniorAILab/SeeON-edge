@@ -295,12 +295,19 @@ def test_kernel_xid_monitor_is_bounded_and_fail_closed(
     import worker.tools.deepstream_canary.safety as safety_module
 
     observed: list[tuple[str, ...]] = []
+    results = iter(
+        (
+            SimpleNamespace(returncode=0, stdout="-- cursor: run-start\n"),
+            SimpleNamespace(returncode=returncode, stdout=stdout),
+        )
+    )
 
     def run(command: tuple[str, ...], **_: object) -> SimpleNamespace:
         observed.append(command)
-        return SimpleNamespace(returncode=returncode, stdout=stdout)
+        return next(results)
 
     monkeypatch.setattr(safety_module.subprocess, "run", run)
+    monkeypatch.setattr(safety_module, "_KERNEL_CURSOR", None)
 
     assert safety_module._kernel_xid_count() == expected
     assert observed == [
@@ -310,12 +317,39 @@ def test_kernel_xid_monitor_is_bounded_and_fail_closed(
             "0",
             "--dmesg",
             "--no-pager",
+            "--lines",
+            "0",
+            "--show-cursor",
+        ),
+        (
+            "journalctl",
+            "--boot",
+            "0",
+            "--dmesg",
+            "--no-pager",
+            "--after-cursor",
+            "run-start",
             "--grep",
             "NVRM: Xid",
             "--output",
             "cat",
         )
     ]
+
+
+def test_kernel_xid_monitor_fails_closed_without_run_start_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import worker.tools.deepstream_canary.safety as safety_module
+
+    monkeypatch.setattr(
+        safety_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout=""),
+    )
+    monkeypatch.setattr(safety_module, "_KERNEL_CURSOR", None)
+
+    assert safety_module._kernel_xid_count() == -1
 
 
 def test_live_gpu_protection_attributes_container_and_allows_pid_churn(

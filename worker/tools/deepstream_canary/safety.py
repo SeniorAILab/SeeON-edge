@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,8 @@ from worker.tools.deepstream_canary.report import canonical_json
 
 PROJECT_LABEL: Final = "com.docker.compose.project"
 PROJECT_NAME: Final = "seeon-ds-canary"
+_KERNEL_CURSOR: str | None = None
+_KERNEL_CURSOR_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +207,37 @@ def _live_status() -> tuple[tuple[str, ...], tuple[str, ...], int]:
 
 
 def _kernel_xid_count() -> int:
+    global _KERNEL_CURSOR
+    with _KERNEL_CURSOR_LOCK:
+        if _KERNEL_CURSOR is None:
+            initial = subprocess.run(
+                (
+                    "journalctl",
+                    "--boot",
+                    "0",
+                    "--dmesg",
+                    "--no-pager",
+                    "--lines",
+                    "0",
+                    "--show-cursor",
+                ),
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            prefix = "-- cursor: "
+            cursor = next(
+                (
+                    line.removeprefix(prefix)
+                    for line in initial.stdout.splitlines()
+                    if line.startswith(prefix)
+                ),
+                None,
+            )
+            if initial.returncode != 0 or cursor is None:
+                return -1
+            _KERNEL_CURSOR = cursor
+
     kernel = subprocess.run(
         (
             "journalctl",
@@ -211,6 +245,8 @@ def _kernel_xid_count() -> int:
             "0",
             "--dmesg",
             "--no-pager",
+            "--after-cursor",
+            _KERNEL_CURSOR,
             "--grep",
             "NVRM: Xid",
             "--output",
@@ -220,8 +256,9 @@ def _kernel_xid_count() -> int:
         capture_output=True,
         text=True,
     )
-    # journalctl returns 1 when --grep finds no entries; that is a conclusive
-    # zero-Xid result. Other failures remain fail-closed.
+    # journalctl returns 1 when --grep finds no entries after the run-start
+    # cursor; that is a conclusive zero-Xid result. Other failures remain
+    # fail-closed.
     return len(kernel.stdout.splitlines()) if kernel.returncode in {0, 1} else -1
 
 
