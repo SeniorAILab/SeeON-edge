@@ -9,6 +9,7 @@ from contracts.observation import FrameObservation
 from shared.detection_policies import FALL_POLICY_V1_DEFAULT
 from worker.domains.fall.classifier import (
     FallModelProtocol,
+    FallScoreSnapshot,
     FallWindowClassifier,
 )
 from worker.domains.fall.schema import FallEvent
@@ -53,6 +54,10 @@ class FallEventLatch:
             stale_after_sec=stale_after_sec,
         )
         self.last_trace_snapshots: tuple[DecisionTraceSnapshot, ...] = ()
+
+    @property
+    def last_score_snapshots(self) -> tuple[FallScoreSnapshot, ...]:
+        return self.classifier.last_score_snapshots
 
     @property
     def status_snapshot(self) -> FallLatchStatus:

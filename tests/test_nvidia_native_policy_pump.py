@@ -19,6 +19,7 @@ from worker.native.deepstream.metadata import LatestMetadataSlot, SourceBinding
 from worker.pipeline.decision import EventAggregator, IncidentManager
 from worker.pipeline.output.evidence_attacher import AlertEvidenceAttacher
 from worker.pipeline.perception import SceneState, build_frame_observation
+from worker.runtime.deepstream.fall_diagnostics import FallDiagnosticFrame, FallScoreSnapshot
 from worker.runtime.deepstream.native_policy_pump import (
     NativePolicyContext,
     NativePolicyPump,
@@ -29,6 +30,7 @@ from worker.types import (
     BusinessEvent,
     ChannelState,
     DecisionInput,
+    DecisionTraceSnapshot,
     HumanPoseChannel,
     Keypoint,
     NativeEvidenceTrigger,
@@ -45,9 +47,24 @@ _CHILD = uuid.UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 @dataclass(slots=True)
 class _Decider:
     received: DecisionInput | None = None
+    last_trace_snapshots: tuple[DecisionTraceSnapshot, ...] = ()
+    last_score_snapshots: tuple[FallScoreSnapshot, ...] = ()
 
     def update(self, input_value: DecisionInput) -> tuple[BusinessEvent, ...]:
         self.received = input_value
+        tensor = tuple(tuple(0.9 for _ in range(51)) for _ in range(30))
+        self.last_score_snapshots = (FallScoreSnapshot(7, tensor, 0.9, "fresh"),)
+        self.last_trace_snapshots = (
+            DecisionTraceSnapshot(
+                reason="fall-onset",
+                previous_state="clear",
+                current_state="fall",
+                triggered=True,
+                track_id=7,
+                bed_id=None,
+                values={"fall_probability": 0.9, "operating_threshold": 0.5},
+            ),
+        )
         return (
             BusinessEvent(
                 "fall",
@@ -72,6 +89,16 @@ class _Sink:
         trigger: NativeEvidenceTrigger,
     ) -> None:
         self.emitted = (event, trigger)
+
+
+@dataclass(slots=True)
+class _DiagnosticRecorder:
+    sink: _Sink
+    recorded: FallDiagnosticFrame | None = None
+
+    def record(self, frame: FallDiagnosticFrame) -> None:
+        assert self.sink.emitted is not None
+        self.recorded = frame
 
 
 @dataclass(slots=True)
@@ -152,6 +179,7 @@ def test_native_policy_uses_child_association_and_image_free_evidence_trigger(
     responder.start()
     decider = _Decider()
     sink = _Sink()
+    recorder = _DiagnosticRecorder(sink)
     diagnostics = _Diagnostics()
     binding = SourceBinding(
         str(_BOOT),
@@ -172,6 +200,7 @@ def test_native_policy_uses_child_association_and_image_free_evidence_trigger(
             AlertEvidenceAttacher({}),
             diagnostics,
             90,
+            fall_diagnostics=recorder,
         ),
     )
 
@@ -190,6 +219,12 @@ def test_native_policy_uses_child_association_and_image_free_evidence_trigger(
     assert trigger.source_generation == 3
     assert trigger.frame_key.stream_epoch == 4
     assert diagnostics.completed == 1
+    assert recorder.recorded is not None
+    assert recorder.recorded.source_seq == 11
+    assert recorder.recorded.source_pts == 2_000_000_000
+    assert recorder.recorded.track_ids == (7,)
+    assert recorder.recorded.score is not None
+    assert recorder.recorded.score.provenance == "fresh"
     control.close()
     child.close()
 

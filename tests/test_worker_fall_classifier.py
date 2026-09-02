@@ -174,3 +174,28 @@ def test_stride_reuses_probability_until_next_due_frame() -> None:
     # Then
     assert tuple(result.labels[0].confidence for result in results) == (0.0, 0.8, 0.8, 0.2)
     assert len(model.inputs) == 2
+    snapshots = classifier.last_score_snapshots
+    assert len(snapshots) == 1
+    assert snapshots[0].track_id == 4
+    assert snapshots[0].probability == 0.2
+    assert snapshots[0].provenance == "fresh"
+    assert snapshots[0].tensor == model.inputs[-1]
+
+
+def test_sequence_score_snapshot_marks_stride_reuse_as_cached() -> None:
+    model = _Model(_Metadata(window=2, stride=3, mode="sequence"), (0.8,), 0.5)
+    classifier = FallWindowClassifier(model)
+
+    for index in range(3):
+        _ = classifier.classify(
+            _input(frame_index=index, track_id=4, pose=_pose(), live_track_ids=(4,))
+        )
+    assert classifier.last_score_snapshots[0].provenance == "fresh"
+
+    _ = classifier.classify(
+        _input(frame_index=3, track_id=4, pose=_pose(), live_track_ids=(4,))
+    )
+
+    assert classifier.last_score_snapshots[0].provenance == "cached"
+    assert classifier.last_score_snapshots[0].probability == 0.8
+    assert classifier.last_score_snapshots[0].tensor == model.inputs[-1]

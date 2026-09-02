@@ -122,6 +122,11 @@ from worker.runtime.config import (
     WorkerConfig,
 )
 from worker.runtime.deepstream.config import ChildConfig
+from worker.runtime.deepstream.fall_diagnostic_writer import (
+    FallDiagnosticWriter,
+    build_fall_diagnostic_writer,
+)
+from worker.runtime.deepstream.fall_diagnostics import FallDiagnosticRecorder
 from worker.runtime.deepstream.native_policy_pump import (
     NativeEventSink,
     NativePolicyContext,
@@ -837,6 +842,7 @@ class WorkerRuntime:
         self._boot_instance_id = f"worker:{self._worker_boot_uuid}"
         self._runtime_manifest: AppliedRuntimeManifest | None = None
         self._trace_writer: BoundedTraceWriter | None = None
+        self._fall_diagnostic_writer: FallDiagnosticWriter | None = None
         self._camera_trace_captures: dict[str, TraceCapture] = {}
         self._clip_store_dir = (
             Path(DEFAULT_CLIP_STORE_DIR) if clip_store_dir is None else clip_store_dir
@@ -994,6 +1000,10 @@ class WorkerRuntime:
         self._trace_writer = BoundedTraceWriter(
             self._state_dir / "runtime-analysis",
         )
+        self._fall_diagnostic_writer = build_fall_diagnostic_writer(
+            self._env,
+            self._state_dir,
+        )
         nvidia = self._env.get("ML_WORKER_PROFILE", "cpu").strip() == "nvidia"
         decode_probe = (
             (lambda _decode: VerifyResult(True, "nvidia", "decode", "DeepStream preflight"))
@@ -1102,6 +1112,9 @@ class WorkerRuntime:
         if self._trace_writer is not None:
             self._trace_writer.stop()
             self._trace_writer = None
+        if self._fall_diagnostic_writer is not None:
+            self._fall_diagnostic_writer.stop()
+            self._fall_diagnostic_writer = None
         self._context.release_lease()
 
     def _start_live_view_server(self) -> None:
@@ -1812,6 +1825,19 @@ class WorkerRuntime:
         binding = media_plane.child.metadata.expected_binding(camera.camera_id)
         if binding is None:
             raise RuntimeError("native source became ready without an acceptance binding")
+        fall_diagnostics = None
+        fall_definition = plan.definitions.get("fall")
+        if self._fall_diagnostic_writer is not None and fall_definition is not None:
+            fall_policy = self.config.detection_policies.resolve(
+                camera.camera_id,
+                fall_definition.module_id,
+                fall_definition.version,
+            )
+            fall_diagnostics = FallDiagnosticRecorder(
+                f"slot-{len(pumps):02d}",
+                self._fall_diagnostic_writer,
+                threshold=float(fall_policy.operating_threshold),
+            )
         pump = NativePolicyPump(
             binding,
             NativePolicyContext(
@@ -1827,6 +1853,7 @@ class WorkerRuntime:
                 scene_decisions=SceneDecisionProvider(
                     self._build_trace_identities(camera.camera_id, plan)
                 ),
+                fall_diagnostics=fall_diagnostics,
             ),
         )
         pumps.append(pump)

@@ -44,6 +44,16 @@ class FallModelProtocol(Protocol):
     def predict(self, features: FallModelInput) -> float: ...
 
 
+@dataclass(frozen=True, slots=True)
+class FallScoreSnapshot:
+    """Exact sequence input and score provenance from the latest classification."""
+
+    track_id: int
+    tensor: tuple[tuple[float, ...], ...]
+    probability: float
+    provenance: Literal["fresh", "cached"]
+
+
 @dataclass(slots=True)
 class FallWindowClassifier:
     model: FallModelProtocol
@@ -53,7 +63,12 @@ class FallWindowClassifier:
         init=False,
     )
     _last_probabilities: dict[int, float] = field(default_factory=dict, init=False)
+    _last_tensors: dict[int, tuple[tuple[float, ...], ...]] = field(
+        default_factory=dict,
+        init=False,
+    )
     _frame_counter: int = field(default=0, init=False)
+    last_score_snapshots: tuple[FallScoreSnapshot, ...] = field(default=(), init=False)
 
     def classify(self, input_value: DecisionInput) -> FrameObservation:
         observation = input_value.observation
@@ -80,15 +95,30 @@ class FallWindowClassifier:
             if track_id not in live_ids:
                 del self._buffers[track_id]
                 _ = self._last_probabilities.pop(track_id, None)
+                _ = self._last_tensors.pop(track_id, None)
 
         self._frame_counter += 1
+        fresh_track_ids: frozenset[int] = frozenset()
         if self._frame_counter % self.model.metadata.stride == 0:
-            self._update_due_probabilities()
+            fresh_track_ids = self._update_due_probabilities()
 
         labels = tuple(
             self._label_for_track(track_id)
             for track_id in observation.track_ids
             if track_id is not None and track_id in live_ids
+        )
+        self.last_score_snapshots = tuple(
+            FallScoreSnapshot(
+                track_id,
+                self._last_tensors[track_id],
+                self._last_probabilities[track_id],
+                "fresh" if track_id in fresh_track_ids else "cached",
+            )
+            for track_id in observation.track_ids
+            if track_id is not None
+            and track_id in live_ids
+            and track_id in self._last_tensors
+            and track_id in self._last_probabilities
         )
         return FrameObservation(
             detections=(observation.boxes, labels),
@@ -105,8 +135,9 @@ class FallWindowClassifier:
         self._buffers[track_id] = new_buffer
         return new_buffer
 
-    def _update_due_probabilities(self) -> None:
+    def _update_due_probabilities(self) -> frozenset[int]:
         metadata = self.model.metadata
+        fresh_track_ids: set[int] = set()
         for track_id, buffer in self._buffers.items():
             if len(buffer) < metadata.window:
                 continue
@@ -120,7 +151,10 @@ class FallWindowClassifier:
                         tuple(coordinate for keypoint in pose for coordinate in keypoint)
                         for pose in window
                     )
+                    self._last_tensors[track_id] = model_input
             self._last_probabilities[track_id] = self.model.predict(model_input)
+            fresh_track_ids.add(track_id)
+        return frozenset(fresh_track_ids)
 
     def _label_for_track(self, track_id: int) -> DetectionLabel:
         probability = self._last_probabilities.get(track_id, 0.0)
@@ -135,5 +169,6 @@ class FallWindowClassifier:
 __all__ = [
     "FallModelMetadataProtocol",
     "FallModelProtocol",
+    "FallScoreSnapshot",
     "FallWindowClassifier",
 ]

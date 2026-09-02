@@ -22,6 +22,10 @@ from worker.pipeline.output.overlay_scene import OverlaySceneBuilder
 from worker.pipeline.output.scene_decisions import SceneDecisionProvider
 from worker.pipeline.perception import SceneState, build_decision_input, build_frame_observation
 from worker.runtime.deepstream.canary_telemetry import NativeCanaryTelemetry
+from worker.runtime.deepstream.fall_diagnostic_capture import (
+    NativeFallDiagnostics,
+    record_native_fall_diagnostic,
+)
 from worker.types import BusinessEvent, ChannelState, NativeEvidenceTrigger
 from worker.types.overlay_scene import (
     ObservationSemantics,
@@ -57,6 +61,7 @@ class NativePolicyContext:
     canary_telemetry: NativeCanaryTelemetry | None = None
     scene_sink: SceneSink | None = None
     scene_decisions: SceneDecisionProvider | None = None
+    fall_diagnostics: NativeFallDiagnostics | None = None
 
 
 @final
@@ -76,6 +81,7 @@ class NativePolicyPump:
         self._canary_telemetry = context.canary_telemetry
         self._scene_sink = context.scene_sink
         self._scene_decisions = context.scene_decisions
+        self._fall_diagnostics = context.fall_diagnostics
         self._stop = threading.Event()
         self._fps: deque[float] = deque()
         self.processed_count = 0
@@ -219,6 +225,14 @@ class NativePolicyPump:
             except ChildControlError:
                 snapshot = None
             self._sink.emit_for_frame(self._attacher.attach_native(event, snapshot), trigger)
+        if self._fall_diagnostics is not None:
+            record_native_fall_diagnostic(
+                self._fall_diagnostics,
+                metadata,
+                decision_input,
+                self._decision,
+                resolved_track_ids,
+            )
         self._diagnostics.record_detection_completed(self.camera_id)
         now = time.monotonic()
         self._fps.append(now)
