@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import re
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final
@@ -38,6 +39,7 @@ class FallDiagnosticReplayResult:
     sha256: str
     frame_count: int
     onset_sequences: tuple[int, ...]
+    external_cached_seed_track_ids: tuple[int, ...]
 
 
 def replay_fall_diagnostic_bundle(
@@ -47,10 +49,14 @@ def replay_fall_diagnostic_bundle(
 ) -> FallDiagnosticReplayResult:
     payload = json.loads(raw)
     if not isinstance(payload, dict) or set(payload) != {
+        "camera_ref",
         "camera_slot",
         "frames",
+        "module_qualified_id",
+        "runtime_manifest_sha256",
         "schema_version",
         "threshold",
+        "worker_boot_id",
     }:
         raise ValueError("diagnostic bundle fields are not allowlisted")
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
@@ -61,6 +67,7 @@ def replay_fall_diagnostic_bundle(
         or _SLOT_RE.fullmatch(payload["camera_slot"]) is None
     ):
         raise ValueError("diagnostic camera slot is invalid")
+    _validate_bundle_identity(payload)
     frames = payload["frames"]
     if not isinstance(frames, list) or len(frames) != _FRAME_COUNT:
         raise ValueError("diagnostic bundle must contain exactly 35 frames")
@@ -70,16 +77,29 @@ def replay_fall_diagnostic_bundle(
     _validate_frames(frames)
     previous = frames[0]["previous_state"]
     onsets: list[int] = []
+    score_state: dict[int, tuple[FallModelInput, float]] = {}
+    external_cached_seeds: set[int] = set()
     for frame in frames:
         score = frame["score"]
         probability = 0.0
         if score is not None:
+            track_id = _strict_int(score["track_id"])
             tensor: FallModelInput = tuple(
                 tuple(_finite_float(value) for value in row) for row in score["tensor_30x51"]
             )
-            probability = predict(tensor)
-            if not math.isfinite(probability) or probability != _finite_float(score["probability"]):
-                raise ValueError("replayed score differs from captured score")
+            captured_probability = _finite_float(score["probability"])
+            if score["provenance"] == "fresh" or track_id not in score_state:
+                probability = predict(tensor)
+                if not math.isfinite(probability) or probability != captured_probability:
+                    raise ValueError("replayed score differs from captured score")
+                if score["provenance"] == "cached":
+                    external_cached_seeds.add(track_id)
+                score_state[track_id] = (tensor, probability)
+            else:
+                previous_tensor, previous_probability = score_state[track_id]
+                if tensor != previous_tensor or captured_probability != previous_probability:
+                    raise ValueError("cached score differs from preceding score state")
+                probability = previous_probability
         current = "fall" if probability >= threshold else "clear"
         triggered = current == "fall" and previous == "clear"
         if (
@@ -91,7 +111,12 @@ def replay_fall_diagnostic_bundle(
         if triggered:
             onsets.append(frame["source_seq"])
         previous = current
-    return FallDiagnosticReplayResult(hashlib.sha256(raw).hexdigest(), len(frames), tuple(onsets))
+    return FallDiagnosticReplayResult(
+        hashlib.sha256(raw).hexdigest(),
+        len(frames),
+        tuple(onsets),
+        tuple(sorted(external_cached_seeds)),
+    )
 
 
 def _validate_frames(frames: list[object]) -> None:
@@ -146,6 +171,22 @@ def _strict_int(value: object) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise TypeError("diagnostic integer value is invalid")
     return value
+
+
+def _validate_bundle_identity(payload: dict[str, object]) -> None:
+    worker_boot_id = payload["worker_boot_id"]
+    if not isinstance(worker_boot_id, str):
+        raise TypeError("diagnostic worker boot identity is invalid")
+    try:
+        _ = uuid.UUID(worker_boot_id)
+    except ValueError as error:
+        raise ValueError("diagnostic worker boot identity is invalid") from error
+    for field in ("camera_ref", "runtime_manifest_sha256"):
+        value = payload[field]
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            raise ValueError(f"diagnostic {field} is invalid")
+    if not isinstance(payload["module_qualified_id"], str) or not payload["module_qualified_id"]:
+        raise ValueError("diagnostic module identity is invalid")
 
 
 __all__ = ["FallDiagnosticReplayResult", "replay_fall_diagnostic_bundle"]

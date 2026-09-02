@@ -12,6 +12,8 @@ from typing import Final
 
 _DIAGNOSTIC_ENV: Final = "SEEON_FALL_DIAGNOSTICS_ENABLED"
 _MAX_BUNDLE_BYTES: Final = 2_000_000
+_MAX_STORED_BUNDLES: Final = 64
+_MAX_STORED_BYTES: Final = 128_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,12 +35,18 @@ class FallDiagnosticWriter:
         persist: Callable[[bytes], None] | None = None,
         max_pending: int = 2,
         max_bundle_bytes: int = _MAX_BUNDLE_BYTES,
+        max_stored_bundles: int = _MAX_STORED_BUNDLES,
+        max_stored_bytes: int = _MAX_STORED_BYTES,
     ) -> None:
         if (root is None) == (persist is None):
             raise ValueError("exactly one diagnostic persistence target is required")
-        if max_pending <= 0 or max_bundle_bytes <= 0:
+        if min(max_pending, max_bundle_bytes, max_stored_bundles, max_stored_bytes) <= 0:
             raise ValueError("diagnostic writer bounds must be positive")
-        self._persist = self._content_addressed_persist(root) if root is not None else persist
+        self._persist = (
+            self._content_addressed_persist(root, max_stored_bundles, max_stored_bytes)
+            if root is not None
+            else persist
+        )
         self._pending: queue.Queue[object] = queue.Queue(maxsize=max_pending)
         self._max_bundle_bytes = max_bundle_bytes
         self._stop = threading.Event()
@@ -51,7 +59,11 @@ class FallDiagnosticWriter:
         self._write_failures = 0
 
     @staticmethod
-    def _content_addressed_persist(root: Path) -> Callable[[bytes], None]:
+    def _content_addressed_persist(
+        root: Path,
+        max_stored_bundles: int,
+        max_stored_bytes: int,
+    ) -> Callable[[bytes], None]:
         def persist(payload: bytes) -> None:
             root.mkdir(parents=True, exist_ok=True, mode=0o700)
             root.chmod(0o700)
@@ -61,6 +73,10 @@ class FallDiagnosticWriter:
                 if destination.read_bytes() != payload:
                     raise OSError("content-addressed diagnostic collision")
                 return
+            stored = tuple(root.glob("*.json"))
+            stored_bytes = sum(path.stat().st_size for path in stored)
+            if len(stored) >= max_stored_bundles or stored_bytes + len(payload) > max_stored_bytes:
+                raise OSError("diagnostic retention bound reached")
             temporary = root / f".{digest}.tmp"
             descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             try:
@@ -158,9 +174,22 @@ def build_fall_diagnostic_writer(
 ) -> FallDiagnosticWriter | None:
     if env.get(_DIAGNOSTIC_ENV, "") != "1":
         return None
-    writer = FallDiagnosticWriter(state_dir / "fall-diagnostics")
+    root = state_dir / "fall-diagnostics"
+    _purge_previous_boot(root)
+    writer = FallDiagnosticWriter(root)
     writer.start()
     return writer
+
+
+def _purge_previous_boot(root: Path) -> None:
+    if root.is_symlink() or (root.exists() and not root.is_dir()):
+        raise OSError("fall diagnostic root is not a private directory")
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    root.chmod(0o700)
+    for path in root.iterdir():
+        if path.is_symlink() or not path.is_file():
+            raise OSError("fall diagnostic root contains an unsafe entry")
+        path.unlink()
 
 
 __all__ = [

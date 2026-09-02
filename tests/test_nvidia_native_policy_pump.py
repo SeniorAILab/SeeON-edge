@@ -97,7 +97,7 @@ class _DiagnosticRecorder:
     recorded: FallDiagnosticFrame | None = None
 
     def record(self, frame: FallDiagnosticFrame) -> None:
-        assert self.sink.emitted is not None
+        assert self.sink.emitted is None
         self.recorded = frame
 
 

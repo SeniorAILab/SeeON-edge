@@ -9,6 +9,10 @@ from pathlib import Path
 
 import pytest
 
+from worker.domains.fall.classifier import FallModelInput
+from worker.runtime.deepstream.fall_diagnostic_capture import (
+    require_v1_fall_diagnostic_contract,
+)
 from worker.runtime.deepstream.fall_diagnostic_replay import replay_fall_diagnostic_bundle
 from worker.runtime.deepstream.fall_diagnostic_writer import (
     FallDiagnosticWriter,
@@ -64,7 +68,16 @@ def test_bundle_is_allowlisted_bounded_and_byte_deterministic() -> None:
     assert len(first) == 1
     assert first == second
     payload = json.loads(first[0])
-    assert payload.keys() == {"camera_slot", "frames", "schema_version", "threshold"}
+    assert payload.keys() == {
+        "camera_ref",
+        "camera_slot",
+        "frames",
+        "module_qualified_id",
+        "runtime_manifest_sha256",
+        "schema_version",
+        "threshold",
+        "worker_boot_id",
+    }
     assert payload["camera_slot"] == "slot-00"
     assert len(payload["frames"]) == 35
     assert payload["frames"][30]["triggered"] is True
@@ -93,6 +106,36 @@ def test_replay_recomputes_cached_score_without_prior_bundle_state() -> None:
     result = replay_fall_diagnostic_bundle(raw, predict=lambda tensor: tensor[0][0])
 
     assert result.onset_sequences == (30,)
+    assert result.external_cached_seed_track_ids == (7,)
+
+
+def test_replay_reuses_preceding_score_for_cached_frame() -> None:
+    captured, _ = _capture_bytes()
+    payload = json.loads(captured[0])
+    payload["frames"][1]["score"]["provenance"] = "cached"
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    predictions = 0
+
+    def predict(tensor: FallModelInput) -> float:
+        nonlocal predictions
+        predictions += 1
+        return tensor[0][0]  # pyright: ignore[reportIndexIssue]
+
+    result = replay_fall_diagnostic_bundle(raw, predict=predict)
+
+    assert result.external_cached_seed_track_ids == ()
+    assert predictions == 34
+
+
+def test_replay_rejects_cached_score_that_differs_from_preceding_state() -> None:
+    captured, _ = _capture_bytes()
+    payload = json.loads(captured[0])
+    payload["frames"][1]["score"]["provenance"] = "cached"
+    payload["frames"][1]["score"]["probability"] = 0.2
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+
+    with pytest.raises(ValueError, match="cached score"):
+        replay_fall_diagnostic_bundle(raw, predict=lambda tensor: tensor[0][0])
 
 
 def test_replay_rejects_non_allowlisted_nested_fields() -> None:
@@ -236,6 +279,35 @@ def test_writer_uses_private_content_addressed_local_file(tmp_path: Path) -> Non
     assert stat.S_IMODE(expected.stat().st_mode) == 0o600
 
 
+def test_writer_enforces_cross_camera_file_and_byte_retention(tmp_path: Path) -> None:
+    writer = FallDiagnosticWriter(
+        root=tmp_path,
+        max_stored_bundles=1,
+        max_stored_bytes=30,
+    )
+    writer.start()
+    assert writer.submit(b'{"first":1}')
+    assert writer.submit(b'{"second":2}')
+    writer.stop()
+
+    assert len(tuple(tmp_path.glob("*.json"))) == 1
+    assert writer.stats().written == 1
+    assert writer.stats().write_failures == 1
+
+
+def test_enabled_writer_purges_previous_boot_artifacts(tmp_path: Path) -> None:
+    root = tmp_path / "fall-diagnostics"
+    root.mkdir()
+    stale = root / "stale.json"
+    stale.write_text("{}")
+
+    writer = build_fall_diagnostic_writer({"SEEON_FALL_DIAGNOSTICS_ENABLED": "1"}, tmp_path)
+    assert writer is not None
+    writer.stop()
+
+    assert not stale.exists()
+
+
 def test_diagnostics_are_disabled_by_default_and_require_exact_opt_in(tmp_path: Path) -> None:
     assert build_fall_diagnostic_writer({}, tmp_path) is None
     assert (
@@ -249,3 +321,11 @@ def test_diagnostics_are_disabled_by_default_and_require_exact_opt_in(tmp_path: 
     writer = build_fall_diagnostic_writer({"SEEON_FALL_DIAGNOSTICS_ENABLED": "1"}, tmp_path)
     assert writer is not None
     writer.stop()
+
+
+def test_v2_like_decider_without_score_trace_contract_is_rejected() -> None:
+    class UnsupportedDecision:
+        deciders = (object(),)
+
+    with pytest.raises(RuntimeError, match="v1 score/trace contract"):
+        require_v1_fall_diagnostic_contract(UnsupportedDecision())  # type: ignore[arg-type]

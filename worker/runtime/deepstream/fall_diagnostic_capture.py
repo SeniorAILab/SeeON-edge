@@ -12,6 +12,20 @@ class NativeFallDiagnostics(Protocol):
     def record(self, frame: FallDiagnosticFrame) -> None: ...
 
 
+def require_v1_fall_diagnostic_contract(decision: EventAggregator) -> None:
+    for decider in decision.deciders:
+        target: object | None = decider
+        for _ in range(9):
+            if target is None:
+                break
+            if hasattr(target, "last_trace_snapshots") and hasattr(
+                target, "last_score_snapshots"
+            ):
+                return
+            target = getattr(target, "decider", None)
+    raise RuntimeError("fall diagnostics require the v1 score/trace contract")
+
+
 def record_native_fall_diagnostic(
     recorder: NativeFallDiagnostics,
     metadata: MetadataFrame,
@@ -61,6 +75,11 @@ def _fall_diagnostic_state(
                 break
             traces = getattr(target, "last_trace_snapshots", ())
             scores = getattr(target, "last_score_snapshots", ())
+            if any(
+                getattr(item, "reason", "") == "outside-detection-window"
+                for item in traces
+            ):
+                return None, "clear", "clear", False
             trace = next(
                 (
                     item
@@ -97,4 +116,8 @@ def _fall_diagnostic_state(
     return None, "clear", "clear", False
 
 
-__all__ = ["NativeFallDiagnostics", "record_native_fall_diagnostic"]
+__all__ = [
+    "NativeFallDiagnostics",
+    "record_native_fall_diagnostic",
+    "require_v1_fall_diagnostic_contract",
+]

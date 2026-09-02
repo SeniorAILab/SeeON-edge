@@ -122,6 +122,9 @@ from worker.runtime.config import (
     WorkerConfig,
 )
 from worker.runtime.deepstream.config import ChildConfig
+from worker.runtime.deepstream.fall_diagnostic_capture import (
+    require_v1_fall_diagnostic_contract,
+)
 from worker.runtime.deepstream.fall_diagnostic_writer import (
     FallDiagnosticWriter,
     build_fall_diagnostic_writer,
@@ -1828,6 +1831,10 @@ class WorkerRuntime:
         fall_diagnostics = None
         fall_definition = plan.definitions.get("fall")
         if self._fall_diagnostic_writer is not None and fall_definition is not None:
+            require_v1_fall_diagnostic_contract(plan.decision)
+            runtime_manifest = self._runtime_manifest
+            if runtime_manifest is None:
+                raise RuntimeError("fall diagnostics require an applied runtime manifest")
             fall_policy = self.config.detection_policies.resolve(
                 camera.camera_id,
                 fall_definition.module_id,
@@ -1837,6 +1844,12 @@ class WorkerRuntime:
                 f"slot-{len(pumps):02d}",
                 self._fall_diagnostic_writer,
                 threshold=float(fall_policy.operating_threshold),
+                worker_boot_id=binding.worker_boot_id,
+                camera_ref=hashlib.sha256(
+                    f"{binding.worker_boot_id}\0{camera.camera_id}".encode()
+                ).hexdigest(),
+                runtime_manifest_sha256=runtime_manifest.sha256,
+                module_qualified_id=fall_definition.qualified_id,
             )
         pump = NativePolicyPump(
             binding,

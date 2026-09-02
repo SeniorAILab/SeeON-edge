@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from typing import Final, Literal
@@ -52,15 +53,30 @@ class FallDiagnosticRecorder:
         *,
         threshold: float = 0.5,
         max_bundles: int = 1,
+        worker_boot_id: str = "00000000-0000-0000-0000-000000000000",
+        camera_ref: str = "0" * 64,
+        runtime_manifest_sha256: str = "0" * 64,
+        module_qualified_id: str = "fall@1",
     ) -> None:
         if _SLOT_RE.fullmatch(camera_slot) is None:
             raise ValueError("camera slot must be anonymous slot-NN")
         if not 0.0 <= threshold <= 1.0 or max_bundles <= 0:
             raise ValueError("invalid diagnostic capture bound")
+        _ = uuid.UUID(worker_boot_id)
+        if not re.fullmatch(r"[0-9a-f]{64}", camera_ref) or not re.fullmatch(
+            r"[0-9a-f]{64}", runtime_manifest_sha256
+        ):
+            raise ValueError("diagnostic identity must be lowercase SHA-256")
+        if not module_qualified_id:
+            raise ValueError("diagnostic module identity is required")
         self._camera_slot = camera_slot
         self._writer = writer
         self._threshold = threshold
         self._max_bundles = max_bundles
+        self._worker_boot_id = worker_boot_id
+        self._camera_ref = camera_ref
+        self._runtime_manifest_sha256 = runtime_manifest_sha256
+        self._module_qualified_id = module_qualified_id
         self._ring: deque[FallDiagnosticFrame] = deque(maxlen=_PRE_ONSET_FRAMES)
         self._active: list[FallDiagnosticFrame] | None = None
         self._rejected_frames = 0
@@ -110,7 +126,17 @@ class FallDiagnosticRecorder:
         frames = tuple(self._active)
         self._active = None
         self._ring.clear()
-        if self._writer.submit_bundle(_bundle_payload(self._camera_slot, self._threshold, frames)):
+        if self._writer.submit_bundle(
+            _bundle_payload(
+                self._camera_slot,
+                self._threshold,
+                frames,
+                worker_boot_id=self._worker_boot_id,
+                camera_ref=self._camera_ref,
+                runtime_manifest_sha256=self._runtime_manifest_sha256,
+                module_qualified_id=self._module_qualified_id,
+            )
+        ):
             self._completed_bundles += 1
         else:
             self._dropped_bundles += 1
@@ -162,12 +188,21 @@ def _bundle_payload(
     camera_slot: str,
     threshold: float,
     frames: tuple[FallDiagnosticFrame, ...],
+    *,
+    worker_boot_id: str,
+    camera_ref: str,
+    runtime_manifest_sha256: str,
+    module_qualified_id: str,
 ) -> dict[str, object]:
     return {
+        "camera_ref": camera_ref,
         "camera_slot": camera_slot,
         "frames": [_frame_payload(frame) for frame in frames],
+        "module_qualified_id": module_qualified_id,
+        "runtime_manifest_sha256": runtime_manifest_sha256,
         "schema_version": 1,
         "threshold": threshold,
+        "worker_boot_id": worker_boot_id,
     }
 
 

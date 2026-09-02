@@ -219,12 +219,6 @@ class NativePolicyPump:
             frame.identity.source_pts or 0,
             metadata.source_time_ns / 1_000_000_000,
         )
-        for event in events:
-            try:
-                snapshot = self._control.snapshot(self.camera_id)
-            except ChildControlError:
-                snapshot = None
-            self._sink.emit_for_frame(self._attacher.attach_native(event, snapshot), trigger)
         if self._fall_diagnostics is not None:
             record_native_fall_diagnostic(
                 self._fall_diagnostics,
@@ -233,6 +227,12 @@ class NativePolicyPump:
                 self._decision,
                 resolved_track_ids,
             )
+        for event in events:
+            try:
+                snapshot = self._control.snapshot(self.camera_id)
+            except ChildControlError:
+                snapshot = None
+            self._sink.emit_for_frame(self._attacher.attach_native(event, snapshot), trigger)
         self._diagnostics.record_detection_completed(self.camera_id)
         now = time.monotonic()
         self._fps.append(now)
