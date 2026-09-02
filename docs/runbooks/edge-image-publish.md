@@ -66,7 +66,11 @@ from the sealed worker image into the `worker-models` named volume on every
 `up`; `ml-worker` starts only after it exits 0, so a hash mismatch or a broken
 pin holds the worker back instead of loading an unverified weight. Changing a
 weight means changing the manifest in the sealed SHA, never editing the volume
-by hand. The optional `HF_TOKEN` in `.env.edge.prod` reaches this service
+by hand. `--no-deps` skips this service: a targeted `up -d --no-deps ml-worker`
+on an appliance whose `worker-models` volume is empty fails fast on missing
+weights. Bring `ml-worker` up without `--no-deps`, or run
+`compose run --rm --pull never edge-model-fetch` first, so the volume is filled
+by the verifier rather than by hand. The optional `HF_TOKEN` in `.env.edge.prod` reaches this service
 only; leave it empty for the public pins. There is no host `./models` bind
 mount any more.
 
