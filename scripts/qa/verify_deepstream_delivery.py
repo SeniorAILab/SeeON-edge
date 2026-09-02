@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 from typing import ClassVar, Literal, assert_never, final
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 if str(REPOSITORY_ROOT) not in sys.path:
@@ -50,6 +50,9 @@ from worker.tools.deepstream_canary.telemetry import (  # noqa: E402
 )
 
 POLICY = Path("scripts/qa/deepstream-canary/gate-policy.v1.json")
+LEGACY_BASELINE_POLICY_SHA256 = (
+    "95bb74fd48e242ced4a640399f403321bd45df1d70408e163a284584dcbfefa5"
+)
 
 
 class RunRequestReceipt(BaseModel):
@@ -64,6 +67,24 @@ class RunRequestReceipt(BaseModel):
     appliance_id: str = "unbound-canary-appliance"
     camera_ids: tuple[str, ...] = ()
     authorization_sha256: str | None = None
+
+
+class LegacyBaselineAuthorizationAttestation(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal[1]
+    kind: Literal["legacy_baseline_authorization"]
+    appliance_id: str
+    authorization_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    run_request_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    rung_receipts: dict[str, str]
+
+    @field_validator("rung_receipts")
+    @classmethod
+    def rung_receipt_hashes_are_sha256(cls, values: dict[str, str]) -> dict[str, str]:
+        if any(re.fullmatch(r"[0-9a-f]{64}", digest) is None for digest in values.values()):
+            raise ValueError("rung receipt hashes must be lowercase SHA-256 digests")
+        return values
 
 
 class DeliveryVerdict(BaseModel):
@@ -384,6 +405,60 @@ def _authorization_findings(
     return findings
 
 
+def _legacy_baseline_authorization_findings(
+    root: Path,
+    request: RunRequestReceipt,
+    rungs: tuple[str, ...],
+    receipt_records: tuple[tuple[BaselineReceipt, bytes], ...],
+) -> list[str]:
+    authorization_path = root / "authorization.json"
+    attestation_path = root / "legacy-authorization-attestation.json"
+    findings: list[str] = []
+    if not authorization_path.is_file():
+        findings.append("baseline_legacy_authorization_missing")
+    if not attestation_path.is_file():
+        findings.append("baseline_legacy_authorization_attestation_missing")
+    if findings:
+        return findings
+    try:
+        attestation = LegacyBaselineAuthorizationAttestation.model_validate_json(
+            attestation_path.read_bytes()
+        )
+    except (OSError, ValidationError) as error:
+        return [f"baseline_legacy_authorization_attestation_invalid:{error}"]
+
+    authorization_content = authorization_path.read_bytes()
+    request_content = (root / "run-request.json").read_bytes()
+    if hashlib.sha256(authorization_content).hexdigest() != attestation.authorization_sha256:
+        findings.append("baseline_legacy_authorization_authorization_sha256_mismatch")
+    if hashlib.sha256(request_content).hexdigest() != attestation.run_request_sha256:
+        findings.append("baseline_legacy_authorization_run_request_sha256_mismatch")
+    receipt_contents = {receipt.rung: content for receipt, content in receipt_records}
+    for rung in rungs:
+        expected_digest = attestation.rung_receipts.get(rung)
+        if expected_digest is None:
+            findings.append(f"baseline_legacy_authorization_rung_receipt_missing:{rung}")
+        elif hashlib.sha256(receipt_contents[rung]).hexdigest() != expected_digest:
+            findings.append(
+                f"baseline_legacy_authorization_rung_receipt_sha256_mismatch:{rung}"
+            )
+    try:
+        artifact = AuthorizationArtifact.model_validate_json(authorization_content)
+    except ValidationError as error:
+        findings.append(f"baseline_legacy_authorization_invalid:{error}")
+        return findings
+    if artifact.appliance_id != attestation.appliance_id:
+        findings.append("baseline_legacy_authorization_appliance_id_mismatch")
+    if artifact.worker_image != request.worker_image_digest:
+        findings.append("baseline_legacy_authorization_worker_image_mismatch")
+    if not rungs or len(artifact.camera_ids) != max(int(rung) for rung in rungs):
+        findings.append("baseline_legacy_authorization_camera_count_mismatch")
+    for rung in rungs:
+        if int(rung) not in artifact.authorized_rungs:
+            findings.append(f"baseline_legacy_authorization_rung_unauthorized:{rung}")
+    return findings
+
+
 def _canary(
     root: Path, policy_path: Path, baseline_root: Path | None = None
 ) -> DeliveryVerdict:
@@ -408,6 +483,17 @@ def _canary(
     baseline_by_rung = {
         receipt.rung: receipt for receipt, _ in baseline_records
     }
+    baseline_digit_rungs = (
+        tuple(
+            rung for rung in baseline_request.requested_rungs if rung.isdigit()
+        )
+        if baseline_request is not None
+        else ()
+    )
+    v1_baseline = bool(baseline_digit_rungs) and all(
+        isinstance(baseline_by_rung.get(rung), V1RungReceipt)
+        for rung in baseline_digit_rungs
+    )
     findings = [
         f"requested_rung_missing:{rung}"
         for rung in request.requested_rungs
@@ -425,7 +511,9 @@ def _canary(
             for rung in digit_rungs
         )
     if baseline_request is not None:
-        if baseline_request.policy_sha256 != policy_digest:
+        if v1_baseline and baseline_request.policy_sha256 != LEGACY_BASELINE_POLICY_SHA256:
+            findings.append("baseline_legacy_policy_digest_unapproved")
+        elif not v1_baseline and baseline_request.policy_sha256 != policy_digest:
             findings.append("baseline_run_request_policy_digest_mismatch")
         findings.extend(
             f"baseline_requested_rung_missing:{rung}"
@@ -447,7 +535,14 @@ def _canary(
             )
         )
         findings.extend(
-            _authorization_findings(
+            _legacy_baseline_authorization_findings(
+                baseline_root,
+                baseline_request,
+                baseline_digit_rungs,
+                baseline_records,
+            )
+            if v1_baseline
+            else _authorization_findings(
                 baseline_root,
                 baseline_request,
                 baseline_request.requested_rungs,

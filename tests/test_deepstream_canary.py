@@ -725,6 +725,81 @@ def _verify(
     )
 
 
+def test_legacy_baseline_authorization_attestation_is_byte_bound(tmp_path: Path) -> None:
+    verifier = runpy.run_path("scripts/qa/verify_deepstream_delivery.py")
+    findings_for = verifier["_legacy_baseline_authorization_findings"]
+    root = tmp_path / "baseline"
+    root.mkdir()
+    request_content = b'{"legacy":"request"}\n'
+    authorization_content = json.dumps(
+        {
+            "schema_version": 1,
+            "appliance_id": "edge-lab-01",
+            "worker_image": "sha256:" + "b" * 64,
+            "camera_ids": ["camera-00"],
+            "owner": "owner",
+            "issue": "https://github.com/SeniorAILab/SeeON-edge/issues/1",
+            "expires_at": "2026-09-03T00:00:00Z",
+            "authorized_rungs": [1],
+            "eight_pass_report_sha256": None,
+            "projected_slack_mib": 1.0,
+        }
+    ).encode()
+    receipt_content = b'{"schema_version":1,"rung":"1"}\n'
+    (root / "run-request.json").write_bytes(request_content)
+    (root / "authorization.json").write_bytes(authorization_content)
+    (root / "legacy-authorization-attestation.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "legacy_baseline_authorization",
+                "appliance_id": "edge-lab-01",
+                "authorization_sha256": hashlib.sha256(authorization_content).hexdigest(),
+                "run_request_sha256": hashlib.sha256(request_content).hexdigest(),
+                "rung_receipts": {"1": hashlib.sha256(receipt_content).hexdigest()},
+            }
+        )
+    )
+    request = verifier["RunRequestReceipt"](
+        schema_version=1,
+        requested_rungs=("1",),
+        policy_sha256="a" * 64,
+        worker_image_digest="sha256:" + "b" * 64,
+    )
+    records = ((SimpleNamespace(rung="1"), receipt_content),)
+
+    assert findings_for(root, request, ("1",), records) == []
+
+    (root / "authorization.json").write_bytes(authorization_content + b" ")
+    assert "baseline_legacy_authorization_authorization_sha256_mismatch" in findings_for(
+        root, request, ("1",), records
+    )
+    (root / "authorization.json").write_bytes(authorization_content)
+    (root / "run-request.json").write_bytes(request_content + b" ")
+    assert "baseline_legacy_authorization_run_request_sha256_mismatch" in findings_for(
+        root, request, ("1",), records
+    )
+    (root / "run-request.json").write_bytes(request_content)
+    tampered_records = ((SimpleNamespace(rung="1"), receipt_content + b" "),)
+    assert "baseline_legacy_authorization_rung_receipt_sha256_mismatch:1" in findings_for(
+        root, request, ("1",), tampered_records
+    )
+    wrong_worker = request.model_copy(update={"worker_image_digest": "sha256:" + "c" * 64})
+    assert "baseline_legacy_authorization_worker_image_mismatch" in findings_for(
+        root, wrong_worker, ("1",), records
+    )
+    wrong_count_content = authorization_content.replace(
+        b'["camera-00"]', b'["camera-00", "camera-01"]'
+    )
+    (root / "authorization.json").write_bytes(wrong_count_content)
+    attestation = json.loads((root / "legacy-authorization-attestation.json").read_text())
+    attestation["authorization_sha256"] = hashlib.sha256(wrong_count_content).hexdigest()
+    (root / "legacy-authorization-attestation.json").write_text(json.dumps(attestation))
+    assert "baseline_legacy_authorization_camera_count_mismatch" in findings_for(
+        root, request, ("1",), records
+    )
+
+
 def _render_evidence(root: Path) -> None:
     result = _run_cli(
         "run",
