@@ -16,6 +16,7 @@ from worker.tools.deepstream_canary.collector import CollectionRequest, collect_
 from worker.tools.deepstream_canary.execution_artifacts import (
     ExecutionArtifactSources,
     ReceiptEmissionRequest,
+    copy_windows,
     emit_receipts,
     generate_corpus,
     gpu_sample,
@@ -238,8 +239,10 @@ def execute_canary(request: ExecutionRequest) -> int:
     watchdog_fault: list[CanarySafetyError] = []
     gpu_loss_observed_at: dict[str, float] = {}
     native_path = request.evidence_dir / "raw" / "native-telemetry.jsonl"
-    native_path.touch(mode=0o666, exist_ok=False)
-    native_path.chmod(0o666)
+    child_copy_path = native_path.with_name(f"{native_path.stem}.child-copy.jsonl")
+    for path in (native_path, child_copy_path):
+        path.touch(mode=0o666, exist_ok=False)
+        path.chmod(0o666)
     corpus: Path | None = None
 
     def flush_partial(error: CanarySafetyError) -> None:
@@ -265,7 +268,8 @@ def execute_canary(request: ExecutionRequest) -> int:
                     clean_steady_seconds=duration,
                     camera_ids=camera_ids,
                     gpu_samples=phase_gpu,
-                    native_windows=native_windows(native_path),
+                    native_windows=() if rung == "zero" else native_windows(native_path),
+                    copy_windows=() if rung == "zero" else copy_windows(native_path),
                     allow_partial=True,
                     fault_windows=(error.code,),
                 )
@@ -416,9 +420,12 @@ def execute_canary(request: ExecutionRequest) -> int:
                     native_windows=(
                         ()
                         if rung == "zero"
-                        else native_windows(
-                            request.evidence_dir / "raw" / "native-telemetry.jsonl"
-                        )
+                        else native_windows(native_path)
+                    ),
+                    copy_windows=(
+                        ()
+                        if rung == "zero"
+                        else copy_windows(native_path)
                     ),
                 )
             )

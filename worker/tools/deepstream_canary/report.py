@@ -31,6 +31,10 @@ def write_canonical_report(root: Path, value: Mapping[str, JsonValue]) -> Path:
     encoded = canonical_json(value)
     digest = hashlib.sha256(encoded).hexdigest()
     destination = root / f"gate-report.{digest}.json"
+    # The filename embeds the content hash, so an existing identical report is
+    # a no-op republish (idempotent re-verification), never an overwrite.
+    if destination.is_file() and destination.read_bytes() == encoded:
+        return destination
     write_once(destination, encoded)
     return destination
 

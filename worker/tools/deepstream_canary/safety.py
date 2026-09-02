@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,8 @@ from worker.tools.deepstream_canary.report import canonical_json
 
 PROJECT_LABEL: Final = "com.docker.compose.project"
 PROJECT_NAME: Final = "seeon-ds-canary"
+_KERNEL_CURSOR: str | None = None
+_KERNEL_CURSOR_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +206,62 @@ def _live_status() -> tuple[tuple[str, ...], tuple[str, ...], int]:
     return online, healthy, recorder.dropped_frames + recorder.dropped_events
 
 
+def _kernel_xid_count() -> int:
+    global _KERNEL_CURSOR
+    with _KERNEL_CURSOR_LOCK:
+        if _KERNEL_CURSOR is None:
+            initial = subprocess.run(
+                (
+                    "journalctl",
+                    "--boot",
+                    "0",
+                    "--dmesg",
+                    "--no-pager",
+                    "--lines",
+                    "0",
+                    "--show-cursor",
+                ),
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            prefix = "-- cursor: "
+            cursor = next(
+                (
+                    line.removeprefix(prefix)
+                    for line in initial.stdout.splitlines()
+                    if line.startswith(prefix)
+                ),
+                None,
+            )
+            if initial.returncode != 0 or cursor is None:
+                return -1
+            _KERNEL_CURSOR = cursor
+
+    kernel = subprocess.run(
+        (
+            "journalctl",
+            "--boot",
+            "0",
+            "--dmesg",
+            "--no-pager",
+            "--after-cursor",
+            _KERNEL_CURSOR,
+            "--grep",
+            "NVRM: Xid",
+            "--output",
+            "cat",
+        ),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    # journalctl returns 1 when --grep finds no entries after the run-start
+    # cursor; that is a conclusive zero-Xid result. Other failures remain
+    # fail-closed.
+    return len(kernel.stdout.splitlines()) if kernel.returncode in {0, 1} else -1
+
+
 def capture_live_snapshot() -> LiveSnapshot:
     ids = _run(("docker", "ps", "--format", "{{.ID}}"))
     gpu_used, gpu_total, gpu_utilization, gpu_processes = _gpu_snapshot()
@@ -210,13 +269,7 @@ def capture_live_snapshot() -> LiveSnapshot:
         _container_snapshot(item, gpu_processes) for item in ids.splitlines() if item
     )
     containers = tuple(item for item in candidates if item is not None)
-    kernel = subprocess.run(
-        ("journalctl", "--boot", "0", "--dmesg", "--no-pager"),
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    xid_count = kernel.stdout.count("NVRM: Xid") if kernel.returncode == 0 else -1
+    xid_count = _kernel_xid_count()
     online, healthy, evidence_drops = _live_status()
     return LiveSnapshot(
         containers=containers,

@@ -41,8 +41,10 @@ class ServerState {
   explicit ServerState(const ChildOptions& options_value);
   ~ServerState();
 
-  void on_frame(const std::string& camera, const PipelineBindingPtr& binding,
-                const DecodedFrameView& view);
+  void on_host_frame(const std::string& camera, const PipelineBindingPtr& binding,
+                     const HostFrameView& view);
+  void on_device_frame(const std::string& camera, const PipelineBindingPtr& binding,
+                       const DeviceFrameView& view);
   void on_access_unit(const std::string& camera, const PipelineBindingPtr& binding,
                       ParsedAccessUnit unit);
   void on_failure(const NativeFailure& failure);
@@ -63,6 +65,9 @@ class ServerState {
   std::map<std::string, std::uint32_t> generation_high_water;
   std::uint64_t publish_sequence = 0;
   std::atomic<std::uint64_t> published{0};
+  // Internal inference-owner diagnostic. This intentionally stays out of the
+  // status and perception wire contracts.
+  std::atomic<std::uint64_t> surface_drops{0};
   std::uint64_t overwritten = 0;
   std::uint64_t wake_dropped = 0;
   std::uint64_t source_failures = 0;

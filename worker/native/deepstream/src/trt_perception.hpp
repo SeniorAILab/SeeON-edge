@@ -5,16 +5,22 @@
 // Owns the three pinned engines (pose/person/bed) from the content-addressed
 // engine cache, the C3-parity preprocessing (letterbox 640-side, stride 32,
 // pad 114, BGR planes, FP32/255 -- see parity/preprocess.py), and the parse +
-// association stage (native_perception.hpp). One instance per child process;
-// infer() is thread-safe and bounded-concurrent (see infer()).
+// association stage (native_perception.hpp). One instance per child process.
 
 #include "native_perception.hpp"
+#include "preprocess_cpu.hpp"
 
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
+
+namespace seeon {
+struct HostFrameView;
+struct DeviceFrameView;
+}  // namespace seeon
 
 namespace seeon::trt {
 
@@ -37,6 +43,12 @@ struct EngineIdentity {
 inline constexpr double kPersonConfidence = 0.25;
 inline constexpr double kBedConfidence = 0.25;
 
+enum class InferStatus : std::uint8_t {
+  kCompleted,
+  kDroppedBusy,
+  kFailed,
+};
+
 class TrtPerception {
  public:
   ~TrtPerception();
@@ -49,15 +61,18 @@ class TrtPerception {
   static std::unique_ptr<TrtPerception> load(const std::string& cache_dir,
                                              std::string* error);
 
-  // rgba: HxWx4 host frame (RGBA byte order as the caps negotiate); stride in
-  // bytes per row. Runs preprocess + pose + bed (+ person when
-  // run_person_engine mirrors box_source=="person") + parsers. Thread-safe:
-  // concurrent callers lease one of a bounded pool of execution contexts and
-  // CUDA streams, so inferences overlap instead of serializing behind a single
-  // context. A caller blocks only when every workspace is busy.
-  [[nodiscard]] bool infer(const std::uint8_t* rgba, int width, int height, int stride,
-                           bool run_person_engine, PerceptionResult* result,
-                           std::string* error);
+  // Runs synchronously: completion or failure is known before this returns.
+  // Host input is only for deterministic warmup and explicitly selected
+  // non-RTSP paths. Device inference never falls back to host input.
+  [[nodiscard]] InferStatus infer_host(const seeon::HostFrameView& frame,
+                                       bool run_person_engine,
+                                       PerceptionResult* result,
+                                       std::string* error);
+  [[nodiscard]] InferStatus infer_device(std::string_view camera_id,
+                                         const seeon::DeviceFrameView& frame,
+                                         bool run_person_engine,
+                                         PerceptionResult* result,
+                                         std::string* error);
 
   [[nodiscard]] std::vector<std::string> engine_names() const;
 
@@ -66,13 +81,5 @@ class TrtPerception {
   class Impl;
   std::unique_ptr<Impl> impl_;
 };
-
-// C3-parity preprocessing on the host: float bilinear resize with the OpenCV
-// coordinate convention, value-114 letterbox padding, RGBA -> BGR plane order
-// ("the shipped second flip"), FP32/255, NCHW. Exposed for the warmup receipt
-// and for unit probes; production callers go through TrtPerception::infer.
-void preprocess_rgba_to_bgr_tensor(const std::uint8_t* rgba, int width, int height,
-                                   int stride, const perception::AffineMetadata& affine,
-                                   float* output_chw);
 
 }  // namespace seeon::trt

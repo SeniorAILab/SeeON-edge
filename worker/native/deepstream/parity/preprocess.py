@@ -20,6 +20,10 @@ every shipped detection, keypoint and event timeline -- so the inversion is
 reproduced, not fixed.
 """
 
+# OI-1: This cv2.resize path quantizes resized pixels to uint8 before FP32
+# normalization, unlike the native C++ double-bilinear oracle at non-integer
+# scales. It is a pre-existing compatibility path; do not change it here.
+
 from __future__ import annotations
 
 from typing import Final, Literal, TypeAlias

@@ -80,7 +80,7 @@ class NativeCanaryTelemetry:
 
     def _flush(self, ended_ns: int) -> None:
         record = CanaryWindowRecord(
-            schema_version=1,
+            schema_version=2,
             camera_id=self._camera_id,
             window_started_ns=self._window_started_ns,
             window_ended_ns=ended_ns,

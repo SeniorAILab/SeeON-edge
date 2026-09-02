@@ -16,9 +16,15 @@ project `seeon-ds-canary`; it does not authorize facility cameras.
   coexistence-only and always produces `claim_eligible=false`.
 - The default pre-facility invocation explicitly requests `zero,loopback` and
   requires no facility RTSP.
-  Live rungs `1,4,8,13` require an unexpired owner artifact bound to appliance,
+- Live rungs `1,4,8,13` require an unexpired owner artifact bound to appliance,
   image digest, ordered camera IDs, and allowed rungs. Rung 13 must be last and
   additionally requires an 8-pass report digest and projected slack >= 3 GiB.
+- Live work is ordered `1 -> 4 -> 8 -> 13`. Every baseline and candidate live
+  run requires its own AuthorizationArtifact; no nonzero candidate is eligible
+  without a sealed same-rung baseline using the same corpus, mode, duration,
+  ordered cameras/count, and workload. Rung 13 additionally requires the
+  verified rung-8 PASS prerequisite; a projection is admission evidence, never
+  a PASS.
 
 Never load `compose.edge.yaml`, read `.env.edge.prod`, reuse a live mount, or
 run `down -v`. Cleanup is limited to project `seeon-ds-canary` and its isolated
@@ -38,6 +44,17 @@ container restart, camera-stale, evidence-drop, and new-Xid signals remain abort
 conditions. `PASS` is capacity-claim eligible only in commissioning mode;
 `MARGINAL` and shared-host smoke are not claims.
 
+Parent `raw/native-telemetry.jsonl` is schema 2. Native child telemetry is the
+separate schema-1 `raw/native-telemetry.child-copy.jsonl` sidecar: do not merge
+it, derive it from stderr, or accept a missing/partial sidecar. Its gates are
+exactly H2D zero, D2H at most 200424 bytes, zero surface drops, positive child
+frames, and coverage/contiguity. The AC4 30-frame span bound (2.15 seconds) is
+computed as `30 / fps_windows p05` from parent metadata rate; child
+`frame_window_spans_seconds` stays sealed as diagnostic evidence, never the
+decision variable. Relative baseline comparison applies to digit rungs only. Synthetic timing is diagnostic only, never a canary
+PASS. A failed or partial run is immutable failure evidence: stop escalation,
+do not seal it as a baseline, and clean up only `seeon-ds-canary`.
+
 ## Commands
 
 Default gate (with `CANARY_WORKER_IMAGE=repository@sha256:<digest>` and
@@ -46,6 +63,10 @@ Default gate (with `CANARY_WORKER_IMAGE=repository@sha256:<digest>` and
 Verify immutable receipts:
 `uv run python scripts/qa/verify_deepstream_delivery.py canary --evidence-root <dir> --output <green.json>`;
 its JSON verdict must be exactly `PASS`.
+For a nonzero candidate, add
+`--baseline-evidence-root <sealed-same-rung-baseline>`; the verifier must
+confirm FPS p05/p50 nonregression and strict p95 latency improvement per
+camera.
 
 Browser evidence uses `node scripts/qa/deepstream_canary_browser.mjs ...`.
 Operational details live in `docs/runbooks/deepstream-canary-capacity.md` and

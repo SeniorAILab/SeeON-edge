@@ -1,0 +1,28 @@
+Pinned Host atan2 Compatibility Component
+
+This distribution includes a CUDA adaptation derived from the GNU C Library
+(glibc) 2.39 IBM Accurate Mathematical Library atan2 implementation and its
+uatan coefficient table.
+
+Copyright (C) 2001-2024 Free Software Foundation, Inc.
+License: GNU Lesser General Public License, version 2.1 or later.
+The complete license terms are in COPYING.LESSER beside this notice.
+
+Modified by SeniorAILab on 2026-09-01:
+- restricted the implementation to finite SeeON 160x160 contour deltas;
+- translated the selected x86_64 FMA expression graph to explicit CUDA
+  round-to-nearest operations;
+- encoded binary64 constants and the 241x7 coefficient table canonically;
+- added raw-bit/order parity and image-identity boot gates.
+
+The preferred corresponding source and relinking materials are distributed in
+this repository at worker/native/deepstream/src/pinned_host_atan2.{cuh,cu},
+worker/native/deepstream/src/pinned_host_atan2_test.cu, and
+worker/native/deepstream/CMakeLists.txt. The runtime image embeds the exact
+repository revision at /opt/seeon/ml-worker-image-revision. Rebuild or relink
+with:
+
+  docker build --target runtime --build-arg SOURCE_REVISION=<revision> \
+    -f Dockerfile.edge .
+
+Upstream source: https://sourceware.org/git/glibc.git, tag glibc-2.39.

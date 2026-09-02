@@ -33,6 +33,18 @@
   "native": {
     "path": "/usr/local/bin/seeon-deepstream-preflight"
   },
+  "native_interop": {
+    "path": "/opt/seeon/native-build/bin/seeon-deepstream-nvmm-cuda-interop-probe"
+  },
+  "atan2_compat": {
+    "path": "/opt/seeon/native-build/bin/seeon-deepstream-pinned-host-atan2-test",
+    "host_libm_path": "/lib/x86_64-linux-gnu/libm.so.6",
+    "host_libm_sha256": "1b87a1a50b496cfead2b0ad134c2ff536705c82608db240c7e8aa48d6c0e4217",
+    "variant": "glibc-2.39-x86_64-fma",
+    "upstream_table_sha256": "8072e14d43f1b897ab7013b70954e18b113ef2fcac942e8a263a579d4baf531a",
+    "table_payload_sha256": "48e09fcdce6990c03bd03b476de3a3cfdc24d524751623c2e2c140ea3fbd6c3b",
+    "corpus_digest": "4bee588f444e6fd596893fb78037ffda4ff67345fdcfd921e3209a7fd145dccb"
+  },
   "models": {
     "path": "/app/models",
     "require_read_only": true

@@ -1,11 +1,16 @@
 #include "source_runtime.hpp"
 
 #include "encoded_source_branch.hpp"
+#include "encoded_source_context.hpp"
 #include "source_bus.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <condition_variable>
+#include <exception>
 #include <map>
+#include <mutex>
 #include <utility>
 
 #ifdef SEEON_HAS_GSTREAMER
@@ -43,15 +48,70 @@ void seeon_perception_transform_init(SeeonPerceptionTransform* transform) {
 }
 
 struct SourceContext {
-  seeon::FrameCallback frame_callback;
+  seeon::HostFrameCallback frame_callback;
   seeon::PipelineBindingPtr binding;
+  std::shared_ptr<seeon::InFlightGate> gate;
   std::string camera;
 };
+
+struct NullStateCompletion {
+  std::mutex mutex;
+  std::condition_variable completed;
+  bool done = false;
+  GstStateChangeReturn result = GST_STATE_CHANGE_FAILURE;
+};
+
+void set_null_async(GstElement* pipeline, gpointer raw) {
+  auto completion = *static_cast<std::shared_ptr<NullStateCompletion>*>(raw);
+  const GstStateChangeReturn result = gst_element_set_state(pipeline, GST_STATE_NULL);
+  {
+    std::lock_guard lock{completion->mutex};
+    completion->result = result;
+    completion->done = true;
+  }
+  completion->completed.notify_all();
+}
+
+bool stop_and_drain(GstElement* pipeline, const seeon::PipelineBindingPtr& binding,
+                    const std::shared_ptr<seeon::InFlightGate>& gate,
+                    const std::chrono::steady_clock::time_point deadline) {
+  gate->stop();
+  binding->invalidate();
+  if (pipeline == nullptr) return gate->wait_drained(deadline);
+
+  seeon::flush_encoded_access_units(pipeline);
+  auto completion = std::make_shared<NullStateCompletion>();
+  gst_element_call_async(
+      pipeline, set_null_async, new std::shared_ptr<NullStateCompletion>{completion},
+      [](gpointer raw) { delete static_cast<std::shared_ptr<NullStateCompletion>*>(raw); });
+
+  {
+    std::unique_lock lock{completion->mutex};
+    if (!completion->completed.wait_until(lock, deadline, [&] { return completion->done; })) {
+      return false;
+    }
+    if (completion->result == GST_STATE_CHANGE_FAILURE) return false;
+  }
+
+  const auto remaining = deadline - std::chrono::steady_clock::now();
+  const GstClockTime timeout = remaining.count() > 0
+                                   ? static_cast<GstClockTime>(
+                                         std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                             remaining).count())
+                                   : 0;
+  return gst_element_get_state(pipeline, nullptr, nullptr, timeout) == GST_STATE_CHANGE_SUCCESS &&
+         gate->wait_drained(deadline);
+}
 
 GstFlowReturn on_generic_sample(GstAppSink* sink, gpointer raw) {
   auto* context = static_cast<SourceContext*>(raw);
   GstSample* sample = gst_app_sink_pull_sample(sink);
   if (sample == nullptr) return GST_FLOW_ERROR;
+  seeon::InFlightLease callback{context->gate};
+  if (!callback) {
+    gst_sample_unref(sample);
+    return GST_FLOW_FLUSHING;
+  }
   GstCaps* caps = gst_sample_get_caps(sample);
   GstBuffer* buffer = gst_sample_get_buffer(sample);
   GstVideoInfo info;
@@ -65,9 +125,9 @@ GstFlowReturn on_generic_sample(GstAppSink* sink, gpointer raw) {
     gst_sample_unref(sample);
     return GST_FLOW_OK;
   }
-  const seeon::DecodedFrameView view{
-      GST_BUFFER_PTS_IS_VALID(buffer) ? GST_BUFFER_PTS(buffer) : 0,
-      static_cast<std::uint64_t>(g_get_real_time()) * 1000ULL,
+  const seeon::HostFrameView view{
+      {GST_BUFFER_PTS_IS_VALID(buffer) ? GST_BUFFER_PTS(buffer) : 0,
+       static_cast<std::uint64_t>(g_get_real_time()) * 1000ULL},
       GST_VIDEO_INFO_WIDTH(&info),
       GST_VIDEO_INFO_HEIGHT(&info),
       GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 0),
@@ -97,24 +157,34 @@ class SourceRuntime::Impl {
 #ifdef SEEON_HAS_GSTREAMER
   struct Source {
     std::string uri;
-    GstElement* pipeline;
-    std::uint32_t preview_viewers;
+    GstElement* pipeline = nullptr;
+    std::uint32_t preview_viewers = 0;
     PipelineBindingPtr binding;
+    std::shared_ptr<InFlightGate> gate;
+    bool drain_failure_reported = false;
   };
   std::map<std::string, Source> sources;
   std::map<std::string, std::uint32_t> preview_demands;
   bool transform_available = false;
 #else
-  struct Source { std::string uri; PipelineBindingPtr binding; };
+  struct Source {
+    std::string uri;
+    PipelineBindingPtr binding;
+    std::shared_ptr<InFlightGate> gate;
+    bool drain_failure_reported = false;
+  };
   std::map<std::string, Source> sources;
   bool transform_available = true;
 #endif
 };
 
-SourceRuntime::SourceRuntime(FrameCallback frame_callback, FailureCallback failure_callback,
+SourceRuntime::SourceRuntime(HostFrameCallback host_frame_callback,
+                             DeviceFrameCallback device_frame_callback,
+                             FailureCallback failure_callback,
                              AccessUnitCallback access_unit_callback,
                              PreviewCallback preview_callback)
-    : frame_callback_(std::move(frame_callback)),
+    : host_frame_callback_(std::move(host_frame_callback)),
+      device_frame_callback_(std::move(device_frame_callback)),
       failure_callback_(std::move(failure_callback)),
       access_unit_callback_(std::move(access_unit_callback)),
       preview_callback_(std::move(preview_callback)),
@@ -127,28 +197,22 @@ SourceRuntime::SourceRuntime(FrameCallback frame_callback, FailureCallback failu
 }
 
 SourceRuntime::~SourceRuntime() {
-#ifdef SEEON_HAS_GSTREAMER
-  for (auto& [camera, source] : impl_->sources) {
-    static_cast<void>(camera);
-    source.binding->invalidate();
-    if (source.pipeline != nullptr) {
-      quiesce_encoded_pipeline(source.pipeline);
-      gst_element_set_state(source.pipeline, GST_STATE_NULL);
-      gst_object_unref(source.pipeline);
-    }
-  }
-#endif
+  if (!shutdown()) std::terminate();
 }
 
 #ifdef SEEON_HAS_GSTREAMER
 GstElement* build_pipeline(const std::string& camera, const std::string& uri,
-                           const FrameCallback& frames, const FailureCallback& failures,
+                           const HostFrameCallback& host_frames,
+                           const DeviceFrameCallback& device_frames,
+                           const FailureCallback& failures,
                            const AccessUnitCallback& access_units,
                            const PreviewCallback& previews,
-                           const PipelineBindingPtr& binding, std::string* error_code) {
+                           const PipelineBindingPtr& binding,
+                           const std::shared_ptr<InFlightGate>& gate,
+                           std::string* error_code) {
   if (uri.starts_with("rtsp://")) {
     return build_encoded_rtsp_pipeline(
-        camera, uri, frames, failures, access_units, previews, binding, error_code);
+        camera, uri, device_frames, failures, access_units, previews, binding, gate, error_code);
   }
   GstElement* pipeline = gst_pipeline_new(nullptr);
   GstElement* source = gst_element_factory_make(uri.starts_with("loopback://")
@@ -157,7 +221,7 @@ GstElement* build_pipeline(const std::string& camera, const std::string& uri,
   GstElement* rgba = gst_element_factory_make("capsfilter", nullptr);
   GstElement* transform = gst_element_factory_make("seeonperceptiontransform", nullptr);
   GstElement* sink = gst_element_factory_make("appsink", nullptr);
-  if (pipeline == nullptr || source == nullptr || convert == nullptr || rgba == nullptr ||
+  if (!host_frames || pipeline == nullptr || source == nullptr || convert == nullptr || rgba == nullptr ||
       transform == nullptr || sink == nullptr) {
     *error_code = "camera_id=" + camera + " element_unavailable";
     GstElement* elements[] = {source, convert, rgba, transform, sink};
@@ -189,7 +253,7 @@ GstElement* build_pipeline(const std::string& camera, const std::string& uri,
     gst_object_unref(pipeline);
     return nullptr;
   }
-  auto* context = new SourceContext{frames, binding, camera};
+  auto* context = new SourceContext{host_frames, binding, gate, camera};
   g_signal_connect_data(sink, "new-sample", G_CALLBACK(on_generic_sample), context,
                         [](gpointer raw, GClosure*) { destroy_context(raw); },
                         static_cast<GConnectFlags>(0));
@@ -208,16 +272,19 @@ bool SourceRuntime::add(const std::string& camera, const std::string& uri,
   if (!valid_source_uri(uri)) { *error_code = "source_uri_invalid"; return false; }
   if (impl_->sources.contains(camera)) { *error_code = "source_exists"; return false; }
 #ifdef SEEON_HAS_GSTREAMER
+  auto gate = std::make_shared<InFlightGate>();
   GstElement* pipeline = build_pipeline(
-      camera, uri, frame_callback_, failure_callback_, access_unit_callback_, preview_callback_,
-      binding, error_code);
+      camera, uri, host_frame_callback_, device_frame_callback_, failure_callback_,
+      access_unit_callback_, preview_callback_, binding, gate, error_code);
   if (pipeline == nullptr) return false;
   const auto viewers = impl_->preview_demands[camera];
   static_cast<void>(set_encoded_preview_viewers(pipeline, viewers));
-  impl_->sources.emplace(camera, Impl::Source{uri, pipeline, viewers, binding});
+  impl_->sources.emplace(camera, Impl::Source{uri, pipeline, viewers, binding, gate});
 #else
-  impl_->sources.emplace(camera, Impl::Source{uri, binding});
-  frame_callback_(camera, binding, DecodedFrameView{});
+  auto gate = std::make_shared<InFlightGate>();
+  impl_->sources.emplace(camera, Impl::Source{uri, binding, gate});
+  InFlightLease callback{gate};
+  if (callback) host_frame_callback_(camera, binding, HostFrameView{});
 #endif
   return true;
 }
@@ -233,18 +300,45 @@ bool SourceRuntime::remove(const std::string& camera) {
 bool SourceRuntime::quiesce(const std::string& camera) {
   const auto found = impl_->sources.find(camera);
   if (found == impl_->sources.end()) return false;
-  found->second.binding->invalidate();
+  auto& source = found->second;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
 #ifdef SEEON_HAS_GSTREAMER
-  if (found->second.pipeline != nullptr) {
-    quiesce_encoded_pipeline(found->second.pipeline);
-    static_cast<void>(gst_element_set_state(found->second.pipeline, GST_STATE_NULL));
-    static_cast<void>(gst_element_get_state(
-        found->second.pipeline, nullptr, nullptr, 2 * GST_SECOND));
-    gst_object_unref(found->second.pipeline);
-    found->second.pipeline = nullptr;
+  if (!stop_and_drain(source.pipeline, source.binding, source.gate, deadline)) {
+    if (!source.drain_failure_reported) {
+      failure_callback_({camera, "inference_drain_timeout", FailureScope::kFatal});
+      source.drain_failure_reported = true;
+    }
+    return false;
+  }
+  if (source.pipeline != nullptr) {
+    gst_object_unref(source.pipeline);
+    source.pipeline = nullptr;
+  }
+#else
+  source.gate->stop();
+  source.binding->invalidate();
+  if (!source.gate->wait_drained(deadline)) {
+    if (!source.drain_failure_reported) {
+      failure_callback_({camera, "inference_drain_timeout", FailureScope::kFatal});
+      source.drain_failure_reported = true;
+    }
+    return false;
   }
 #endif
   return true;
+}
+
+bool SourceRuntime::shutdown() {
+  bool drained = true;
+  for (auto source = impl_->sources.begin(); source != impl_->sources.end();) {
+    if (!quiesce(source->first)) {
+      drained = false;
+      ++source;
+      continue;
+    }
+    source = impl_->sources.erase(source);
+  }
+  return drained;
 }
 
 bool SourceRuntime::restart(const std::string& camera, const PipelineBindingPtr& binding,
@@ -252,16 +346,25 @@ bool SourceRuntime::restart(const std::string& camera, const PipelineBindingPtr&
   const auto found = impl_->sources.find(camera);
   if (found == impl_->sources.end()) { *error_code = "source_unknown"; return false; }
 #ifdef SEEON_HAS_GSTREAMER
+  if (found->second.pipeline != nullptr) {
+    *error_code = "pipeline_not_quiesced";
+    return false;
+  }
+  auto gate = std::make_shared<InFlightGate>();
   GstElement* replacement = build_pipeline(
-      camera, found->second.uri, frame_callback_, failure_callback_, access_unit_callback_,
-      preview_callback_, binding, error_code);
+      camera, found->second.uri, host_frame_callback_, device_frame_callback_, failure_callback_,
+      access_unit_callback_, preview_callback_, binding, gate, error_code);
   if (replacement == nullptr) return false;
   static_cast<void>(set_encoded_preview_viewers(replacement, found->second.preview_viewers));
   found->second.pipeline = replacement;
   found->second.binding = binding;
+  found->second.gate = std::move(gate);
+  found->second.drain_failure_reported = false;
 #else
   found->second.binding = binding;
-  frame_callback_(camera, binding, DecodedFrameView{});
+  found->second.gate = std::make_shared<InFlightGate>();
+  InFlightLease callback{found->second.gate};
+  if (callback) host_frame_callback_(camera, binding, HostFrameView{});
 #endif
   return true;
 }

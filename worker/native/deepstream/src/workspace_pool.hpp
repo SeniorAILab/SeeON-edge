@@ -12,7 +12,6 @@
 // exhaustion behaviour can be tested on a host without a GPU. It owns nothing:
 // the caller keeps the elements alive for the pool's lifetime.
 
-#include <condition_variable>
 #include <cstddef>
 #include <mutex>
 #include <vector>
@@ -22,27 +21,24 @@ namespace seeon::trt {
 template <typename T>
 class BoundedPool {
  public:
-  // Registers an element as available. Call before any acquire().
+  // Registers an element as available. Call before any try_acquire().
   void add(T* element) {
     std::lock_guard lock{mutex_};
     free_.push_back(element);
   }
 
-  // Blocks until an element is free, then hands out exclusive use of it.
-  T* acquire() {
-    std::unique_lock lock{mutex_};
-    available_.wait(lock, [this] { return !free_.empty(); });
+  // Returns an exclusive workspace immediately, or nullptr when exhausted.
+  [[nodiscard]] T* try_acquire() noexcept {
+    std::lock_guard lock{mutex_};
+    if (free_.empty()) return nullptr;
     T* element = free_.back();
     free_.pop_back();
     return element;
   }
 
   void release(T* element) {
-    {
-      std::lock_guard lock{mutex_};
-      free_.push_back(element);
-    }
-    available_.notify_one();
+    std::lock_guard lock{mutex_};
+    free_.push_back(element);
   }
 
   void reserve(std::size_t capacity) {
@@ -51,8 +47,8 @@ class BoundedPool {
   }
 
   // Test observability only; not part of the production interface. A caller
-  // must not branch on this to decide whether to acquire: the answer is stale the moment it is returned, and acquire()
-  // already blocks correctly.
+  // must not branch on this to decide whether to acquire: the answer is stale
+  // the moment it is returned.
   [[nodiscard]] std::size_t available() {
     std::lock_guard lock{mutex_};
     return free_.size();
@@ -60,7 +56,6 @@ class BoundedPool {
 
  private:
   std::mutex mutex_;
-  std::condition_variable available_;
   std::vector<T*> free_;
 };
 
@@ -71,19 +66,19 @@ class BoundedPool {
 template <typename T>
 class PoolLease {
  public:
-  PoolLease(BoundedPool<T>* pool, T* element) : pool_{pool}, element_{element} {}
-  ~PoolLease() { pool_->release(element_); }
+  PoolLease(BoundedPool<T>& pool, T& element) : pool_{pool}, element_{element} {}
+  ~PoolLease() { pool_.release(&element_); }
   PoolLease(const PoolLease&) = delete;
   PoolLease& operator=(const PoolLease&) = delete;
   PoolLease(PoolLease&&) = delete;
   PoolLease& operator=(PoolLease&&) = delete;
 
-  [[nodiscard]] T& operator*() const { return *element_; }
-  [[nodiscard]] T* operator->() const { return element_; }
+  [[nodiscard]] T& operator*() const { return element_; }
+  [[nodiscard]] T* operator->() const { return &element_; }
 
  private:
-  BoundedPool<T>* pool_;
-  T* element_;
+  BoundedPool<T>& pool_;
+  T& element_;
 };
 
 }  // namespace seeon::trt

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import json
@@ -35,6 +36,15 @@ def _passing_receipt(camera_count: int = 1) -> dict[str, object]:
         {
             "camera_id": f"loop-{index:02d}",
             "fps_windows": [14.8, 15.0, 15.2],
+            "copy_window_frames": 30,
+            "frame_window_spans_seconds": [2.0],
+            "telemetry_coverage_seconds": 1000.0,
+            "h2d_bytes_max": 0,
+            "d2h_bytes_max": 200424,
+            "box_source": "pose",
+            "pool_wait_us_p95": 1.0,
+            "gpu_us_p95": 1.0,
+            "surface_drops": 0,
             "latency_ms": {"p50": 90.0, "p95": 150.0, "p99": 190.0, "max": 220.0},
             "au_gaps": 0,
             "config_discontinuities": 0,
@@ -48,7 +58,7 @@ def _passing_receipt(camera_count: int = 1) -> dict[str, object]:
         for index in range(camera_count)
     ]
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "rung": "loopback" if camera_count == 1 else str(camera_count),
         "mode": "commissioning",
         "camera_count": camera_count,
@@ -272,6 +282,76 @@ def test_mount_guard_rejects_live_volume_ancestor(tmp_path: Path) -> None:
         refuse_mount_overlap((live / "canary",), snapshot)
 
 
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "expected"),
+    ((1, "", 0), (0, "xid-a\nxid-b\n", 2), (2, "", -1)),
+)
+def test_kernel_xid_monitor_is_bounded_and_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    stdout: str,
+    expected: int,
+) -> None:
+    import worker.tools.deepstream_canary.safety as safety_module
+
+    observed: list[tuple[str, ...]] = []
+    results = iter(
+        (
+            SimpleNamespace(returncode=0, stdout="-- cursor: run-start\n"),
+            SimpleNamespace(returncode=returncode, stdout=stdout),
+        )
+    )
+
+    def run(command: tuple[str, ...], **_: object) -> SimpleNamespace:
+        observed.append(command)
+        return next(results)
+
+    monkeypatch.setattr(safety_module.subprocess, "run", run)
+    monkeypatch.setattr(safety_module, "_KERNEL_CURSOR", None)
+
+    assert safety_module._kernel_xid_count() == expected
+    assert observed == [
+        (
+            "journalctl",
+            "--boot",
+            "0",
+            "--dmesg",
+            "--no-pager",
+            "--lines",
+            "0",
+            "--show-cursor",
+        ),
+        (
+            "journalctl",
+            "--boot",
+            "0",
+            "--dmesg",
+            "--no-pager",
+            "--after-cursor",
+            "run-start",
+            "--grep",
+            "NVRM: Xid",
+            "--output",
+            "cat",
+        )
+    ]
+
+
+def test_kernel_xid_monitor_fails_closed_without_run_start_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import worker.tools.deepstream_canary.safety as safety_module
+
+    monkeypatch.setattr(
+        safety_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout=""),
+    )
+    monkeypatch.setattr(safety_module, "_KERNEL_CURSOR", None)
+
+    assert safety_module._kernel_xid_count() == -1
+
+
 def test_live_gpu_protection_attributes_container_and_allows_pid_churn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -335,9 +415,10 @@ def test_verifier_recomputes_pass_and_rejects_intentional_red(tmp_path: Path) ->
     # Given: raw per-camera signals and the versioned policy.
     policy = GatePolicy.model_validate_json(_policy(tmp_path / "policy.json").read_bytes())
     passing = RungReceipt.model_validate(_passing_receipt())
+    baseline = RungReceipt.model_validate(_baseline_for(_passing_receipt()))
 
     # When: gate math is recomputed.
-    report = evaluate_receipt(passing, policy)
+    report = evaluate_receipt(passing, policy, baseline)
 
     # Then: clean signals pass, while a missing PTS mapping is an intentional RED.
     assert report.verdict == "PASS"
@@ -347,6 +428,265 @@ def test_verifier_recomputes_pass_and_rejects_intentional_red(tmp_path: Path) ->
     )
     with pytest.raises(ValueError):
         RungReceipt.model_validate_json(malformed)
+
+
+def _baseline_for(receipt: dict[str, object]) -> dict[str, object]:
+    baseline = copy.deepcopy(receipt)
+    baseline["cameras"][0]["latency_ms"]["p95"] = 151.0  # type: ignore[index]
+    return baseline
+
+
+def _write_verified_rung(
+    root: Path, camera_count: int = 1, latency_ms: float = 150.0
+) -> dict[str, object]:
+    from worker.tools.deepstream_canary.models import ArtifactBindings
+    from worker.tools.deepstream_canary.telemetry import RecordedRungTelemetry, build_rung_receipt
+
+    receipt = _passing_receipt(camera_count)
+    receipt["cameras"] = [
+        {
+            **camera,
+            "latency_ms": {
+                "p50": latency_ms,
+                "p95": latency_ms,
+                "p99": latency_ms,
+                "max": latency_ms,
+            },
+        }
+        for camera in receipt["cameras"]  # type: ignore[index]
+    ]
+    raw = copy.deepcopy(receipt)
+    artifacts = raw.pop("artifacts")
+    raw["cameras"] = [
+        {
+            "camera_id": camera["camera_id"],
+            "decision_window_counts": [148, 150, 152],
+            "decision_window_seconds": [10.0, 10.0, 10.0],
+            "telemetry_coverage_seconds": camera["telemetry_coverage_seconds"],
+            "copy_window_frames": camera["copy_window_frames"],
+            "frame_window_spans_seconds": camera["frame_window_spans_seconds"],
+            "h2d_bytes_max": camera["h2d_bytes_max"],
+            "d2h_bytes_max": camera["d2h_bytes_max"],
+            "box_source": camera["box_source"],
+            "pool_wait_us_p95": camera["pool_wait_us_p95"],
+            "gpu_us_p95": camera["gpu_us_p95"],
+            "surface_drops": camera["surface_drops"],
+            "latency_samples_ms": [latency_ms],
+            "au_gaps": camera["au_gaps"],
+            "config_discontinuities": camera["config_discontinuities"],
+            "timestamp_discontinuities": camera["timestamp_discontinuities"],
+            "metadata_published": camera["metadata_published"],
+            "metadata_overwritten": camera["metadata_overwritten"],
+            "event_evidence_parity": camera["event_evidence_parity"],
+            "preview_ok": camera["preview_ok"],
+            "derivative_ok": camera["derivative_ok"],
+        }
+        for camera in receipt["cameras"]  # type: ignore[index]
+    ]
+    gpu = raw["gpu"]  # type: ignore[index]
+    raw["gpu"] = {
+        "child_pid": gpu["child_pid"],
+        "warmup_memory_mib": [gpu["warmup_peak_mib"]],
+        "steady_memory_mib": [gpu["steady_p95_mib"]],
+        "recovery_memory_mib": [gpu["recovery_mib"]],
+        "global_used_mib": gpu["global_used_mib"],
+        "total_mib": gpu["total_mib"],
+        "slack_samples_mib": [gpu["minimum_slack_mib"]],
+        "utilization_samples": [gpu["utilization_p95"]],
+        "new_xids": gpu["new_xids"],
+    }
+    recorded = RecordedRungTelemetry.model_validate(raw)
+    rebuilt = build_rung_receipt(recorded, ArtifactBindings.model_validate(artifacts))
+    (root / "raw" / f"telemetry-{rebuilt.rung}.json").write_text(recorded.model_dump_json())
+    (root / "raw" / f"rung-{rebuilt.rung}.json").write_text(rebuilt.model_dump_json())
+    return rebuilt.model_dump(mode="json")
+
+
+def _failed_check_names(report: object) -> set[str]:
+    return {check.name for check in report.checks if not check.passed}  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "check"),
+    (
+        ("h2d_bytes_max", 1, "camera.loop-00.h2d_bytes_max"),
+        ("d2h_bytes_max", 200425, "camera.loop-00.d2h_bytes_max"),
+        ("surface_drops", 1, "camera.loop-00.surface_drops"),
+    ),
+)
+def test_v4_absolute_copy_gates_reject_values_beyond_exact_boundaries(
+    tmp_path: Path, field: str, value: int | list[float], check: str
+) -> None:
+    from worker.tools.deepstream_canary.gates import evaluate_receipt
+    from worker.tools.deepstream_canary.models import GatePolicy, RungReceipt
+
+    policy = GatePolicy.model_validate_json(_policy(tmp_path / "policy.json").read_bytes())
+    candidate = _passing_receipt()
+    candidate["cameras"][0][field] = value  # type: ignore[index]
+    report = evaluate_receipt(
+        RungReceipt.model_validate(candidate),
+        policy,
+        RungReceipt.model_validate(_baseline_for(_passing_receipt())),
+    )
+
+    assert check in _failed_check_names(report)
+
+
+def test_v4_exact_copy_gate_boundaries_and_matched_baseline_pass(tmp_path: Path) -> None:
+    from worker.tools.deepstream_canary.gates import evaluate_receipt
+    from worker.tools.deepstream_canary.models import GatePolicy, RungReceipt
+
+    policy = GatePolicy.model_validate_json(_policy(tmp_path / "policy.json").read_bytes())
+    candidate_data = _passing_receipt()
+    candidate_data["cameras"][0]["frame_window_spans_seconds"] = [2.15]  # type: ignore[index]
+    candidate = RungReceipt.model_validate(candidate_data)
+    baseline_data = _baseline_for(_passing_receipt())
+    baseline_data["cameras"][0]["frame_window_spans_seconds"] = [2.15]  # type: ignore[index]
+    baseline = RungReceipt.model_validate(baseline_data)
+
+    assert policy.policy_id.endswith("-v4")
+    assert (policy.h2d_bytes_max, policy.d2h_bytes_max, policy.frame_window_span_max_seconds) == (
+        0,
+        200424,
+        2.15,
+    )
+    assert evaluate_receipt(candidate, policy, baseline).verdict == "PASS"
+    invalid = _passing_receipt()
+    invalid["unrecognized"] = True
+    with pytest.raises(ValueError, match="unrecognized"):
+        RungReceipt.model_validate(invalid)
+
+
+def test_frame_window_span_gate_uses_fps_p05_not_child_spans(tmp_path: Path) -> None:
+    from worker.tools.deepstream_canary.gates import evaluate_receipt
+    from worker.tools.deepstream_canary.models import GatePolicy, RungReceipt
+
+    policy = GatePolicy.model_validate_json(_policy(tmp_path / "policy.json").read_bytes())
+    loopback = _passing_receipt()
+    loopback["cameras"][0]["fps_windows"] = [14.9]  # type: ignore[index]
+    loopback["cameras"][0]["frame_window_spans_seconds"] = [2.16, 99.0]  # type: ignore[index]
+
+    report = evaluate_receipt(RungReceipt.model_validate(loopback), policy)
+
+    assert report.verdict == "PASS"
+    check = next(
+        item for item in report.checks if item.name.endswith("frame_window_span_max_seconds")
+    )
+    assert float(check.actual) == pytest.approx(30 / 14.9)
+
+
+def test_absolute_gate_rejects_fault_window_and_sparse_telemetry(tmp_path: Path) -> None:
+    from worker.tools.deepstream_canary.gates import evaluate_absolute_receipt
+    from worker.tools.deepstream_canary.models import GatePolicy, RungReceipt
+
+    policy = GatePolicy.model_validate_json(_policy(tmp_path / "policy.json").read_bytes())
+    receipt = _passing_receipt()
+    receipt["fault_windows"] = ["native_child_exit"]
+    receipt["cameras"][0]["telemetry_coverage_seconds"] = 877.0  # type: ignore[index]
+
+    report = evaluate_absolute_receipt(RungReceipt.model_validate(receipt), policy)
+
+    assert {"fault_windows", "camera.loop-00.telemetry_coverage_seconds"} <= _failed_check_names(
+        report
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "mutate"),
+    (
+        ("relative.baseline.rung", lambda baseline: baseline.update(rung="loopback")),
+        (
+            "relative.baseline.mode",
+            lambda baseline: baseline.update(mode="shared-host-smoke"),
+        ),
+        (
+            "relative.baseline.camera_count",
+            lambda baseline: baseline.update(camera_count=2),
+        ),
+        (
+            "relative.baseline.camera_ids",
+            lambda baseline: baseline["cameras"][0].update(camera_id="other"),  # type: ignore[index]
+        ),
+        (
+            "relative.baseline.clean_steady_seconds",
+            lambda baseline: baseline.update(clean_steady_seconds=901),
+        ),
+        (
+            "relative.baseline.workload",
+            lambda baseline: baseline["workload"].update(fps=30.0),  # type: ignore[index]
+        ),
+        (
+            "relative.baseline.corpus",
+            lambda baseline: baseline["artifacts"].update(corpus="9" * 64),  # type: ignore[index]
+        ),
+    ),
+)
+def test_v4_relative_gate_rejects_mismatched_baseline_facts(
+    tmp_path: Path, name: str, mutate: object
+) -> None:
+    from worker.tools.deepstream_canary.gates import evaluate_receipt
+    from worker.tools.deepstream_canary.models import GatePolicy, RungReceipt
+
+    policy = GatePolicy.model_validate_json(_policy(tmp_path / "policy.json").read_bytes())
+    candidate = _passing_receipt()
+    candidate.update(rung="1", clean_steady_seconds=7200)
+    candidate["cameras"][0]["telemetry_coverage_seconds"] = 7200.0  # type: ignore[index]
+    baseline = _baseline_for(candidate)
+    mutate(baseline)  # type: ignore[operator]
+    report = evaluate_receipt(
+        RungReceipt.model_validate(candidate),
+        policy,
+        RungReceipt.model_validate(baseline),
+    )
+
+    assert name in _failed_check_names(report)
+
+
+def test_v4_relative_gate_requires_baseline_and_enforces_per_camera_regression(
+    tmp_path: Path,
+) -> None:
+    from worker.tools.deepstream_canary.gates import evaluate_receipt
+    from worker.tools.deepstream_canary.models import GatePolicy, RungReceipt
+
+    policy = GatePolicy.model_validate_json(_policy(tmp_path / "policy.json").read_bytes())
+    candidate = _passing_receipt()
+    candidate.update(rung="1", clean_steady_seconds=7200)
+    baseline = _baseline_for(_passing_receipt())
+    baseline.update(rung="1", clean_steady_seconds=7200)
+    baseline["cameras"][0]["fps_windows"] = [15.0, 15.2, 15.4]  # type: ignore[index]
+    baseline["cameras"][0]["latency_ms"]["p95"] = 150.0  # type: ignore[index]
+
+    missing = evaluate_receipt(RungReceipt.model_validate(candidate), policy)
+    regression = evaluate_receipt(
+        RungReceipt.model_validate(candidate), policy, RungReceipt.model_validate(baseline)
+    )
+    zero = _passing_receipt(camera_count=0)
+    zero.update(
+        rung="zero",
+        clean_steady_seconds=120,
+        nvdec={"hardware_branches": 0, "software_fallbacks": 0},
+        timeline=[],
+        workload={
+            "codec": "h264",
+            "width": 1280,
+            "height": 720,
+            "fps": 15.0,
+            "gop": 30,
+            "camera_phase_offsets_ms": [],
+        },
+    )
+
+    assert "relative.baseline" in _failed_check_names(missing)
+    assert {
+        "camera.loop-00.relative.fps_p05",
+        "camera.loop-00.relative.fps_p50",
+        "camera.loop-00.relative.latency_p95",
+    } <= _failed_check_names(regression)
+    assert evaluate_receipt(RungReceipt.model_validate(zero), policy).verdict == "PASS"
+    assert (
+        evaluate_receipt(RungReceipt.model_validate(_passing_receipt()), policy).verdict
+        == "PASS"
+    )
 
 
 def test_product_image_explicitly_excludes_canary_module() -> None:
@@ -359,7 +699,14 @@ def test_product_image_explicitly_excludes_canary_module() -> None:
     assert "test ! -e /app/worker/tools/deepstream_canary" in dockerfile
 
 
-def _verify(kind: str, root: Path) -> subprocess.CompletedProcess[str]:
+def _verify(
+    kind: str, root: Path, baseline_root: Path | None = None
+) -> subprocess.CompletedProcess[str]:
+    baseline_arguments = (
+        ["--baseline-evidence-root", str(baseline_root)]
+        if baseline_root is not None
+        else []
+    )
     return subprocess.run(
         [
             sys.executable,
@@ -367,6 +714,7 @@ def _verify(kind: str, root: Path) -> subprocess.CompletedProcess[str]:
             kind,
             "--evidence-root",
             str(root),
+            *baseline_arguments,
             "--output",
             str(root / f"{kind}.json"),
         ],
@@ -374,6 +722,81 @@ def _verify(kind: str, root: Path) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         timeout=30,
+    )
+
+
+def test_legacy_baseline_authorization_attestation_is_byte_bound(tmp_path: Path) -> None:
+    verifier = runpy.run_path("scripts/qa/verify_deepstream_delivery.py")
+    findings_for = verifier["_legacy_baseline_authorization_findings"]
+    root = tmp_path / "baseline"
+    root.mkdir()
+    request_content = b'{"legacy":"request"}\n'
+    authorization_content = json.dumps(
+        {
+            "schema_version": 1,
+            "appliance_id": "edge-lab-01",
+            "worker_image": "sha256:" + "b" * 64,
+            "camera_ids": ["camera-00"],
+            "owner": "owner",
+            "issue": "https://github.com/SeniorAILab/SeeON-edge/issues/1",
+            "expires_at": "2026-09-03T00:00:00Z",
+            "authorized_rungs": [1],
+            "eight_pass_report_sha256": None,
+            "projected_slack_mib": 1.0,
+        }
+    ).encode()
+    receipt_content = b'{"schema_version":1,"rung":"1"}\n'
+    (root / "run-request.json").write_bytes(request_content)
+    (root / "authorization.json").write_bytes(authorization_content)
+    (root / "legacy-authorization-attestation.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "legacy_baseline_authorization",
+                "appliance_id": "edge-lab-01",
+                "authorization_sha256": hashlib.sha256(authorization_content).hexdigest(),
+                "run_request_sha256": hashlib.sha256(request_content).hexdigest(),
+                "rung_receipts": {"1": hashlib.sha256(receipt_content).hexdigest()},
+            }
+        )
+    )
+    request = verifier["RunRequestReceipt"](
+        schema_version=1,
+        requested_rungs=("1",),
+        policy_sha256="a" * 64,
+        worker_image_digest="sha256:" + "b" * 64,
+    )
+    records = ((SimpleNamespace(rung="1"), receipt_content),)
+
+    assert findings_for(root, request, ("1",), records) == []
+
+    (root / "authorization.json").write_bytes(authorization_content + b" ")
+    assert "baseline_legacy_authorization_authorization_sha256_mismatch" in findings_for(
+        root, request, ("1",), records
+    )
+    (root / "authorization.json").write_bytes(authorization_content)
+    (root / "run-request.json").write_bytes(request_content + b" ")
+    assert "baseline_legacy_authorization_run_request_sha256_mismatch" in findings_for(
+        root, request, ("1",), records
+    )
+    (root / "run-request.json").write_bytes(request_content)
+    tampered_records = ((SimpleNamespace(rung="1"), receipt_content + b" "),)
+    assert "baseline_legacy_authorization_rung_receipt_sha256_mismatch:1" in findings_for(
+        root, request, ("1",), tampered_records
+    )
+    wrong_worker = request.model_copy(update={"worker_image_digest": "sha256:" + "c" * 64})
+    assert "baseline_legacy_authorization_worker_image_mismatch" in findings_for(
+        root, wrong_worker, ("1",), records
+    )
+    wrong_count_content = authorization_content.replace(
+        b'["camera-00"]', b'["camera-00", "camera-01"]'
+    )
+    (root / "authorization.json").write_bytes(wrong_count_content)
+    attestation = json.loads((root / "legacy-authorization-attestation.json").read_text())
+    attestation["authorization_sha256"] = hashlib.sha256(wrong_count_content).hexdigest()
+    (root / "legacy-authorization-attestation.json").write_text(json.dumps(attestation))
+    assert "baseline_legacy_authorization_camera_count_mismatch" in findings_for(
+        root, request, ("1",), records
     )
 
 
@@ -389,6 +812,41 @@ def _render_evidence(root: Path) -> None:
         "seeon-edge@sha256:" + "b" * 64,
     )
     assert result.returncode == 0
+
+
+def test_canary_verifier_loads_baseline_evidence_and_keeps_absolute_gates_active(
+    tmp_path: Path,
+) -> None:
+    candidate_root = tmp_path / "candidate"
+    baseline_root = tmp_path / "baseline"
+    for root in (candidate_root, baseline_root):
+        (root / "raw").mkdir(parents=True)
+    candidate = _write_verified_rung(candidate_root)
+    _ = _write_verified_rung(baseline_root, latency_ms=151.0)
+    policy_digest = hashlib.sha256(
+        Path("scripts/qa/deepstream-canary/gate-policy.v1.json").read_bytes()
+    ).hexdigest()
+    for root in (candidate_root, baseline_root):
+        (root / "run-request.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "requested_rungs": ["loopback"],
+                    "policy_sha256": policy_digest,
+                }
+            )
+            + "\n"
+        )
+
+    assert _verify("canary", candidate_root, baseline_root).returncode == 0
+
+    candidate["cameras"][0]["h2d_bytes_max"] = 1  # type: ignore[index]
+    (candidate_root / "raw" / "rung-loopback.json").write_text(json.dumps(candidate))
+    assert _verify("canary", candidate_root, baseline_root).returncode == 1
+    report = json.loads((candidate_root / "canary.json").read_text())
+    assert "camera.loop-00.h2d_bytes_max" in {
+        check["name"] for check in report["reports"][0]["checks"] if not check["passed"]
+    }
 
 
 def test_canary_verifier_rejects_missing_requested_rung(tmp_path: Path) -> None:
@@ -433,7 +891,7 @@ def test_canary_verifier_rejects_missing_requested_rung(tmp_path: Path) -> None:
     # Then: an available zero PASS cannot hide the absent loopback receipt.
     assert result.returncode == 1
     verdict = json.loads((root / "canary.json").read_text())
-    assert verdict["findings"] == ["requested_rung_missing:loopback"]
+    assert "requested_rung_missing:loopback" in verdict["findings"]
 
 
 def test_canary_verifier_rejects_low_per_camera_fps(tmp_path: Path) -> None:

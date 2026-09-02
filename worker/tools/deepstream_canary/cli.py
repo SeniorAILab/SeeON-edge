@@ -173,6 +173,11 @@ def _run(arguments: RunArguments) -> int:
         write_once(evidence_dir / "authorization-refusal.json", canonical_json(refusal))
         print(str(error), file=sys.stderr)
         return 2
+    authorization_digest: str | None = None
+    if artifact is not None:
+        authorization_content = canonical_json(artifact.model_dump(mode="json"))
+        authorization_digest = hashlib.sha256(authorization_content).hexdigest()
+        write_once(evidence_dir / "authorization.json", authorization_content)
     requested_rungs: list[JsonValue] = list(rungs)
     write_once(
         evidence_dir / "run-request.json",
@@ -184,6 +189,9 @@ def _run(arguments: RunArguments) -> int:
                 "worker_image": binding.image,
                 "worker_image_digest": binding.digest,
                 "expected_revision": binding.revision,
+                "appliance_id": arguments.appliance_id,
+                "camera_ids": list(camera_ids),
+                "authorization_sha256": authorization_digest,
             }
         ),
     )
