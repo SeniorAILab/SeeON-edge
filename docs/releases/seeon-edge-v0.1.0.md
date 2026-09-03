@@ -4,6 +4,10 @@ The first tagged release of the edge stack: the FastAPI gateway (`ml-api`) and
 the DeepStream inference worker (`ml-worker`), built from one commit and
 published to GHCR as two digest-pinned images.
 
+## Before you deploy
+
+[Check deployment fit before installing](https://github.com/SeniorAILab/SeeON-edge#deployment-fit).
+
 ## Highlights
 
 **Detection and alerting**

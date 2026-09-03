@@ -122,6 +122,31 @@ pnpm --dir front install --frozen-lockfile
 ML_API_PROXY_TARGET=http://127.0.0.1:8000 pnpm --dir front dev
 ```
 
+## Deployment fit
+
+Check each item before installing an edge release:
+
+- **Verify image access (blocked/unverified):** v0.1.0 uses the two immutable image
+  references below. From a Docker environment with no GHCR login or cached
+  credentials, both pulls must succeed before public image access is considered
+  verified:
+
+  ```bash
+  docker pull ghcr.io/seniorailab/eldercare-fall-ml/ml-api@sha256:3b84a2678050c6ca8a30e5985a6c7b6858103293c1ebb1258ff3334271292dec
+  docker pull ghcr.io/seniorailab/eldercare-fall-ml/ml-worker@sha256:fd1f99b10d90a8fa9bfd8c6ec2b84ba9b86ccd04eee6ad8b7c7a769014f41951
+  ```
+
+- **Selected-profile preflight:** set `ML_WORKER_PROFILE` in
+  `.env.edge.prod`, use the matching Compose overlay, and run
+  `scripts/edge-preflight/check-env.sh .env.edge.prod`.
+- **Clip store:** confirm at least 20 GiB of free capacity before deployment.
+- **Hub:** `API_BACKEND_BASE_URL` must use `https://`.
+- **Credentials:** choose deployment-unique random values for the dashboard
+  bootstrap username/password and `API_EDGE_RELAY_TOKEN`. Do not use sample,
+  default, or shared values.
+- **Sizing:** minimum RAM/VRAM and per-camera scale are **Not yet validated for
+  public guidance**.
+
 ## Edge deployment
 
 Copy `.env.edge.prod.example` to `.env.edge.prod`, then replace the real
