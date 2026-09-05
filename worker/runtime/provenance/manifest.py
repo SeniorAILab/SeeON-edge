@@ -9,6 +9,8 @@ from worker.domains.module_compiler import CompiledDetectionModuleRegistry
 from worker.domains.module_definition import (
     ComponentBinding,
     DetectionModuleDefinition,
+    RuntimeResolvedArtifactDigest,
+    RuntimeResolvedIdentityField,
     SharedComponentIdentity,
 )
 from worker.runtime.profile.boot import BootContext
@@ -151,10 +153,13 @@ def _verified_component_identities(
             raise AppliedRuntimeManifestError(
                 f"unresolved applied identity for component {identity.component_id!r}"
             )
+        # Under the media-plane-owned profiles the temporal policy and the
+        # bed segmenter run on the CPU beside a CUDA media plane by design;
+        # every other component must match the boot device.
         cpu_policy = (
-            boot.profile.name == "nvidia"
+            boot.profile.name in {"nvidia", "flow"}
             and identity.device == "cpu"
-            and identity.runtime == "cpu-policy"
+            and identity.runtime in {"cpu-policy", "onnxruntime-cpu"}
         )
         if identity.device != boot.device and not cpu_policy:
             raise AppliedRuntimeManifestError(
@@ -185,11 +190,17 @@ def _verified_component_identities(
         )
     for component_id, identity in by_id.items():
         binding = bindings[component_id]
-        if binding.artifact_digest != identity.artifact_digest:
+        if (
+            not isinstance(binding.artifact_digest, RuntimeResolvedArtifactDigest)
+            and binding.artifact_digest != identity.artifact_digest
+        ):
             raise AppliedRuntimeManifestError(
                 f"contradictory artifact identity for component {component_id!r}"
             )
-        if binding.preprocessing_identity != identity.preprocessing_identity:
+        if (
+            not isinstance(binding.preprocessing_identity, RuntimeResolvedIdentityField)
+            and binding.preprocessing_identity != identity.preprocessing_identity
+        ):
             raise AppliedRuntimeManifestError(
                 f"contradictory preprocessing identity for component {component_id!r}"
             )

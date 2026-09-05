@@ -273,7 +273,7 @@ class TestCameraResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ok: bool
-    error_class: Literal["timeout", "decode", "auth", "unsupported"] | None = None
+    error_class: Literal["timeout", "decode", "auth", "unsupported", "unavailable"] | None = None
     # worker의 /probe에 닿지 못해 검사 자체를 못 했다는 뜻이다 (True일 때만
     # 응답에 실린다 -- response_model_exclude_none이 없애지 못하는 bool
     # 기본값 노출을 피하려고 Optional로 선언했다). error_class는 이 경우
@@ -360,10 +360,10 @@ def create_topology_floor(
     actor = _authorize(request)
     try:
         _store(request.app).create_floor(
-            edge_ref=payload.edge_ref, name=payload.name, order_index=payload.order_index,
-            after_write=_audit_hook(
-                request, actor, AuditAction.LOCATION_CREATE, payload.edge_ref
-            ),
+            edge_ref=payload.edge_ref,
+            name=payload.name,
+            order_index=payload.order_index,
+            after_write=_audit_hook(request, actor, AuditAction.LOCATION_CREATE, payload.edge_ref),
         )
     except TopologyConflictError as error:
         raise _topology_conflict(error) from error
@@ -380,7 +380,9 @@ def update_topology_floor(
 ) -> dict[str, object]:
     actor = _authorize(request)
     if not _store(request.app).update_floor(
-        edge_ref, name=payload.name, order_index=payload.order_index,
+        edge_ref,
+        name=payload.name,
+        order_index=payload.order_index,
         after_write=_audit_hook(request, actor, AuditAction.LOCATION_UPDATE, edge_ref),
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="floor not found")
@@ -419,9 +421,7 @@ def create_topology_room(
             floor_edge_ref=payload.floor_edge_ref,
             name=payload.name,
             legacy_canonical_space_id=payload.legacy_canonical_space_id,
-            after_write=_audit_hook(
-                request, actor, AuditAction.LOCATION_CREATE, payload.edge_ref
-            ),
+            after_write=_audit_hook(request, actor, AuditAction.LOCATION_CREATE, payload.edge_ref),
         )
     except TopologyConflictError as error:
         raise _topology_conflict(error) from error
@@ -438,7 +438,8 @@ def update_topology_room(
 ) -> dict[str, str]:
     actor = _authorize(request)
     if not _store(request.app).update_room(
-        edge_ref, name=payload.name,
+        edge_ref,
+        name=payload.name,
         after_write=_audit_hook(request, actor, AuditAction.LOCATION_UPDATE, edge_ref),
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="room not found")
@@ -504,9 +505,7 @@ def create_camera(
             never_connected=not probe.ok,
             edge_ref=payload.edge_ref,
             room_edge_ref=payload.room_edge_ref,
-            after_write=_audit_hook(
-                request, actor, AuditAction.CAMERA_CREATE, provisional_id
-            ),
+            after_write=_audit_hook(request, actor, AuditAction.CAMERA_CREATE, provisional_id),
         )
     except DuplicateCameraError as exc:
         raise _duplicate_camera_error(exc) from exc
@@ -548,16 +547,16 @@ def test_camera(
             updates["last_ok_at"] = now
             updates["never_connected"] = False
         event = AuditEvent(
-            occurred_at=audit_now(), actor_id=actor, action=AuditAction.CAMERA_PROBE,
+            occurred_at=audit_now(),
+            actor_id=actor,
+            action=AuditAction.CAMERA_PROBE,
             target_id=camera_id,
             detail=camera_probe_detail(probe.ok, probe.error_class),
         )
         _store(request.app).update(
             camera_id,
             updates,
-            after_write=lambda connection: append_transactional(
-                request, connection, event
-            ),
+            after_write=lambda connection: append_transactional(request, connection, event),
         )
     return _probe_response(probe)
 
@@ -601,7 +600,8 @@ def update_camera(
 
     try:
         updated = _store(request.app).update(
-            camera_id, updates,
+            camera_id,
+            updates,
             after_write=_audit_hook(request, actor, AuditAction.CAMERA_UPDATE, camera_id),
         )
     except DuplicateCameraError as exc:
@@ -1320,7 +1320,10 @@ def _audit_hook(
     request: Request, actor: str, action: AuditAction, target_id: str
 ) -> Callable[[sqlite3.Connection], None]:
     event = AuditEvent(
-        occurred_at=audit_now(), actor_id=actor, action=action, target_id=target_id,
+        occurred_at=audit_now(),
+        actor_id=actor,
+        action=action,
+        target_id=target_id,
         detail=empty_detail(action),
     )
     return lambda connection: append_transactional(request, connection, event)
@@ -1486,6 +1489,8 @@ def _probe_result_from_worker(payload: dict[object, object]) -> ProbeResult:
         error_class = "auth"
     elif raw_error_class == "unsupported":
         error_class = "unsupported"
+    elif raw_error_class == "unavailable":
+        error_class = "unavailable"
     else:
         error_class = None
     width = _optional_positive_int(payload.get("width"))

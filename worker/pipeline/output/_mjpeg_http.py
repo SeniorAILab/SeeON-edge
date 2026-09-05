@@ -7,7 +7,7 @@ from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
-from typing import Final, Protocol, TypeAlias
+from typing import Final, TypeAlias
 from urllib.parse import urlsplit
 
 import cv2
@@ -17,7 +17,7 @@ from contracts.runner import Image
 from shared.detection_policies import parse_effective_policy
 from shared.events.replay_wire import MAX_REPLAY_BODY_BYTES as _REPLAY_BODY_LIMIT
 from shared.events.replay_wire import ReplayWireError, decode_replay_trace
-from worker.domains.fall import FallModelProtocol
+from worker.interfaces.fall_model import FallV2ModelProtocol
 from worker.pipeline.output.live_view import LatestFrame, LatestFrameStore
 from worker.pipeline.output.live_view_api import (
     BED_ZONE_NOT_FOUND_BODY,
@@ -31,8 +31,6 @@ from worker.pipeline.output.live_view_api import (
     ProbeErrorClass,
     ProbeResponse,
     bed_zone_camera_id,
-    clip_deletion_clip_id,
-    clip_deletion_preflight_clip_id,
     normalize_probe_error_class,
     parse_pose_body,
     parse_probe_request,
@@ -67,11 +65,6 @@ MAX_REPLAY_BODY_BYTES: Final = _REPLAY_BODY_LIMIT
 # cached the way it always was pre-gating; this must stay comfortably under
 # a client's read timeout while giving the pump a real chance to publish.
 STREAM_FIRST_FRAME_TIMEOUT_SECONDS: Final = 0.5
-# On-demand bed-zone recognition is a deliberate, infrequent user action (not
-# periodic polling), so it is worth waiting a bit longer than a stream's first
-# frame for a genuinely fresh capture before falling back to whatever is
-# already cached.
-BED_ZONE_FRAME_TIMEOUT_SECONDS: Final = 2.0
 
 
 class BedZoneNotFoundError(RuntimeError):
@@ -84,12 +77,7 @@ class BedZoneNotFoundError(RuntimeError):
 # composition root -- so this output-layer module never imports
 # ``worker.adapters`` directly, mirroring the existing ``MjpegProbe`` seam.
 BedZoneRecognizer = Callable[[Image], BedZoneRecognizeResponse]
-
-
-class ClipDeletionControl(Protocol):
-    def preflight(self, clip_id: str) -> dict[str, object]: ...
-
-    def delete(self, clip_id: str) -> dict[str, object]: ...
+BedZoneSnapshot = Callable[[str], bytes]
 
 
 # Raw probe result as the runtime's probe callable returns it (it may carry
@@ -124,9 +112,8 @@ def build_http_server(
     probe_token: str | None,
     probe: MjpegProbe,
     bed_zone_recognizer: BedZoneRecognizer | None = None,
-    clip_deletion_control: ClipDeletionControl | None = None,
-    replay_fall_model: FallModelProtocol | None = None,
-    bed_zone_frame_timeout_s: float = BED_ZONE_FRAME_TIMEOUT_SECONDS,
+    bed_zone_snapshot: BedZoneSnapshot | None = None,
+    replay_fall_model: FallV2ModelProtocol | None = None,
 ) -> HTTPServer:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 - stdlib hook name
@@ -142,10 +129,6 @@ def build_http_server(
             pose_id = pose_camera_id(path)
             if pose_id is not None:
                 self._handle_get_pose(pose_id)
-                return
-            clip_preflight_id = clip_deletion_preflight_clip_id(path)
-            if clip_preflight_id is not None:
-                self._handle_clip_delete_preflight(clip_preflight_id)
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -225,42 +208,6 @@ def build_http_server(
                 return
             self._write_status_json(HTTPStatus.OK, _replay_run_payload(result, trace.truncation))
 
-        def do_DELETE(self) -> None:  # noqa: N802 - stdlib hook name
-            path = urlsplit(self.path).path
-            clip_id = clip_deletion_clip_id(path)
-            if clip_id is not None:
-                self._handle_clip_delete(clip_id)
-                return
-            self.send_error(HTTPStatus.NOT_FOUND)
-
-        def _handle_clip_delete_preflight(self, clip_id: str) -> None:
-            if not _authorized_probe(self.headers.get(RELAY_TOKEN_HEADER), probe_token):
-                self.send_error(HTTPStatus.FORBIDDEN)
-                return
-            if clip_deletion_control is None:
-                self.send_error(HTTPStatus.SERVICE_UNAVAILABLE)
-                return
-            try:
-                payload = clip_deletion_control.preflight(clip_id)
-            except (OSError, RuntimeError, TypeError, ValueError):
-                self.send_error(HTTPStatus.CONFLICT)
-                return
-            self._write_status_json(HTTPStatus.OK, payload)
-
-        def _handle_clip_delete(self, clip_id: str) -> None:
-            if not _authorized_probe(self.headers.get(RELAY_TOKEN_HEADER), probe_token):
-                self.send_error(HTTPStatus.FORBIDDEN)
-                return
-            if clip_deletion_control is None:
-                self.send_error(HTTPStatus.SERVICE_UNAVAILABLE)
-                return
-            try:
-                payload = clip_deletion_control.delete(clip_id)
-            except (OSError, RuntimeError, TypeError, ValueError):
-                self.send_error(HTTPStatus.CONFLICT)
-                return
-            self._write_status_json(HTTPStatus.ACCEPTED, payload)
-
         def _resolve_frame(self, camera_id: str) -> LatestFrame | None:
             if camera_id == "" or not store.is_known(camera_id):
                 self.send_error(HTTPStatus.NOT_FOUND)
@@ -307,7 +254,12 @@ def build_http_server(
 
                 previous: LatestFrame | None = None
                 last_send_at = 0.0
+                last_refresh_at = time.monotonic()
                 while True:
+                    now = time.monotonic()
+                    if now - last_refresh_at >= POLL_INTERVAL_SECONDS:
+                        store.request_snapshot_refresh(camera_id)
+                        last_refresh_at = now
                     frame = store.wait_for_latest(
                         camera_id,
                         previous=previous,
@@ -315,7 +267,14 @@ def build_http_server(
                     )
                     now = time.monotonic()
                     heartbeat_due = now - last_send_at >= HEARTBEAT_INTERVAL_SECONDS
-                    if frame is None or (frame is previous and not heartbeat_due):
+                    if frame is None:
+                        # A mode change can deliberately invalidate the cached
+                        # frame. Wait against ``None`` next time rather than
+                        # repeatedly satisfying ``current is not previous``
+                        # with the empty slot and spinning.
+                        previous = None
+                        continue
+                    if frame is previous and not heartbeat_due:
                         continue
                     try:
                         self._write_part(frame)
@@ -380,26 +339,18 @@ def build_http_server(
             if camera_id == "" or not store.is_known(camera_id):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            if bed_zone_recognizer is None:
+            if bed_zone_recognizer is None or bed_zone_snapshot is None:
                 self.send_error(HTTPStatus.SERVICE_UNAVAILABLE)
                 return
-            # Force as fresh a capture as the live-view store can provide:
-            # note whatever is already cached, ask for a refresh (viewer
-            # gating -- #48 -- means encoding is otherwise paused with no
-            # stream viewer connected), then wait for a frame that is not the
-            # one we already had. Fall back to the stale cached frame if the
-            # wait times out rather than failing the whole request.
-            previous = store.get_latest(camera_id)
-            store.request_snapshot_refresh(camera_id)
-            frame = store.wait_for_latest(
-                camera_id, previous=previous, timeout=bed_zone_frame_timeout_s
-            )
-            if frame is None:
-                frame = previous
-            if frame is None:
+            try:
+                jpeg = bed_zone_snapshot(camera_id)
+                if not isinstance(jpeg, bytes) or not jpeg:
+                    self.send_error(HTTPStatus.SERVICE_UNAVAILABLE)
+                    return
+                decoded = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+            except (OSError, RuntimeError, TypeError, ValueError, cv2.error):
                 self.send_error(HTTPStatus.SERVICE_UNAVAILABLE)
                 return
-            decoded = cv2.imdecode(np.frombuffer(frame.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
             if not isinstance(decoded, np.ndarray) or decoded.dtype != np.dtype(np.uint8):
                 self.send_error(HTTPStatus.SERVICE_UNAVAILABLE)
                 return
@@ -754,10 +705,9 @@ def _replay_run_payload(run: ReplayRun, truncation: dict[str, object]) -> dict[s
 
 
 __all__ = [
-    "BED_ZONE_FRAME_TIMEOUT_SECONDS",
     "BedZoneNotFoundError",
     "BedZoneRecognizer",
-    "ClipDeletionControl",
+    "BedZoneSnapshot",
     "MjpegProbe",
     "MjpegProbeError",
     "MjpegProbePayload",
