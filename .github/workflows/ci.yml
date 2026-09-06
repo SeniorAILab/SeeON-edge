@@ -126,15 +126,6 @@ jobs:
 
       - run: uv sync --frozen --group lint
 
-      # ~900KB, measured at 1s on a runner. Deliberately not wrapped in
-      # actions/cache: this workflow runs untrusted fork code and the Actions
-      # cache is cross-branch, so caching model weights here is a supply-chain
-      # vector (aa5e2c0) bought for roughly zero seconds.
-      - name: Fetch packaged default LSTM model
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: bash scripts/fetch-models.sh
-
       # The marker filter is unchanged. `integration` is deselected because that
       # is what the marker has always claimed in pyproject.toml; its one test
       # drives a live enrolled ml-api over CLOUD_EDGE_ML_URL and can only fail on

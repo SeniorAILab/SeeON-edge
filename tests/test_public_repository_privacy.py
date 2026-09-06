@@ -878,7 +878,9 @@ _SHARD_DISCOVERY = (
 )
 
 
-# The whole cost centre: pytest was 18m27s of a 19m37s run. fonts-noto-cjk
+# The whole cost centre: pytest was 18m27s of a 19m37s run. Tests use tracked
+# synthetic/contract fixtures rather than fetching a production model bundle.
+# fonts-noto-cjk
 # provisions the same real CJK glyph file the runtime image installs
 # (Dockerfile.edge); it is a plain distro apt package that fetches no other
 # repository, reads no secret, starts no container and re-checks out nothing, so
@@ -902,10 +904,6 @@ _TEST_STEPS = [
         ),
     },
     {"run": "uv sync --frozen --group lint"},
-    {
-        "name": "Fetch packaged default LSTM model",
-        "run": "bash scripts/fetch-models.sh",
-    },
     {
         "name": "Run test shard ${{ matrix.shard }} of 4",
         # The matrix value is passed through `env:` and read back as `$SHARD`.
@@ -1071,7 +1069,7 @@ def test_untrusted_ci_has_no_private_repository_access() -> None:
         # Swapping a locked, audited toolchain for an ad-hoc resolve.
         ("lint", 3, "run", "uvx ruff check ."),
         # Silently widening what the shard actually runs.
-        ("test", 5, "run", "uv run pytest -q tests/"),
+        ("test", 4, "run", "uv run pytest -q tests/"),
         # The gate must not be turned into a no-op.
         ("ci-ok", 0, "run", "true"),
     ],
