@@ -119,11 +119,11 @@ from worker.runtime.profile.registry import (
 from worker.runtime.provenance import (
     AppliedDetectionWindow,
     AppliedRuntimeManifest,
+    RuntimeEnvironmentFacts,
     build_applied_camera_state,
     build_applied_runtime_manifest,
 )
 from worker.runtime.provenance.environment import (
-    RuntimeEnvironmentFacts,
     collect_runtime_environment_facts,
 )
 from worker.runtime.provenance.model_bundle import ModelBundleProof, admit_model_bundle
@@ -1039,18 +1039,25 @@ class WorkerRuntime:
             # export and the TensorRT engine are build products of that
             # artifact, verified separately by the engine identity file at
             # boot), so the runtime manifest names their published lineage.
-            digest = binding.artifact_digest
-            preprocessing = binding.preprocessing_identity
-            if not isinstance(digest, str) or not digest or not preprocessing:
+            artifact_digest = binding.artifact_digest
+            preprocessing_identity = binding.preprocessing_identity
+            if (
+                not isinstance(artifact_digest, str)
+                or not artifact_digest
+                or not isinstance(preprocessing_identity, str)
+                or not preprocessing_identity
+            ):
                 raise RuntimeError(f"flow component {binding.component_id!r} has no identity")
-            components[binding.component_id] = _NativeEngineComponent(digest, preprocessing)
+            components[binding.component_id] = _NativeEngineComponent(
+                artifact_digest, preprocessing_identity
+            )
             identities.append(
                 SharedComponentIdentity(
                     binding.component_id,
-                    digest,
+                    artifact_digest,
                     "deepstream-flow" if binding.component_id == "pose" else "onnxruntime-cpu",
                     boot.device if binding.component_id == "pose" else "cpu",
-                    preprocessing,
+                    preprocessing_identity,
                 )
             )
         graph = SharedComponentGraph(MappingProxyType(components), (), tuple(identities), None)
@@ -1192,6 +1199,7 @@ class WorkerRuntime:
                     profile="flow",
                     task="flow_media_plane",
                     stage="flow_media_plane",
+                    camera_id="worker",
                 ),
             )
 
@@ -1469,7 +1477,7 @@ class WorkerRuntime:
                     # manifest records which decoder actually ran, and under flow
                     # that is the SDK's NVDEC. Reporting "flow" here made every
                     # boot fail the manifest's vocabulary check.
-                    effective_decode_backend=self._boot.runtime_profile.effective_decode_backend,
+                    effective_decode_backend=boot.runtime_profile.effective_decode_backend,
                     ingest_target_fps=self.temporal_profile.target_fps,
                     module_qualified_ids=tuple(
                         definition.qualified_id

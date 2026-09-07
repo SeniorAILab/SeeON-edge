@@ -834,7 +834,7 @@ _SECRETS_STEPS = [
 ]
 
 # Static checks. This job deliberately carries NO apt step and NO model fetch:
-# ruff, import-linter, verify_scope_fidelity.py and `docker compose config` read
+# ruff, mypy, import-linter, verify_scope_fidelity.py and `docker compose config` read
 # the repo tree and nothing else, so the ~28s ffmpeg/fonts install and the model
 # download buy it nothing. Scope fidelity runs a tracked in-repo Python script
 # over this same checkout: it greps for env-provisioned facility identity and
@@ -847,6 +847,14 @@ _LINT_STEPS = [
     _SETUP_UV_STEP,
     {"run": "uv sync --frozen --group lint"},
     {"run": "uv run --group lint ruff check ."},
+    {
+        "run": (
+            "uv run --group lint mypy --follow-imports=silent "
+            "worker/runtime/worker.py "
+            "worker/pipeline/output/evidence/clip_publication.py "
+            "worker/interfaces/thumbnail.py --no-error-summary"
+        )
+    },
     {"run": "uv run --group lint lint-imports"},
     {
         "name": ("Scope fidelity (no env-provisioned identity or camera roster)"),
