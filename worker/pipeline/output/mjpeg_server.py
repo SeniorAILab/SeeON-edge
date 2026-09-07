@@ -11,6 +11,7 @@ from typing import Final
 
 from worker.interfaces.fall_model import FallV2ModelProtocol
 from worker.pipeline.output._mjpeg_http import (
+    DEFAULT_MAX_CONCURRENT_REQUESTS,
     BedZoneNotFoundError,
     BedZoneRecognizer,
     BedZoneSnapshot,
@@ -32,6 +33,11 @@ class MjpegServerConfig:
     host: str = "127.0.0.1"
     port: int = 8090
     probe_token: str | None = None
+    max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS
+
+    def __post_init__(self) -> None:
+        if self.max_concurrent_requests <= 0:
+            raise ValueError("max_concurrent_requests must be positive")
 
 
 class MjpegServer:
@@ -61,6 +67,7 @@ class MjpegServer:
             bed_zone_recognizer=self.bed_zone_recognizer,
             bed_zone_snapshot=self.bed_zone_snapshot,
             replay_fall_model=replay_fall_model,
+            max_concurrent_requests=config.max_concurrent_requests,
         )
         self.port = int(self._server.server_port)
         self._thread: threading.Thread | None = None

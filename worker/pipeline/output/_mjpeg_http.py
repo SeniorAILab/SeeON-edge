@@ -5,10 +5,12 @@ import json
 import logging
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
-from typing import Final, TypeAlias
+from threading import BoundedSemaphore
+from typing import Any, Final, TypeAlias
 from urllib.parse import urlsplit
 
 import cv2
@@ -55,6 +57,7 @@ from worker.types.preview import OverlaySelection
 
 POLL_INTERVAL_SECONDS: Final = 0.05
 HEARTBEAT_INTERVAL_SECONDS: Final = 1.0
+DEFAULT_MAX_CONCURRENT_REQUESTS: Final = 16
 MAX_PROBE_BODY_BYTES: Final = 8192
 MAX_POSE_BODY_BYTES: Final = 256
 MAX_BED_ZONE_BODY_BYTES: Final = 256
@@ -107,6 +110,40 @@ class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        request_handler_class: type[BaseHTTPRequestHandler],
+        *,
+        max_concurrent_requests: int,
+    ) -> None:
+        super().__init__(server_address, request_handler_class)
+        self._request_slots = BoundedSemaphore(max_concurrent_requests)
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if not self._request_slots.acquire(blocking=False):
+            try:
+                with suppress(OSError):
+                    request.sendall(
+                        b"HTTP/1.1 503 Service Unavailable\r\n"
+                        b"Content-Length: 0\r\n"
+                        b"Connection: close\r\n\r\n"
+                    )
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_slots.release()
+
 
 def build_http_server(
     store: LatestFrameStore,
@@ -118,6 +155,7 @@ def build_http_server(
     bed_zone_recognizer: BedZoneRecognizer | None = None,
     bed_zone_snapshot: BedZoneSnapshot | None = None,
     replay_fall_model: FallV2ModelProtocol | None = None,
+    max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS,
 ) -> HTTPServer:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 - stdlib hook name
@@ -501,7 +539,11 @@ def build_http_server(
         def log_message(self, format: str, *args: str) -> None:  # noqa: A002
             del format, args
 
-    return _ThreadingHTTPServer((host, port), Handler)
+    return _ThreadingHTTPServer(
+        (host, port),
+        Handler,
+        max_concurrent_requests=max_concurrent_requests,
+    )
 
 
 def _authorized_probe(supplied: str | None, expected: str | None) -> bool:
