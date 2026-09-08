@@ -936,6 +936,14 @@ _TEST_STEPS = [
 _PRIVATE_BUNDLE_STEPS = [
     _CHECKOUT_STEP,
     _SETUP_UV_STEP,
+    {
+        "name": "Install FFmpeg and packaged CJK overlay font",
+        "run": (
+            "sudo apt-get update && "
+            "sudo apt-get install -y --no-install-recommends "
+            "ffmpeg fonts-noto-cjk"
+        ),
+    },
     {"run": "uv sync --frozen --group lint"},
     {
         "name": "Fetch private fall bundle and public model artifacts",
@@ -944,6 +952,30 @@ _PRIVATE_BUNDLE_STEPS = [
     {
         "name": "Run the full suite with the private fall bundle",
         "run": 'uv run pytest -q -m "not real_stack and not heavy and not integration"',
+    },
+]
+
+_PRIVATE_BUNDLE_PREDICTION_STEPS = [
+    _CHECKOUT_STEP,
+    _SETUP_UV_STEP,
+    {
+        "name": "Install packaged CJK overlay font",
+        "run": (
+            "sudo apt-get update && "
+            "sudo apt-get install -y --no-install-recommends fonts-noto-cjk"
+        ),
+    },
+    {"run": "uv sync --frozen --group lint"},
+    {
+        "name": "Predict private-bundle regressions without private credentials",
+        "run": (
+            "uv run pytest -q "
+            "tests/test_public_repository_privacy.py::"
+            "test_untrusted_ci_has_no_private_repository_access "
+            "tests/test_alert_amplification_diagnostic_cli.py::"
+            "test_semantic_http_reads_complete_compose_service_map "
+            "tests/test_preview_renderer.py"
+        ),
     },
 ]
 
@@ -959,6 +991,8 @@ _CI_OK_STEPS = [
             '  "secrets=${{ needs.secrets.result }}" \\\n'
             '  "lint=${{ needs.lint.result }}" \\\n'
             '  "test=${{ needs.test.result }}" \\\n'
+            '  "test-private-bundle-prediction='
+            '${{ needs.test-private-bundle-prediction.result }}" \\\n'
             '  "test-private-bundle=${{ needs.test-private-bundle.result }}"; do\n'
             '  name="${entry%%=*}"\n'
             '  result="${entry#*=}"\n'
@@ -1009,10 +1043,21 @@ _EXPECTED_JOBS: dict[str, dict[str, object]] = {
         "env": {"HF_TOKEN": "${{ secrets.HF_TOKEN }}"},
         "steps": _PRIVATE_BUNDLE_STEPS,
     },
+    "test-private-bundle-prediction": {
+        "runs-on": "ubuntu-latest",
+        "timeout-minutes": "15",
+        "steps": _PRIVATE_BUNDLE_PREDICTION_STEPS,
+    },
     "ci-ok": {
         "runs-on": "ubuntu-latest",
         "timeout-minutes": "5",
-        "needs": ["secrets", "lint", "test", "test-private-bundle"],
+        "needs": [
+            "secrets",
+            "lint",
+            "test",
+            "test-private-bundle-prediction",
+            "test-private-bundle",
+        ],
         "if": "always()",
         "steps": _CI_OK_STEPS,
     },
