@@ -5,6 +5,7 @@ import {
   normalizeCameraResponse,
   normalizeCameraTestResult,
   normalizeClipsResponse,
+  normalizeClipAnalysisStatus,
   normalizeClipStorageBrowse,
   normalizeClipStorageInfo,
   normalizeConnectionTestResult,
@@ -28,6 +29,7 @@ import type {
   CleanArtifactState,
   Clip,
   ClipArtifacts,
+  ClipAnalysisStatus,
   ClipStorageBrowseResult,
   ClipStorageInfo,
   ConnectionInput,
@@ -61,6 +63,7 @@ export type {
   CameraHeartbeat,
   CameraTestResult,
   Clip,
+  ClipAnalysisStatus,
   ClipStorageBrowseEntry,
   ClipStorageBrowseResult,
   ClipStorageInfo,
@@ -290,7 +293,7 @@ export function bedZoneRecognitionFailureDetail(error: unknown): BedZoneRecognit
  * Returns one-shot YOLO bed candidates from the camera's latest frame without saving them. 422
  * (bed_not_found) and 503 (worker/frame unavailable) are surfaced as thrown HttpErrors.
  */
-export async function recognizeBedZone(cameraId: string, confidence = 0.25): Promise<BedZone> {
+export async function recognizeBedZone(cameraId: string, confidence = 0.15): Promise<BedZone> {
   return normalizeBedZoneRecognitionResponse(
     await requestJson(`/cameras/${encodeURIComponent(cameraId)}/bed-zone/recognize`, {
       method: 'POST',
@@ -390,6 +393,23 @@ function normalizeClipArtifacts(value: unknown): ClipArtifacts {
 
 export async function fetchClipArtifacts(clipId: string, signal?: AbortSignal): Promise<ClipArtifacts> {
   return normalizeClipArtifacts(await requestJson(`/clips/${encodeURIComponent(clipId)}/artifacts`, { signal }));
+}
+
+export async function fetchClipAnalysis(clipId: string, signal?: AbortSignal): Promise<ClipAnalysisStatus> {
+  return normalizeClipAnalysisStatus(await requestJson(`/clips/${encodeURIComponent(clipId)}/analysis`, { signal }));
+}
+
+export async function triggerClipAnalysis(clipId: string, signal?: AbortSignal): Promise<ClipAnalysisStatus> {
+  try {
+    return normalizeClipAnalysisStatus(await requestJson(`/clips/${encodeURIComponent(clipId)}/analysis`, { method: 'POST', signal }));
+  } catch (error) {
+    if (error instanceof HttpError && error.status === 409) return normalizeClipAnalysisStatus(error.body);
+    throw error;
+  }
+}
+
+export async function cancelClipAnalysis(clipId: string, signal?: AbortSignal): Promise<void> {
+  await requestJson(`/clips/${encodeURIComponent(clipId)}/analysis/cancel`, { method: 'POST', signal });
 }
 
 export async function fetchClipStorage(signal?: AbortSignal): Promise<ClipStorageInfo> {

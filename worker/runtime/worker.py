@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
 import time
 import uuid
@@ -32,8 +33,11 @@ from worker.adapters.deepstream.service_maker import DeepStreamFlowStopTimeout
 from worker.adapters.device.cuda.probe import probe_cuda_capability
 from worker.adapters.device.mps.probe import probe_mps_capability
 from worker.adapters.device.nvml.probe import probe_nvml_gpu_status
+from worker.adapters.media.ffmpeg_thumbnail import FfmpegThumbnailGenerator
 from worker.adapters.model import ort_pose_bbox56, warmup_to_ready
+from worker.adapters.model.clip_reanalysis import ClipAnalysisProfile
 from worker.adapters.model.errors import FatalAcceleratorError, ModelLoadError
+from worker.adapters.model.ort_bed_seg import BED_MODEL_CONFIDENCE, BED_ONNX_MODEL_PATH
 from worker.domains import (
     AVAILABLE_OBSERVATION_CHANNELS,
     DETECTION_MODULE_REGISTRY,
@@ -51,6 +55,8 @@ from worker.domains.fall.pose_bbox56 import (
     POSE_BBOX56_CONFIDENCE_GATE,
 )
 from worker.domains.tracker import GreedyIouTracker
+from worker.interfaces.clip_analysis import ClipAnalysisDisabledError
+from worker.interfaces.clip_analysis import ClipAnalysisSupervisor as ClipAnalysisControl
 from worker.interfaces.decision import Decider, TraceSnapshotProvider
 from worker.interfaces.fall_model import FallV2ModelProtocol
 from worker.interfaces.serving import ServingClient
@@ -59,7 +65,7 @@ from worker.pipeline.decision import EventAggregator, IncidentManager
 from worker.pipeline.decision.event_identity import event_identity_path
 from worker.pipeline.output.evidence.clip_config import DEFAULT_CLIP_STORE_DIR
 from worker.pipeline.output.evidence.clip_identity import ClipIdAllocator
-from worker.pipeline.output.evidence.clip_publication import ClipPublisher
+from worker.pipeline.output.evidence.clip_publication import ClipPublisher, ReadyClipPublication
 from worker.pipeline.output.evidence.clip_store_lock import (
     ClipStoreLock,
     ClipStoreLockedError,
@@ -81,6 +87,8 @@ from worker.pipeline.output.preview_renderer import PreviewRenderer
 from worker.pipeline.perception import SceneState
 from worker.pipeline.trace.replay_trace_writer import ReplayTraceWriter
 from worker.runtime import bootstrap
+from worker.runtime.clip_analysis_catchup import start_clip_analysis_catchup
+from worker.runtime.clip_analysis_supervisor import ClipAnalysisSupervisor
 from worker.runtime.config import (
     RELAY_HEARTBEAT_PATH,
     CameraRuntimeConfig,
@@ -152,6 +160,7 @@ HEARTBEAT_TIMEOUT_SEC: Final = 0.5
 # Matches edge/runtime/edge_worker.py's DETECTOR_VERSION -- same domain-detector
 # generation, ported wholesale rather than re-derived per worker/AGENTS.md.
 DETECTOR_VERSION: Final = "worker-domain-detectors-v1"
+CLIP_ANALYSIS_CPU_ENV: Final = "ML_WORKER_CLIP_ANALYSIS_CPU"
 
 
 def _validate_fall_bundle_conformance(
@@ -413,6 +422,45 @@ def _delivery_queue_dir(state_dir: Path) -> Path:
     is no second persisted ledger to diverge from it after a crash.
     """
     return state_dir / "delivery-queue"
+
+
+class ClipAnalysisDisabled:
+    """Fail-closed analysis control seam for deployments without an assigned CPU."""
+
+    def status(self, clip_id: str) -> object:
+        del clip_id
+        raise ClipAnalysisDisabledError("clip_analysis_disabled")
+
+    def trigger(self, *args: object, **kwargs: object) -> bool:
+        del args, kwargs
+        raise ClipAnalysisDisabledError("clip_analysis_disabled")
+
+    def enqueue(self, *args: object, **kwargs: object) -> bool:
+        del args, kwargs
+        return False
+
+    def notify(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+
+    def cancel(self, clip_id: str) -> bool:
+        del clip_id
+        raise ClipAnalysisDisabledError("clip_analysis_disabled")
+
+    def shutdown(self) -> None:
+        return None
+
+
+def _clip_analysis_cpu_index(environ: Mapping[str, str]) -> int | None:
+    raw_value = environ.get(CLIP_ANALYSIS_CPU_ENV)
+    if raw_value is None or raw_value.strip() == "":
+        return None
+    try:
+        cpu_index = int(raw_value)
+    except ValueError as exc:
+        raise RuntimeError(f"{CLIP_ANALYSIS_CPU_ENV} must be an integer") from exc
+    if cpu_index < 0:
+        raise RuntimeError(f"{CLIP_ANALYSIS_CPU_ENV} must be non-negative")
+    return cpu_index
 
 
 def _production_cuda_source() -> CudaProbe:
@@ -700,6 +748,9 @@ class WorkerRuntime:
         self._mjpeg_config = self._resolve_mjpeg_config()
         self._live_frames = LatestFrameStore()
         self._mjpeg_server: MjpegServer | None = None
+        self._clip_analysis_supervisor: ClipAnalysisControl | None = None
+        self._clip_analysis_catchup_thread: threading.Thread | None = None
+        self._clip_analysis_catchup_stop = threading.Event()
         self._flow_media_plane: FlowMediaPlane | None = flow_media_plane
         self._flow_lifecycle_supervisor: FlowLifecycleSupervisor | None = None
         self._native_policy_pumps: tuple[NativePolicyPump, ...] = ()
@@ -822,6 +873,16 @@ class WorkerRuntime:
         if self._mjpeg_server is not None:
             self._mjpeg_server.stop()
             self._mjpeg_server = None
+        if self._clip_analysis_catchup_thread is not None:
+            self._clip_analysis_catchup_stop.set()
+            self._clip_analysis_catchup_thread.join(timeout=5.0)
+            if self._clip_analysis_catchup_thread.is_alive():
+                LOGGER.error("clip analysis catch-up thread did not stop within timeout")
+            else:
+                self._clip_analysis_catchup_thread = None
+        if self._clip_analysis_supervisor is not None:
+            self._clip_analysis_supervisor.shutdown()
+            self._clip_analysis_supervisor = None
         self._context.release_lease()
 
     def _start_live_view_server(self) -> None:
@@ -841,21 +902,48 @@ class WorkerRuntime:
         if not self._mjpeg_config.enabled:
             LOGGER.info("dev_mjpeg disabled; live view server not started")
             return
+        # Analysis lookup spans the stable mount, including historical active
+        # subdirectories. New recordings still use `_resolved_clip_store_dir`.
+        clip_store_dir = self._clip_store_dir
+        cpu_index = _clip_analysis_cpu_index(self._env)
+        supervisor = (
+            ClipAnalysisDisabled()
+            if cpu_index is None
+            else ClipAnalysisSupervisor(
+                python_executable=sys.executable,
+                # The same digest-verified pose ONNX the Flow engine was built from.
+                pose_model_path=Path(self._env["ML_WORKER_FLOW_ONNX_PATH"]),
+                bed_model_path=Path(BED_ONNX_MODEL_PATH),
+                profile=ClipAnalysisProfile(
+                    person_threshold=0.25,
+                    bed_confidence=BED_MODEL_CONFIDENCE,
+                    max_frames=5400,
+                    max_duration_s=180.0,
+                    max_pixels=3840 * 2160,
+                    max_input_bytes=128 * 1024 * 1024,
+                ),
+                cpu_index=cpu_index,
+                deadline_s=600.0,
+            )
+        )
         self._mjpeg_server = start_optional_mjpeg_server(
             self._live_frames,
             self._mjpeg_config,
+            clip_analysis_supervisor=supervisor,
+            clip_store_dir=clip_store_dir,
             bed_zone_recognizer=NvidiaBedZoneRecognizer(
                 self._serving,
                 timeout_s=DEFAULT_BED_ZONE_RECOGNITION_TIMEOUT_S,
             ),
             bed_zone_snapshot=(
-                self._flow_media_plane.clean_snapshot
+                self._flow_media_plane.native_snapshot
                 if self._flow_media_plane is not None
                 else None
             ),
             replay_fall_model=self.fall_model,
         )
         if self._mjpeg_server is None:
+            supervisor.shutdown()
             LOGGER.warning(
                 "live view enabled but its server could not bind: host=%s port=%d",
                 self._mjpeg_config.host,
@@ -866,6 +954,12 @@ class WorkerRuntime:
                 },
             )
         else:
+            self._clip_analysis_supervisor = supervisor
+            if not isinstance(supervisor, ClipAnalysisDisabled):
+                self._clip_analysis_catchup_stop.clear()
+                self._clip_analysis_catchup_thread = start_clip_analysis_catchup(
+                    clip_store_dir, supervisor, self._clip_analysis_catchup_stop
+                )
             LOGGER.info(
                 "live view server bound: host=%s port=%d",
                 self._mjpeg_config.host,
@@ -1329,6 +1423,26 @@ class WorkerRuntime:
                 ", ".join(unproven),
             )
 
+    def _on_clip_ready(self, publication: ReadyClipPublication) -> None:
+        supervisor = self._clip_analysis_supervisor
+        if supervisor is None:
+            return
+        try:
+            supervisor.notify(
+                publication.clip_id,
+                publication.video_path,
+                publication.sha256,
+                size_bytes=publication.size_bytes,
+                duration_ms=publication.duration_ms,
+            )
+        except Exception as exc:  # noqa: BLE001 - publication already succeeded
+            LOGGER.warning(
+                "clip analysis ready hook failed stage=clip_analysis_ready clip_id=%s "
+                "exception_class=%s",
+                publication.clip_id,
+                type(exc).__name__,
+            )
+
     def _build_flow_camera(
         self,
         camera: CameraRuntimeConfig,
@@ -1397,6 +1511,8 @@ class WorkerRuntime:
                 ClipPublisher(
                     self._resolved_clip_store_dir(),
                     delivery_queue_directory=_delivery_queue_dir(self._state_dir),
+                    thumbnail_generator=FfmpegThumbnailGenerator(),
+                    on_ready=self._on_clip_ready,
                 ),
             ),
             sidecars=FlowSealedSidecars(self._state_dir / "flow-sealed"),

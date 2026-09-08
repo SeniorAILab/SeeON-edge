@@ -34,7 +34,6 @@ from backend.app.features.clips.store import (
     LocatedClip,
 )
 from backend.app.features.evidence.receipt_store import (
-    ArtifactReceiptStore,
     ArtifactReceiptVerificationError,
     verify_artifact,
 )
@@ -85,7 +84,7 @@ def list_clips(
             offset=filters.offset,
             total=page.total,
             has_more=page.has_more,
-            next_cursor=getattr(page, "next_cursor", None),
+            next_cursor=page.next_cursor,
         ),
         event_type_counts=dict(page.event_type_counts),
     )
@@ -106,7 +105,7 @@ def get_clip_metadata(
         manifest,
         resolved_video_size(store, located),
         store.thumbnail_available(located),
-    )
+    ).model_copy(update={"playback_codec": store.playback_codec(located)})
     append_governed(
         request, actor_id=actor, action=AuditAction.CLIP_DETAIL, target_id=manifest.clip_id
     )
@@ -156,6 +155,7 @@ def clip_artifacts(
 def clip_video(
     clip_id: str,
     request: Request,
+    media: Annotated[str | None, Query()] = None,
 ) -> Response:
     actor = _authorize(request)
     located = _get_located_clip_or_404(request, clip_id)
@@ -165,21 +165,8 @@ def clip_video(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="clip video not available",
         )
-    try:
-        opened = _clip_store(request).open_located_video(located)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="clip video not found",
-        ) from exc
-    receipt_store = getattr(request.app.state, "artifact_receipt_store", None)
-    receipt = (
-        receipt_store.get(manifest.clip_id)
-        if isinstance(receipt_store, ArtifactReceiptStore)
-        else None
-    )
+    receipt_store = _app_state_value(request, "artifact_receipt_store")
+    receipt = receipt_store.get(manifest.clip_id) if receipt_store is not None else None
     # A receipt is proof the served bytes are the recorded ones, so when one
     # exists it is enforced below without exception. Its ABSENCE is not
     # evidence of tampering: a receipt is only committed after a successful
@@ -190,13 +177,27 @@ def clip_video(
     # answering "영상을 재생하지 못했습니다" forever. Evidence a carer cannot
     # watch is evidence the system did not capture.
     if receipt is not None and not receipt.accepted:
-        opened.handle.close()
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="clip video receipt not accepted",
         )
     try:
-        if receipt is not None:
+        store = _clip_store(request)
+        playback_identity = store.open_located_playback_identity(located)
+        opened = playback_identity.opened
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="clip video not found",
+        ) from exc
+    if media is not None and media != playback_identity.served_media_sha256:
+        opened.handle.close()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="media_mismatch")
+    rendition = "original" if playback_identity.served_kind == "original" else "playback-h264"
+    try:
+        if receipt is not None and rendition == "original":
             verify_artifact(opened.path, receipt)
     except ArtifactReceiptVerificationError as exc:
         opened.handle.close()
@@ -209,6 +210,7 @@ def clip_video(
         request.headers.get("range"),
         media_type(opened.path.name),
     )
+    response.headers["X-Clip-Rendition"] = rendition
     if response.status_code >= status.HTTP_400_BAD_REQUEST:
         return response
     try:
@@ -272,7 +274,7 @@ def _duplicate_clip_http_error(exc: DuplicateClipIdError) -> HTTPException:
 
 
 def _clip_store(request: Request) -> ClipStore:
-    store = getattr(request.app.state, "clip_store", None)
+    store = _app_state_value(request, "clip_store")
     if not isinstance(store, ClipStore):
         store = ClipStore.from_env()
         request.app.state.clip_store = store
@@ -280,11 +282,15 @@ def _clip_store(request: Request) -> ClipStore:
 
 
 def _artifact_query(request: Request) -> CentralClipArtifactQuery:
-    query = getattr(request.app.state, "central_clip_artifact_query", None)
+    query = _app_state_value(request, "central_clip_artifact_query")
     if not isinstance(query, CentralClipArtifactQuery):
         query = CentralClipArtifactQuery()
         request.app.state.central_clip_artifact_query = query
     return query
+
+
+def _app_state_value(request: Request, name: str) -> object | None:
+    return vars(request.app.state).get("_state", {}).get(name)
 
 
 def _authorize(request: Request) -> str:

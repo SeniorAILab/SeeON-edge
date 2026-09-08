@@ -28,6 +28,8 @@ from backend.app.features.cameras.store import ProbeResult
 from backend.app.features.clips import catalog
 from backend.app.features.clips.manifest import read_manifest_file
 from backend.app.features.clips.store import ClipStore
+from tests_support.clip_analysis import no_op_ready_hook
+from tests_support.thumbnail import DeterministicThumbnailGenerator
 from worker.pipeline.output import live_view_api
 from worker.pipeline.output.evidence.clip_identity import ClipReservation
 from worker.pipeline.output.evidence.clip_publication import (
@@ -72,9 +74,13 @@ def _publish_unavailable(root: Path) -> Path:
     reservation = ClipReservation(
         ClipId("clip-a"), "camera-1", root / "clips/.staging/clip-a", root / "clips/clip-a"
     )
-    published = ClipPublisher(root).publish_unavailable(
-        reservation, _metadata(), EvidenceReasonCode.NO_FRAMES
-    )
+    published = ClipPublisher(
+        root,
+        thumbnail_generator=DeterministicThumbnailGenerator(
+            error=AssertionError("publish_unavailable must not generate a thumbnail")
+        ),
+        on_ready=no_op_ready_hook,
+    ).publish_unavailable(reservation, _metadata(), EvidenceReasonCode.NO_FRAMES)
     return published.manifest_path
 
 

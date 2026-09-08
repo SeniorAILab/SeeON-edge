@@ -10,7 +10,7 @@ import numpy as np
 
 from contracts.artifacts import bed_seg_weight_path
 from contracts.runner import BedRunnerResult, Image, bed_result
-from worker.adapters.model.artifact import verify_artifact_digest
+from worker.adapters.model.artifact import read_artifact_digest_sidecar, verify_artifact_digest
 from worker.adapters.model.errors import ModelLoadError
 from worker.adapters.model.seg_postprocess import (
     BedInstance,
@@ -31,9 +31,15 @@ BED_PREPROCESSING_IDENTITY: Final = "rgb24-to-bed-regions.v1"
 
 
 class _OrtSession(Protocol):
+    def get_inputs(self) -> Sequence[_OrtInput]: ...
+
     def run(
         self, output_names: Sequence[str] | None, input_feed: dict[str, np.ndarray]
     ) -> Sequence[object]: ...
+
+
+class _OrtInput(Protocol):
+    shape: Sequence[object]
 
 
 SessionFactory = Callable[[str, list[str]], _OrtSession]
@@ -69,7 +75,7 @@ class OrtBedSegRunner:
         if not self._model_path.is_file():
             raise ModelLoadError(f"bed segmentation ONNX model does not exist: {self._model_path}")
         self.artifact_digest = verify_artifact_digest(
-            self._model_path, _read_digest_sidecar(self._model_path)
+            self._model_path, read_artifact_digest_sidecar(self._model_path)
         )
         self._confidence = confidence
         self._max_points = max_points
@@ -80,9 +86,10 @@ class OrtBedSegRunner:
             self._session = session_factory(str(self._model_path), list(_CPU_PROVIDER))
         except Exception as exc:
             raise ModelLoadError(f"cannot load bed segmentation ONNX model: {exc}") from exc
+        self._model_size = _model_size(self._session)
 
     def detect_beds(self, frame: Image) -> BedRunnerResult:
-        tensor, letterbox = letterbox_rgb(frame)
+        tensor, letterbox = letterbox_rgb(frame, self._model_size)
         try:
             outputs = self._session.run(None, {"images": tensor})
         except Exception as exc:
@@ -94,6 +101,7 @@ class OrtBedSegRunner:
                 outputs[0],
                 outputs[1],
                 letterbox,
+                model_size=self._model_size,
                 confidence=self._confidence,
                 max_points=self._max_points,
             )
@@ -108,23 +116,28 @@ class OrtBedSegRunner:
         self.run(synthetic_rgb_frame(self._warmup_frame))
 
 
-def _read_digest_sidecar(model_path: Path) -> str:
-    sidecar = model_path.with_suffix(model_path.suffix + ".sha256")
-    try:
-        digest = sidecar.read_text(encoding="ascii")
-    except OSError as exc:
-        raise ModelLoadError(f"cannot read bed segmentation digest sidecar: {sidecar}") from exc
-    if not digest.endswith("\n") or digest.count("\n") != 1:
-        raise ModelLoadError("bed segmentation digest sidecar must contain one SHA-256 digest")
-    return digest[:-1]
-
-
 def _onnxruntime_session_factory(model_path: str, providers: list[str]) -> _OrtSession:
     try:
         import onnxruntime
     except ImportError as exc:
         raise ModelLoadError("onnxruntime is required for bed segmentation ONNX model") from exc
-    return onnxruntime.InferenceSession(model_path, providers=providers)
+    options = onnxruntime.SessionOptions()
+    options.intra_op_num_threads = 1
+    options.inter_op_num_threads = 1
+    return onnxruntime.InferenceSession(model_path, sess_options=options, providers=providers)
+
+
+def _model_size(session: _OrtSession) -> int:
+    try:
+        shape = session.get_inputs()[0].shape
+        height, width = shape[2], shape[3]
+    except (AttributeError, IndexError, TypeError) as exc:
+        raise ModelLoadError("bed segmentation ONNX input must have a fixed NCHW shape") from exc
+    if not isinstance(height, int) or not isinstance(width, int):
+        raise ModelLoadError("bed segmentation ONNX input size must be fixed, not symbolic")
+    if height <= 0 or width <= 0 or height != width:
+        raise ModelLoadError("bed segmentation ONNX input size must be positive and square")
+    return height
 
 
 __all__ = ["BED_ONNX_MODEL_PATH", "OrtBedSegRunner", "SessionFactory"]

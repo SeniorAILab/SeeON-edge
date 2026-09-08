@@ -23,7 +23,6 @@ from backend.app.features.cameras.bed_zone_store import (
     BedZoneStore,
     validate_bed_zone,
 )
-from backend.app.features.cameras.camera_repository import record_registry_mutation
 from backend.app.features.cameras.store import utc_now_iso
 from backend.app.shared.dashboard_auth import authorize_dashboard
 
@@ -71,7 +70,7 @@ class BedZoneSaveRequest(BaseModel):
 class BedZoneRecognizeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    confidence: float = Field(default=0.25, ge=0.05, le=0.95, allow_inf_nan=False)
+    confidence: float = Field(default=0.15, ge=0.05, le=0.95, allow_inf_nan=False)
 
 
 class BedZoneResponse(BaseModel):
@@ -93,7 +92,7 @@ def recognize_bed_zone(
     upstream_request = urllib.request.Request(
         _bed_zone_url(settings.worker_stream_origin, camera_id),
         data=json.dumps(
-            {"confidence": 0.25 if payload is None else payload.confidence},
+            {"confidence": 0.15 if payload is None else payload.confidence},
             separators=(",", ":"),
         ).encode("utf-8"),
         method="POST",
@@ -211,7 +210,6 @@ def _save_hook(
     request: Request, actor: str, camera_id: str
 ) -> Callable[[sqlite3.Connection], None]:
     def after_write(connection: sqlite3.Connection) -> None:
-        record_registry_mutation(connection)
         append_transactional(
             request,
             connection,

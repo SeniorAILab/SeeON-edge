@@ -60,7 +60,8 @@ Neither image carries model weights. Models are a pinned external artifact:
 `worker/tools/fetch_models/manifest.json` names every file, its upstream
 (Hugging Face `Berom0227/seeon-model-v0.1.0-pose-bbox56-proxy-research` at a
 40-hex revision for the pose+bbox56 fall bundle; `ultralytics/assets` release
-`v8.4.0` for the YOLO pose, person, and bed weights), its size, and its SHA-256. The one-shot
+`v8.4.0` for the YOLO checkpoints; and `SeniorAILab/SeeON-edge` release
+`models-onnx-2026-09-07` for the pose and bed ONNX files), its size, and its SHA-256. The one-shot
 `edge-model-fetch` compose service runs `python -m worker.tools.fetch_models`
 from the sealed worker image into the `worker-models` named volume on every
 `up`; `ml-worker` starts only after it exits 0, so a hash mismatch or a broken
@@ -70,13 +71,44 @@ by hand. The optional `HF_TOKEN` in `.env.edge.prod` reaches this service
 only; leave it empty for the public pins. There is no host `./models` bind
 mount any more.
 
+Pull-request CI provisions only public model artifacts with
+`python -m worker.tools.fetch_models --public-only`; it deliberately treats all
+Hugging Face sources as private and reports each skipped path. The full fall
+bundle fetch runs only in the non-pull-request `test-private-bundle` job, where
+`HF_TOKEN` is scoped to that job and is never available to fork-authored code.
+
+## Pose ONNX export and engine rebuild
+
+On a Torch host, export the pose ONNX with:
+
+```sh
+uv run python -m worker.tools.export_pose_onnx
+```
+
+Export the bed segmentation ONNX at its native-recognition input size:
+
+```sh
+uv run python -m worker.tools.export_bed_seg_onnx --imgsz 1280
+```
+
+Record the ONNX SHA-256 and its `.onnx.sha256` sidecar. Stage the artifact
+beside, never over, the previous ONNX. Build its engine into a **new** engine
+cache directory. Before deployment, run `docker inspect` on the current
+container and record its invocation, mounts, and image digest. Recreate the
+container rather than restarting it, with the explicit tuple: image digest,
+worker tree revision, models directory, and new engine directory. Roll back by
+recreating the container with the previous tuple. A boot refusal means
+re-export and rebuild, never delete the identity.
+
 ## Deploying an admitted model selection
 
 `/app/model-selection.json` is a deployment-owned, read-only file; it is never
 copied into `Dockerfile.edge`. To switch the running fall model, publish the
-bundle into `worker-models`, place the matching selection document on the
-deployment host, and enable the read-only selection mount in
-`compose.edge.yaml`. Restart `ml-worker` only after `edge-model-fetch` has
+bundle into `worker-models`, place the matching selection document at
+`/deployment/model-selection.json` on the host, and add the opt-in overlay
+`compose.edge.model-selection.yaml` with a second `-f`. Never bind the file
+unconditionally: on a host without it Docker creates a directory of that name
+and the worker refuses to boot (`IsADirectoryError`, #498). Restart `ml-worker` only after `edge-model-fetch` has
 verified the bundle. Removing that mount is the only normal path back to the
 packaged fallback. Replacing a model requires only the bundle and selection
 file, not an image rebuild.
@@ -346,12 +378,13 @@ Record the deployed tuple as one atomic receipt:
 ```
 (ml-worker image digest,
  fall/pose-bbox56-gru/arch.json sha256=ba6b7b3e83514aa9b6cea15012bb1fa96b66ef668a2ddb447635af5f97602726,
- fall/pose-bbox56-gru/bundle-manifest.json sha256=55108ac7e1bb427d0387c29b55caa5e2019e7616e4bcd05c615c4805e85f91d6,
+ fall/pose-bbox56-gru/bundle-manifest.json sha256=a60ede83da712d9488c81222c5dbbd77174e7136813b86052ed1eeb2fd1913bc,
  fall/pose-bbox56-gru/calibration.json sha256=0653c44577390488a84ff20388907e34a2c7a6cfe91c4c6f80b6da2ac3de1510,
  fall/pose-bbox56-gru/conformance/pose-bbox56-v1.json sha256=72d7e911acf39c7183bcdf10fad3c066dd93b7a45b7d28bef1950e1bf85b3a9c,
  fall/pose-bbox56-gru/evaluation-receipt.json sha256=3880181783b97708903c8c440d852cae32cc44d619128eabbf4972f255317fce,
  fall/pose-bbox56-gru/metadata.yaml sha256=f309ca0b08bc58a790519e3df5cda0a072cd6419558e28c09c3a7c5906a5e69e,
  fall/pose-bbox56-gru/model-card.md sha256=77c09bc3eacba53cadcaef1b8e91b5085efee38a04847908d436e431738166bd,
+ fall/pose-bbox56-gru/model.onnx sha256=258ae9d9460534e659bf97af4bc55a083c830fa190ff6c8ed347db6bdbf32163,
  fall/pose-bbox56-gru/model.pt sha256=7bb75a2932e1a1250dc900013b2c80b220de5e23f3ea568e05f1db21d0a757e3,
  fall.v2, fall.policy.v2, [30,56])
 ```
@@ -359,9 +392,9 @@ Record the deployed tuple as one atomic receipt:
 This is the packaged pose+bbox56 bundle, pinned member by member -- not a
 synthetic "bundle SHA-256". Its own `bundle-manifest.json` is re-verified at
 load time, so a tampered member is refused before any weights are read.
-`model.pt` and `metadata.upstream.json` are the pinned artifacts in
-`worker/tools/fetch_models/manifest.json`; `metadata.yaml` and `arch.json` are
-the byte-identified sidecars that the fetcher installs alongside them. Read
+`model.pt`, `model.onnx`, and `bundle-manifest.json` are pinned artifacts in
+`worker/tools/fetch_models/manifest.json`; the other listed bundle members are
+installed alongside them. Read
 the configured worker reference separately from the container's immutable image
 ID, then attest that ID's repository digest and source revision. Compare all of
 them to the sealed receipt before declaring the deployment healthy:
@@ -385,6 +418,7 @@ from pathlib import Path
 for path in (
     Path("/app/models/fall/pose-bbox56-gru/bundle-manifest.json"),
     Path("/app/models/fall/pose-bbox56-gru/model.pt"),
+    Path("/app/models/fall/pose-bbox56-gru/model.onnx"),
     Path("/app/models/fall/pose-bbox56-gru/arch.json"),
     Path("/app/models/fall/pose-bbox56-gru/calibration.json"),
     Path("/app/models/fall/pose-bbox56-gru/evaluation-receipt.json"),

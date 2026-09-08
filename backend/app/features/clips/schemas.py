@@ -35,6 +35,7 @@ class ClipManifestResponse(BaseModel):
     started_at: str = Field(min_length=1)
     duration_s: float = Field(ge=0)
     codec: str = Field(default="")
+    playback_codec: str = Field(default="")
     path: str | None = Field(default=None)
     video_available: bool
     video_error: str | None = Field(default=None)
@@ -104,3 +105,23 @@ class AuditResponse(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
 
     entries: list[dict[str, object]]
+
+
+ClipAnalysisState: TypeAlias = Literal[
+    "idle",
+    "queued",
+    "running",
+    "available",
+    "failed",
+    "unavailable",
+]
+
+
+class ClipAnalysisResponse(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
+
+    state: ClipAnalysisState = Field(...)
+    served_media_sha256: str | None = Field(...)
+    reason: str | None = Field(default=None, min_length=1)
+    served_timing_identical: bool | None = Field(default=None)
+    result: dict[str, object] | None = Field(default=None)
