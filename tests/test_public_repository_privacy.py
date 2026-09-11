@@ -1733,7 +1733,10 @@ def test_edge_image_boot_smoke_shapes_are_exact_complements() -> None:
     assert "docker run --rm --network none" in str(stage[0]["run"])
     assert "python -m worker --check-config" in str(pull[0]["run"])
     worker = next(s for s in steps if s.get("name") == "Build and push ml-worker image")
-    assert worker["with"]["outputs"] == "type=docker,dest=/tmp/ml-worker-runtime.tar"
+    assert worker["with"]["outputs"] == (
+        "${{ env.RELEASE_BUILD != 'true' "
+        "&& 'type=docker,dest=/tmp/ml-worker-runtime.tar' || '' }}"
+    )
 
 
 def test_edge_image_policy_rejects_a_push_images_flag_that_is_true_on_a_pr() -> None:
