@@ -14,7 +14,12 @@ from worker.adapters.deepstream.service_maker import (
     DeepStreamMediaPlaneConfig,
     FlowFactory,
 )
-from worker.interfaces.media_plane import MediaPlane, RecordingInfo, SnapshotUnavailable
+from worker.interfaces.media_plane import (
+    MediaPlane,
+    MediaPlaneStatus,
+    RecordingInfo,
+    SnapshotUnavailable,
+)
 from worker.pipeline.output.evidence.smart_record_actor import ClipSealed, SmartRecordActor
 from worker.pipeline.output.live_view import LatestFrameStore
 from worker.pipeline.output.preview_renderer import (
@@ -178,7 +183,7 @@ class FlowMediaPlane:
     def source_failure(self, camera_id: str, category: str) -> SourceBinding:
         return self.plane.source_failure(camera_id, category)
 
-    def status(self):
+    def status(self) -> MediaPlaneStatus:
         return self.plane.status()
 
     def clear_preview(self, camera_id: str) -> None:

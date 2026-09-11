@@ -43,7 +43,7 @@ jobs:
           detect --source=/repo --no-git --redact --exit-code=1
 
   # Static checks only. Deliberately carries no ffmpeg/fonts-noto-cjk apt step
-  # and no model fetch: ruff, import-linter, verify_scope_fidelity.py and
+  # and no model fetch: ruff, mypy, import-linter, verify_scope_fidelity.py and
   # `docker compose config` read the repo tree and nothing else, so the ~28s apt
   # install and the model download buy this job nothing.
   lint:
@@ -68,6 +68,12 @@ jobs:
       - run: uv sync --frozen --group lint
 
       - run: uv run --group lint ruff check .
+
+      - run: >-
+          uv run --group lint mypy --follow-imports=silent
+          worker/runtime/worker.py
+          worker/pipeline/output/evidence/clip_publication.py
+          worker/interfaces/thumbnail.py --no-error-summary
 
       # Stage 0 guardrail: declarative architecture contracts (import-linter).
       # Tightened per strangler stage; replaces test_import_dependency_ladder.py at Stage 5.
