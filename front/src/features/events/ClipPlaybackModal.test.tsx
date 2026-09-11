@@ -165,6 +165,58 @@ describe('ClipPlaybackModal', () => {
     delete (HTMLVideoElement.prototype as Partial<HTMLVideoElement>).cancelVideoFrameCallback;
   });
 
+  it('keeps overlay controls usable when saving the preference is denied', async () => {
+    vi.stubGlobal('ResizeObserver', class {
+      observe(): void {}
+      disconnect(): void {}
+    });
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(() => null);
+    Object.defineProperty(HTMLVideoElement.prototype, 'requestVideoFrameCallback', {
+      configurable: true,
+      value: vi.fn(() => 1),
+    });
+    Object.defineProperty(HTMLVideoElement.prototype, 'cancelVideoFrameCallback', {
+      configurable: true,
+      value: vi.fn(),
+    });
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/artifacts')) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ clip_id: 'clip-1', clean: 'AVAILABLE', snapshot: null }) });
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          state: 'available',
+          served_media_sha256: 'a'.repeat(64),
+          served_timing_identical: true,
+          result: analysisResult,
+        }),
+      });
+    }));
+    vi.stubGlobal('localStorage', {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(() => {
+        throw new DOMException('storage denied', 'SecurityError');
+      }),
+    });
+
+    const { root } = render(baseClip);
+    await act(async () => Promise.resolve());
+    await act(async () => Promise.resolve());
+
+    const personButton = dialog().querySelector('[aria-label="사람 오버레이"]') as HTMLButtonElement;
+    expect(personButton.getAttribute('aria-pressed')).toBe('true');
+    act(() => personButton.click());
+    expect(dialog().querySelector('[aria-label="사람 오버레이"]')?.getAttribute('aria-pressed')).toBe('false');
+    act(() => root.unmount());
+    activeRoots.delete(root);
+    vi.unstubAllGlobals();
+    delete (HTMLVideoElement.prototype as Partial<HTMLVideoElement>).requestVideoFrameCallback;
+    delete (HTMLVideoElement.prototype as Partial<HTMLVideoElement>).cancelVideoFrameCallback;
+  });
+
   it('shows the disabled analysis icon without an analysis trigger', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);

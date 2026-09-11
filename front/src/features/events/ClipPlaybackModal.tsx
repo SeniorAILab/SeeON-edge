@@ -34,6 +34,12 @@ function loadOverlayTargets(): { person: boolean; bed: boolean } {
   return { person: true, bed: true };
 }
 
+function saveOverlayTargets(targets: { person: boolean; bed: boolean }): void {
+  try {
+    localStorage.setItem(overlayStorageKey, JSON.stringify(targets));
+  } catch { /* unavailable storage only disables persistence, never the controls */ }
+}
+
 function StatusIcon({ label }: { label: string }): JSX.Element {
   return <span aria-label={label} title={label} role="img" className="inline-flex h-8 w-8 items-center justify-center">ⓘ</span>;
 }
@@ -58,7 +64,7 @@ export function ClipPlaybackModal({
   const toggleTarget = (target: keyof typeof targets): void => {
     setTargets((previous) => {
       const next = { ...previous, [target]: !previous[target] };
-      localStorage.setItem(overlayStorageKey, JSON.stringify(next));
+      saveOverlayTargets(next);
       return next;
     });
   };
