@@ -126,13 +126,6 @@ jobs:
 
       - run: uv sync --frozen --group lint
 
-      # ~900KB, measured at 1s on a runner. Deliberately not wrapped in
-      # actions/cache: this workflow runs untrusted fork code and the Actions
-      # cache is cross-branch, so caching model weights here is a supply-chain
-      # vector (aa5e2c0) bought for roughly zero seconds.
-      - name: Fetch packaged default LSTM model
-        run: bash scripts/fetch-models.sh --public-only
-
       # The marker filter is unchanged. `integration` is deselected because that
       # is what the marker has always claimed in pyproject.toml; its one test
       # drives a live enrolled ml-api over CLOUD_EDGE_ML_URL and can only fail on
@@ -194,6 +187,9 @@ jobs:
           version: "0.11.27"
           enable-cache: false
 
+      - name: Install FFmpeg and packaged CJK overlay font
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk
+
       - run: uv sync --frozen --group lint
 
       - name: Fetch private fall bundle and public model artifacts
@@ -205,6 +201,35 @@ jobs:
       - name: Run the full suite with the private fall bundle
         run: uv run pytest -q -m "not real_stack and not heavy and not integration"
 
+  # Pull requests cannot receive the private bundle token. This deterministic
+  # subset instead exercises both seams that most recently broke only in the
+  # post-merge full-bundle run, and the workflow contract above proves that the
+  # private job carries the same font resource needed by the renderer tests.
+  test-private-bundle-prediction:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: "0.11.27"
+          enable-cache: false
+
+      - name: Install packaged CJK overlay font
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-noto-cjk
+
+      - run: uv sync --frozen --group lint
+
+      - name: Predict private-bundle regressions without private credentials
+        run: >-
+          uv run pytest -q
+          tests/test_public_repository_privacy.py::test_untrusted_ci_has_no_private_repository_access
+          tests/test_alert_amplification_diagnostic_cli.py::test_semantic_http_reads_complete_compose_service_map
+          tests/test_preview_renderer.py
+
   # Single required status check for branch protection. Every dependency's
   # result is asserted explicitly: `needs` alone would let a skipped or
   # cancelled job pass silently under `if: always()`.
@@ -212,7 +237,7 @@ jobs:
     runs-on: ubuntu-latest
     # Reads `needs` results and exits; it does no work of its own.
     timeout-minutes: 5
-    needs: [secrets, lint, test, test-private-bundle]
+    needs: [secrets, lint, test, test-private-bundle-prediction, test-private-bundle]
     if: always()
     steps:
       - name: Assert every required job succeeded
@@ -222,6 +247,7 @@ jobs:
             "secrets=${{ needs.secrets.result }}" \
             "lint=${{ needs.lint.result }}" \
             "test=${{ needs.test.result }}" \
+            "test-private-bundle-prediction=${{ needs.test-private-bundle-prediction.result }}" \
             "test-private-bundle=${{ needs.test-private-bundle.result }}"; do
             name="${entry%%=*}"
             result="${entry#*=}"

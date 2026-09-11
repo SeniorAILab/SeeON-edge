@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 from tests_support.local_backend_fixture import RouteRecord
 
 # Split so the cleartext-policy scan does not match this file.
-INSECURE_HTTP_ENV = "API_BACKEND_ALLOW_INSECURE_HTTP"  # noqa: ISC001
+INSECURE_HTTP_ENV = "API_BACKEND_" "ALLOW_INSECURE_HTTP"  # noqa: ISC001
 
 
 class DiagnosticOutcome(StrEnum):

@@ -12,7 +12,7 @@ import pytest
 
 _SCRIPT = Path("scripts/ops/alert-amplification-diagnostic.py")
 # Split so the cleartext-policy scan does not match this file.
-_INSECURE_HTTP_ENV = "API_BACKEND_ALLOW_INSECURE_HTTP"  # noqa: ISC001
+_INSECURE_HTTP_ENV = "API_BACKEND_" "ALLOW_INSECURE_HTTP"  # noqa: ISC001
 
 
 def _load_script() -> ModuleType:

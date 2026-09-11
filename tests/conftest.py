@@ -225,12 +225,12 @@ def _deterministic_file_modes() -> Iterator[None]:
 # Hugging Face repository. A pull_request run of CI fetches with
 # `fetch_models --public-only` and therefore has no bundle on disk; the test
 # modules below read the real bundle and are skipped there with an explicit
-# reason. The `test-private-bundle` job (never on pull_request) provisions the
-# bundle and runs the full suite, so nothing is silently untested on main.
+# reason. Secret-free diagnostic tests are intentionally not in this list: the
+# prediction job must execute them on pull requests. The `test-private-bundle`
+# job provisions the real bundle and runs the full suite on main.
 _PRIVATE_BUNDLE_SENTINEL = Path("models/fall/pose-bbox56-gru/model.onnx")
 _PRIVATE_BUNDLE_MODULES = frozenset(
     {
-        "test_alert_amplification_diagnostic_cli.py",
         "test_episode_metric.py",
         "test_fall_model_family_registry.py",
         "test_fall_v2_contract_fixtures.py",
