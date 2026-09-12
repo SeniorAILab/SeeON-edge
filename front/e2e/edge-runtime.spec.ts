@@ -138,6 +138,44 @@ const policy = {
   values: { threshold: 0.75 }, effective_policy_id: 'fall.v1:camera-override:8',
 };
 
+type EventsFilterRequest = { cameraId: string | null; eventType: string | null };
+
+async function installFilteredEventsBackend(page: Page): Promise<EventsFilterRequest[]> {
+  const requests: EventsFilterRequest[] = [];
+  await page.route('**/api/v1/**', async (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    const json = (body: unknown) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(body),
+    });
+
+    if (path.endsWith('/auth/session')) return json({});
+    if (path.endsWith('/cameras')) return json({
+      registry_version: 7,
+      cameras: [
+        cameras.cameras[0],
+        { ...cameras.cameras[0], id: 'cam-2', backend_camera_id: 'cam-2', label: '서울 302호' },
+      ],
+    });
+    if (path.endsWith('/clips')) {
+      requests.push({
+        cameraId: url.searchParams.get('camera_id'),
+        eventType: url.searchParams.get('event_type'),
+      });
+      const hasActiveFilter = url.searchParams.has('camera_id') || url.searchParams.has('event_type');
+      return json({
+        clips: hasActiveFilter ? [] : [clip],
+        pagination: { limit: 48, offset: 0, total: hasActiveFilter ? 0 : 1, has_more: false, next_cursor: null },
+        event_type_counts: { fall: 1, 'bed-exit': 0 },
+      });
+    }
+    return json({});
+  });
+  return requests;
+}
+
 async function installOperatorBackend(page: Page): Promise<{ requests: Array<{ path: string; method: string; body: unknown; cursor: string | null }> }> {
   const requests: Array<{ path: string; method: string; body: unknown; cursor: string | null }> = [];
   let policyApplyAttempts = 0;
@@ -254,6 +292,55 @@ async function installSetupBackend(page: Page): Promise<SetupBackend> {
   });
   return { requests };
 }
+
+test('filtered empty events recover by keyboard on mobile and clear camera plus URL state', async ({ page }) => {
+  const consoleErrors = captureUnexpectedConsoleErrors(page);
+  const pageErrors = capturePageErrors(page);
+  const clipRequests = await installFilteredEventsBackend(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  await page.goto('/?page=events');
+  const cameraFilter = page.getByLabel('카메라');
+  const bedExitFilter = page.getByRole('button', { name: /침대 이탈/ });
+  const resetFilters = page.getByRole('button', { name: '필터 초기화' });
+  const clipCard = page.getByRole('button', { name: /서울 301호.*낙상/ });
+
+  await expect(clipCard).toBeVisible();
+
+  await cameraFilter.selectOption('cam-2');
+  await expect(resetFilters).toBeVisible();
+  await expect.poll(() => clipRequests.at(-1)).toEqual({ cameraId: 'cam-2', eventType: null });
+  await cameraFilter.focus();
+  await page.keyboard.press('Tab');
+  await expect(resetFilters).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(cameraFilter).toHaveValue('');
+  await expect(clipCard).toBeVisible();
+  await expect.poll(() => clipRequests.at(-1)).toEqual({ cameraId: null, eventType: null });
+
+  await bedExitFilter.click();
+  await expect(page).toHaveURL(/event=bed-exit/);
+  await expect(resetFilters).toBeVisible();
+  await expect.poll(() => clipRequests.at(-1)).toEqual({ cameraId: null, eventType: 'bed-exit' });
+  await resetFilters.click();
+  await expect(page).not.toHaveURL(/event=/);
+  await expect(clipCard).toBeVisible();
+
+  await bedExitFilter.click();
+  await cameraFilter.selectOption('cam-2');
+  await expect(resetFilters).toBeVisible();
+  await expect(bedExitFilter).toHaveAttribute('aria-pressed', 'true');
+  await expect(cameraFilter).toHaveValue('cam-2');
+  await expect.poll(() => clipRequests.at(-1)).toEqual({ cameraId: 'cam-2', eventType: 'bed-exit' });
+  await resetFilters.click();
+  await expect(cameraFilter).toHaveValue('');
+  await expect(page).not.toHaveURL(/event=/);
+  await expect(clipCard).toBeVisible();
+  await expect.poll(() => clipRequests.at(-1)).toEqual({ cameraId: null, eventType: null });
+  await expect(page.locator('html')).toHaveJSProperty('scrollWidth', 390);
+  expect(consoleErrors).toEqual([]);
+  expect(pageErrors).toEqual([]);
+});
 
 test('three-step field setup keeps inputs local, exposes conflicts, and confirms the exact server snapshot', async ({ page }) => {
   const consoleErrors = captureUnexpectedConsoleErrors(page);
