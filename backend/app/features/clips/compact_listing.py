@@ -49,6 +49,7 @@ class CompactClipQuery:
 class CompactClipPage:
     clips: tuple[LocatedClip, ...]
     total: int
+    reconciled: bool
     has_more: bool
     next_cursor: str | None
     event_type_counts: dict[str, int]
@@ -79,6 +80,7 @@ class _CataloguedClip:
 class _Reconciliation:
     prepared: tuple[_PreparedClip, ...]
     removed_ids: frozenset[str]
+    complete: bool
 
 
 class CompactClipListing:
@@ -124,6 +126,9 @@ class CompactClipListing:
         return CompactClipPage(
             clips=tuple(visible),
             total=total,
+            # Cursor pages intentionally skip the store walk. False is conservative: callers may
+            # retain a prior cursor-less True, but this response cannot independently claim it.
+            reconciled=reconciliation is not None and reconciliation.complete,
             has_more=len(page_rows) > query.limit,
             next_cursor=next_cursor,
             event_type_counts=facets,
@@ -184,7 +189,11 @@ def _reconcile_incrementally(
                 removed.add(item.clip_id)
             continue
         prepared.append(_prepare_clip(store, located, catalogued.get(item.clip_id)))
-    return _Reconciliation(tuple(prepared), frozenset(removed))
+    return _Reconciliation(
+        tuple(prepared),
+        frozenset(removed),
+        complete=len(candidates) <= EXAMINE_BUDGET,
+    )
 
 
 def _unchanged(root: Path, item: ScannedManifest, row: _CataloguedClip | None) -> bool:

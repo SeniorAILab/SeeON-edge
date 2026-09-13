@@ -97,6 +97,7 @@ def test_first_page_returns_compact_cursor(
         "limit": 48,
         "offset": 0,
         "total": 60,
+        "reconciled": True,
         "has_more": True,
         "next_cursor": body["pagination"]["next_cursor"],
     }
@@ -173,6 +174,7 @@ def test_paged_list_rebuilds_without_a_listing_generation() -> None:
         "limit": 48,
         "offset": 0,
         "total": 0,
+        "reconciled": True,
         "has_more": False,
         "next_cursor": None,
     }
@@ -206,6 +208,7 @@ def test_unpaged_list_preserves_all_clips_and_reports_unbounded_pagination(clip_
         "limit": None,
         "offset": 0,
         "total": 2,
+        "reconciled": True,
         "has_more": False,
         "next_cursor": None,
     }

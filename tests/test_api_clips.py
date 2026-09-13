@@ -211,6 +211,7 @@ def test_compact_rebuild_removes_stale_manifest_from_page_total_and_facets(clip_
         "limit": 10,
         "offset": 0,
         "total": 0,
+        "reconciled": True,
         "has_more": False,
         "next_cursor": None,
     }

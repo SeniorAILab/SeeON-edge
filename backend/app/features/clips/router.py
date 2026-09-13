@@ -83,6 +83,7 @@ def list_clips(
             limit=filters.limit,
             offset=filters.offset,
             total=page.total,
+            reconciled=page.reconciled,
             has_more=page.has_more,
             next_cursor=page.next_cursor,
         ),

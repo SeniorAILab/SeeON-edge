@@ -11,6 +11,8 @@ export type ClipPageQuery = {
 export type ClipPagination = {
   readonly limit: number;
   readonly total: number;
+  /** False while the backend's bounded store reconciliation makes total a lower bound. */
+  readonly reconciled: boolean;
   readonly has_more: boolean;
   /** Opaque `(started_at, clip_id)` keyset cursor for the next page; null on the last page. */
   readonly next_cursor: string | null;

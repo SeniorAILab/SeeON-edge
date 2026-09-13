@@ -111,6 +111,13 @@ export function useEventsPage(filters: EventsPageFilters): EventsPageResource {
         page = await fetchClipPage(pageQuery(requestedFilters, null), controller.signal);
       }
       if (!aliveRef.current || requestId !== requestRef.current || requestedKey !== activeKeyRef.current) return;
+      const currentView = viewRef.current;
+      if (trail.length > 1
+        && currentView?.filterKey === requestedKey
+        && currentView.page.pagination.reconciled
+        && !page.pagination.reconciled) {
+        page = { ...page, pagination: { ...page.pagination, reconciled: true } };
+      }
       const view = { filterKey: requestedKey, trail, page };
       viewRef.current = view;
       setState({

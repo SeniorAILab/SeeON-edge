@@ -99,6 +99,7 @@ export function normalizeClipPageResponse(value: unknown, query: ClipPageQuery):
     pagination: {
       limit: query.limit,
       total: filtered.length,
+      reconciled: true,
       has_more: hasMore,
       next_cursor: hasMore && lastClip ? encodeClipCursor(clipKey(lastClip)) : null,
     },
@@ -125,6 +126,7 @@ function normalizePagination(value: unknown): ClipPagination {
   return {
     limit: value.limit,
     total: value.total,
+    reconciled: value.reconciled === true,
     has_more: value.has_more && nextCursor !== null,
     next_cursor: nextCursor,
   };

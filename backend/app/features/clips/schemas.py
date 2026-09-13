@@ -53,6 +53,7 @@ class ClipsPaginationResponse(BaseModel):
     limit: int | None = Field(default=None, ge=1, le=100)
     offset: int = Field(ge=0)
     total: int = Field(ge=0)
+    reconciled: bool
     has_more: bool
     next_cursor: str | None = None
 
