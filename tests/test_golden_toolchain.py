@@ -12,6 +12,8 @@ from scripts.qa import golden_from_worksheet, golden_labeller_html, golden_works
 from tests_support import episode_metric
 from tests_support.golden_episodes import load_golden_episodes
 
+pytestmark = pytest.mark.usefixtures("packaged_fall_bundle")
+
 _ROSTER = tuple(f"camera-{index:02d}" for index in range(13))
 
 

@@ -20,7 +20,7 @@ from torch import nn
 PREPROCESSING_IDENTITY_DIGEST = "6ab6d8165fe11a374446e36c8448ff1dae32946a23715e0bb0c22d2a234877bb"
 _CONFORMANCE_SOURCE = (
     Path(__file__).resolve().parents[1]
-    / "models/fall/pose-bbox56-gru/conformance/pose-bbox56-v1.json"
+    / "tests/fixtures_fall_pose_bbox56_v1.json"
 )
 
 

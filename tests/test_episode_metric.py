@@ -19,6 +19,8 @@ from tests_support.episode_metric import _id_churn_allowance, _load_rows, evalua
 from tests_support.golden_episodes import GoldenEpisode
 from worker.interfaces.fall_model import FallV2Probabilities
 
+pytestmark = pytest.mark.usefixtures("packaged_fall_bundle")
+
 
 @dataclass(frozen=True)
 class _FallModel:
