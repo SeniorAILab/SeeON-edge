@@ -298,7 +298,10 @@ jobs:
           # which means attaching provenance.
           push: ${{ env.PUSH_IMAGES == 'true' }}
           provenance: ${{ env.RELEASE_BUILD == 'true' }}
-          outputs: type=docker,dest=/tmp/ml-worker-runtime.tar
+          # The local docker carrier is needed only by the non-release smoke
+          # below. Release provenance produces an OCI index, which the docker
+          # exporter cannot represent; the release smoke pulls the pushed digest.
+          outputs: ${{ env.RELEASE_BUILD != 'true' && 'type=docker,dest=/tmp/ml-worker-runtime.tar' || '' }}
           build-args: |
             SOURCE_REVISION=${{ env.DEPLOY_SHA }}
           tags: ${{ env.ML_WORKER_TAGS }}
