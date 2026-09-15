@@ -170,7 +170,7 @@ export function BedZonePolygonEditor({ regions, imageWidth, imageHeight, onChang
           }
         }}
         onClick={(event) => {
-          if (disabled || !draft || suppressClickRef.current || event.target !== event.currentTarget || draft.points.length >= MAX_VERTICES) {
+          if (disabled || !draft || suppressClickRef.current || draft.points.length >= MAX_VERTICES) {
             suppressClickRef.current = false;
             return;
           }
@@ -198,7 +198,11 @@ export function BedZonePolygonEditor({ regions, imageWidth, imageHeight, onChang
               fill="rgba(43,182,163,0.25)"
               stroke="var(--overlay-teal)"
               strokeWidth={selected?.regionId === region.id ? 3 : 2}
-              onClick={(event) => { event.stopPropagation(); setSelected({ regionId: region.id, vertexIndex: null }); }}
+              onClick={(event) => {
+                if (draft) return;
+                event.stopPropagation();
+                setSelected({ regionId: region.id, vertexIndex: null });
+              }}
             />
             {region.polygon.map(([x, y], vertexIndex) => (
               <circle
@@ -212,9 +216,12 @@ export function BedZonePolygonEditor({ regions, imageWidth, imageHeight, onChang
                 tabIndex={disabled ? undefined : 0}
                 role="button"
                 aria-label={`영역 ${region.id} 꼭짓점 ${vertexIndex + 1}`}
-                onFocus={() => setSelected({ regionId: region.id, vertexIndex })}
+                onFocus={() => {
+                  if (draft) return;
+                  setSelected({ regionId: region.id, vertexIndex });
+                }}
                 onPointerDown={(event) => {
-                  if (disabled) return;
+                  if (disabled || draft) return;
                   event.stopPropagation();
                   event.currentTarget.setPointerCapture(event.pointerId);
                   setSelected({ regionId: region.id, vertexIndex });

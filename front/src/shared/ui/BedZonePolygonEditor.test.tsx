@@ -118,6 +118,42 @@ describe('BedZonePolygonEditor', () => {
     expect(onChange).toHaveBeenCalledWith([{ id: 'manual-bed', polygon: [[20, 20], [40, 20], [40, 40]], origin: 'manual' }]);
   });
 
+  it('creates a manual region from existing vertex and interior clicks without selecting or dropping the original', () => {
+    const onChange = vi.fn();
+    const { host, svg } = render(initial, 1000, 500, onChange);
+    const vertex = host.querySelector('circle[aria-label="영역 model-bed 꼭짓점 1"]') as SVGCircleElement;
+    const polygon = host.querySelector('[data-region-id="model-bed"] polygon') as SVGPolygonElement;
+
+    expect(button(host, '선택 영역 삭제').disabled).toBe(true);
+    act(() => button(host, '직접 그리기').click());
+    expect(button(host, '선택 영역 삭제').disabled).toBe(true);
+
+    act(() => vertex.dispatchEvent(pointerEvent('pointerdown', 1, 60, 70)));
+    act(() => vertex.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 60, clientY: 70 })));
+    expect(host.querySelectorAll('[data-draft-point]')).toHaveLength(1);
+    expect(button(host, '선택 영역 삭제').disabled).toBe(true);
+    expect(onChange).not.toHaveBeenCalled();
+
+    act(() => polygon.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 160, clientY: 95 })));
+    expect(host.querySelectorAll('[data-draft-point]')).toHaveLength(2);
+    expect(button(host, '선택 영역 삭제').disabled).toBe(true);
+
+    clickCanvas(svg, 260, 220);
+    expect(host.querySelectorAll('[data-draft-point]')).toHaveLength(3);
+    expect(button(host, '선택 영역 삭제').disabled).toBe(true);
+    expect(button(host, '영역 완료').disabled).toBe(false);
+
+    act(() => button(host, '영역 완료').click());
+    expect(onChange).toHaveBeenCalledWith([
+      { id: 'model-bed', polygon: [[100, 100], [400, 100], [400, 300]], origin: 'model' },
+      {
+        id: '00000000-0000-4000-8000-000000000001',
+        polygon: [[100, 100], [300, 150], [500, 400]],
+        origin: 'manual',
+      },
+    ]);
+  });
+
   it('offers integer numeric editing on both axes, clips below exclusive bounds, and marks model regions manual', () => {
     const onChange = vi.fn();
     const { host } = render(initial, 1000, 500, onChange);
