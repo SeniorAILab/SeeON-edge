@@ -105,6 +105,7 @@ export function keysetBody(
       limit,
       offset: 0,
       total: clips.length,
+      reconciled: cursor === null,
       has_more: hasMore,
       next_cursor: hasMore && last
         ? encodeClipCursor({ startedAt: String(last.started_at), clipId: String(last.clip_id) })

@@ -116,6 +116,7 @@ export function EventsPage(): JSX.Element {
           <EventsPager
             pageIndex={clipsResource.pageIndex}
             total={clipsResource.data.pagination.total}
+            reconciled={clipsResource.data.pagination.reconciled}
             visibleCount={clips.length}
             hasNextPage={clipsResource.hasNextPage}
             pendingPageIndex={clipsResource.pendingPageIndex}

@@ -1,6 +1,7 @@
 type EventsPagerProps = {
   readonly pageIndex: number;
   readonly total: number;
+  readonly reconciled: boolean;
   readonly visibleCount: number;
   readonly hasNextPage: boolean;
   readonly pendingPageIndex: number | null;
@@ -20,6 +21,7 @@ const CONTROL_CLASS = 'inline-flex min-h-11 min-w-11 items-center justify-center
 export function EventsPager({
   pageIndex,
   total,
+  reconciled,
   visibleCount,
   hasNextPage,
   pendingPageIndex,
@@ -43,8 +45,9 @@ export function EventsPager({
         data-page-ordinal={pageIndex + 1}
         data-visible-count={visibleCount}
         data-total-count={total}
+        data-total-reconciled={reconciled}
       >
-        {visibleCount}건 표시 / 전체 {total}건 · {pageIndex + 1} 페이지
+        {visibleCount}건 표시 / 전체 {total}{reconciled ? '' : '+'}건 · {pageIndex + 1} 페이지
       </p>
       <div className="flex flex-wrap items-center justify-end gap-2">
         {pageIndex > 0 ? (

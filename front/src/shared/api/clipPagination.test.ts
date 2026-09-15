@@ -32,7 +32,9 @@ describe('clip pagination API', () => {
       status: 200,
       json: async () => ({
         clips: [clipManifest({ clip_id: 'clip-97' })],
-        pagination: { limit: 48, offset: 0, total: 145, has_more: true, next_cursor: 'bmV4dA==' },
+        pagination: {
+          limit: 48, offset: 0, total: 145, reconciled: false, has_more: true, next_cursor: 'bmV4dA==',
+        },
         event_type_counts: { fall: 100, 'bed-exit': 45 },
       }),
     });
@@ -44,7 +46,9 @@ describe('clip pagination API', () => {
       `/api/v1/clips?camera_id=cam%2F1&event_type=fall&limit=48&cursor=${encodeURIComponent(cursor)}`,
       expect.objectContaining({ credentials: 'same-origin' }),
     );
-    expect(page.pagination).toEqual({ limit: 48, total: 145, has_more: true, next_cursor: 'bmV4dA==' });
+    expect(page.pagination).toEqual({
+      limit: 48, total: 145, reconciled: false, has_more: true, next_cursor: 'bmV4dA==',
+    });
     expect(page.event_type_counts).toEqual({ fall: 100, 'bed-exit': 45 });
   });
 
@@ -132,6 +136,7 @@ describe('clip pagination API', () => {
     expect(first.pagination).toEqual({
       limit: 2,
       total: 3,
+      reconciled: true,
       has_more: true,
       next_cursor: encodeClipCursor({ startedAt: '2026-08-02T03:00:00Z', clipId: 'clip-3' }),
     });

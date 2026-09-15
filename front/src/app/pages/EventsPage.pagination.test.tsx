@@ -88,6 +88,34 @@ describe('EventsPage keyset pagination', () => {
     expect(host.textContent).toContain('침대 이탈 26');
   });
 
+  it('marks the catalogue total as a lower bound until reconciliation finishes', async () => {
+    resetLocation();
+    const clips = Array.from({ length: 60 }, (_, index) => clipManifest({
+      clip_id: `clip-${index + 1}`,
+      event_ref: `event-${index + 1}`,
+    }));
+    const fetchMock = installFetchMock(clips);
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/cameras')) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => cameraRegistry });
+      }
+      if (url.includes('/incidents')) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ incidents: [] }) });
+      }
+      const params = new URL(url, 'http://localhost').searchParams;
+      const body = keysetBody(clips, Number(params.get('limit')), params.get('cursor'));
+      (body.pagination as Record<string, unknown>).reconciled = false;
+      return Promise.resolve({ ok: true, status: 200, json: async () => body });
+    });
+
+    const { host } = await renderPage();
+
+    const range = host.querySelector('[data-testid="events-page-range"]') as HTMLElement;
+    expect(range.dataset.totalReconciled).toBe('false');
+    expect(range.textContent).toContain('60+');
+  });
+
   it('advances with the server cursor and commits the page only after it succeeds', async () => {
     resetLocation();
     const clips = Array.from({ length: 97 }, (_, index) => clipManifest({
@@ -108,6 +136,9 @@ describe('EventsPage keyset pagination', () => {
     const lastRequest = clipRequestUrls(fetchMock).at(-1) as string;
     expect(lastRequest).not.toContain('offset=');
     expect(decodeClipCursor(clipCursorOf(lastRequest) as string)?.clipId).toBe(firstPageIds.at(-1));
+    const range = host.querySelector('[data-testid="events-page-range"]') as HTMLElement;
+    expect(range.dataset.totalReconciled).toBe('true');
+    expect(range.textContent).not.toContain('97+');
   });
 
   it('walks equal-timestamp rows forward and back without duplicating or skipping a clip', async () => {

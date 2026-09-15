@@ -115,6 +115,7 @@ def test_listing_walks_the_store_once_and_never_relocates_per_clip(
         cursor = response.json()["pagination"]["next_cursor"]
         second = client.get("/api/v1/clips", params={"limit": 20, "cursor": cursor})
         assert second.status_code == 200
+        assert second.json()["pagination"]["reconciled"] is False
         assert root_walks <= 1
         assert locates == 0
 
@@ -225,6 +226,10 @@ def test_examination_is_bounded_per_call_and_converges(
         first = client.get("/api/v1/clips", params={"limit": 5})
         assert first.status_code == 200
         assert first.json()["pagination"]["total"] == 7
+        assert first.json()["pagination"]["reconciled"] is False
         assert first.json()["clips"][0]["clip_id"] == "clip-00019"
         calls = _catalogue_everything(client, count)
+        settled = client.get("/api/v1/clips", params={"limit": 5})
+        assert settled.status_code == 200
+        assert settled.json()["pagination"]["reconciled"] is True
     assert calls == 2  # ceil(20 / 7) - 1 further calls after the first
