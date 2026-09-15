@@ -3,9 +3,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from math import isfinite
 from types import MappingProxyType
-from typing import Literal, Protocol
+from typing import Final, Literal, Protocol
 
 from shared.detection_policies import EffectivePolicy, parse_effective_policy, policy_values_dict
+from worker.domains.fall.geometry_scorer import POSE_GEOMETRY_SCORER_VERSION
+from worker.domains.fall.trained_scorer import TRAINED_FALL_SCORER_VERSION
 from worker.domains.module_compiler import CompiledDetectionModuleRegistry
 from worker.domains.module_definition import (
     ComponentBinding,
@@ -43,6 +45,16 @@ class _BedZoneRegionInput(Protocol):
     id: str
     polygon: Sequence[tuple[int, int]]
     origin: Literal["manual", "model"]
+
+
+_CPU_POLICY_RUNTIMES: Final = frozenset(
+    {
+        "cpu-policy",
+        f"cpu-policy+{POSE_GEOMETRY_SCORER_VERSION}",
+        f"cpu-policy+{TRAINED_FALL_SCORER_VERSION}",
+        "onnxruntime-cpu",
+    }
+)
 
 
 def build_applied_camera_state(
@@ -174,7 +186,7 @@ def _verified_component_identities(
         cpu_policy = (
             boot.profile.name in {"nvidia", "flow"}
             and identity.device == "cpu"
-            and identity.runtime in {"cpu-policy", "onnxruntime-cpu"}
+            and identity.runtime in _CPU_POLICY_RUNTIMES
         )
         if identity.device != boot.device and not cpu_policy:
             raise AppliedRuntimeManifestError(

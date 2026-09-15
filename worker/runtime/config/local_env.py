@@ -63,6 +63,8 @@ ML_WORKER_FALL_MODEL_PREPROCESSING_IDENTITY_ENV: Final = (
 )
 ML_WORKER_CLIP_RECORDING_ENABLED_ENV: Final = "ML_WORKER_CLIP_RECORDING_ENABLED"
 WORKER_REPLAY_TRACE_DIR_ENV: Final = "WORKER_REPLAY_TRACE_DIR"
+# Opt-in trained fall classifier; configured-but-unloadable refuses the boot.
+GEOMETRY_FALL_MODEL_ENV: Final = "ML_WORKER_FALL_GEOMETRY_MODEL"
 FALL_SELECTION_PATH: Final = Path("/app/model-selection.json")
 FALL_MODELS_ROOT: Final = Path("/models")
 
@@ -496,6 +498,7 @@ def replay_trace_directory_from_environment(
 __all__ = [
     "FALL_MODELS_ROOT",
     "FALL_SELECTION_PATH",
+    "GEOMETRY_FALL_MODEL_ENV",
     "ML_WORKER_CLIP_RECORDING_ENABLED_ENV",
     "ML_WORKER_FALL_MODEL_ARCHITECTURE_ENV",
     "ML_WORKER_FALL_MODEL_ARTIFACT_DIR_ENV",
