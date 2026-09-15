@@ -20,7 +20,10 @@ from dataclasses import dataclass
 from statistics import median
 from typing import Final, Protocol, runtime_checkable
 
-from worker.domains.fall.pose_bbox56 import COCO17_KEYPOINTS, POSE_BBOX56_DIM
+from worker.domains.fall.pose_bbox56 import (
+    COCO17_KEYPOINTS,
+    POSE_BBOX56_DIM,
+)
 from worker.interfaces.fall_model import FallV2ModelProtocol, FallV2Probabilities
 from worker.types import FallModelInput
 
