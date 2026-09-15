@@ -50,6 +50,10 @@ from worker.domains import (
 from worker.domains.detection_window import DetectionWindow
 from worker.domains.fall import FallV2DomainDecider
 from worker.domains.fall.classifier_v2 import FALL_STRIDE_FRAMES, FALL_WINDOW_FRAMES
+from worker.domains.fall.geometry_scorer import (
+    POSE_GEOMETRY_SCORER_VERSION,
+    PoseGeometryFallScorer,
+)
 from worker.domains.fall.pose_bbox56 import (
     COCO17_KEYPOINT_ORDER,
     POSE_BBOX56_CONFIDENCE_GATE,
@@ -1103,7 +1107,13 @@ class WorkerRuntime:
 
     def _initialize_flow_policy_graph(self, boot: BootContext) -> SharedComponentGraph:
         """Build the CPU policy graph for the Flow media plane."""
-        fall_model = self._create_fall_model()
+        # The packaged proxy scored a real corridor fall at 0.05; the geometry
+        # scorer names the upright-to-collapsed transition on the same window.
+        fall_model: FallV2ModelProtocol = PoseGeometryFallScorer(
+            self._create_fall_model(),
+            frame_width=int(self._env["ML_WORKER_FLOW_FRAME_WIDTH"]),
+            frame_height=int(self._env["ML_WORKER_FLOW_FRAME_HEIGHT"]),
+        )
         models = self._fall_models()
         flags = {"person-box-source": models.box_source == "person"}
         bindings = self._module_registry.shared_bindings(self._module_versions, flags=flags)
@@ -1123,7 +1133,11 @@ class WorkerRuntime:
                 components[binding.component_id] = fall_model
                 identities.append(
                     SharedComponentIdentity(
-                        binding.component_id, digest, "cpu-policy", "cpu", preprocessing
+                        binding.component_id,
+                        digest,
+                        f"cpu-policy+{POSE_GEOMETRY_SCORER_VERSION}",
+                        "cpu",
+                        preprocessing,
                     )
                 )
                 continue

@@ -170,7 +170,11 @@ def _config(*, with_fall: dict[str, object] | None = None) -> WorkerConfig:
 def _runtime(config: WorkerConfig, serving: object, state_dir: Path) -> WorkerRuntime:
     return WorkerRuntime(
         config,
-        env={"ML_WORKER_PROFILE": "flow"},
+        env={
+            "ML_WORKER_PROFILE": "flow",
+            "ML_WORKER_FLOW_FRAME_WIDTH": "640",
+            "ML_WORKER_FLOW_FRAME_HEIGHT": "360",
+        },
         serving_client=serving,
         acquire_lease=lambda: GpuLease.acquire(state_dir),
         state_dir=state_dir,
