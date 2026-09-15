@@ -2,6 +2,7 @@ import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   cleanupPages,
+  clipManifest,
   clipRequestUrls,
   flush,
   installFetchMock,
@@ -109,5 +110,38 @@ describe('EventsPage', () => {
     const { host } = await renderPage();
 
     expect(host.textContent).toContain('조건에 맞는 이벤트가 없습니다.');
+    expect(Array.from(host.querySelectorAll('button')).some(
+      (button) => button.textContent === '필터 초기화',
+    )).toBe(false);
+  });
+
+  it('clears an active camera filter from the empty state and restores events', async () => {
+    resetLocation();
+    const fetchMock = installFetchMock([
+      clipManifest({ clip_id: 'clip-cam-1', camera_id: 'cam-1' }),
+    ]);
+    const { host } = await renderPage();
+    const select = host.querySelector('select') as HTMLSelectElement;
+    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+
+    act(() => {
+      nativeSetter?.call(select, 'cam-2');
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+
+    expect(host.textContent).toContain('조건에 맞는 이벤트가 없습니다.');
+    const clearButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent === '필터 초기화',
+    );
+    expect(clearButton).toBeDefined();
+
+    act(() => clearButton?.click());
+    await flush();
+
+    expect(select.value).toBe('');
+    expect(host.querySelectorAll('button.rounded-card')).toHaveLength(1);
+    expect(clipRequestUrls(fetchMock)).toContain('/api/v1/clips?camera_id=cam-2&limit=48');
+    expect(clipRequestUrls(fetchMock).at(-1)).toBe('/api/v1/clips?limit=48');
   });
 });

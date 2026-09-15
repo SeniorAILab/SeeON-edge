@@ -8,10 +8,11 @@ type ClipGridProps = {
   clips: readonly Clip[];
   resolveCameraLabel: (clip: Clip) => string;
   onRetry: () => void;
+  onClearFilters?: () => void;
   onSelect: (clipId: string) => void;
 };
 
-export function ClipGrid({ status, hasData, clips, resolveCameraLabel, onRetry, onSelect }: ClipGridProps): JSX.Element {
+export function ClipGrid({ status, hasData, clips, resolveCameraLabel, onRetry, onClearFilters, onSelect }: ClipGridProps): JSX.Element {
   if (status === 'loading' && !hasData) {
     return <p className="py-12 text-center text-sm text-muted-foreground" role="status">이벤트를 불러오는 중입니다…</p>;
   }
@@ -26,7 +27,14 @@ export function ClipGrid({ status, hasData, clips, resolveCameraLabel, onRetry, 
   }
 
   if (clips.length === 0) {
-    return <p className="py-12 text-center text-sm text-muted-foreground">조건에 맞는 이벤트가 없습니다.</p>;
+    return (
+      <div className="flex flex-col items-center gap-3 py-12 text-center text-sm text-muted-foreground">
+        <p>조건에 맞는 이벤트가 없습니다.</p>
+        {onClearFilters ? (
+          <button type="button" className="dialog-secondary-action" onClick={onClearFilters}>필터 초기화</button>
+        ) : null}
+      </div>
+    );
   }
 
   return (

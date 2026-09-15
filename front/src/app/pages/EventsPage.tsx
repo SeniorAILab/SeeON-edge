@@ -65,6 +65,10 @@ export function EventsPage(): JSX.Element {
     setSelectedCameraId(cameraId);
     if (cameraId && activeClip && activeClip.camera_id !== cameraId) location.discardClip();
   }, [activeClip, location.discardClip]);
+  const handleClearFilters = useCallback((): void => {
+    setSelectedCameraId('');
+    location.setEventType(undefined);
+  }, [location.setEventType]);
 
   return (
     <section>
@@ -110,6 +114,7 @@ export function EventsPage(): JSX.Element {
           clips={clips}
           resolveCameraLabel={resolveLabel}
           onRetry={clipsResource.refresh}
+          onClearFilters={selectedCameraId || location.eventType ? handleClearFilters : undefined}
           onSelect={location.openClip}
         />
         {clipsResource.data ? (
