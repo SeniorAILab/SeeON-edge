@@ -61,8 +61,24 @@ _TORSO_DEG_FULL: Final = 60.0
 # the floor measured 0.14-0.19. When the legs are not visible, the box must
 # have lost more than half of its standing height instead (0.24 on the fall,
 # 0.79 on the bends).
-_LEGS_DOWN_MAX_FRAC: Final = 0.3
+_LEGS_DOWN_MAX_FRAC: Final = 0.35
 _HEIGHT_COLLAPSE_MAX_RATIO: Final = 0.45
+# A second owner fall (05:52Z) went down along the camera axis: the torso
+# read 20-33 deg and the box near square, so the 2-D torso angle alone missed
+# it, while the figure still lost 63% of its standing height. Either signal
+# now counts as the collapse. Sitting down on the floor lost height too, but
+# put the hips at the very bottom of the box (0.87-0.89); lying keeps them
+# mid-box (0.56-0.65), crouching high (0.20-0.24).
+_HEIGHT_LOSS_START: Final = 0.4
+_HEIGHT_LOSS_FULL: Final = 0.6
+_LYING_HIP_MIN_FRAC: Final = 0.35
+_LYING_HIP_MAX_FRAC: Final = 0.75
+# Walking away from the camera already shrinks the standing box, so on the
+# axis-aligned fall the height lost inside one window read only 0.27-0.47.
+# The legs folding under the hips is collapse evidence in its own right:
+# ankle-to-hip drop fell from ~0.40 standing to 0.19-0.32 lying.
+_LEG_DROP_START: Final = 0.05
+_LEG_DROP_FULL: Final = 0.15
 _LEFT_KNEE: Final = 13
 _RIGHT_KNEE: Final = 14
 _LEFT_ANKLE: Final = 15
@@ -80,6 +96,7 @@ class _RowGeometry:
     height: float
     torso_deg: float | None
     leg_frac: float | None
+    hip_frac: float | None
 
 
 def _unit(value: float, start: float, full: float) -> float:
@@ -98,11 +115,13 @@ def _row_geometry(row: Sequence[float], frame_aspect_ratio: float) -> _RowGeomet
     height = y2 - y1
     if width <= 0.0 or height <= 0.0:
         return None
+    hips = _centre(row, (_LEFT_HIP, _RIGHT_HIP), frame_aspect_ratio)
     return _RowGeometry(
         aspect=height / width,
         height=height,
         torso_deg=_torso_deg(row, frame_aspect_ratio),
         leg_frac=_leg_frac(row, frame_aspect_ratio, height),
+        hip_frac=None if hips is None else (hips[1] - y1) / height,
     )
 
 
@@ -162,6 +181,34 @@ def _legs_down(late: Sequence[_RowGeometry], standing_height: float) -> bool:
     return median(row.height for row in late) / standing_height <= _HEIGHT_COLLAPSE_MAX_RATIO
 
 
+def _hips_mid_box(late: Sequence[_RowGeometry]) -> bool:
+    """Lying keeps the hips mid-box; sitting on the floor drops them to the bottom."""
+    hips = [row.hip_frac for row in late if row.hip_frac is not None]
+    if len(hips) < _MIN_EDGE_ROWS:
+        return True
+    return _LYING_HIP_MIN_FRAC <= median(hips) <= _LYING_HIP_MAX_FRAC
+
+
+def _collapse(
+    early: Sequence[_RowGeometry],
+    late: Sequence[_RowGeometry],
+    late_torso: float | None,
+    standing: float,
+) -> float:
+    """How far the figure went down: torso horizontal, height lost, or legs folded."""
+    height_loss = 1.0 - median(row.height for row in late) / standing
+    evidence = [_unit(height_loss, _HEIGHT_LOSS_START, _HEIGHT_LOSS_FULL)]
+    if late_torso is not None:
+        evidence.append(_unit(late_torso, _TORSO_DEG_START, _TORSO_DEG_FULL))
+    early_legs = [row.leg_frac for row in early if row.leg_frac is not None]
+    late_legs = [row.leg_frac for row in late if row.leg_frac is not None]
+    if len(early_legs) >= _MIN_EDGE_ROWS and len(late_legs) >= _MIN_EDGE_ROWS:
+        evidence.append(
+            _unit(median(early_legs) - median(late_legs), _LEG_DROP_START, _LEG_DROP_FULL)
+        )
+    return max(evidence)
+
+
 def _upright_evidence(rows: Sequence[_RowGeometry]) -> tuple[float, float | None]:
     """The most upright the person stood in the span: tallest box, straightest torso."""
     aspect = max(row.aspect for row in rows)
@@ -188,13 +235,12 @@ def geometry_fall_transition(features: FallModelInput, frame_aspect_ratio: float
         return 0.0
     if early_torso is not None and early_torso > _UPRIGHT_MAX_TORSO_DEG:
         return 0.0
-    if late_torso is None:
-        return 0.0
-    if not _legs_down(late, max(row.height for row in early)):
+    standing = max(row.height for row in early)
+    if not _legs_down(late, standing) or not _hips_mid_box(late):
         return 0.0
     aspect_drop = (early_aspect - late_aspect) / early_aspect
-    return _unit(aspect_drop, _ASPECT_DROP_START, _ASPECT_DROP_FULL) * _unit(
-        late_torso, _TORSO_DEG_START, _TORSO_DEG_FULL
+    return _unit(aspect_drop, _ASPECT_DROP_START, _ASPECT_DROP_FULL) * _collapse(
+        early, late, late_torso, standing
     )
 
 

@@ -45,7 +45,18 @@ def _row(
 _UPRIGHT = _row((300.0, 100.0, 360.0, 300.0), 5.0, legs_down=False)  # 200 tall x 60 wide
 _ON_FLOOR = _row((250.0, 240.0, 410.0, 300.0), 65.0)  # 60 tall x 160 wide, legs level
 _CROUCH = _row((300.0, 180.0, 380.0, 300.0), 18.0, legs_down=False)  # laptop crouch
-_SEATED = _row((300.0, 200.0, 380.0, 300.0), 20.0, legs_down=False)
+
+
+def _seated_row() -> tuple[float, ...]:
+    """Sitting on a chair: hips at mid-box, torso upright, feet on the floor below."""
+    keypoints = [(0.0, 0.0, 0.0)] * 17
+    keypoints[5], keypoints[6] = (330.0, 200.0, 0.9), (350.0, 200.0, 0.9)
+    keypoints[11], keypoints[12] = (332.0, 240.0, 0.9), (348.0, 240.0, 0.9)
+    keypoints[15], keypoints[16] = (334.0, 296.0, 0.9), (346.0, 296.0, 0.9)
+    return pose_bbox56_row(keypoints, (300.0, 180.0, 380.0, 300.0), _WIDTH, _HEIGHT)
+
+
+_SEATED = _seated_row()
 # Caregiver bending over a bed: box collapses and torso turns horizontal, but
 # the legs stay planted below the hips (room 207, 2026-09-15).
 _BENDING = _row((270.0, 190.0, 400.0, 300.0), 70.0, legs_down=False)
