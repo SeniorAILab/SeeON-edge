@@ -130,6 +130,37 @@ def test_mjpeg_server_defaults_loopback_and_disabled() -> None:
         server.stop()
 
 
+def test_given_stream_slots_are_full_when_another_viewer_connects_then_rejects_503() -> None:
+    store = LatestFrameStore()
+    store.publish_jpeg("camera-a", b"\xff\xd8jpeg\xff\xd9", frame_index=1)
+    server = MjpegServer(
+        store,
+        MjpegServerConfig(
+            port=0,
+            probe_token=_RELAY_TOKEN,
+            max_concurrent_requests=2,
+        ),
+    )
+    server.start()
+    base = f"http://127.0.0.1:{server.port}"
+    viewers = []
+    try:
+        for _ in range(2):
+            viewers.append(
+                urllib.request.urlopen(_authed_get(f"{base}/stream/camera-a"), timeout=1)
+            )
+
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(_authed_get(f"{base}/stream/camera-a"), timeout=1)
+
+        assert exc_info.value.code == 503
+        assert exc_info.value.headers["Connection"] == "close"
+    finally:
+        for viewer in viewers:
+            viewer.close()
+        server.stop()
+
+
 def test_mjpeg_server_unknown_empty_and_stream_response() -> None:
     store = LatestFrameStore()
     store.register_camera("empty")
