@@ -7,6 +7,7 @@ from typing import Final, Literal, Protocol
 
 from shared.detection_policies import EffectivePolicy, parse_effective_policy, policy_values_dict
 from worker.domains.fall.geometry_scorer import POSE_GEOMETRY_SCORER_VERSION
+from worker.domains.fall.trained_scorer import TRAINED_FALL_SCORER_VERSION
 from worker.domains.module_compiler import CompiledDetectionModuleRegistry
 from worker.domains.module_definition import (
     ComponentBinding,
@@ -47,7 +48,12 @@ class _BedZoneRegionInput(Protocol):
 
 
 _CPU_POLICY_RUNTIMES: Final = frozenset(
-    {"cpu-policy", f"cpu-policy+{POSE_GEOMETRY_SCORER_VERSION}", "onnxruntime-cpu"}
+    {
+        "cpu-policy",
+        f"cpu-policy+{POSE_GEOMETRY_SCORER_VERSION}",
+        f"cpu-policy+{TRAINED_FALL_SCORER_VERSION}",
+        "onnxruntime-cpu",
+    }
 )
 
 

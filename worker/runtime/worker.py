@@ -38,6 +38,7 @@ from worker.adapters.model import ort_pose_bbox56, warmup_to_ready
 from worker.adapters.model.clip_reanalysis import ClipAnalysisProfile
 from worker.adapters.model.errors import FatalAcceleratorError, ModelLoadError
 from worker.adapters.model.ort_bed_seg import BED_MODEL_CONFIDENCE, BED_ONNX_MODEL_PATH
+from worker.adapters.model.ort_vector_classifier import OrtVectorClassifier
 from worker.domains import (
     AVAILABLE_OBSERVATION_CHANNELS,
     DETECTION_MODULE_REGISTRY,
@@ -50,6 +51,7 @@ from worker.domains import (
 from worker.domains.detection_window import DetectionWindow
 from worker.domains.fall import FallV2DomainDecider
 from worker.domains.fall.classifier_v2 import FALL_STRIDE_FRAMES, FALL_WINDOW_FRAMES
+from worker.domains.fall.geometry_features import GEOMETRY_FEATURE_DIM
 from worker.domains.fall.geometry_scorer import (
     POSE_GEOMETRY_SCORER_VERSION,
     PoseGeometryFallScorer,
@@ -57,6 +59,10 @@ from worker.domains.fall.geometry_scorer import (
 from worker.domains.fall.pose_bbox56 import (
     COCO17_KEYPOINT_ORDER,
     POSE_BBOX56_CONFIDENCE_GATE,
+)
+from worker.domains.fall.trained_scorer import (
+    TRAINED_FALL_SCORER_VERSION,
+    TrainedGeometryFallScorer,
 )
 from worker.domains.tracker import GreedyIouTracker
 from worker.interfaces.clip_analysis import ClipAnalysisDisabledError
@@ -94,6 +100,7 @@ from worker.runtime import bootstrap
 from worker.runtime.clip_analysis_catchup import start_clip_analysis_catchup
 from worker.runtime.clip_analysis_supervisor import ClipAnalysisSupervisor
 from worker.runtime.config import (
+    GEOMETRY_FALL_MODEL_ENV,
     RELAY_HEARTBEAT_PATH,
     CameraRuntimeConfig,
     LiveClipExportPolicy,
@@ -1107,13 +1114,29 @@ class WorkerRuntime:
 
     def _initialize_flow_policy_graph(self, boot: BootContext) -> SharedComponentGraph:
         """Build the CPU policy graph for the Flow media plane."""
-        # The packaged proxy scored a real corridor fall at 0.05; the geometry
-        # scorer names the upright-to-collapsed transition on the same window.
-        fall_model: FallV2ModelProtocol = PoseGeometryFallScorer(
-            self._create_fall_model(),
-            frame_width=int(self._env["ML_WORKER_FLOW_FRAME_WIDTH"]),
-            frame_height=int(self._env["ML_WORKER_FLOW_FRAME_HEIGHT"]),
-        )
+        # The packaged proxy promoted no fall on the sealed split and scored a
+        # real corridor fall at 0.05, so the serving scorer is chosen here.
+        frame_width = int(self._env["ML_WORKER_FLOW_FRAME_WIDTH"])
+        frame_height = int(self._env["ML_WORKER_FLOW_FRAME_HEIGHT"])
+        packaged = self._create_fall_model()
+        trained_path = self._env.get(GEOMETRY_FALL_MODEL_ENV, "").strip()
+        fall_model: FallV2ModelProtocol
+        if trained_path:
+            # Configured but unloadable is a refused boot, never a silent
+            # downgrade to the scorer the operator did not choose.
+            fall_model = TrainedGeometryFallScorer(
+                OrtVectorClassifier.from_model_path(
+                    Path(trained_path), feature_dim=GEOMETRY_FEATURE_DIM
+                ),
+                frame_width=frame_width,
+                frame_height=frame_height,
+            )
+            self._fall_scorer_runtime = f"cpu-policy+{TRAINED_FALL_SCORER_VERSION}"
+        else:
+            fall_model = PoseGeometryFallScorer(
+                packaged, frame_width=frame_width, frame_height=frame_height
+            )
+            self._fall_scorer_runtime = f"cpu-policy+{POSE_GEOMETRY_SCORER_VERSION}"
         models = self._fall_models()
         flags = {"person-box-source": models.box_source == "person"}
         bindings = self._module_registry.shared_bindings(self._module_versions, flags=flags)
@@ -1135,7 +1158,7 @@ class WorkerRuntime:
                     SharedComponentIdentity(
                         binding.component_id,
                         digest,
-                        f"cpu-policy+{POSE_GEOMETRY_SCORER_VERSION}",
+                        self._fall_scorer_runtime,
                         "cpu",
                         preprocessing,
                     )

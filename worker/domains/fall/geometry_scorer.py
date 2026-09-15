@@ -42,9 +42,11 @@ _VALID_INDEX: Final = POSE_BBOX56_DIM - 1
 # qualifies every window starting in [C-1.33s, C), four classifier ticks, which
 # is what the policy's three consecutive votes need. Narrower front edges
 # yielded two ticks on the owner's real fall and no alert.
-_UPRIGHT_ROWS: Final = 15
-_EDGE_ROWS: Final = 10
+UPRIGHT_ROWS: Final = 15
+EDGE_ROWS: Final = 10
 _MIN_EDGE_ROWS: Final = 5
+# A window with fewer valid rows than both edges describes too little to score.
+MIN_WINDOW_ROWS: Final = 2 * _MIN_EDGE_ROWS
 
 # Owner fall (corridor, 2026-09-15 04:36Z): aspect 2.7 -> 0.45-0.75 and torso
 # 2-6 deg -> 52-68 deg within two seconds. Crouching with a laptop held aspect
@@ -91,7 +93,7 @@ class _Warmable(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
-class _RowGeometry:
+class RowGeometry:
     aspect: float
     height: float
     torso_deg: float | None
@@ -107,7 +109,7 @@ def _unit(value: float, start: float, full: float) -> float:
     return (value - start) / (full - start)
 
 
-def _row_geometry(row: Sequence[float], frame_aspect_ratio: float) -> _RowGeometry | None:
+def row_geometry(row: Sequence[float], frame_aspect_ratio: float) -> RowGeometry | None:
     if len(row) != POSE_BBOX56_DIM or row[_VALID_INDEX] != 1.0:
         return None
     x1, y1, x2, y2 = row[_BBOX_OFFSET : _BBOX_OFFSET + 4]
@@ -116,7 +118,7 @@ def _row_geometry(row: Sequence[float], frame_aspect_ratio: float) -> _RowGeomet
     if width <= 0.0 or height <= 0.0:
         return None
     hips = _centre(row, (_LEFT_HIP, _RIGHT_HIP), frame_aspect_ratio)
-    return _RowGeometry(
+    return RowGeometry(
         aspect=height / width,
         height=height,
         torso_deg=_torso_deg(row, frame_aspect_ratio),
@@ -167,13 +169,13 @@ def _leg_frac(row: Sequence[float], frame_aspect_ratio: float, height: float) ->
     return (feet[1] - hips[1]) / height
 
 
-def _edge_median(rows: Sequence[_RowGeometry]) -> tuple[float, float | None]:
+def _edge_median(rows: Sequence[RowGeometry]) -> tuple[float, float | None]:
     aspect = median(row.aspect for row in rows)
     angles = [row.torso_deg for row in rows if row.torso_deg is not None]
     return aspect, (median(angles) if len(angles) >= _MIN_EDGE_ROWS else None)
 
 
-def _legs_down(late: Sequence[_RowGeometry], standing_height: float) -> bool:
+def legs_down(late: Sequence[RowGeometry], standing_height: float) -> bool:
     """The legs lie with the torso, or the whole figure lost most of its height."""
     legs = [row.leg_frac for row in late if row.leg_frac is not None]
     if len(legs) >= _MIN_EDGE_ROWS:
@@ -181,7 +183,7 @@ def _legs_down(late: Sequence[_RowGeometry], standing_height: float) -> bool:
     return median(row.height for row in late) / standing_height <= _HEIGHT_COLLAPSE_MAX_RATIO
 
 
-def _hips_mid_box(late: Sequence[_RowGeometry]) -> bool:
+def hips_mid_box(late: Sequence[RowGeometry]) -> bool:
     """Lying keeps the hips mid-box; sitting on the floor drops them to the bottom."""
     hips = [row.hip_frac for row in late if row.hip_frac is not None]
     if len(hips) < _MIN_EDGE_ROWS:
@@ -190,8 +192,8 @@ def _hips_mid_box(late: Sequence[_RowGeometry]) -> bool:
 
 
 def _collapse(
-    early: Sequence[_RowGeometry],
-    late: Sequence[_RowGeometry],
+    early: Sequence[RowGeometry],
+    late: Sequence[RowGeometry],
     late_torso: float | None,
     standing: float,
 ) -> float:
@@ -209,7 +211,7 @@ def _collapse(
     return max(evidence)
 
 
-def _upright_evidence(rows: Sequence[_RowGeometry]) -> tuple[float, float | None]:
+def _upright_evidence(rows: Sequence[RowGeometry]) -> tuple[float, float | None]:
     """The most upright the person stood in the span: tallest box, straightest torso."""
     aspect = max(row.aspect for row in rows)
     angles = [row.torso_deg for row in rows if row.torso_deg is not None]
@@ -224,11 +226,11 @@ def geometry_fall_transition(features: FallModelInput, frame_aspect_ratio: float
         geometry
         for row in features
         if isinstance(row, tuple)
-        and (geometry := _row_geometry(row, frame_aspect_ratio)) is not None
+        and (geometry := row_geometry(row, frame_aspect_ratio)) is not None
     ]
-    if len(rows) < 2 * _MIN_EDGE_ROWS:
+    if len(rows) < MIN_WINDOW_ROWS:
         return 0.0
-    early, late = rows[:_UPRIGHT_ROWS], rows[-_EDGE_ROWS:]
+    early, late = rows[:UPRIGHT_ROWS], rows[-EDGE_ROWS:]
     early_aspect, early_torso = _upright_evidence(early)
     late_aspect, late_torso = _edge_median(late)
     if early_aspect < _UPRIGHT_MIN_ASPECT:
@@ -236,7 +238,7 @@ def geometry_fall_transition(features: FallModelInput, frame_aspect_ratio: float
     if early_torso is not None and early_torso > _UPRIGHT_MAX_TORSO_DEG:
         return 0.0
     standing = max(row.height for row in early)
-    if not _legs_down(late, standing) or not _hips_mid_box(late):
+    if not legs_down(late, standing) or not hips_mid_box(late):
         return 0.0
     aspect_drop = (early_aspect - late_aspect) / early_aspect
     return _unit(aspect_drop, _ASPECT_DROP_START, _ASPECT_DROP_FULL) * _collapse(
@@ -278,7 +280,14 @@ class PoseGeometryFallScorer:
 
 
 __all__ = [
+    "EDGE_ROWS",
+    "MIN_WINDOW_ROWS",
     "POSE_GEOMETRY_SCORER_VERSION",
+    "UPRIGHT_ROWS",
     "PoseGeometryFallScorer",
+    "RowGeometry",
     "geometry_fall_transition",
+    "hips_mid_box",
+    "legs_down",
+    "row_geometry",
 ]

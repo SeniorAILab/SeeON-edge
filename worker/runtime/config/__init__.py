@@ -49,6 +49,7 @@ from worker.runtime.config.loader import (
     resolve_config_path,
 )
 from worker.runtime.config.local_env import (
+    GEOMETRY_FALL_MODEL_ENV,
     ML_WORKER_CLIP_RECORDING_ENABLED_ENV,
     ML_WORKER_FALL_MODEL_ARCHITECTURE_ENV,
     ML_WORKER_FALL_MODEL_ARTIFACT_DIR_ENV,
@@ -89,6 +90,7 @@ from worker.runtime.config.worker_models import (
 __all__ = [
     "CONFIG_HISTORY_RETENTION_COUNT",
     "CONFIG_VERSION_KEY",
+    "GEOMETRY_FALL_MODEL_ENV",
     "KNOWN_DOMAIN_NAMES",
     "ML_WORKER_CLIP_RECORDING_ENABLED_ENV",
     "ML_WORKER_DEV_MJPEG_ENV",
