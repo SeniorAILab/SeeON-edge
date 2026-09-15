@@ -33,7 +33,7 @@ from worker.pipeline.output.evidence.evidence_manifest import (
     finalize_ready_manifest,
     unavailable_manifest,
 )
-from worker.pipeline.output.evidence.evidence_outbox_types import EvidenceReasonCode
+from worker.pipeline.output.evidence.evidence_outbox_types import ClipId, EvidenceReasonCode
 from worker.pipeline.output.evidence.manifest_models import ReadyClipManifest
 from worker.pipeline.output.evidence.playback_rendition import schedule_playback_rendition
 from worker.pipeline.output.evidence.terminal_outcome import (
@@ -307,7 +307,7 @@ class ClipPublisher:
             return
         if metadata.facility_id is None:
             raise ClipPublicationConflictError(
-                manifest.clip_id, "facility id is required for clip relay delivery"
+                ClipId(manifest.clip_id), "facility id is required for clip relay delivery"
             )
         if isinstance(manifest, ReadyClipManifest):
             entry = ClipEntry(
@@ -350,7 +350,7 @@ class ClipPublisher:
         admitted = DeliveryQueue(self._delivery_queue_directory).try_admit(entry)
         if not admitted.accepted:
             raise ClipPublicationConflictError(
-                manifest.clip_id, f"clip relay queue admission failed: {admitted.fault}"
+                ClipId(manifest.clip_id), f"clip relay queue admission failed: {admitted.fault}"
             )
 
     def _validate_reservation(self, reservation: ClipReservation) -> None:

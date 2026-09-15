@@ -41,7 +41,8 @@ SessionFactory = Callable[[str, list[str]], _OrtSession]
 
 
 class _AdmittedBundleProof(Protocol):
-    observed: Mapping[str, object]
+    @property
+    def observed(self) -> Mapping[str, object]: ...
 
 
 @dataclass(frozen=True)

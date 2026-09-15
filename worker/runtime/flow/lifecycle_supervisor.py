@@ -12,18 +12,15 @@ class _Frame(Protocol):
     native_publish_sequence: int
 
 
-class _Metadata(Protocol):
-    def published_frames(self, camera_id: str) -> int: ...
-
-
 class _Status(Protocol):
-    fatal_error: str | None
+    @property
+    def fatal_error(self) -> str | None: ...
 
 
 class _Plane(Protocol):
-    metadata: _Metadata
-
     def status(self) -> _Status: ...
+
+    def published_frames(self, camera_id: str) -> int: ...
 
     def source_failure(self, camera_id: str, category: str) -> object: ...
 

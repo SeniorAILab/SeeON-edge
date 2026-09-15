@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+from worker.pipeline.output.evidence.event_payload import WorkerEventPayload
 from worker.pipeline.output.evidence.flow_clip_publication import FlowClipPublisher
 from worker.pipeline.output.evidence.flow_sealed_sidecar import (
     FlowSealedRecovery,
@@ -23,7 +24,7 @@ LOGGER = logging.getLogger(__name__)
 class FlowEvidenceStager(Protocol):
     """The durable methods required by the Flow evidence bridge."""
 
-    def stage(self, event: dict[str, object]) -> None: ...
+    def stage(self, event: WorkerEventPayload) -> None: ...
 
     def complete(self, edge_event_id: str, clip_id: str | None) -> None: ...
 

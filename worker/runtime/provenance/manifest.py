@@ -40,9 +40,14 @@ _EFFECTIVE_DECODE_BACKENDS = frozenset({"cpu", "opencv", "nvdec", "vaapi"})
 
 
 class _BedZoneRegionInput(Protocol):
-    id: str
-    polygon: Sequence[tuple[int, int]]
-    origin: Literal["manual", "model"]
+    @property
+    def id(self) -> str: ...
+
+    @property
+    def polygon(self) -> Sequence[tuple[int, int]]: ...
+
+    @property
+    def origin(self) -> Literal["manual", "model"]: ...
 
 
 def build_applied_camera_state(
