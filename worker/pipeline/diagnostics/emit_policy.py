@@ -115,6 +115,9 @@ def model_score_record(
         payload["raw_logit"] = evidence.raw_logit
         payload["applied_temperature"] = evidence.applied_temperature
         payload["class_origins"] = list(evidence.class_origins)
+    shadow_fall_transition = getattr(probability, "shadow_fall_transition", None)
+    if shadow_fall_transition is not None:
+        payload["shadow_fall_transition"] = shadow_fall_transition
     return make_record(
         record_kind="model.score",
         camera_id=camera_id,

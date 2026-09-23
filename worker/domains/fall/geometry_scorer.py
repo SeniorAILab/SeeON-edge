@@ -6,10 +6,12 @@ through the fall). This scorer reads the same ``(30, 56)`` window and names the
 transition the model misses: an upright person whose box collapses from tall
 to wide while the torso turns horizontal inside the two-second window.
 
-It is composed in front of the packaged model at the runtime model seam and
-returns the larger of the two transition scores, so policy votes, episode
-promotion and admission are unchanged. ``fallen`` stays 0.0 like the packaged
-ONNX runner; the policy owns the fallen lifecycle.
+It is composed in front of the packaged model at the runtime model seam and is
+the alert authority (#542): the fall policy acts only on the geometry
+transition. The packaged score can no longer qualify a track on its own; it is
+kept on ``shadow_fall_transition`` as comparison evidence in the ``model.score``
+execution record. ``fallen`` stays the packaged runner's; the policy owns the
+fallen lifecycle.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ from worker.domains.fall.pose_bbox56 import (
 from worker.interfaces.fall_model import FallModelProtocol, FallProbabilities
 from worker.types import FallModelInput
 
-POSE_GEOMETRY_SCORER_VERSION: Final = "pose-geometry-v1"
+POSE_GEOMETRY_SCORER_VERSION: Final = "pose-geometry-authority-v1"
 
 # COCO-17 indices of the torso landmarks the angle is measured between.
 _LEFT_SHOULDER: Final = 5
@@ -245,7 +247,14 @@ def geometry_fall_transition(features: FallModelInput, frame_aspect_ratio: float
 
 
 class PoseGeometryFallScorer:
-    """``FallModelProtocol`` that lifts the packaged score by the geometric one."""
+    """``FallModelProtocol`` where the geometry transition is the alert authority.
+
+    The packaged model's ``fall_transition`` is computed every call and kept on
+    ``shadow_fall_transition`` so it stays visible on the ``model.score``
+    execution record for comparison, but it never composes into the value the
+    fall policy acts on (P542: the packaged proxy missed a real corridor fall
+    outright).
+    """
 
     _base: FallModelProtocol
     _frame_aspect_ratio: float
@@ -263,12 +272,12 @@ class PoseGeometryFallScorer:
     def predict(self, features: FallModelInput) -> FallProbabilities:
         packaged = self._base.predict(features)
         geometric = geometry_fall_transition(features, self._frame_aspect_ratio)
-        if geometric <= packaged.fall_transition:
-            return packaged
         return FallProbabilities(
             background=1.0 - geometric,
             fall_transition=geometric,
             fallen=packaged.fallen,
+            model_evidence=packaged.model_evidence,
+            shadow_fall_transition=packaged.fall_transition,
         )
 
     def warmup(self) -> None:

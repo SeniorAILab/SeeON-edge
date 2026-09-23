@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 
+from worker.domains.fall import FallPolicyDecider
 from worker.domains.fall.classifier import FALL_WINDOW_FRAMES
 from worker.domains.fall.geometry_scorer import (
     PoseGeometryFallScorer,
@@ -125,17 +126,63 @@ class _FlatModel:
         self.warmed = True
 
 
-def test_scorer_lifts_the_packaged_score_only_when_geometry_is_higher() -> None:
+def test_scorer_authority_is_geometry_and_packaged_score_is_shadow_only() -> None:
+    """P542: the fall policy acts on the geometry score; the packaged score is
+    recorded on the side (``shadow_fall_transition``) and never composes in."""
     base = _FlatModel(0.05)
     scorer = PoseGeometryFallScorer(base, frame_width=_WIDTH, frame_height=_HEIGHT)
 
-    lifted = scorer.predict(_window((_UPRIGHT, 12), (_ON_FLOOR, 18)))
-    assert lifted.fall_transition == 1.0
-    assert lifted.background == 0.0
-    assert lifted.fallen == 0.0
+    collapsed = scorer.predict(_window((_UPRIGHT, 12), (_ON_FLOOR, 18)))
+    assert collapsed.fall_transition == 1.0
+    assert collapsed.background == 0.0
+    assert collapsed.fallen == 0.0
+    assert collapsed.shadow_fall_transition == 0.05
 
-    kept = scorer.predict(_window((_CROUCH, 30)))
-    assert kept.fall_transition == 0.05
+    stable = scorer.predict(_window((_CROUCH, 30)))
+    assert stable.fall_transition == 0.0
+    assert stable.shadow_fall_transition == 0.05
 
     scorer.warmup()
     assert base.warmed is True
+
+
+def test_a_high_packaged_score_without_a_geometry_collapse_does_not_qualify() -> None:
+    """A packaged score past the policy threshold must not qualify a track by
+    itself; only a geometry collapse may (issue #542)."""
+    base = _FlatModel(0.97)
+    scorer = PoseGeometryFallScorer(base, frame_width=_WIDTH, frame_height=_HEIGHT)
+
+    stable = scorer.predict(_window((_CROUCH, 30)))
+    assert stable.fall_transition == 0.0
+    assert stable.shadow_fall_transition == 0.97
+
+    collapsed = scorer.predict(_window((_UPRIGHT, 12), (_ON_FLOOR, 18)))
+    assert collapsed.fall_transition == 1.0
+    assert collapsed.shadow_fall_transition == 0.97
+
+def test_policy_never_fires_on_a_high_packaged_score_without_a_collapse() -> None:
+    """Guards the exact seam FallPolicyDecider reads: repeated high packaged
+    scores over many ticks must not accumulate into an alert without a real
+    geometry collapse, while the collapse still confirms one (issue #542)."""
+    base = _FlatModel(0.97)
+    scorer = PoseGeometryFallScorer(base, frame_width=_WIDTH, frame_height=_HEIGHT)
+    decider = FallPolicyDecider(
+        camera_id="camera",
+        facility_id="facility",
+        boot_id="boot",
+        stream_epoch="epoch",
+        source_generation=0,
+    )
+
+    stable = scorer.predict(_window((_CROUCH, 30)))
+    for frame in range(10):
+        assert decider.update({7: stable}, (7,), frame_index=frame, time_sec=float(frame)) == ()
+
+    collapsed = scorer.predict(_window((_UPRIGHT, 12), (_ON_FLOOR, 18)))
+    events: tuple = ()
+    for frame in range(10, 13):
+        events = decider.update(
+            {7: collapsed}, (7,), frame_index=frame, time_sec=float(frame)
+        )
+    assert len(events) == 1
+    assert events[0].event_type == "fall"
