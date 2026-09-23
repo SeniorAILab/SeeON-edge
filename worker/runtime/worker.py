@@ -58,6 +58,10 @@ from worker.domains.fall.pose_bbox56 import (
     COCO17_KEYPOINT_ORDER,
     POSE_BBOX56_CONFIDENCE_GATE,
 )
+from worker.domains.fall.trained_scorer import (
+    TRAINED_FALL_SCORER_VERSION,
+    TrainedGeometryFallScorer,
+)
 from worker.domains.tracker import GreedyIouTracker
 from worker.interfaces.clip_analysis import ClipAnalysisDisabledError
 from worker.interfaces.clip_analysis import ClipAnalysisSupervisor as ClipAnalysisControl
@@ -104,6 +108,7 @@ from worker.runtime.config import (
     LiveClipExportPolicy,
     WorkerConfig,
     WorkerModelsConfig,
+    fall_geometry_classifier_dir_from_environment,
     replay_trace_directory_from_environment,
 )
 from worker.runtime.execution_records import compose_execution_records
@@ -1161,13 +1166,32 @@ class WorkerRuntime:
 
     def _initialize_flow_policy_graph(self, boot: BootContext) -> SharedComponentGraph:
         """Build the CPU policy graph for the Flow media plane."""
-        # The packaged proxy scored a real corridor fall at 0.05; the geometry
-        # scorer names the upright-to-collapsed transition on the same window.
-        fall_model: FallModelProtocol = PoseGeometryFallScorer(
-            self._create_fall_model(),
-            frame_width=int(self._env["ML_WORKER_FLOW_FRAME_WIDTH"]),
-            frame_height=int(self._env["ML_WORKER_FLOW_FRAME_HEIGHT"]),
-        )
+        frame_width = int(self._env["ML_WORKER_FLOW_FRAME_WIDTH"])
+        frame_height = int(self._env["ML_WORKER_FLOW_FRAME_HEIGHT"])
+        # The packaged proxy scored a real corridor fall at 0.05 and the rule-based
+        # geometry scorer missed both owner corridor falls on site replay (#575).
+        # ML_WORKER_FALL_GEOMETRY_CLASSIFIER_DIR is interim, opt-in wiring for the
+        # trained classifier (no fetch-models.sh/manifest.json pinned source exists
+        # yet for this artifact class): unset keeps the rule-based scorer as
+        # authority unchanged; set, the trained classifier becomes the fall-alert
+        # authority and both the packaged proxy and the rule become shadow-only.
+        fall_runtime_version = POSE_GEOMETRY_SCORER_VERSION
+        classifier_dir = fall_geometry_classifier_dir_from_environment(self._env)
+        fall_model: FallModelProtocol
+        if classifier_dir is None:
+            fall_model = PoseGeometryFallScorer(
+                self._create_fall_model(),
+                frame_width=frame_width,
+                frame_height=frame_height,
+            )
+        else:
+            fall_model = TrainedGeometryFallScorer.from_artifact_dir(
+                classifier_dir,
+                self._create_fall_model(),
+                frame_width=frame_width,
+                frame_height=frame_height,
+            )
+            fall_runtime_version = TRAINED_FALL_SCORER_VERSION
         models = self._fall_models()
         flags = {"person-box-source": models.box_source == "person"}
         bindings = self._module_registry.shared_bindings(self._module_versions, flags=flags)
@@ -1189,7 +1213,7 @@ class WorkerRuntime:
                     SharedComponentIdentity(
                         binding.component_id,
                         digest,
-                        f"cpu-policy+{POSE_GEOMETRY_SCORER_VERSION}",
+                        f"cpu-policy+{fall_runtime_version}",
                         "cpu",
                         preprocessing,
                     )

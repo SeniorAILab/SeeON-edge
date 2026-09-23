@@ -58,6 +58,7 @@ from worker.runtime.config.loader import (
 )
 from worker.runtime.config.local_env import (
     ML_WORKER_CLIP_RECORDING_ENABLED_ENV,
+    ML_WORKER_FALL_GEOMETRY_CLASSIFIER_DIR_ENV,
     ML_WORKER_FALL_MODEL_ARCHITECTURE_ENV,
     ML_WORKER_FALL_MODEL_ARTIFACT_DIR_ENV,
     ML_WORKER_FALL_MODEL_OPERATING_THRESHOLD_ENV,
@@ -69,6 +70,7 @@ from worker.runtime.config.local_env import (
     ML_WORKER_FALL_MODEL_WINDOW_ENV,
     WORKER_REPLAY_TRACE_DIR_ENV,
     clip_recording_config_from_environment,
+    fall_geometry_classifier_dir_from_environment,
     fall_model_config_from_environment,
     reject_retired_worker_environment,
     replay_trace_directory_from_environment,
@@ -106,6 +108,7 @@ __all__ = [
     "ML_WORKER_EXECUTION_RECORDS_ENABLED_ENV",
     "ML_WORKER_EXECUTION_RECORDS_FLUSH_MS_ENV",
     "ML_WORKER_EXECUTION_RECORDS_LANE_CAPACITY_ENV",
+    "ML_WORKER_FALL_GEOMETRY_CLASSIFIER_DIR_ENV",
     "ML_WORKER_FALL_MODEL_ARCHITECTURE_ENV",
     "ML_WORKER_FALL_MODEL_ARTIFACT_DIR_ENV",
     "ML_WORKER_FALL_MODEL_OPERATING_THRESHOLD_ENV",
@@ -158,6 +161,7 @@ __all__ = [
     "WorkerRuntimeConfig",
     "clip_recording_config_from_environment",
     "execution_records_settings_from_environment",
+    "fall_geometry_classifier_dir_from_environment",
     "fall_model_config_from_environment",
     "load_worker_config",
     "load_worker_config_from_relay",

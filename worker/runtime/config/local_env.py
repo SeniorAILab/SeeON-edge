@@ -63,6 +63,9 @@ ML_WORKER_FALL_MODEL_PREPROCESSING_IDENTITY_ENV: Final = (
 )
 ML_WORKER_CLIP_RECORDING_ENABLED_ENV: Final = "ML_WORKER_CLIP_RECORDING_ENABLED"
 WORKER_REPLAY_TRACE_DIR_ENV: Final = "WORKER_REPLAY_TRACE_DIR"
+ML_WORKER_FALL_GEOMETRY_CLASSIFIER_DIR_ENV: Final = (
+    "ML_WORKER_FALL_GEOMETRY_CLASSIFIER_DIR"
+)
 FALL_SELECTION_PATH: Final = Path("/app/model-selection.json")
 FALL_MODELS_ROOT: Final = Path("/models")
 
@@ -493,10 +496,29 @@ def replay_trace_directory_from_environment(
     return None if not raw else Path(raw)
 
 
+def fall_geometry_classifier_dir_from_environment(
+    environ: Mapping[str, str] | None = None,
+) -> Path | None:
+    """Return the opt-in trained fall-geometry classifier artifact directory.
+
+    Unset (the default) keeps the rule-based ``PoseGeometryFallScorer`` as the
+    fall-alert authority -- zero blast radius on every existing boot and test
+    that does not know about this model. Set, it points at a directory holding
+    ``model.onnx`` + ``receipt.json`` (``TrainedGeometryFallScorer.from_artifact_dir``
+    verifies both, sha256-checked, before boot proceeds); this is interim,
+    explicit-config wiring documented in the PR body -- no fetch-models.sh/
+    manifest.json pinned-source entry exists yet for this artifact class.
+    """
+    env = os.environ if environ is None else environ
+    raw = env.get(ML_WORKER_FALL_GEOMETRY_CLASSIFIER_DIR_ENV, "").strip()
+    return None if not raw else Path(raw)
+
+
 __all__ = [
     "FALL_MODELS_ROOT",
     "FALL_SELECTION_PATH",
     "ML_WORKER_CLIP_RECORDING_ENABLED_ENV",
+    "ML_WORKER_FALL_GEOMETRY_CLASSIFIER_DIR_ENV",
     "ML_WORKER_FALL_MODEL_ARCHITECTURE_ENV",
     "ML_WORKER_FALL_MODEL_ARTIFACT_DIR_ENV",
     "ML_WORKER_FALL_MODEL_OPERATING_THRESHOLD_ENV",
@@ -508,6 +530,7 @@ __all__ = [
     "ML_WORKER_FALL_MODEL_WINDOW_ENV",
     "WORKER_REPLAY_TRACE_DIR_ENV",
     "clip_recording_config_from_environment",
+    "fall_geometry_classifier_dir_from_environment",
     "fall_model_config_from_environment",
     "reject_retired_worker_environment",
     "replay_trace_directory_from_environment",
