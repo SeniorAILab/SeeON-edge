@@ -118,6 +118,11 @@ def model_score_record(
     shadow_fall_transition = getattr(probability, "shadow_fall_transition", None)
     if shadow_fall_transition is not None:
         payload["shadow_fall_transition"] = shadow_fall_transition
+    shadow_geometry_fall_transition = getattr(
+        probability, "shadow_geometry_fall_transition", None
+    )
+    if shadow_geometry_fall_transition is not None:
+        payload["shadow_geometry_fall_transition"] = shadow_geometry_fall_transition
     return make_record(
         record_kind="model.score",
         camera_id=camera_id,

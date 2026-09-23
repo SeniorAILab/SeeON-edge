@@ -38,10 +38,11 @@ class FallProbabilities:
     that no source score was observed; it does not imply a native three-class
     result, a unit temperature, or a reconstructed logit.
 
-    ``shadow_fall_transition`` is a second scorer's ``fall_transition`` kept for
-    comparison only (P542: the packaged proxy composed in front of the pose
-    geometry scorer). It is recorded on the ``model.score`` execution record
-    so the two can keep being compared, but nothing reads it to qualify a
+    ``shadow_fall_transition`` and ``shadow_geometry_fall_transition`` are other
+    scorers' ``fall_transition`` kept for comparison only: the packaged
+    pose+bbox56 proxy (P542) and the rule-based geometry transition (P542/#575)
+    it replaced. Both are recorded on the ``model.score`` execution record so
+    all three can keep being compared, but nothing reads them to qualify a
     track -- only ``fall_transition`` reaches the policy.
     """
 
@@ -50,14 +51,15 @@ class FallProbabilities:
     fallen: float
     model_evidence: BinaryFallScoreEvidence | None = field(default=None, kw_only=True)
     shadow_fall_transition: float | None = field(default=None, kw_only=True)
+    shadow_geometry_fall_transition: float | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         for value in (self.background, self.fall_transition, self.fallen):
             if not math.isfinite(value) or not 0.0 <= value <= 1.0:
                 raise ValueError("fall probabilities must be finite values in [0, 1]")
-        shadow = self.shadow_fall_transition
-        if shadow is not None and (not math.isfinite(shadow) or not 0.0 <= shadow <= 1.0):
-            raise ValueError("shadow fall transition must be a finite value in [0, 1]")
+        for shadow in (self.shadow_fall_transition, self.shadow_geometry_fall_transition):
+            if shadow is not None and (not math.isfinite(shadow) or not 0.0 <= shadow <= 1.0):
+                raise ValueError("shadow fall transition must be a finite value in [0, 1]")
 
 
 @runtime_checkable
