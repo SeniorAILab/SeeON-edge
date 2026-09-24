@@ -8,6 +8,53 @@ from typing import Literal, Protocol, runtime_checkable
 
 from worker.types import FallModelInput
 
+FallState = Literal["background", "fall_transition", "fallen"]
+
+
+@dataclass(frozen=True, slots=True)
+class FallOutputContract:
+    """Versioned meaning of one model output tensor and its policy projection."""
+
+    contract_id: str
+    version: int
+    supported_states: tuple[FallState, ...]
+    model_output_size: int
+    model_class_order: tuple[str, ...]
+    activation: Literal["sigmoid", "softmax"]
+
+    @property
+    def unsupported_states(self) -> tuple[FallState, ...]:
+        return tuple(
+            state
+            for state in ("background", "fall_transition", "fallen")
+            if state not in self.supported_states
+        )
+
+    def manifest_value(self) -> dict[str, object]:
+        return {
+            "id": self.contract_id,
+            "version": self.version,
+            "supported_states": list(self.supported_states),
+        }
+
+
+BINARY_FALL_OUTPUT_CONTRACT = FallOutputContract(
+    contract_id="fall.binary-transition-sigmoid",
+    version=1,
+    supported_states=("background", "fall_transition"),
+    model_output_size=1,
+    model_class_order=("non_fall", "fall_transition_proxy"),
+    activation="sigmoid",
+)
+THREE_STATE_FALL_OUTPUT_CONTRACT = FallOutputContract(
+    contract_id="fall.three-state-softmax",
+    version=1,
+    supported_states=("background", "fall_transition", "fallen"),
+    model_output_size=3,
+    model_class_order=("background", "fall_transition", "fallen"),
+    activation="softmax",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class BinaryFallScoreEvidence:
@@ -20,6 +67,10 @@ class BinaryFallScoreEvidence:
 
     raw_logit: float
     applied_temperature: float
+    output_contract: FallOutputContract = field(
+        default=BINARY_FALL_OUTPUT_CONTRACT,
+        init=False,
+    )
     class_origins: tuple[
         Literal["derived_complement"],
         Literal["temperature_sigmoid"],
@@ -31,18 +82,41 @@ class BinaryFallScoreEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class ThreeStateFallScoreEvidence:
+    """Observed three-state logits and calibration used to produce one result."""
+
+    raw_logits: tuple[float, float, float]
+    applied_temperature: float
+    output_contract: FallOutputContract = field(
+        default=THREE_STATE_FALL_OUTPUT_CONTRACT,
+        init=False,
+    )
+    class_origins: tuple[
+        Literal["temperature_softmax"],
+        Literal["temperature_softmax"],
+        Literal["temperature_softmax"],
+    ] = field(
+        default=("temperature_softmax", "temperature_softmax", "temperature_softmax"),
+        init=False,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class FallProbabilities:
-    """Policy probabilities with optional evidence from a binary source.
+    """Policy probabilities with optional evidence from a declared output contract.
 
     ``fall_transition`` is already calibrated. ``model_evidence=None`` means
-    that no source score was observed; it does not imply a native three-class
-    result, a unit temperature, or a reconstructed logit.
+    that no source score was observed; it does not imply any output contract,
+    a unit temperature, or a reconstructed logit.
     """
 
     background: float
     fall_transition: float
     fallen: float
-    model_evidence: BinaryFallScoreEvidence | None = field(default=None, kw_only=True)
+    model_evidence: BinaryFallScoreEvidence | ThreeStateFallScoreEvidence | None = field(
+        default=None,
+        kw_only=True,
+    )
 
     def __post_init__(self) -> None:
         for value in (self.background, self.fall_transition, self.fallen):
@@ -58,7 +132,12 @@ class FallModelProtocol(Protocol):
 
 
 __all__ = [
+    "BINARY_FALL_OUTPUT_CONTRACT",
     "BinaryFallScoreEvidence",
+    "FallOutputContract",
     "FallModelProtocol",
     "FallProbabilities",
+    "FallState",
+    "THREE_STATE_FALL_OUTPUT_CONTRACT",
+    "ThreeStateFallScoreEvidence",
 ]

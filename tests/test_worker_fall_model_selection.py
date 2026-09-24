@@ -53,7 +53,14 @@ from worker.adapters.model.pose_bbox56_bundle import PoseBbox56BundleRunner
 from worker.domains import DETECTION_MODULE_REGISTRY, CameraModuleContext
 from worker.domains.fall import FallPolicyDecider, FallWindowClassifier
 from worker.domains.registry import _audit_snapshot, _effective_transition_threshold
-from worker.interfaces.fall_model import BinaryFallScoreEvidence, FallProbabilities
+from worker.interfaces.fall_model import (
+    BINARY_FALL_OUTPUT_CONTRACT,
+    THREE_STATE_FALL_OUTPUT_CONTRACT,
+    BinaryFallScoreEvidence,
+    FallProbabilities,
+    ThreeStateFallScoreEvidence,
+)
+from worker.pipeline.diagnostics.emit_policy import model_score_record
 from worker.runtime import bootstrap
 from worker.runtime.config import WorkerConfig, local_env
 from worker.runtime.config.worker_models import SelectedFallBundleConfig
@@ -104,6 +111,17 @@ class _ControlledLogitSession:
     def run(self, _output_names: object, _input_feed: object) -> list[object]:
         self.run_count += 1
         return [[[self.logit]]]
+
+
+@final
+class _ControlledLogitsSession:
+    def __init__(self, logits: tuple[float, float, float]) -> None:
+        self.logits = logits
+        self.run_count = 0
+
+    def run(self, _output_names: object, _input_feed: object) -> list[object]:
+        self.run_count += 1
+        return [[list(self.logits)]]
 
 
 @final
@@ -226,8 +244,15 @@ def _selected_onnx_bundle(
     calibration_grants: tuple[bool, float] | None = None,
     class_order: list[str] | None = None,
     temporal_rule: object = None,
+    output_contract: dict[str, object] | None = None,
+    output_class_count: int = 2,
 ) -> tuple[Path, DesiredModelBundle]:
     source = write_pose_bbox56_bundle(tmp_path / "source", temperature=temperature)
+    if output_contract is not None:
+        manifest_path = source / "bundle-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["output_contract"] = output_contract
+        manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
     # A selection that declares its threshold comes from the receipt must be
     # backed by the calibration: a real promoted publication states
     # promotion_eligible and the granted threshold there. Write that in, so
@@ -261,11 +286,12 @@ def _selected_onnx_bundle(
         )
     }
     calibration_document = json.loads(members["calibration.json"])
+    bundle_manifest = json.loads(members["bundle-manifest.json"])
     identities = {
         "dataset": "1" * 64,
         "calibration": hashlib.sha256(members["calibration.json"]).hexdigest(),
         "conformance": hashlib.sha256(members["conformance/pose-bbox56-v1.json"]).hexdigest(),
-        "class": "4" * 64,
+        "class": canonical_digest(bundle_manifest["output_contract"]),
         "input": "pose-bbox56.v1",
         "policy": canonical_digest(calibration_document.get("temporal_rule")),
         "members": "6" * 64,
@@ -289,7 +315,7 @@ def _selected_onnx_bundle(
         "calibration_digest": identities["calibration"],
         "conformance_digest": identities["conformance"],
         "input_observation_schema": identities["input"],
-        "output_class_count": 2,
+        "output_class_count": output_class_count,
         "output_class_semantics_digest": identities["class"],
         "policy_digest": identities["policy"],
     }
@@ -337,7 +363,7 @@ def _selected_onnx_bundle(
         calibration_digest=identities["calibration"],
         conformance_digest=identities["conformance"],
         input_observation_schema=identities["input"],
-        output_class_count=2,
+        output_class_count=output_class_count,
         output_class_semantics_digest=identities["class"],
         policy_digest=identities["policy"],
         runtime_format="onnxruntime",
@@ -391,6 +417,12 @@ def test_packaged_onnx_result_retains_per_call_binary_score_evidence(
         raw_logit=1.25,
         applied_temperature=2.0,
     )
+    assert first_evidence.output_contract is BINARY_FALL_OUTPUT_CONTRACT
+    assert first_evidence.output_contract.supported_states == (
+        "background",
+        "fall_transition",
+    )
+    assert first_evidence.output_contract.unsupported_states == ("fallen",)
     assert first_evidence.class_origins == (
         "derived_complement",
         "temperature_sigmoid",
@@ -410,6 +442,166 @@ def test_packaged_onnx_result_retains_per_call_binary_score_evidence(
         first_evidence.raw_logit = 0.0
     with pytest.raises(FrozenInstanceError):
         first.model_evidence = None
+
+
+def test_binary_score_report_marks_fallen_as_unsupported() -> None:
+    probability = FallProbabilities(
+        background=0.25,
+        fall_transition=0.75,
+        fallen=0.0,
+        model_evidence=BinaryFallScoreEvidence(
+            raw_logit=1.0986123,
+            applied_temperature=1.0,
+        ),
+    )
+
+    record = model_score_record(
+        camera_id="camera",
+        worker_boot_id="boot",
+        source_generation=0,
+        stream_epoch=1,
+        frame_seq=30,
+        source_pts_ns=2_000_000_000,
+        track_id=7,
+        generation=0,
+        probability=probability,
+        observed_at_ns=3_000_000_000,
+    )
+
+    assert record is not None
+    assert record.payload["fallen"] == 0.0
+    assert record.payload["output_contract_id"] == "fall.binary-transition-sigmoid"
+    assert record.payload["output_contract_version"] == 1
+    assert record.payload["supported_states"] == ["background", "fall_transition"]
+    assert record.payload["state_support"] == {
+        "background": "supported",
+        "fall_transition": "supported",
+        "fallen": "unsupported",
+    }
+
+
+def test_static_three_state_contract_dispatches_softmax_without_claiming_trained_model(
+    tmp_path: Path,
+) -> None:
+    contract = THREE_STATE_FALL_OUTPUT_CONTRACT.manifest_value()
+    models_root, desired = _selected_onnx_bundle(
+        tmp_path,
+        class_order=list(THREE_STATE_FALL_OUTPUT_CONTRACT.model_class_order),
+        output_contract=contract,
+        output_class_count=3,
+    )
+    selection = desired.selection
+    assert selection is not None
+    proof = admit_model_bundle(models_root, desired)
+    session = _ControlledLogitsSession((1.0, 2.0, 3.0))
+    runner = OrtPoseBbox56Runner.from_admitted_bundle(
+        models_root / "bundles" / desired.bundle_sha256,
+        proof,
+        selection,
+        session_factory=lambda _path, _providers: session,
+    )
+
+    result = runner.predict(np.zeros((30, 56), dtype=np.float32))
+    expected = np.exp(np.array([1.0, 2.0, 3.0], dtype=np.float32) - 3.0)
+    expected /= expected.sum()
+
+    assert session.run_count == 2
+    assert (result.background, result.fall_transition, result.fallen) == pytest.approx(
+        tuple(float(value) for value in expected)
+    )
+    assert result.model_evidence == ThreeStateFallScoreEvidence(
+        raw_logits=(1.0, 2.0, 3.0),
+        applied_temperature=1.0,
+    )
+    assert result.model_evidence.output_contract is THREE_STATE_FALL_OUTPUT_CONTRACT
+
+
+def test_packaged_bundle_requires_output_contract_metadata(tmp_path: Path) -> None:
+    root = write_pose_bbox56_bundle(tmp_path / "bundle")
+    manifest_path = root / "bundle-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    del manifest["output_contract"]
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(ModelLoadError, match="must declare output_contract"):
+        OrtPoseBbox56Runner.from_artifact_dir(
+            root,
+            session_factory=lambda _path, _providers: _ControlledLogitSession(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("id", "fall.unknown"),
+        ("version", 2),
+    ],
+)
+def test_packaged_bundle_rejects_unknown_output_contract(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    root = write_pose_bbox56_bundle(tmp_path / "bundle")
+    manifest_path = root / "bundle-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["output_contract"][field] = value
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(ModelLoadError, match="unsupported output_contract id/version"):
+        OrtPoseBbox56Runner.from_artifact_dir(
+            root,
+            session_factory=lambda _path, _providers: _ControlledLogitSession(),
+        )
+
+
+def test_packaged_bundle_rejects_supported_states_mismatch(tmp_path: Path) -> None:
+    root = write_pose_bbox56_bundle(tmp_path / "bundle")
+    manifest_path = root / "bundle-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["output_contract"]["supported_states"].append("fallen")
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(ModelLoadError, match="output_contract metadata mismatch"):
+        OrtPoseBbox56Runner.from_artifact_dir(
+            root,
+            session_factory=lambda _path, _providers: _ControlledLogitSession(),
+        )
+
+
+def test_selected_bundle_rejects_output_contract_digest_mismatch(tmp_path: Path) -> None:
+    models_root, desired = _selected_onnx_bundle(tmp_path)
+    selection = desired.selection
+    assert selection is not None
+    proof = admit_model_bundle(models_root, desired)
+
+    with pytest.raises(ModelLoadError, match="output_class_semantics_digest"):
+        OrtPoseBbox56Runner.from_admitted_bundle(
+            models_root / "bundles" / desired.bundle_sha256,
+            proof,
+            replace(selection, output_class_semantics_digest="f" * 64),
+            session_factory=lambda _path, _providers: _ControlledLogitSession(),
+        )
+
+
+def test_selected_bundle_rejects_output_contract_tamper_after_admission(tmp_path: Path) -> None:
+    models_root, desired = _selected_onnx_bundle(tmp_path)
+    selection = desired.selection
+    assert selection is not None
+    proof = admit_model_bundle(models_root, desired)
+    bundle_dir = models_root / "bundles" / desired.bundle_sha256
+    manifest_path = bundle_dir / "bundle-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["output_contract"]["version"] = 2
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(ModelLoadError, match="admitted bundle member changed"):
+        OrtPoseBbox56Runner.from_admitted_bundle(
+            bundle_dir,
+            proof,
+            selection,
+            session_factory=lambda _path, _providers: _ControlledLogitSession(),
+        )
 
 
 def test_admitted_non_promotable_onnx_result_still_applies_loaded_temperature(

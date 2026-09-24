@@ -15,19 +15,23 @@ import numpy as np
 from contracts.model_selection import POSE_BBOX56_PREPROCESSING_IDENTITY, ModelSelection
 from shared.detection_policies import FALL_POLICY_V2_DEFAULT
 from worker.adapters.model.errors import ModelLoadError
+from worker.adapters.model.fall_output_contract import parse_fall_output_contract
 from worker.adapters.model.pose_bbox56_bundle_support import (
     member_digest,
     read_json,
     verify_bundle,
 )
-from worker.interfaces.fall_model import BinaryFallScoreEvidence, FallProbabilities
+from worker.interfaces.fall_model import (
+    BINARY_FALL_OUTPUT_CONTRACT,
+    THREE_STATE_FALL_OUTPUT_CONTRACT,
+    BinaryFallScoreEvidence,
+    FallOutputContract,
+    FallProbabilities,
+    ThreeStateFallScoreEvidence,
+)
 from worker.types import FallModelInput
 
 _SHAPE: Final = (30, 56)
-#: The output contract this runner implements: one logit, read as a binary
-#: fall-transition score. The bundle calibration's class_order has two entries.
-OUTPUT_CLASS_COUNT: Final = 2
-OUTPUT_CLASS_ORDER: Final = ("non_fall", "fall_transition_proxy")
 _CPU_PROVIDER: Final = ("CPUExecutionProvider",)
 
 
@@ -91,6 +95,7 @@ class OrtPoseBbox56Runner:
         artifact_digest: str,
         preprocessing_identity: str,
         conformance: PoseBbox56Conformance,
+        output_contract: FallOutputContract,
     ) -> None:
         self._session = session
         self._temperature = temperature
@@ -101,6 +106,7 @@ class OrtPoseBbox56Runner:
         self.artifact_digest = artifact_digest
         self.preprocessing_identity = preprocessing_identity
         self.conformance = conformance
+        self.output_contract = output_contract
 
     @classmethod
     def from_artifact_dir(
@@ -118,6 +124,7 @@ class OrtPoseBbox56Runner:
         root = Path(artifact_dir).expanduser().resolve()
         manifest = read_json(root / "bundle-manifest.json")
         verify_bundle(root, manifest)
+        output_contract, _output_contract_digest = parse_fall_output_contract(manifest)
         artifact_digest = member_digest(manifest, "model.onnx")
         member_digest(manifest, "calibration.json")
         conformance = _packaged_conformance(root, manifest)
@@ -128,7 +135,7 @@ class OrtPoseBbox56Runner:
             receipt_transition_votes,
             receipt_transition_window,
             promotion_eligible,
-        ) = _bundle_metadata(root, conformance.preprocessing_identity)
+        ) = _bundle_metadata(root, conformance.preprocessing_identity, output_contract)
         if session_factory is None:
             session_factory = _onnxruntime_session_factory
         try:
@@ -145,6 +152,7 @@ class OrtPoseBbox56Runner:
             artifact_digest,
             conformance.preprocessing_identity,
             conformance,
+            output_contract,
         )
         runner.warmup()
         return runner
@@ -159,17 +167,6 @@ class OrtPoseBbox56Runner:
         session_factory: SessionFactory | None = None,
     ) -> OrtPoseBbox56Runner:
         """Construct the selected ONNX runner from the already-admitted bundle."""
-        # The selection declares an output contract; this runner implements
-        # exactly one - a single logit read as a binary fall-transition score.
-        # A replacement that emits a different class count is a different
-        # structure, and it must refuse here rather than have its logit read
-        # as if it were this one.
-        if selection.output_class_count != OUTPUT_CLASS_COUNT:
-            raise ModelLoadError(
-                f"selected bundle declares output_class_count={selection.output_class_count}, "
-                f"but this runner implements {OUTPUT_CLASS_COUNT} (a single fall-transition "
-                "logit); a model with another output contract needs its own runner"
-            )
         member_digests = proof.observed.get("member_digests")
         if not isinstance(member_digests, Mapping):
             raise ModelLoadError("admitted bundle proof has no member digests")
@@ -205,6 +202,7 @@ class OrtPoseBbox56Runner:
         root = Path(artifact_dir).expanduser().resolve()
         _verify_admitted_member(root, "model.onnx", model_digest)
         _verify_admitted_member(root, "calibration.json", calibration_digest)
+        output_contract = _admitted_output_contract(root, member_digests, selection)
         conformance = _admitted_conformance(root, member_digests, selection.conformance_digest)
         if conformance.preprocessing_identity != selection.preprocessing_identity:
             raise ModelLoadError(
@@ -214,7 +212,12 @@ class OrtPoseBbox56Runner:
             )
         _validate_runner_conformance(conformance)
         calibration = read_json(root / "calibration.json")
-        temperature = _calibration_temperature(root, calibration, selection.preprocessing_identity)
+        temperature = _calibration_temperature(
+            root,
+            calibration,
+            selection.preprocessing_identity,
+            output_contract,
+        )
         receipt_transition_votes, receipt_transition_window = _calibration_temporal_rule(
             calibration
         )
@@ -240,6 +243,7 @@ class OrtPoseBbox56Runner:
             model_digest,
             conformance.preprocessing_identity,
             conformance,
+            output_contract,
         )
         runner.warmup()
         return runner
@@ -255,18 +259,38 @@ class OrtPoseBbox56Runner:
         if len(outputs) != 1:
             raise ModelLoadError("pose-bbox56 ONNX model must return one output")
         logits = np.asarray(outputs[0], dtype=np.float32)
-        if logits.shape != (1, 1) or not np.isfinite(logits).all():
-            raise ModelLoadError("pose-bbox56 ONNX model must return finite shape (1, 1)")
-        fall_transition = float(1.0 / (1.0 + np.exp(-logits[0, 0] / self._temperature)))
-        return FallProbabilities(
-            background=1.0 - fall_transition,
-            fall_transition=fall_transition,
-            fallen=0.0,
-            model_evidence=BinaryFallScoreEvidence(
-                raw_logit=float(logits[0, 0]),
-                applied_temperature=self._temperature,
-            ),
-        )
+        expected_shape = (1, self.output_contract.model_output_size)
+        if logits.shape != expected_shape or not np.isfinite(logits).all():
+            raise ModelLoadError(
+                f"pose-bbox56 ONNX model must return finite shape {expected_shape}"
+            )
+        if self.output_contract is BINARY_FALL_OUTPUT_CONTRACT:
+            fall_transition = float(
+                1.0 / (1.0 + np.exp(-logits[0, 0] / self._temperature))
+            )
+            return FallProbabilities(
+                background=1.0 - fall_transition,
+                fall_transition=fall_transition,
+                fallen=0.0,
+                model_evidence=BinaryFallScoreEvidence(
+                    raw_logit=float(logits[0, 0]),
+                    applied_temperature=self._temperature,
+                ),
+            )
+        if self.output_contract is THREE_STATE_FALL_OUTPUT_CONTRACT:
+            scaled = logits[0] / self._temperature
+            exponentials = np.exp(scaled - np.max(scaled))
+            probabilities = exponentials / np.sum(exponentials)
+            return FallProbabilities(
+                background=float(probabilities[0]),
+                fall_transition=float(probabilities[1]),
+                fallen=float(probabilities[2]),
+                model_evidence=ThreeStateFallScoreEvidence(
+                    raw_logits=tuple(float(value) for value in logits[0]),
+                    applied_temperature=self._temperature,
+                ),
+            )
+        raise ModelLoadError("pose-bbox56 output contract dispatch is unavailable")
 
     def warmup(self) -> None:
         self.predict(np.zeros(_SHAPE, dtype=np.float32))
@@ -293,12 +317,19 @@ def _onnxruntime_session_factory(model_path: str, providers: list[str]) -> _OrtS
 
 
 def _bundle_metadata(
-    root: Path, preprocessing_identity: str
+    root: Path,
+    preprocessing_identity: str,
+    output_contract: FallOutputContract,
 ) -> tuple[float, float | None, int, int, bool]:
     calibration = read_json(root / "calibration.json")
     if not isinstance(calibration, dict):
         raise ModelLoadError("invalid calibration.json")
-    parsed_temperature = _calibration_temperature(root, calibration, preprocessing_identity)
+    parsed_temperature = _calibration_temperature(
+        root,
+        calibration,
+        preprocessing_identity,
+        output_contract,
+    )
     transition_votes, transition_window = _calibration_temporal_rule(calibration)
     candidate_threshold = calibration.get("threshold")
     receipt_threshold = (
@@ -346,11 +377,12 @@ def _calibration_temperature(
     root: Path,
     calibration: object | None = None,
     preprocessing_identity: str = POSE_BBOX56_PREPROCESSING_IDENTITY,
+    output_contract: FallOutputContract = BINARY_FALL_OUTPUT_CONTRACT,
 ) -> float:
     document = read_json(root / "calibration.json") if calibration is None else calibration
     if not isinstance(document, dict):
         raise ModelLoadError("invalid calibration.json")
-    _validate_calibration_class_order(document)
+    _validate_calibration_class_order(document, output_contract)
     declared_digest = document.get("preprocessing_identity_digest")
     expected_digest = hashlib.sha256(preprocessing_identity.encode("utf-8")).hexdigest()
     if declared_digest != expected_digest:
@@ -368,18 +400,22 @@ def _calibration_temperature(
     return parsed_temperature
 
 
-def _validate_calibration_class_order(calibration: Mapping[str, object]) -> None:
+def _validate_calibration_class_order(
+    calibration: Mapping[str, object],
+    output_contract: FallOutputContract,
+) -> None:
     class_order = calibration.get("class_order")
-    if not isinstance(class_order, list) or len(class_order) != OUTPUT_CLASS_COUNT:
+    expected_order = output_contract.model_class_order
+    if not isinstance(class_order, list) or len(class_order) != len(expected_order):
         raise ModelLoadError(
-            f"calibration class_order must contain exactly {OUTPUT_CLASS_COUNT} entries; "
+            f"calibration class_order must contain exactly {len(expected_order)} entries; "
             f"observed {class_order!r}"
         )
     observed_order = tuple(class_order)
-    if observed_order != OUTPUT_CLASS_ORDER:
+    if observed_order != expected_order:
         raise ModelLoadError(
             f"calibration class_order {class_order!r} contradicts this runner's "
-            f"implemented order {list(OUTPUT_CLASS_ORDER)!r}"
+            f"implemented order {list(expected_order)!r}"
         )
 
 
@@ -443,6 +479,32 @@ def _admitted_conformance(
     relative_path = candidates[0]
     _verify_admitted_member(root, relative_path, conformance_digest)
     return _parse_conformance(root, relative_path)
+
+
+def _admitted_output_contract(
+    root: Path,
+    member_digests: Mapping[str, object],
+    selection: ModelSelection,
+) -> FallOutputContract:
+    manifest_digest = member_digests.get("bundle-manifest.json")
+    if not isinstance(manifest_digest, str):
+        raise ModelLoadError("admitted bundle has no bundle-manifest.json digest")
+    _verify_admitted_member(root, "bundle-manifest.json", manifest_digest)
+    contract, contract_digest = parse_fall_output_contract(
+        read_json(root / "bundle-manifest.json")
+    )
+    if selection.output_class_semantics_digest != contract_digest:
+        raise ModelLoadError(
+            "selected output_class_semantics_digest does not match bundle output_contract"
+        )
+    expected_count = len(contract.model_class_order)
+    if selection.output_class_count != expected_count:
+        raise ModelLoadError(
+            f"selected bundle declares output_class_count={selection.output_class_count}, "
+            f"but output_contract {contract.contract_id!r} version {contract.version} "
+            f"requires {expected_count}"
+        )
+    return contract
 
 
 def _parse_conformance(root: Path, relative_path: str) -> PoseBbox56Conformance:

@@ -13,12 +13,17 @@ from torch import nn
 
 from contracts.model_selection import POSE_BBOX56_PREPROCESSING_IDENTITY
 from worker.adapters.model.errors import ModelLoadError
+from worker.adapters.model.fall_output_contract import parse_fall_output_contract
 from worker.adapters.model.pose_bbox56_bundle_support import (
     member_digest,
     read_json,
     verify_bundle,
 )
-from worker.interfaces.fall_model import BinaryFallScoreEvidence, FallProbabilities
+from worker.interfaces.fall_model import (
+    BINARY_FALL_OUTPUT_CONTRACT,
+    BinaryFallScoreEvidence,
+    FallProbabilities,
+)
 from worker.types import FallModelInput
 
 _SHAPE: Final = (30, 56)
@@ -73,6 +78,11 @@ class PoseBbox56BundleRunner:
         root = Path(artifact_dir).expanduser().resolve()
         manifest = read_json(root / "bundle-manifest.json")
         verify_bundle(root, manifest)
+        output_contract, _output_contract_digest = parse_fall_output_contract(manifest)
+        if output_contract is not BINARY_FALL_OUTPUT_CONTRACT:
+            raise ModelLoadError(
+                "pose-bbox56 proxy bundle supports only the binary output contract"
+            )
         member_digest(manifest, "calibration.json")
         arch = read_json(root / "arch.json")
         calibration = read_json(root / "calibration.json")

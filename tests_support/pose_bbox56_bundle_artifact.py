@@ -140,6 +140,11 @@ def write_pose_bbox56_bundle(
     manifest = {
         "files": files,
         "model_family": "gru_source_proxy_v0",
+        "output_contract": {
+            "id": "fall.binary-transition-sigmoid",
+            "supported_states": ["background", "fall_transition"],
+            "version": 1,
+        },
         "preprocessing_identity_digest": PREPROCESSING_IDENTITY_DIGEST,
         "schema_version": "bundle-manifest/proxy-v0",
     }

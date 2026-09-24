@@ -112,9 +112,22 @@ def model_score_record(
         "window_frames": FALL_WINDOW_FRAMES,
     }
     if evidence is not None:
-        payload["raw_logit"] = evidence.raw_logit
+        raw_logit = getattr(evidence, "raw_logit", None)
+        raw_logits = getattr(evidence, "raw_logits", None)
+        if raw_logit is not None:
+            payload["raw_logit"] = raw_logit
+        if raw_logits is not None:
+            payload["raw_logits"] = list(raw_logits)
         payload["applied_temperature"] = evidence.applied_temperature
         payload["class_origins"] = list(evidence.class_origins)
+        contract = evidence.output_contract
+        payload["output_contract_id"] = contract.contract_id
+        payload["output_contract_version"] = contract.version
+        payload["supported_states"] = list(contract.supported_states)
+        payload["state_support"] = {
+            state: "supported" if state in contract.supported_states else "unsupported"
+            for state in ("background", "fall_transition", "fallen")
+        }
     return make_record(
         record_kind="model.score",
         camera_id=camera_id,
