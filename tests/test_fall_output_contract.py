@@ -25,9 +25,6 @@ from worker.adapters.model.ort_pose_bbox56 import (
     OrtPoseBbox56Runner,
     PoseBbox56Conformance,
 )
-
-_VENDORED_V0_MANIFEST_PATH = Path(__file__).parent / "fixtures/fall/bundle-manifest.json"
-_VENDORED_V0_MANIFEST_SHA256 = "a60ede83da712d9488c81222c5dbbd77174e7136813b86052ed1eeb2fd1913bc"
 from worker.interfaces.fall_model import (
     BINARY_FALL_OUTPUT_CONTRACT,
     THREE_STATE_FALL_OUTPUT_CONTRACT,
@@ -35,6 +32,9 @@ from worker.interfaces.fall_model import (
     ThreeStateFallScoreEvidence,
 )
 from worker.pipeline.diagnostics.emit_policy import model_score_record
+
+_VENDORED_V0_MANIFEST_PATH = Path(__file__).parent / "fixtures/fall/bundle-manifest.json"
+_VENDORED_V0_MANIFEST_SHA256 = "a60ede83da712d9488c81222c5dbbd77174e7136813b86052ed1eeb2fd1913bc"
 
 
 class _StaticSession:
