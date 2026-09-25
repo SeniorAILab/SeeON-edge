@@ -1,0 +1,15 @@
+logLevel: info
+rtsp: true
+rtspAddress: :8554
+protocols: [tcp]
+hls: false
+webrtc: false
+srt: false
+api: false
+metrics: false
+pathDefaults:
+  source: publisher
+  overridePublisher: false
+paths:
+  research:
+  research2:

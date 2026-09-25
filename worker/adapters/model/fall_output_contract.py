@@ -61,4 +61,26 @@ def parse_fall_output_contract(
     return contract, canonical_digest(expected)
 
 
-__all__ = ["parse_fall_output_contract"]
+def parse_packaged_fall_output_contract(
+    bundle_manifest: object,
+) -> tuple[FallOutputContract, str]:
+    """Resolve a packaged bundle's contract, admitting the pre-contract v0 shape.
+
+    A bundle published before ``output_contract`` existed declares its class
+    order at the manifest's top level instead. When ``output_contract`` is
+    absent and that legacy ``class_order`` matches the binary contract's
+    exactly, the bundle is binary. Every other bundle -- with an
+    ``output_contract``, or without one and a non-matching legacy
+    ``class_order`` -- goes through the strict parser, so a bundle that omits
+    both still fails closed. Only the packaged loaders call this; the
+    admitted path always requires an explicit ``output_contract``.
+    """
+    if isinstance(bundle_manifest, Mapping) and "output_contract" not in bundle_manifest:
+        legacy_class_order = bundle_manifest.get("class_order")
+        if legacy_class_order == list(BINARY_FALL_OUTPUT_CONTRACT.model_class_order):
+            expected = BINARY_FALL_OUTPUT_CONTRACT.manifest_value()
+            return BINARY_FALL_OUTPUT_CONTRACT, canonical_digest(expected)
+    return parse_fall_output_contract(bundle_manifest)
+
+
+__all__ = ["parse_fall_output_contract", "parse_packaged_fall_output_contract"]

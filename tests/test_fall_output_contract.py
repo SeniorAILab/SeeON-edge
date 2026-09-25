@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 
 import numpy as np
@@ -16,11 +17,17 @@ from contracts.model_selection import (
     canonical_digest,
 )
 from worker.adapters.model.errors import ModelLoadError
-from worker.adapters.model.fall_output_contract import parse_fall_output_contract
+from worker.adapters.model.fall_output_contract import (
+    parse_fall_output_contract,
+    parse_packaged_fall_output_contract,
+)
 from worker.adapters.model.ort_pose_bbox56 import (
     OrtPoseBbox56Runner,
     PoseBbox56Conformance,
 )
+
+_VENDORED_V0_MANIFEST_PATH = Path(__file__).parent / "fixtures/fall/bundle-manifest.json"
+_VENDORED_V0_MANIFEST_SHA256 = "a60ede83da712d9488c81222c5dbbd77174e7136813b86052ed1eeb2fd1913bc"
 from worker.interfaces.fall_model import (
     BINARY_FALL_OUTPUT_CONTRACT,
     THREE_STATE_FALL_OUTPUT_CONTRACT,
@@ -232,6 +239,46 @@ def test_selected_output_contract_digest_mismatch_fails_closed(tmp_path) -> None
             mismatched,
             session_factory=lambda _path, _providers: _StaticSession((0.0,)),
         )
+
+
+def test_vendored_v0_bundle_manifest_bytes_are_pinned() -> None:
+    """Guard the vendored fixture against silent drift; see the digest note
+    below for how this value was established."""
+    observed = hashlib.sha256(_VENDORED_V0_MANIFEST_PATH.read_bytes()).hexdigest()
+
+    assert observed == _VENDORED_V0_MANIFEST_SHA256
+
+
+def test_vendored_v0_bundle_manifest_loads_as_binary_via_packaged_path() -> None:
+    """A real pre-contract v0 manifest has no output_contract key, only the
+    legacy top-level class_order; the packaged loader admits it as binary."""
+    manifest = json.loads(_VENDORED_V0_MANIFEST_PATH.read_text(encoding="utf-8"))
+    assert "output_contract" not in manifest
+
+    contract, digest = parse_packaged_fall_output_contract(manifest)
+
+    assert contract is BINARY_FALL_OUTPUT_CONTRACT
+    assert digest == canonical_digest(BINARY_FALL_OUTPUT_CONTRACT.manifest_value())
+
+
+def test_vendored_v0_bundle_manifest_rejected_by_admitted_path() -> None:
+    """The admitted path never guesses from legacy class_order; only the
+    packaged loaders may use that shortcut."""
+    manifest = json.loads(_VENDORED_V0_MANIFEST_PATH.read_text(encoding="utf-8"))
+
+    with pytest.raises(ModelLoadError, match="must declare output_contract"):
+        parse_fall_output_contract(manifest)
+
+
+def test_output_contract_parser_rejects_extra_keys() -> None:
+    output_contract = dict(BINARY_FALL_OUTPUT_CONTRACT.manifest_value())
+    output_contract["extra_key"] = "unexpected"
+
+    with pytest.raises(
+        ModelLoadError,
+        match="output_contract must contain exactly id, version, and supported_states",
+    ):
+        parse_fall_output_contract({"output_contract": output_contract})
 
 
 def test_output_contract_tamper_after_admission_fails_closed(tmp_path) -> None:

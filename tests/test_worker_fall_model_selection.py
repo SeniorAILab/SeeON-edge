@@ -248,11 +248,14 @@ def _selected_onnx_bundle(
     output_class_count: int = 2,
 ) -> tuple[Path, DesiredModelBundle]:
     source = write_pose_bbox56_bundle(tmp_path / "source", temperature=temperature)
-    if output_contract is not None:
-        manifest_path = source / "bundle-manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest["output_contract"] = output_contract
-        manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+    # The admitted path always requires an explicit output_contract (the
+    # legacy class_order shortcut is packaged-loader only), so this synthetic
+    # source bundle -- which no longer carries one by default -- always gets
+    # one here, regardless of what write_pose_bbox56_bundle wrote.
+    manifest_path = source / "bundle-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["output_contract"] = output_contract or BINARY_FALL_OUTPUT_CONTRACT.manifest_value()
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
     # A selection that declares its threshold comes from the receipt must be
     # backed by the calibration: a real promoted publication states
     # promotion_eligible and the granted threshold there. Write that in, so
@@ -516,11 +519,31 @@ def test_static_three_state_contract_dispatches_softmax_without_claiming_trained
     assert result.model_evidence.output_contract is THREE_STATE_FALL_OUTPUT_CONTRACT
 
 
+def test_packaged_bundle_legacy_class_order_without_output_contract_loads_as_binary(
+    tmp_path: Path,
+) -> None:
+    """A pre-contract v0 bundle has no output_contract, only a top-level
+    class_order; the packaged loader admits it as binary from that alone."""
+    root = write_pose_bbox56_bundle(tmp_path / "bundle")
+    manifest = json.loads((root / "bundle-manifest.json").read_text(encoding="utf-8"))
+    assert "output_contract" not in manifest
+    assert manifest["class_order"] == ["non_fall", "fall_transition_proxy"]
+
+    runner = OrtPoseBbox56Runner.from_artifact_dir(
+        root,
+        session_factory=lambda _path, _providers: _ControlledLogitSession(),
+    )
+
+    assert runner.output_contract is BINARY_FALL_OUTPUT_CONTRACT
+
+
 def test_packaged_bundle_requires_output_contract_metadata(tmp_path: Path) -> None:
+    """Neither an output_contract nor a legacy binary class_order: refuse
+    rather than guess."""
     root = write_pose_bbox56_bundle(tmp_path / "bundle")
     manifest_path = root / "bundle-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    del manifest["output_contract"]
+    manifest["class_order"] = ["background", "fall_transition", "fallen"]
     manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
 
     with pytest.raises(ModelLoadError, match="must declare output_contract"):
@@ -545,6 +568,7 @@ def test_packaged_bundle_rejects_unknown_output_contract(
     root = write_pose_bbox56_bundle(tmp_path / "bundle")
     manifest_path = root / "bundle-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["output_contract"] = BINARY_FALL_OUTPUT_CONTRACT.manifest_value()
     manifest["output_contract"][field] = value
     manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
 
@@ -559,6 +583,7 @@ def test_packaged_bundle_rejects_supported_states_mismatch(tmp_path: Path) -> No
     root = write_pose_bbox56_bundle(tmp_path / "bundle")
     manifest_path = root / "bundle-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["output_contract"] = BINARY_FALL_OUTPUT_CONTRACT.manifest_value()
     manifest["output_contract"]["supported_states"].append("fallen")
     manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
 

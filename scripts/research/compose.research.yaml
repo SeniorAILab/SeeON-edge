@@ -1,0 +1,148 @@
+# Research stack for the SeeON fall v1 pipeline (Lane E, plan §5 E0/E2).
+# ml-worker gets read-only worker/contracts/shared bind mounts (E2) so
+# fall-deploy.sh's swap is visible without rebuilding the image. Bring up with:
+#   docker compose -p seeon-beomsu-edge --env-file ~/seeon-research/edge/research.env \
+#     -f scripts/research/compose.research.yaml <cmd>
+name: seeon-beomsu-edge
+
+services:
+  engine-build:
+    image: ${ML_WORKER_IMAGE:?ML_WORKER_IMAGE is required}
+    pull_policy: never
+    restart: "no"
+    profiles: [prepare]
+    env_file: ${HOME}/seeon-research/edge/research.env
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ${CANARY_MODEL_DIR:?CANARY_MODEL_DIR is required}:/app/models:ro
+      - ${CANARY_ENGINE_DIR:?CANARY_ENGINE_DIR is required}:/var/cache/seeon/tensorrt:rw
+    command:
+      - python
+      - -m
+      - worker.tools.edge_engine_build
+      - --onnx=/app/models/pose/yolo26n-pose.onnx
+      - --engine=/var/cache/seeon/tensorrt/yolo26n-pose-fp16.engine
+      - --identity=/var/cache/seeon/tensorrt/engine-identity.json
+      - --parser-lib=/opt/nvidia/deepstream/deepstream/lib/libnvdsinfer_custom_yolo26_pose.so
+      - --infer-config=/opt/seeon/deepstream-flow/nvinfer-yolo26-pose.txt
+      - --served-infer-config=/var/cache/seeon/tensorrt/nvinfer-yolo26-pose.txt
+      - --tracker-config=/opt/seeon/deepstream-flow/config_tracker_NvDCF_perf.yml
+      - --tracker-library=/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so
+      - --image-digest=${ML_WORKER_IMAGE:?ML_WORKER_IMAGE is required}
+      - --batch-size=${ML_WORKER_FLOW_BATCH_SIZE:?ML_WORKER_FLOW_BATCH_SIZE is required}
+
+  relay-stub:
+    image: python@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
+    pull_policy: never
+    read_only: true
+    user: "1001:1001"
+    networks:
+      default:
+        aliases: [ml-api]
+    env_file: ${HOME}/seeon-research/edge/research.env
+    environment:
+      CANARY_RELAY_TOKEN: ${CANARY_RELAY_TOKEN:?CANARY_RELAY_TOKEN is required}
+      CANARY_RECEIPT_DIR: /receipts
+      CANARY_WORKER_CONFIG_DIR: /configs
+      CANARY_ACTIVE_CONFIG: /configs/active-config
+      CANARY_EDGE_DATABASE_SCHEMA_VERSION: ${CANARY_EDGE_DATABASE_SCHEMA_VERSION:?CANARY_EDGE_DATABASE_SCHEMA_VERSION is required}
+      CANARY_EDGE_DATABASE_FORMAT_IDENTITY: ${CANARY_EDGE_DATABASE_FORMAT_IDENTITY:?CANARY_EDGE_DATABASE_FORMAT_IDENTITY is required}
+    volumes:
+      - ../qa/deepstream-canary/relay_stub.py:/relay_stub.py:ro
+      - ${CANARY_RECEIPT_DIR:?CANARY_RECEIPT_DIR is required}:/receipts:rw
+      - ./worker-research.json:/configs/worker-research.json:ro
+      - ./active-config:/configs/active-config:ro
+    command: [python, /relay_stub.py]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2)"]
+      interval: 1s
+      timeout: 3s
+      retries: 10
+
+  mediamtx:
+    image: bluenviron/mediamtx@sha256:2001b73159ec146478df64d5fe5a973ae0d978a1648138cbbc6bc6f9c4cc9c82
+    pull_policy: never
+    read_only: true
+    networks: [default, publish]
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+    ports:
+      - "127.0.0.1:18554:8554"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, /mediamtx, --version]
+      interval: 1s
+      timeout: 3s
+      retries: 10
+
+  ml-worker:
+    image: ${ML_WORKER_IMAGE:?ML_WORKER_IMAGE is required}
+    pull_policy: never
+    restart: "no"
+    networks: [default]
+    depends_on:
+      relay-stub:
+        condition: service_healthy
+      mediamtx:
+        condition: service_healthy
+    env_file: ${HOME}/seeon-research/edge/research.env
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+      RELAY_TOKEN: ${RELAY_TOKEN:?RELAY_TOKEN is required}
+      ML_WORKER_PROFILE: flow
+      ML_WORKER_IMAGE: ${ML_WORKER_IMAGE:?ML_WORKER_IMAGE is required}
+      ML_WORKER_FLOW_INFER_CONFIG: /var/cache/seeon/tensorrt/nvinfer-yolo26-pose.txt
+      ML_WORKER_FLOW_TRACKER_CONFIG: /opt/seeon/deepstream-flow/config_tracker_NvDCF_perf.yml
+      ML_WORKER_FLOW_TRACKER_LIBRARY: /opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so
+      ML_WORKER_FLOW_RECORD_DIR: /var/lib/clip-store
+      ML_WORKER_FLOW_RECORD_CACHE_SECONDS: "30"
+      ML_WORKER_FLOW_FRAME_WIDTH: "640"
+      ML_WORKER_FLOW_FRAME_HEIGHT: "360"
+      ML_WORKER_FLOW_BATCH_SIZE: ${ML_WORKER_FLOW_BATCH_SIZE:?ML_WORKER_FLOW_BATCH_SIZE is required}
+      ML_WORKER_FLOW_ENGINE_PATH: /var/cache/seeon/tensorrt/yolo26n-pose-fp16.engine
+      ML_WORKER_FLOW_ENGINE_IDENTITY_PATH: /var/cache/seeon/tensorrt/engine-identity.json
+      ML_WORKER_FLOW_ONNX_PATH: /app/models/pose/yolo26n-pose.onnx
+      ML_WORKER_FLOW_PARSER_LIBRARY: /opt/nvidia/deepstream/deepstream/lib/libnvdsinfer_custom_yolo26_pose.so
+      ML_RTSP_ALLOW_LOCAL_DESTINATIONS: "1"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ${CANARY_MODEL_DIR:?CANARY_MODEL_DIR is required}:/models:ro
+      - ${CANARY_MODEL_DIR:?CANARY_MODEL_DIR is required}:/app/models:ro
+      - ${CANARY_ENGINE_DIR:?CANARY_ENGINE_DIR is required}:/var/cache/seeon/tensorrt:rw
+      - worker-local-state:/var/lib/seeon-state
+      - ${CLIP_STORE_HOST_DIR:?CLIP_STORE_HOST_DIR is required}:/var/lib/clip-store:rw
+      - ../../worker:/app/worker:ro
+      - ../../contracts:/app/contracts:ro
+      - ../../shared:/app/shared:ro
+    command:
+      - python
+      - -m
+      - worker
+      - --heartbeat-on-start
+      - --state-dir
+      - /var/lib/seeon-state
+
+volumes:
+  worker-local-state: {}
+
+networks:
+  default:
+    internal: true
+  publish: {}

@@ -13,7 +13,7 @@ from torch import nn
 
 from contracts.model_selection import POSE_BBOX56_PREPROCESSING_IDENTITY
 from worker.adapters.model.errors import ModelLoadError
-from worker.adapters.model.fall_output_contract import parse_fall_output_contract
+from worker.adapters.model.fall_output_contract import parse_packaged_fall_output_contract
 from worker.adapters.model.pose_bbox56_bundle_support import (
     member_digest,
     read_json,
@@ -78,7 +78,7 @@ class PoseBbox56BundleRunner:
         root = Path(artifact_dir).expanduser().resolve()
         manifest = read_json(root / "bundle-manifest.json")
         verify_bundle(root, manifest)
-        output_contract, _output_contract_digest = parse_fall_output_contract(manifest)
+        output_contract, _output_contract_digest = parse_packaged_fall_output_contract(manifest)
         if output_contract is not BINARY_FALL_OUTPUT_CONTRACT:
             raise ModelLoadError(
                 "pose-bbox56 proxy bundle supports only the binary output contract"

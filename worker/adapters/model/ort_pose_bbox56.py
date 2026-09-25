@@ -15,7 +15,10 @@ import numpy as np
 from contracts.model_selection import POSE_BBOX56_PREPROCESSING_IDENTITY, ModelSelection
 from shared.detection_policies import FALL_POLICY_V2_DEFAULT
 from worker.adapters.model.errors import ModelLoadError
-from worker.adapters.model.fall_output_contract import parse_fall_output_contract
+from worker.adapters.model.fall_output_contract import (
+    parse_fall_output_contract,
+    parse_packaged_fall_output_contract,
+)
 from worker.adapters.model.pose_bbox56_bundle_support import (
     member_digest,
     read_json,
@@ -124,7 +127,7 @@ class OrtPoseBbox56Runner:
         root = Path(artifact_dir).expanduser().resolve()
         manifest = read_json(root / "bundle-manifest.json")
         verify_bundle(root, manifest)
-        output_contract, _output_contract_digest = parse_fall_output_contract(manifest)
+        output_contract, _output_contract_digest = parse_packaged_fall_output_contract(manifest)
         artifact_digest = member_digest(manifest, "model.onnx")
         member_digest(manifest, "calibration.json")
         conformance = _packaged_conformance(root, manifest)
