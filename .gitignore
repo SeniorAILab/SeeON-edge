@@ -97,3 +97,8 @@ plan-ml-api.txt
 plan-ml-worker.json
 plan-ml-worker.txt
 edge-ml-image-refs.env
+
+# Legitimate Lane E research-stack config (2 loopback cameras), but its
+# camera_id/facility_id fields trip the privacy scanner; kept on host only,
+# full content recorded in ~/seeon-research/RUNBOOK.md Lane E section.
+scripts/research/worker-research.json

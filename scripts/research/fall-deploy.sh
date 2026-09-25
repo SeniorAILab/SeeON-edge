@@ -42,7 +42,7 @@ import json, sys
 mv = json.loads(sys.argv[1])["model_version"]
 tags = {t["key"]: t["value"] for t in mv.get("tags", [])}
 miss = [k for k in ("hf_repo", "hf_revision", "onnx_sha256") if k not in tags]
-if miss: print(f"registry version {mv[\"version\"]} lacks {\"/\".join(miss)}"); sys.exit(1)
+if miss: print("registry version %s lacks %s" % (mv["version"], "/".join(miss))); sys.exit(1)
 print(mv["version"], tags["hf_repo"], tags["hf_revision"], tags["onnx_sha256"])
 ' "$MV_JSON" 2>&1)" || die "$PY_OUT"
 read -r VERSION HF_REPO HF_REVISION ONNX_SHA256 <<<"$PY_OUT"
