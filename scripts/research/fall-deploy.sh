@@ -27,6 +27,8 @@ REF="${1:?usage: fall-deploy.sh <alias|version>}"
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 E="${HOME}/seeon-research/edge"
 DC=(docker compose -p seeon-beomsu-edge --env-file "$E/research.env" -f "$R/scripts/research/compose.research.yaml")
+STATE_FILE=/var/lib/seeon-state/applied-runtime-manifest.json
+BOOT_TIMEOUT=600
 
 # 1. Resolve hf_repo/hf_revision/onnx_sha256 from the MLflow registry.
 if [[ "$REF" =~ ^[0-9]+$ ]]; then
@@ -35,12 +37,16 @@ else
   ENDPOINT="$MLFLOW_URL/api/2.0/mlflow/registered-models/alias?name=$MODEL_NAME&alias=$REF"
 fi
 MV_JSON="$(curl -sf "$ENDPOINT")"
-read -r VERSION HF_REPO HF_REVISION ONNX_SHA256 <<<"$(python3 -c '
+PY_OUT="$(python3 -c '
 import json, sys
 mv = json.loads(sys.argv[1])["model_version"]
 tags = {t["key"]: t["value"] for t in mv.get("tags", [])}
+miss = [k for k in ("hf_repo", "hf_revision", "onnx_sha256") if k not in tags]
+if miss: print(f"registry version {mv[\"version\"]} lacks {\"/\".join(miss)}"); sys.exit(1)
 print(mv["version"], tags["hf_repo"], tags["hf_revision"], tags["onnx_sha256"])
-' "$MV_JSON")"
+' "$MV_JSON" 2>&1)" || die "$PY_OUT"
+read -r VERSION HF_REPO HF_REVISION ONNX_SHA256 <<<"$PY_OUT"
+[[ "$VERSION" =~ ^[0-9]+$ ]] || die "bad version '$VERSION'"
 check_repo "$HF_REPO" || die "hf_repo '$HF_REPO' does not match $REPO_RE"
 echo "resolved seeon-fall v$VERSION -> $HF_REPO@$HF_REVISION (onnx $ONNX_SHA256)"
 
@@ -82,6 +88,7 @@ for kv in "${IMG_ENV[@]}"; do IMG_ARGS+=(-e "$kv"); done
 IMG_OUT="$("${DC[@]}" run --rm --no-deps --entrypoint python "${IMG_ARGS[@]}" ml-worker -c "$SMOKE_PY")"
 echo "in-image: $IMG_OUT"
 [[ "$EDGE_OUT" == "$IMG_OUT" ]] || die "smoke mismatch: '$EDGE_OUT' != '$IMG_OUT'"
+read -r _ DIGEST _ _ TAU _ M <<<"$EDGE_OUT"
 
 # 4. Atomic symlink swap, shared by the forward swap and rollback; ln -sfn tmp link survives an aborted run's leftover.
 swap_symlink() {
@@ -91,30 +98,33 @@ swap_symlink() {
 PREV_TARGET="$(readlink "$E/models/fall/pose-bbox56-gru" 2>/dev/null || true)"
 swap_symlink "bundles/seeon-fall-$VERSION"
 
-# 5. Recreate ml-worker, poll up to 60s for it to boot (restart: "no" means up -d alone proves nothing); roll back on failure.
+# 5. Recreate ml-worker; wait_for_boot polls up to BOOT_TIMEOUT for the state file worker.py
+# writes only after the swapped bundle loads and passes conformance (worker.py:1218-1270,1733).
 wait_for_boot() {
-  local deadline=$((SECONDS + 60))
+  local t0="$1" want_digest="$2" out mtime body deadline=$((SECONDS + BOOT_TIMEOUT))
   while (( SECONDS < deadline )); do
     if [[ -n "$("${DC[@]}" ps -q --status running ml-worker)" ]] \
-      && "${DC[@]}" logs ml-worker 2>&1 | grep -q 'fall model operating_threshold resolved to'; then
-      return 0
+      && out="$("${DC[@]}" exec -T ml-worker sh -c "stat -c %Y $STATE_FILE && cat $STATE_FILE" 2>/dev/null)"; then
+      mtime="${out%%$'\n'*}"; body="${out#*$'\n'}"
+      [[ "$mtime" =~ ^[0-9]+$ ]] && (( mtime > t0 )) && [[ "$body" == *"$want_digest"* ]] && return 0
     fi
     sleep 2
   done
   return 1
 }
 T0="$(date +%s)"
-if ! "${DC[@]}" up -d --no-deps --force-recreate ml-worker || ! wait_for_boot; then
-  echo "abort: ml-worker did not boot within 60s; rolling back" >&2
-  if [[ -n "$PREV_TARGET" ]]; then
-    swap_symlink "$PREV_TARGET"
-    "${DC[@]}" up -d --no-deps --force-recreate ml-worker || true
-  fi
+if ! "${DC[@]}" up -d --no-deps --force-recreate ml-worker || ! wait_for_boot "$T0" "$DIGEST"; then
+  echo "abort: ml-worker did not boot within ${BOOT_TIMEOUT}s" >&2
+  [[ -n "$PREV_TARGET" ]] || die "no previous bundle to roll back to; ml-worker left as-is on the failed deploy"
+  swap_symlink "$PREV_TARGET"
+  T0_ROLLBACK="$(date +%s)"; "${DC[@]}" up -d --no-deps --force-recreate ml-worker || true
+  PREV_DIGEST=""; mapfile -t PREV_ENV < <(smoke_env_args "$E/models/fall/$PREV_TARGET")
+  if PREV_OUT="$(cd "$R" && env "${PREV_ENV[@]}" PYTHONPATH="$R" "$R/.venv/bin/python" -c "$SMOKE_PY" 2>/dev/null)"; then read -r _ PREV_DIGEST _ <<<"$PREV_OUT"; fi
+  { [[ -n "$PREV_DIGEST" ]] && wait_for_boot "$T0_ROLLBACK" "$PREV_DIGEST"; } && echo "rolled-back-ok: $PREV_TARGET is running" >&2 || echo "rolled-back-FAILED: $PREV_TARGET did not come back" >&2
   exit 1
 fi
 
 # 6. Record the deploy.
-read -r _ DIGEST _ _ TAU _ M <<<"$EDGE_OUT"
 mkdir -p "$HOME/seeon-research/runs"
 echo "$T0 v$VERSION onnx=$ONNX_SHA256 digest=$DIGEST tau=$TAU m=$M" >>"$HOME/seeon-research/runs/fall-deploy.log"
 echo "deployed seeon-fall v$VERSION at $T0"
