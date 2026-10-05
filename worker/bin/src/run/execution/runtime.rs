@@ -24,7 +24,7 @@ use crate::shutdown::ShutdownDeadline;
 use super::RELAY_URL;
 use crate::run::events::{PreparedEvent, StagedEvent};
 
-use super::output::Session;
+use super::output::{DecisionDomain, Session};
 use super::publication::PublicationError;
 
 #[derive(Debug)]
@@ -55,7 +55,9 @@ impl RuntimeError {
 impl fmt::Display for RuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Pump(_) => formatter.write_str("policy pump refused a live frame or response"),
+            Self::Pump(_) => {
+                formatter.write_str("policy pump refused a live update, frame, or response")
+            }
             Self::Publication(error) => write!(formatter, "publication drain refused: {error}"),
             Self::Delivery => formatter.write_str("delivery sender failed"),
             Self::MediaFatal => formatter.write_str("media plane reported fatal"),
@@ -97,6 +99,7 @@ struct ReadyScore {
 struct ReadyDecision {
     snapshot: seeon_worker::trace::DecisionTraceSnapshot,
     generation: Option<u64>,
+    producing_domain: DecisionDomain,
 }
 
 struct FrameScores {
@@ -106,6 +109,14 @@ struct FrameScores {
 }
 
 const SCORE_RETENTION: usize = MEDIA_MAX_SOURCES * MEDIA_MAX_OBJECTS;
+/// Up to two fall updates and one bed update per pose, bounded responses,
+/// and one pending fall flush per source during shutdown.
+const DECISION_BATCH_RETENTION: usize =
+    MEDIA_MAX_SOURCES * POSE_PER_CAMERA * 3 + FALL_RESPONSE_CAPACITY + MEDIA_MAX_SOURCES;
+/// Bed snapshots can cover each bounded retained track and current observation.
+const DECISION_SNAPSHOT_LIMIT: usize = MEDIA_MAX_OBJECTS * 2;
+/// Each bounded batch is limited by the native per-frame object capacity.
+const DECISION_EVENT_RETENTION: usize = DECISION_BATCH_RETENTION * MEDIA_MAX_OBJECTS;
 
 #[derive(Clone, Debug, PartialEq)]
 struct FrameFailure {
@@ -194,6 +205,34 @@ pub(super) struct LiveSink {
 }
 
 impl LiveSink {
+    fn preflight_decisions(
+        &mut self,
+        batches: usize,
+        refusal: crate::run::pump::PumpError,
+    ) -> Result<(), crate::run::pump::PumpError> {
+        let events = batches
+            .checked_mul(MEDIA_MAX_OBJECTS)
+            .ok_or_else(|| refusal.clone())?;
+        if self
+            .ready
+            .len()
+            .checked_add(batches)
+            .is_none_or(|n| n > DECISION_BATCH_RETENTION)
+            || self
+                .triggered
+                .len()
+                .checked_add(events)
+                .is_none_or(|n| n > DECISION_EVENT_RETENTION)
+        {
+            return Err(refusal);
+        }
+        self.ready
+            .try_reserve(batches)
+            .map_err(|_| refusal.clone())?;
+        self.triggered.try_reserve(events).map_err(|_| refusal)?;
+        Ok(())
+    }
+
     /// Before policy execution there are no accepted responses or events.
     pub(super) fn new(clock: Arc<dyn Clock>) -> Self {
         Self {
@@ -208,6 +247,17 @@ impl LiveSink {
 }
 
 impl PolicySink for LiveSink {
+    fn preflight_fall_decisions(
+        &mut self,
+        batches: usize,
+    ) -> Result<(), crate::run::pump::PumpError> {
+        self.preflight_decisions(batches, crate::run::pump::PumpError::DecisionRetention)
+    }
+
+    fn preflight_bed_decision(&mut self) -> Result<(), crate::run::pump::PumpError> {
+        self.preflight_decisions(1, crate::run::pump::PumpError::BedDecisionRetention)
+    }
+
     fn frame_failure(
         &mut self,
         frame: seeon_deepstream_native::FrameIdentity,
@@ -236,7 +286,21 @@ impl PolicySink for LiveSink {
         Ok(())
     }
 
-    fn decision(&mut self, update: crate::policy::fall::DecisionUpdate<'_>) {
+    fn decision(
+        &mut self,
+        update: crate::policy::fall::DecisionUpdate<'_>,
+    ) -> Result<(), crate::run::pump::PumpError> {
+        if self.ready.len() >= DECISION_BATCH_RETENTION
+            || update.snapshots.len() > DECISION_SNAPSHOT_LIMIT
+            || update.events.len() > MEDIA_MAX_OBJECTS
+            || self
+                .triggered
+                .len()
+                .checked_add(update.events.len())
+                .is_none_or(|count| count > DECISION_EVENT_RETENTION)
+        {
+            return Err(crate::run::pump::PumpError::DecisionRetention);
+        }
         let admission_time = self.clock.monotonic();
         let frame = update.frame;
         let ready = self
@@ -259,6 +323,7 @@ impl PolicySink for LiveSink {
                     .track_id
                     .and_then(|track_id| update.generation_for(track_id)),
                 snapshot: snapshot.clone(),
+                producing_domain: DecisionDomain::Fall,
             })
             .collect();
         self.ready.push(FrameScores {
@@ -275,6 +340,51 @@ impl PolicySink for LiveSink {
                 prepared: None,
                 staged: None,
             }));
+        Ok(())
+    }
+
+    fn bed_decision(
+        &mut self,
+        update: crate::policy::bed_exit::BedDecisionUpdate<'_>,
+    ) -> Result<(), crate::run::pump::PumpError> {
+        if self.ready.len() >= DECISION_BATCH_RETENTION
+            || update.snapshots.len() > DECISION_SNAPSHOT_LIMIT
+            || update.events.len() > MEDIA_MAX_OBJECTS
+            || self
+                .triggered
+                .len()
+                .checked_add(update.events.len())
+                .is_none_or(|count| count > DECISION_EVENT_RETENTION)
+        {
+            return Err(crate::run::pump::PumpError::BedDecisionRetention);
+        }
+        let admission_time = self.clock.monotonic();
+        if update.completed {
+            let decisions = update
+                .snapshots
+                .iter()
+                .map(|snapshot| ReadyDecision {
+                    snapshot: snapshot.clone(),
+                    generation: None,
+                    producing_domain: DecisionDomain::BedExit,
+                })
+                .collect();
+            self.ready.push(FrameScores {
+                frame: update.frame,
+                scores: Vec::new(),
+                decisions,
+            });
+        }
+        self.triggered
+            .extend(update.events.iter().cloned().map(|event| PendingEvent {
+                frame: update.frame,
+                event,
+                admission_time,
+                admitted: None,
+                prepared: None,
+                staged: None,
+            }));
+        Ok(())
     }
 
     fn score(
@@ -410,8 +520,8 @@ fn emit_pre_finalization_exit(session: &Session) {
 pub(super) fn pump_queue_turn(
     pump: &mut PolicyPump,
     poses: &Receiver<PosePacket>,
-    requests: &SyncSender<FallRequest>,
-    responses: &Receiver<FallResponse>,
+    requests: Option<&SyncSender<FallRequest>>,
+    responses: Option<&Receiver<FallResponse>>,
     stop: &std::sync::atomic::AtomicBool,
     sink: &mut dyn PolicySink,
     budget: TurnBudget,
@@ -423,17 +533,25 @@ pub(super) fn pump_queue_turn(
     let mut poses_left = pose_capacity;
     let mut responses_left = response_capacity;
     if pose_capacity == 0 {
-        return drain_responses(pump, responses, stop, sink, &mut responses_left);
+        return match responses {
+            Some(responses) => drain_responses(pump, responses, stop, sink, &mut responses_left),
+            None => Ok(()),
+        };
     }
     while poses_left > 0 {
-        drain_responses(pump, responses, stop, sink, &mut responses_left)?;
-        if responses_left == 0 {
+        if let Some(responses) = responses {
+            drain_responses(pump, responses, stop, sink, &mut responses_left)?;
+        }
+        if responses.is_some() && responses_left == 0 {
+            // Leave complete packets queued for the next turn. Processing them
+            // for bed alone would silently remove observations from fall.
             return Ok(());
         }
         match poses.try_recv() {
             Ok(packet) => {
                 poses_left -= 1;
-                match pump.observe(&packet, requests, sink) {
+                let observed = pump.observe(&packet, requests, sink);
+                match observed {
                     Ok(()) => {}
                     Err(error) if frame_local(&error) => {
                         sink.frame_failure(packet.frame, &error)
@@ -444,14 +562,16 @@ pub(super) fn pump_queue_turn(
             }
             Err(TryRecvError::Empty) => {
                 if !stop.load(Ordering::SeqCst) {
-                    pump.replay_wait_empty();
+                    pump.replay_wait_empty().map_err(RuntimeError::Pump)?;
                 }
                 break;
             }
             Err(TryRecvError::Disconnected) => return Err(RuntimeError::MediaFatal),
         }
     }
-    drain_responses(pump, responses, stop, sink, &mut responses_left)?;
+    if let Some(responses) = responses {
+        drain_responses(pump, responses, stop, sink, &mut responses_left)?;
+    }
     Ok(())
 }
 
@@ -500,15 +620,24 @@ fn turn(
 ) -> Result<(), RuntimeError> {
     let budget = TurnBudget {
         poses: POSE_PER_CAMERA.saturating_mul(session.pump.source_count()),
-        responses: FALL_RESPONSE_CAPACITY,
+        responses: if session.pump.has_fall_stage() {
+            FALL_RESPONSE_CAPACITY
+        } else {
+            0
+        },
     };
-    let owner = booted.models.fall().ok_or(RuntimeError::MediaFatal)?;
-    let responses = booted
-        .models
-        .fall_responses()
-        .ok_or(RuntimeError::MediaFatal)?;
+    let (requests, responses) = if session.pump.has_fall_stage() {
+        let owner = booted.models.fall().ok_or(RuntimeError::MediaFatal)?;
+        let responses = booted
+            .models
+            .fall_responses()
+            .ok_or(RuntimeError::MediaFatal)?;
+        (Some(&owner.requests), Some(responses))
+    } else {
+        (None, None)
+    };
     let (pump, poses, stop) = session.queue_ends();
-    pump_queue_turn(pump, poses, &owner.requests, responses, stop, sink, budget)?;
+    pump_queue_turn(pump, poses, requests, responses, stop, sink, budget)?;
     advance_recordings(session, clock)?;
     if let Some(media) = &session.media {
         let snapshot = media.diagnostics.snapshot();
@@ -578,7 +707,8 @@ fn deliver(
                             break;
                         }
                     };
-                let _ = lanes.try_emit(record);
+                // False is a lane-owned overflow/invalid gap; it is not retried.
+                let _retained = lanes.try_emit(record);
                 emitted += 1;
             }
             ready.scores.drain(..emitted);
@@ -639,20 +769,22 @@ fn deliver(
                 );
             }
             if pending.staged.is_none() {
-                pending.staged = Some(
-                    session
-                        .publications
-                        .stage(
-                            stager,
-                            pending.prepared.as_mut().ok_or(RuntimeError::Identity)?,
-                            &mut |record| {
-                                if let Some(lanes) = &lanes {
-                                    let _ = lanes.try_emit(record);
-                                }
-                            },
-                        )
-                        .map_err(RuntimeError::Publication)?,
-                );
+                let staged = match session.publications.stage(
+                    stager,
+                    pending.prepared.as_mut().ok_or(RuntimeError::Identity)?,
+                    &mut |record| {
+                        if let Some(lanes) = &lanes {
+                            // False is a lane-owned gap, not a failed stage receipt.
+                            let _retained = lanes.try_emit(record);
+                        }
+                    },
+                ) {
+                    Ok(staged) => staged,
+                    Err(error) => {
+                        return Err(RuntimeError::Publication(error));
+                    }
+                };
+                pending.staged = Some(staged);
                 if let Some(sender) = &session.sender {
                     sender.wake();
                 }
@@ -697,15 +829,17 @@ fn emit_decisions(
     clock: &dyn Clock,
     lanes: &crate::records::lanes::Lanes,
 ) -> Result<(), RuntimeError> {
-    let policy = session
-        .decision_policies
-        .get(&stream.camera_id)
-        .ok_or(RuntimeError::Identity)?;
     let mut emitted = 0;
     let delivered = (|| {
         for decision in &ready.decisions {
+            let policy = session
+                .decision_policies
+                .get(&stream.camera_id)
+                .and_then(|domains| domains.get(&decision.producing_domain))
+                .ok_or(RuntimeError::Identity)?;
             let record = decision_record(stream, &ready.frame, decision, policy, clock)?;
-            let _ = lanes.try_emit(record);
+            // False is a lane-owned overflow/invalid gap; it is not retried.
+            let _retained = lanes.try_emit(record);
             emitted += 1;
         }
         Ok(())
@@ -996,6 +1130,9 @@ mod tests {
         assert_eq!(wire["payload"]["accelerator"]["elapsed_ns"], 789);
     }
 }
+#[cfg(test)]
+#[path = "runtime_bed_tests.rs"]
+mod bed_tests;
 #[cfg(test)]
 #[path = "runtime_bounds_tests.rs"]
 mod bounds_tests;

@@ -53,7 +53,26 @@ struct Sink {
 }
 
 impl PolicySink for Sink {
-    fn decision(&mut self, update: DecisionUpdate<'_>) {
+    fn preflight_fall_decisions(&mut self, batches: usize) -> Result<(), PumpError> {
+        assert!((1..=2).contains(&batches));
+        self.decisions
+            .try_reserve(batches)
+            .expect("test receipt capacity");
+        Ok(())
+    }
+
+    fn preflight_bed_decision(&mut self) -> Result<(), PumpError> {
+        panic!("fall-only fixture must not admit a bed decision");
+    }
+
+    fn bed_decision(
+        &mut self,
+        _: seeon_ml_worker::policy::bed_exit::BedDecisionUpdate<'_>,
+    ) -> Result<(), PumpError> {
+        panic!("fall-only fixture must not receive a bed decision");
+    }
+
+    fn decision(&mut self, update: DecisionUpdate<'_>) -> Result<(), PumpError> {
         self.order.push(Kind::Decision);
         self.decisions.push(Receipt {
             frame: update.frame,
@@ -67,6 +86,7 @@ impl PolicySink for Sink {
                 .collect(),
             events: update.events.to_vec(),
         });
+        Ok(())
     }
 
     fn score(
@@ -155,6 +175,7 @@ fn inactive(source_id: u32) -> CameraPolicy {
     CameraPolicy {
         source_id,
         stage: None,
+        bed_stage: None,
     }
 }
 
@@ -181,6 +202,7 @@ fn calibrated_camera(source_id: u32, capacity: usize, temperature: f64) -> Camer
     CameraPolicy {
         source_id,
         stage: Some(FallStage::new(decider, temperature).expect("valid calibration")),
+        bed_stage: None,
     }
 }
 
@@ -234,8 +256,12 @@ fn awaiting(
 ) -> Vec<FallRequest> {
     let mut sink = Sink::default();
     for sequence in 0..120 {
-        pump.observe(&packet(source_id, sequence, tracks), sender, &mut sink)
-            .expect("valid synthetic packet");
+        pump.observe(
+            &packet(source_id, sequence, tracks),
+            Some(sender),
+            &mut sink,
+        )
+        .expect("valid synthetic packet");
         let requests: Vec<_> = receiver.try_iter().collect();
         if !requests.is_empty() {
             assert_eq!(requests.len(), tracks.len());
@@ -328,7 +354,7 @@ fn duplicate_sources_refuse_configuration_and_empty_roster_is_idle() {
     assert!(sink.order.is_empty());
     let (sender, _receiver) = mpsc::sync_channel(1);
     assert_eq!(
-        pump.observe(&packet(19, 0, &[1]), &sender, &mut sink),
+        pump.observe(&packet(19, 0, &[1]), Some(&sender), &mut sink),
         Err(PumpError::UnknownSource(19))
     );
     assert_eq!(pump.pending_scores(), 0);
@@ -395,7 +421,10 @@ fn routing_and_ingest_refusals_leave_pending_policy_and_outputs_untouched() {
         ),
     ] {
         assert_eq!(expected.exit(), Exit::Runtime);
-        assert_eq!(pump.observe(&input, &sender, &mut sink), Err(expected));
+        assert_eq!(
+            pump.observe(&input, Some(&sender), &mut sink),
+            Err(expected)
+        );
         assert_eq!(pump.pending_scores(), 1);
         assert!(sink.order.is_empty());
         assert!(matches!(
@@ -645,7 +674,7 @@ fn observe_keeps_earlier_receipt_when_later_policy_update_fails() {
     let requests = awaiting(&mut pump, 19, &[7], &sender, &receiver);
     let input = packet(19, requests[0].frame.sequence + 1, &[8, 9]);
     let mut sink = Sink::default();
-    let error = pump.observe(&input, &sender, &mut sink).unwrap_err();
+    let error = pump.observe(&input, Some(&sender), &mut sink).unwrap_err();
     assert!(matches!(
         error,
         PumpError::Response(FallResponseError::Policy(FallStageError::Policy(_)))
@@ -665,7 +694,7 @@ fn gap_refusal_precedes_pending_flush_and_preserves_typed_cause() {
     let mut input = packet(19, requests[0].frame.sequence + 1, &[7]);
     input.frame.pts_ns += 120_000_000_000;
     let mut sink = Sink::default();
-    let error = pump.observe(&input, &sender, &mut sink).unwrap_err();
+    let error = pump.observe(&input, Some(&sender), &mut sink).unwrap_err();
     assert!(matches!(
         error,
         PumpError::Response(FallResponseError::Policy(FallStageError::Gap(_)))
@@ -692,7 +721,7 @@ fn observe_forwards_each_original_completion_but_never_invents_a_coast_receipt()
             input.frame.pts_ns = pending.pts_ns;
         }
         let mut sink = Sink::default();
-        pump.observe(&input, &sender, &mut sink).unwrap();
+        pump.observe(&input, Some(&sender), &mut sink).unwrap();
         assert_eq!(sink.decisions[0].frame, pending);
         assert_missing(&sink.decisions[0], &[7]);
         if coast {
@@ -829,7 +858,7 @@ fn inactive_source_validates_pose_without_requests_and_refuses_a_response() {
     assert_eq!(pump.source_count(), 2);
     let (sender, receiver) = mpsc::sync_channel(FALL_REQUEST_CAPACITY);
     let mut sink = Sink::default();
-    pump.observe(&packet(19, 4, &[7]), &sender, &mut sink)
+    pump.observe(&packet(19, 4, &[7]), Some(&sender), &mut sink)
         .expect("inactive pose is admitted");
     assert!(receiver.try_iter().next().is_none());
     assert!(sink.order.is_empty());
@@ -838,14 +867,14 @@ fn inactive_source_validates_pose_without_requests_and_refuses_a_response() {
     let mut malformed = packet(19, 5, &[7]);
     malformed.frame.source_width = 0;
     assert_eq!(
-        pump.observe(&malformed, &sender, &mut sink),
+        pump.observe(&malformed, Some(&sender), &mut sink),
         Err(PumpError::Ingest {
             source_id: 19,
             cause: IngestRefusal::SourceSize,
         })
     );
     assert_eq!(
-        pump.observe(&packet(8, 5, &[7]), &sender, &mut sink),
+        pump.observe(&packet(8, 5, &[7]), Some(&sender), &mut sink),
         Err(PumpError::UnknownSource(8))
     );
     assert!(sink.order.is_empty());
@@ -907,7 +936,7 @@ fn disabled_domain_does_not_disturb_an_active_sources_pending_request() {
     let request = &requests[0];
     assert_eq!(pump.pending_scores(), 1);
     let mut sink = Sink::default();
-    pump.observe(&packet(19, 4, &[7]), &sender, &mut sink)
+    pump.observe(&packet(19, 4, &[7]), Some(&sender), &mut sink)
         .expect("disabled fall does not remove the media source");
     assert_eq!(pump.pending_scores(), 1);
     assert!(receiver.try_iter().next().is_none());
@@ -953,7 +982,7 @@ fn utc_half_open_window_skips_the_current_frame_and_flushes_the_original_pending
     let mut sink = Sink::default();
     let current = packet(19, original.sequence + 1, &[8]);
     outside_pump
-        .observe(&current, &sender, &mut sink)
+        .observe(&current, Some(&sender), &mut sink)
         .expect("outside frame");
     assert!(receiver.try_iter().next().is_none());
     assert_eq!(sink.decisions.len(), 2);
@@ -986,7 +1015,7 @@ fn reentry_preserves_request_cadence_against_an_ungated_control() {
         let outside = (10..15).contains(&sequence);
         clock.set(if outside { start + 3600 } else { start });
         gated
-            .observe(&packet(19, sequence, &[7]), &sender, &mut gated_sink)
+            .observe(&packet(19, sequence, &[7]), Some(&sender), &mut gated_sink)
             .expect("gated cadence");
         let emitted: Vec<_> = receiver.try_iter().collect();
         if outside {
@@ -995,7 +1024,11 @@ fn reentry_preserves_request_cadence_against_an_ungated_control() {
         }
         gated_requests.extend(emitted.into_iter().map(|request| request.frame.sequence));
         control
-            .observe(&packet(19, sequence, &[7]), &sender, &mut control_sink)
+            .observe(
+                &packet(19, sequence, &[7]),
+                Some(&sender),
+                &mut control_sink,
+            )
             .expect("ungated cadence");
         control_requests.extend(receiver.try_iter().map(|request| request.frame.sequence));
     }
@@ -1015,19 +1048,19 @@ fn unknown_invalid_and_disabled_sources_do_not_read_a_failing_clock() {
     let (sender, receiver) = mpsc::sync_channel(1);
     let mut sink = Sink::default();
     assert_eq!(
-        pump.observe(&packet(8, 1, &[7]), &sender, &mut sink),
+        pump.observe(&packet(8, 1, &[7]), Some(&sender), &mut sink),
         Err(PumpError::UnknownSource(8))
     );
     let mut malformed = packet(19, 1, &[7]);
     malformed.frame.source_width = 0;
     assert_eq!(
-        pump.observe(&malformed, &sender, &mut sink),
+        pump.observe(&malformed, Some(&sender), &mut sink),
         Err(PumpError::Ingest {
             source_id: 19,
             cause: IngestRefusal::SourceSize,
         })
     );
-    pump.observe(&packet(19, 1, &[7]), &sender, &mut sink)
+    pump.observe(&packet(19, 1, &[7]), Some(&sender), &mut sink)
         .expect("disabled source skips the clock");
     assert!(receiver.try_iter().next().is_none());
     assert!(sink.order.is_empty());
@@ -1053,7 +1086,11 @@ fn clock_out_of_range_preserves_pending_and_outside_contains_no_request() {
     clock.set(-62_135_596_801);
     let mut sink = Sink::default();
     let error = pump
-        .observe(&packet(19, pending.sequence + 1, &[7]), &sender, &mut sink)
+        .observe(
+            &packet(19, pending.sequence + 1, &[7]),
+            Some(&sender),
+            &mut sink,
+        )
         .unwrap_err();
     assert_eq!(
         error,
@@ -1071,7 +1108,7 @@ fn clock_out_of_range_preserves_pending_and_outside_contains_no_request() {
     )
     .expect("outside roster");
     outside
-        .observe(&packet(19, 0, &[7]), &sender, &mut sink)
+        .observe(&packet(19, 0, &[7]), Some(&sender), &mut sink)
         .expect("outside contains");
     assert!(receiver.try_iter().next().is_none());
     assert_eq!(sink.order, [Kind::Decision]);

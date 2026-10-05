@@ -117,6 +117,7 @@ impl Fixture {
                 .map(|&source_id| CameraPolicy {
                     source_id,
                     stage: None,
+                    bed_stage: None,
                 })
                 .collect(),
             None,

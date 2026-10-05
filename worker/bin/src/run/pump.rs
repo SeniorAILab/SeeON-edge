@@ -7,11 +7,13 @@ use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::SyncSender;
 
 use seeon_deepstream_native::FrameIdentity;
+use seeon_worker::bed_exit::{BedExitClocks, BedExitError, BedExitFailure};
 use seeon_worker::detection_window::{AwareDateTime, DetectionWindow, DetectionWindowError};
 
 use super::policy::{FallResponseError, validate_fall_response};
 use crate::exit::Exit;
 use crate::msg::{FallRequest, FallResponse, FallScore, PosePacket};
+use crate::policy::bed_exit::{BedDecisionUpdate, BedStage, BedStageError};
 use crate::policy::fall::{DecisionUpdate, FallStage, FallStageError};
 use crate::policy::ingest::{IngestRefusal, ingest};
 use crate::seam::Clock;
@@ -21,12 +23,16 @@ use crate::seam::Clock;
 pub struct CameraPolicy {
     pub source_id: u32,
     pub stage: Option<FallStage>,
+    pub bed_stage: Option<BedStage>,
 }
 
 /// Synchronous, non-reentrant, receipt-only callbacks. The root supplies a real
-/// sink. Events are delivered only through `decision`, never again via returns.
+/// sink; each domain's events are delivered only through its callback.
 pub trait PolicySink {
-    fn decision(&mut self, update: DecisionUpdate<'_>);
+    fn preflight_fall_decisions(&mut self, batches: usize) -> Result<(), PumpError>;
+    fn preflight_bed_decision(&mut self) -> Result<(), PumpError>;
+    fn decision(&mut self, update: DecisionUpdate<'_>) -> Result<(), PumpError>;
+    fn bed_decision(&mut self, update: BedDecisionUpdate<'_>) -> Result<(), PumpError>;
     fn score(
         &mut self,
         frame: FrameIdentity,
@@ -56,6 +62,19 @@ pub enum PumpError {
     Response(FallResponseError),
     /// Injected wall time could not be classified against the owned window.
     Window(DetectionWindowError),
+    /// The active fall stage was observed without its required request channel.
+    MissingFallRequests,
+    /// The finite sink could not retain another fall decision receipt.
+    DecisionRetention,
+    /// The finite sink could not retain another bed decision receipt.
+    BedDecisionRetention,
+    /// Typed input, clock, or policy failure from the independent bed stage.
+    Bed(BedStageError),
+    /// A bed stage emitted a prefix that the sink could not retain, then failed.
+    BedReceiptAndPolicy {
+        receipt: Box<PumpError>,
+        stage: BedStageError,
+    },
 }
 
 impl PumpError {
@@ -68,6 +87,10 @@ impl PumpError {
             Self::UnknownSource(_) | Self::Ingest { .. } => Exit::Runtime,
             Self::InactiveSource(_) => Exit::Runtime,
             Self::Window(_) => Exit::Runtime,
+            Self::MissingFallRequests => Exit::Runtime,
+            Self::DecisionRetention | Self::BedDecisionRetention => Exit::Runtime,
+            Self::Bed(_) => Exit::Runtime,
+            Self::BedReceiptAndPolicy { .. } => Exit::Runtime,
             Self::ScoreRetention => Exit::Runtime,
             Self::FrameFailureRetention => Exit::Runtime,
             Self::Response(error) => error.exit(),
@@ -83,6 +106,7 @@ impl From<FallStageError> for PumpError {
 
 pub struct PolicyPump {
     cameras: Vec<CameraPolicy>,
+    last_metadata: Vec<std::time::Duration>,
     window: Option<DetectionWindow>,
     clock: Arc<dyn Clock>,
     replay: Option<super::replay::ReplayCapture>,
@@ -167,8 +191,10 @@ impl PolicyPump {
                 return Err(PumpError::DuplicateSource(camera.source_id));
             }
         }
+        let last_metadata = vec![clock.monotonic(); cameras.len()];
         Ok(Self {
             cameras,
+            last_metadata,
             window,
             clock,
             replay: None,
@@ -181,16 +207,34 @@ impl PolicyPump {
 
     /// Called only after the runtime actually observed an empty metadata queue.
     /// An exhausted pose/response budget is not evidence of unavailable input.
-    pub(crate) fn replay_wait_empty(&mut self) {
+    pub(crate) fn replay_wait_empty(&mut self) -> Result<(), PumpError> {
         if let Some(replay) = &mut self.replay {
             replay.wait_empty(self.clock.monotonic());
         }
+        let now = self.clock.monotonic();
+        for (camera, last_seen) in self.cameras.iter_mut().zip(&self.last_metadata) {
+            if now.saturating_sub(*last_seen) < super::replay::SOURCE_LOSS {
+                continue;
+            }
+            let Some(stage) = &mut camera.bed_stage else {
+                continue;
+            };
+            let snapshot_at = now.as_secs_f64();
+            let frame_index = stage
+                .monitor()
+                .last_debug_snapshot()
+                .and_then(|snapshot| snapshot.frame_index);
+            stage
+                .coast(frame_index, snapshot_at)
+                .map_err(PumpError::Bed)?;
+        }
+        Ok(())
     }
 
     pub fn observe(
         &mut self,
         packet: &PosePacket,
-        requests: &SyncSender<FallRequest>,
+        requests: Option<&SyncSender<FallRequest>>,
         sink: &mut dyn PolicySink,
     ) -> Result<(), PumpError> {
         let result = self.observe_frame(packet, requests, sink);
@@ -205,7 +249,7 @@ impl PolicyPump {
     fn observe_frame(
         &mut self,
         packet: &PosePacket,
-        requests: &SyncSender<FallRequest>,
+        requests: Option<&SyncSender<FallRequest>>,
         sink: &mut dyn PolicySink,
     ) -> Result<(), PumpError> {
         let source_id = packet.frame.source_id;
@@ -214,13 +258,63 @@ impl PolicyPump {
             .iter()
             .position(|camera| camera.source_id == source_id)
             .ok_or(PumpError::UnknownSource(source_id))?;
+        self.last_metadata[index] = self.clock.monotonic();
         let mut observed = Vec::new();
-        let capture = self.replay.is_some().then_some(&mut observed);
+        let capture = (self.replay.is_some() || self.cameras[index].bed_stage.is_some())
+            .then_some(&mut observed);
         let frame =
             ingest(packet, capture).map_err(|cause| PumpError::Ingest { source_id, cause })?;
         if let Some(replay) = &mut self.replay {
             replay.capture(&frame, &observed, self.clock.as_ref());
         }
+
+        let bed_camera_id = self.cameras[index]
+            .bed_stage
+            .as_ref()
+            .map(|stage| stage.monitor().config().camera_id.clone());
+        if let Some(stage) = self.cameras[index].bed_stage.as_mut() {
+            match bed_clocks(stage, self.clock.as_ref()) {
+                Ok(clocks) => {
+                    sink.preflight_bed_decision()?;
+                    let mut callback_error = None;
+                    let result = stage.observe(&frame, &observed, clocks, &mut |update| {
+                        if callback_error.is_none() {
+                            callback_error = sink.bed_decision(update).err();
+                        }
+                    });
+                    if let Some(receipt_error) = callback_error {
+                        return match result {
+                            Ok(()) => Err(receipt_error),
+                            Err(stage_error) => Err(PumpError::BedReceiptAndPolicy {
+                                receipt: Box::new(receipt_error),
+                                stage: stage_error,
+                            }),
+                        };
+                    }
+                    match result {
+                        Ok(()) => {}
+                        Err(error) if bed_window_error(&error) => {
+                            eprintln!(
+                                "ml-worker: bed window update dropped camera_id={} source_id={} frame_seq={} reason={error:?}",
+                                bed_camera_id.as_deref().unwrap_or("-"),
+                                source_id,
+                                packet.frame.sequence
+                            );
+                        }
+                        Err(error) => return Err(PumpError::Bed(error)),
+                    }
+                }
+                Err(error) => {
+                    eprintln!(
+                        "ml-worker: bed window update dropped camera_id={} source_id={} frame_seq={} reason={error:?}",
+                        bed_camera_id.as_deref().unwrap_or("-"),
+                        source_id,
+                        packet.frame.sequence
+                    );
+                }
+            }
+        }
+
         let Some(stage) = self.cameras[index].stage.as_mut() else {
             return Ok(());
         };
@@ -232,10 +326,30 @@ impl PolicyPump {
                 !window.contains(now).map_err(PumpError::Window)?
             }
         };
+        sink.preflight_fall_decisions(2)?;
         if outside {
-            stage.skip_outside_window(&frame, &mut |update| sink.decision(update))?;
+            let mut callback_error = None;
+            let result = stage.skip_outside_window(&frame, &mut |update| {
+                if callback_error.is_none() {
+                    callback_error = sink.decision(update).err();
+                }
+            });
+            if let Some(error) = callback_error {
+                return Err(error);
+            }
+            result?;
         } else {
-            stage.observe(&frame, requests, &mut |update| sink.decision(update))?;
+            let requests = requests.ok_or(PumpError::MissingFallRequests)?;
+            let mut callback_error = None;
+            let result = stage.observe(&frame, requests, &mut |update| {
+                if callback_error.is_none() {
+                    callback_error = sink.decision(update).err();
+                }
+            });
+            if let Some(error) = callback_error {
+                return Err(error);
+            }
+            result?;
         }
         Ok(())
     }
@@ -251,12 +365,22 @@ impl PolicyPump {
         let Some(stage) = self.stage(source_id)? else {
             return Err(PumpError::InactiveSource(source_id));
         };
+        sink.preflight_fall_decisions(1)?;
         if let Ok(score) = &response.score
             && stage.expects_response(&response)
         {
             sink.score(response.frame, response.track_id, score)?;
         }
-        stage.consume(response, &mut |update| sink.decision(update))?;
+        let mut callback_error = None;
+        let result = stage.consume(response, &mut |update| {
+            if callback_error.is_none() {
+                callback_error = sink.decision(update).err();
+            }
+        });
+        if let Some(error) = callback_error {
+            return Err(error);
+        }
+        result?;
         Ok(())
     }
 
@@ -265,7 +389,17 @@ impl PolicyPump {
     pub fn flush(&mut self, sink: &mut dyn PolicySink) -> Result<(), PumpError> {
         for camera in &mut self.cameras {
             if let Some(stage) = &mut camera.stage {
-                stage.flush(&mut |update| sink.decision(update))?;
+                sink.preflight_fall_decisions(1)?;
+                let mut callback_error = None;
+                let result = stage.flush(&mut |update| {
+                    if callback_error.is_none() {
+                        callback_error = sink.decision(update).err();
+                    }
+                });
+                if let Some(error) = callback_error {
+                    return Err(error);
+                }
+                result?;
             }
         }
         Ok(())
@@ -273,6 +407,10 @@ impl PolicyPump {
 
     pub fn source_count(&self) -> usize {
         self.cameras.len()
+    }
+
+    pub fn has_fall_stage(&self) -> bool {
+        self.cameras.iter().any(|camera| camera.stage.is_some())
     }
 
     pub fn pending_scores(&self) -> usize {
@@ -326,6 +464,33 @@ impl PolicyPump {
     }
 }
 
+fn bed_clocks(stage: &BedStage, clock: &dyn Clock) -> Result<BedExitClocks, DetectionWindowError> {
+    let wall_time = stage
+        .monitor()
+        .night_window()
+        .is_some()
+        .then(|| AwareDateTime::from_utc_system_time(clock.wall()))
+        .transpose()?;
+    Ok(BedExitClocks {
+        wall_time,
+        observed_at: clock.monotonic().as_secs_f64(),
+        snapshot_at: clock.monotonic().as_secs_f64(),
+    })
+}
+
+fn bed_window_error(error: &BedStageError) -> bool {
+    matches!(
+        error,
+        BedStageError::Policy(
+            BedExitError::Rejected(BedExitFailure::MissingWallClock | BedExitFailure::Window(_))
+                | BedExitError::FatalPartialState {
+                    cause: BedExitFailure::MissingWallClock | BedExitFailure::Window(_),
+                    ..
+                }
+        )
+    )
+}
+
 #[cfg(test)]
 mod exit_observation_tests {
     use super::PolicyPump;
@@ -371,10 +536,12 @@ mod exit_observation_tests {
                 super::CameraPolicy {
                     source_id: 7,
                     stage: Some(active),
+                    bed_stage: None,
                 },
                 super::CameraPolicy {
                     source_id: 9,
                     stage: None,
+                    bed_stage: None,
                 },
             ],
             None,

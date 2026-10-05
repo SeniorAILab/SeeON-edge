@@ -18,7 +18,7 @@ fn disabled_exporter_retires_snapshots_and_scores_without_disabling_events() {
     consume(&mut stage, &requests, 2.0, &mut sink);
     stage
         .skip_outside_window(&input(19, sequence, &[7]), &mut |update| {
-            sink.decision(update)
+            sink.decision(update).expect("bounded test decision")
         })
         .unwrap();
     assert_eq!(sink.ready.len(), 2);
@@ -50,7 +50,9 @@ fn conversion_and_attribution_failures_retire_only_the_emitted_prefix() {
     );
     let outside = input(19, sequence, &[]);
     stage
-        .skip_outside_window(&outside, &mut |update| sink.decision(update))
+        .skip_outside_window(&outside, &mut |update| {
+            sink.decision(update).expect("bounded test decision")
+        })
         .unwrap();
     let events = sink.triggered.clone();
     assert_eq!(events.len(), 3);
@@ -188,7 +190,7 @@ fn full_policy_lane_drops_incoming_records_without_replaying_them() {
     assert!(!fixture.lanes.has_work());
     stage
         .skip_outside_window(&input(19, sequence, &[]), &mut |update| {
-            sink.decision(update)
+            sink.decision(update).expect("bounded test decision")
         })
         .unwrap();
     fixture.deliver(&mut sink).unwrap();

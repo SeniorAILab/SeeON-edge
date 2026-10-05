@@ -85,8 +85,8 @@ impl Queue {
         pump_queue_turn(
             pump,
             &self.poses,
-            &self.requests,
-            &self.responses,
+            Some(&self.requests),
+            Some(&self.responses),
             &self.stop,
             &mut self.sink,
             budget(poses, responses),
@@ -156,6 +156,7 @@ fn disabled(count: u32, clock: Arc<TestClock>) -> PolicyPump {
             .map(|source_id| CameraPolicy {
                 source_id,
                 stage: None,
+                bed_stage: None,
             })
             .collect(),
         None,

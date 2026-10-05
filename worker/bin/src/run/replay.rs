@@ -27,7 +27,7 @@ use camera::CameraTrace;
 use geometry::{RowMeta, persisted_polygon};
 
 /// Python `wait_accepted(..., timeout_sec=0.5)`.
-const SOURCE_LOSS: Duration = Duration::from_millis(500);
+pub(crate) const SOURCE_LOSS: Duration = Duration::from_millis(500);
 
 struct StoredPolygon {
     points: Vec<(i128, i128)>,

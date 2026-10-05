@@ -20,8 +20,10 @@ use seeon_ml_worker::relay::cameras::policies::{
 };
 use seeon_ml_worker::run::calibration::{Calibration, CalibrationSource, parse};
 use seeon_ml_worker::run::cameras::{
-    CameraPolicyError, PolicyNumberSource, ResolvedFallPolicy, camera_policies, resolve_fall_policy,
+    BedPolicyBudget, CameraPolicyError, PolicyNumberSource, ResolvedFallPolicy, camera_policies,
+    resolve_fall_policy,
 };
+use seeon_worker::bed_exit::BedExitCapacities;
 use seeon_worker::episode::BusinessEvent;
 use seeon_worker::fall::{FallCapacities, FallCapacity, FallFailure};
 use seeon_worker::trace::{DecisionTraceReason, DecisionTraceValueName, NumericTraceValue};
@@ -290,6 +292,20 @@ fn capacities(vote_window: usize) -> FallCapacities {
     }
 }
 
+fn bed_budget() -> BedPolicyBudget {
+    BedPolicyBudget {
+        capacities: BedExitCapacities {
+            tracks: 150,
+            observations: 150,
+            beds: 16,
+            pose_features: 150,
+            polygon_points: 16,
+            episodes: 4096,
+        },
+        mask_cells: 64 * 1024 * 1024,
+    }
+}
+
 fn two_cameras(first: f64, first_source: PolicySource, second: f64) -> PulledConfig {
     let cameras = vec![
         camera_entry("camera-a", "facility-a"),
@@ -456,8 +472,16 @@ fn unpromoted_overrides_stay_canonical_and_promoted_receipt_applies() {
     assert_eq!(first.unapplied_transition_votes, Some(1));
     assert_eq!(first.unapplied_transition_window, Some(8));
 
-    let stages =
-        camera_policies(&config, &idle, BOOT, EPOCH, GENERATION, capacities(5)).expect("stages");
+    let stages = camera_policies(
+        &config,
+        &idle,
+        BOOT,
+        EPOCH,
+        GENERATION,
+        capacities(5),
+        bed_budget(),
+    )
+    .expect("stages");
     assert_eq!(
         stages
             .iter()
@@ -465,6 +489,7 @@ fn unpromoted_overrides_stay_canonical_and_promoted_receipt_applies() {
             .collect::<Vec<_>>(),
         vec![0, 1],
     );
+    assert!(stages.iter().all(|camera| camera.bed_stage.is_some()));
     let mut stages: Vec<FallStage> = stages
         .into_iter()
         .map(|camera| camera.stage.expect("fall enabled"))
@@ -505,9 +530,16 @@ fn unpromoted_overrides_stay_canonical_and_promoted_receipt_applies() {
         PolicyNumberSource::Receipt
     );
     assert_eq!(applied.unapplied_transition_votes, None);
-    let promoted_stages =
-        camera_policies(&config, &promoted, BOOT, EPOCH, GENERATION, capacities(8))
-            .expect("promoted");
+    let promoted_stages = camera_policies(
+        &config,
+        &promoted,
+        BOOT,
+        EPOCH,
+        GENERATION,
+        capacities(8),
+        bed_budget(),
+    )
+    .expect("promoted");
     let mut promoted_stage = promoted_stages
         .into_iter()
         .next()
@@ -526,14 +558,21 @@ fn unpromoted_overrides_stay_canonical_and_promoted_receipt_applies() {
         promoted_stage.decider().last_trace_snapshots()[0].reason,
         DecisionTraceReason::BelowThreshold
     );
-    let mut qualifying =
-        camera_policies(&config, &promoted, BOOT, EPOCH, GENERATION, capacities(8))
-            .expect("promoted positive case")
-            .into_iter()
-            .next()
-            .expect("camera-a")
-            .stage
-            .expect("fall enabled");
+    let mut qualifying = camera_policies(
+        &config,
+        &promoted,
+        BOOT,
+        EPOCH,
+        GENERATION,
+        capacities(8),
+        bed_budget(),
+    )
+    .expect("promoted positive case")
+    .into_iter()
+    .next()
+    .expect("camera-a")
+    .stage
+    .expect("fall enabled");
     let confirmed = consume(&mut qualifying, 20.0);
     assert_eq!(
         confirmed.len(),
@@ -587,6 +626,7 @@ fn image_default_applies_without_promotion_and_temperature_changes_probability()
         EPOCH,
         GENERATION,
         capacities(5),
+        bed_budget(),
     )
     .expect("cool")
     .into_iter()
@@ -602,6 +642,7 @@ fn image_default_applies_without_promotion_and_temperature_changes_probability()
         EPOCH,
         GENERATION,
         capacities(5),
+        bed_budget(),
     )
     .expect("hot")
     .into_iter()
@@ -633,21 +674,45 @@ fn malformed_receipt_and_capacities_refuse_even_when_unpromoted() {
         ..valid
     };
     assert_eq!(
-        camera_policies(&config, &overflow, BOOT, EPOCH, GENERATION, capacities(5))
-            .err()
-            .expect("bound"),
+        camera_policies(
+            &config,
+            &overflow,
+            BOOT,
+            EPOCH,
+            GENERATION,
+            capacities(5),
+            bed_budget(),
+        )
+        .err()
+        .expect("bound"),
         CameraPolicyError::CalibrationBound
     );
     assert_eq!(
-        camera_policies(&config, &valid, BOOT, EPOCH, GENERATION, capacities(0))
-            .err()
-            .expect("capacity"),
+        camera_policies(
+            &config,
+            &valid,
+            BOOT,
+            EPOCH,
+            GENERATION,
+            capacities(0),
+            bed_budget(),
+        )
+        .err()
+        .expect("capacity"),
         CameraPolicyError::Decider(FallFailure::InvalidCapacities)
     );
     assert_eq!(
-        camera_policies(&config, &valid, BOOT, EPOCH, GENERATION, capacities(4))
-            .err()
-            .expect("window"),
+        camera_policies(
+            &config,
+            &valid,
+            BOOT,
+            EPOCH,
+            GENERATION,
+            capacities(4),
+            bed_budget(),
+        )
+        .err()
+        .expect("window"),
         CameraPolicyError::Decider(FallFailure::Capacity(FallCapacity::VoteWindow))
     );
     assert!(matches!(
@@ -661,6 +726,7 @@ fn malformed_receipt_and_capacities_refuse_even_when_unpromoted() {
             EPOCH,
             GENERATION,
             capacities(5),
+            bed_budget(),
         )
         .err()
         .expect("temperature"),
@@ -673,6 +739,7 @@ fn malformed_receipt_and_capacities_refuse_even_when_unpromoted() {
         EPOCH,
         GENERATION,
         capacities(5),
+        bed_budget(),
     )
     .expect("empty");
     assert!(empty.is_empty());
@@ -687,6 +754,7 @@ fn malformed_receipt_and_capacities_refuse_even_when_unpromoted() {
             EPOCH,
             GENERATION,
             capacities(5),
+            bed_budget(),
         )
         .err()
         .expect("sources"),
@@ -695,7 +763,72 @@ fn malformed_receipt_and_capacities_refuse_even_when_unpromoted() {
 }
 
 #[test]
-fn disabled_fall_retains_every_source_index_without_a_stage() {
+fn bed_mask_budget_is_shared_across_the_roster() {
+    let mut config = pulled_with(
+        vec![
+            camera_with_domains("camera-a", "facility-a", Some(vec!["bed_exit"])),
+            camera_with_domains("camera-b", "facility-b", Some(vec!["bed_exit"])),
+        ],
+        Json::Null,
+        disabled_fall(),
+    );
+    for camera in &mut config.cameras {
+        camera.bed_zone_regions = vec![seeon_ml_worker::relay::cameras::BedZoneRegion {
+            id: "bed".into(),
+            origin: "manual".into(),
+            polygon: vec![(0, 0), (20, 0), (20, 20), (0, 20)],
+        }];
+        camera.bed_zone_image_width = Some(32);
+        camera.bed_zone_image_height = Some(32);
+    }
+    let one = seeon_ml_worker::policy::bed_exit_input::BedInputProducer::new(
+        &config.cameras[0],
+        bed_budget().capacities,
+        bed_budget().mask_cells,
+    )
+    .unwrap()
+    .allocated_cells();
+    assert!(one > 0);
+    let calibration = calibration(1.0, None, 3, 5, false);
+    let insufficient = camera_policies(
+        &config,
+        &calibration,
+        BOOT,
+        EPOCH,
+        GENERATION,
+        capacities(5),
+        BedPolicyBudget {
+            mask_cells: one,
+            ..bed_budget()
+        },
+    );
+    assert!(
+        insufficient.is_err(),
+        "each camera must consume the same process budget"
+    );
+    let exact = camera_policies(
+        &config,
+        &calibration,
+        BOOT,
+        EPOCH,
+        GENERATION,
+        capacities(5),
+        BedPolicyBudget {
+            mask_cells: one * 2,
+            ..bed_budget()
+        },
+    )
+    .unwrap();
+    assert_eq!(exact.len(), 2);
+    assert!(
+        exact
+            .iter()
+            .all(|camera| camera.stage.is_none() && camera.bed_stage.is_some())
+    );
+}
+
+#[test]
+fn disabled_fall_retains_every_source_index_with_bed_stages() {
     let cameras = vec![
         camera_with_domains("camera-a", "facility-a", Some(vec!["bed_exit"])),
         camera_with_domains("camera-b", "facility-b", Some(vec!["bed_exit"])),
@@ -707,6 +840,7 @@ fn disabled_fall_retains_every_source_index_without_a_stage() {
         EPOCH,
         GENERATION,
         capacities(5),
+        bed_budget(),
     )
     .expect("disabled roster");
     assert_eq!(
@@ -717,6 +851,7 @@ fn disabled_fall_retains_every_source_index_without_a_stage() {
         vec![0, 1]
     );
     assert!(built.iter().all(|camera| camera.stage.is_none()));
+    assert!(built.iter().all(|camera| camera.bed_stage.is_some()));
 }
 
 #[test]
@@ -743,10 +878,18 @@ fn partial_global_override_keeps_fall_and_camera_replacement_disables_it() {
         EPOCH,
         GENERATION,
         capacities(5),
+        bed_budget(),
     )
     .expect("partial override defaults fall on");
     assert_eq!(retained.len(), 2);
     assert!(retained.iter().all(|camera| camera.stage.is_some()));
+    assert_eq!(
+        retained
+            .iter()
+            .map(|camera| camera.bed_stage.is_some())
+            .collect::<Vec<_>>(),
+        vec![false, false]
+    );
 
     let replaced = pulled_with(
         vec![
@@ -763,6 +906,7 @@ fn partial_global_override_keeps_fall_and_camera_replacement_disables_it() {
         EPOCH,
         GENERATION,
         capacities(5),
+        bed_budget(),
     )
     .expect("camera list replaces defaults");
     assert_eq!(
@@ -772,6 +916,7 @@ fn partial_global_override_keeps_fall_and_camera_replacement_disables_it() {
             .collect::<Vec<_>>(),
         vec![(0, true), (1, true)]
     );
+    assert!(disabled.iter().all(|camera| camera.bed_stage.is_some()));
 
     let payload = object(vec![
         ("config_version", Json::Int(3)),
@@ -819,6 +964,7 @@ fn partial_global_override_keeps_fall_and_camera_replacement_disables_it() {
             EPOCH,
             GENERATION,
             capacities(5),
+            bed_budget(),
         ),
         Err(CameraPolicyError::Domains)
     ));

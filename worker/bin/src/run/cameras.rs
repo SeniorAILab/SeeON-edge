@@ -1,9 +1,12 @@
-//! One fall stage per already admitted runtime camera when fall is enabled.
-//! Precedence is `worker/domains/registry.py` `_effective_transition_threshold`.
+//! Independent optional fall and bed-exit stages for each admitted camera.
+//! Fall precedence is `worker/domains/registry.py` `_effective_transition_threshold`.
+
+mod bed_exit;
 
 use std::fmt;
 
 use seeon_deepstream_native::MEDIA_MAX_SOURCES;
+use seeon_worker::bed_exit::BedExitFailure;
 use seeon_worker::fall::{
     FallCapacities, FallFailure, FallPolicy, FallPolicyDecider, FallPolicyParameters,
 };
@@ -11,9 +14,12 @@ use seeon_worker::fall::{
 use super::calibration::Calibration;
 use super::pump::CameraPolicy;
 use crate::config::pull::PulledConfig;
+use crate::policy::bed_exit::BedStageError;
 use crate::policy::fall::{FallStage, FallStageError};
 use crate::relay::cameras::RuntimeCamera;
 use crate::relay::cameras::policies::{EffectivePolicy, PolicyBundle, PolicySource, PolicyValues};
+
+pub use bed_exit::{BedPolicyBudget, DEFAULT_BED_POLICY_BUDGET};
 
 const FALL_MODULE: &str = "fall";
 const FALL_MODULE_VERSION: i128 = 2;
@@ -45,7 +51,7 @@ pub struct ResolvedFallPolicy {
     pub temperature: f64,
 }
 
-/// A roster entry cannot become a fall stage. No document text is retained.
+/// A roster entry cannot become a domain stage. No document text is retained.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CameraPolicyError {
     /// Effective domain selection refused. The cause is not retained.
@@ -64,12 +70,24 @@ pub enum CameraPolicyError {
     Decider(FallFailure),
     /// `FallStage::new` refused the calibrated temperature.
     Stage(FallStageError),
+    /// The admitted bundle has no bed_exit.v1 policy for this camera.
+    BedPolicyMissing,
+    /// The admitted bed policy is not the exact bed_exit.v1 value shape.
+    BedPolicyShape,
+    /// A selected bed policy integer does not fit the domain owner type.
+    BedPolicyBound,
+    /// The selected bed policy's monitor rejected its admitted configuration.
+    BedMonitor(BedExitFailure),
+    /// The selected bed policy's bounded input or stage construction refused.
+    BedStage(BedStageError),
+    /// Whole-roster bed mask accounting failed.
+    BedMaskBudget,
 }
 
 impl fmt::Display for CameraPolicyError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::SourceId => formatter.write_str("roster index is not a fall source id"),
+            Self::SourceId => formatter.write_str("roster index is not a runtime source id"),
             Self::Domains => formatter.write_str("effective domain selection refused"),
             Self::CalibrationBound => {
                 formatter.write_str("calibration votes or window do not fit fall policy")
@@ -79,6 +97,16 @@ impl fmt::Display for CameraPolicyError {
             Self::Policy(error) => write!(formatter, "fall policy refused: {error}"),
             Self::Decider(error) => write!(formatter, "fall decider refused: {error}"),
             Self::Stage(_) => formatter.write_str("fall stage refused calibrated temperature"),
+            Self::BedPolicyMissing => formatter.write_str("admitted bed_exit.v1 policy is missing"),
+            Self::BedPolicyShape => {
+                formatter.write_str("admitted bed-exit policy is not bed_exit.v1")
+            }
+            Self::BedPolicyBound => {
+                formatter.write_str("bed-exit policy integers do not fit the domain owner")
+            }
+            Self::BedMonitor(error) => write!(formatter, "bed-exit monitor refused: {error}"),
+            Self::BedStage(error) => write!(formatter, "bed-exit stage refused: {error}"),
+            Self::BedMaskBudget => formatter.write_str("whole-roster bed mask budget overflowed"),
         }
     }
 }
@@ -87,13 +115,19 @@ impl std::error::Error for CameraPolicyError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Policy(error) | Self::Decider(error) => Some(error),
+            Self::BedMonitor(error) => Some(error),
+            Self::BedStage(error) => Some(error),
             // FallStageError is a typed refusal but not an std::error::Error.
             Self::Stage(_)
             | Self::Domains
             | Self::SourceId
             | Self::CalibrationBound
             | Self::PolicyMissing
-            | Self::PolicyShape => None,
+            | Self::PolicyShape
+            | Self::BedPolicyMissing
+            | Self::BedPolicyShape
+            | Self::BedPolicyBound
+            | Self::BedMaskBudget => None,
         }
     }
 }
@@ -106,12 +140,14 @@ pub fn camera_policies(
     stream_epoch: &str,
     source_generation: u64,
     capacities: FallCapacities,
+    bed_budget: BedPolicyBudget,
 ) -> Result<Vec<CameraPolicy>, CameraPolicyError> {
     let selection = config.config.domain_selection();
     let domains = selection
         .resolve()
         .map_err(|_| CameraPolicyError::Domains)?;
     let mut policies = Vec::with_capacity(config.cameras.len());
+    let mut bed_mask_cells = bed_budget.mask_cells;
     for (index, camera) in config.cameras.iter().enumerate() {
         let source_id = admitted_source(index)?;
         let stage = if domains.fall {
@@ -127,7 +163,32 @@ pub fn camera_policies(
         } else {
             None
         };
-        policies.push(CameraPolicy { source_id, stage });
+        let bed_stage = if domains.bed_exit {
+            let resolved = bed_exit::resolve_policy(&config.policies, &camera.camera_id)?;
+            let window = config
+                .windows
+                .get("bed_exit")
+                .map(|admitted| admitted.window.clone());
+            let (bed_stage, allocated_cells) = bed_exit::build_stage(
+                camera,
+                boot_id,
+                resolved,
+                window,
+                bed_budget.capacities,
+                bed_mask_cells,
+            )?;
+            bed_mask_cells = bed_mask_cells
+                .checked_sub(allocated_cells)
+                .ok_or(CameraPolicyError::BedMaskBudget)?;
+            Some(bed_stage)
+        } else {
+            None
+        };
+        policies.push(CameraPolicy {
+            source_id,
+            stage,
+            bed_stage,
+        });
     }
     Ok(policies)
 }
@@ -244,6 +305,13 @@ pub(crate) fn admitted_fall<'a>(
         return Err(CameraPolicyError::PolicyShape);
     }
     Ok(selected)
+}
+
+pub(crate) fn admitted_bed<'a>(
+    policies: &'a PolicyBundle,
+    camera_id: &str,
+) -> Result<&'a EffectivePolicy, CameraPolicyError> {
+    bed_exit::admitted_policy(policies, camera_id)
 }
 
 fn fit(value: i128) -> Result<usize, CameraPolicyError> {

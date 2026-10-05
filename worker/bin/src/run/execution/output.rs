@@ -125,6 +125,12 @@ pub(super) struct DecisionPolicy {
     pub effective_policy_id: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(super) enum DecisionDomain {
+    Fall,
+    BedExit,
+}
+
 pub struct Session {
     pub pump: PolicyPump,
     pub publications: Publications,
@@ -138,7 +144,7 @@ pub struct Session {
     policy_stop: AtomicBool,
     pub boot_id: String,
     pub temperature: f64,
-    pub(super) decision_policies: BTreeMap<String, DecisionPolicy>,
+    pub(super) decision_policies: BTreeMap<String, BTreeMap<DecisionDomain, DecisionPolicy>>,
     pose_rx: Receiver<PosePacket>,
     preview_rx: Receiver<PreviewPacket>,
     pub sender: Option<delivery::Handle>,
@@ -174,6 +180,7 @@ pub(super) fn prepare(
         boot_id,
         1,
         default_capacities(),
+        cameras::DEFAULT_BED_POLICY_BUDGET,
     )
     .map_err(OutputError::Policy)?;
     let decision_policies = decision_policies(
@@ -182,8 +189,19 @@ pub(super) fn prepare(
             .cameras
             .iter()
             .zip(&policies)
-            .filter_map(|(camera, policy)| {
-                policy.stage.as_ref().map(|_| camera.camera_id.as_str())
+            .flat_map(|(camera, policy)| {
+                [
+                    policy
+                        .stage
+                        .as_ref()
+                        .map(|_| (camera.camera_id.as_str(), DecisionDomain::Fall)),
+                    policy
+                        .bed_stage
+                        .as_ref()
+                        .map(|_| (camera.camera_id.as_str(), DecisionDomain::BedExit)),
+                ]
+                .into_iter()
+                .flatten()
             }),
     )?;
     let mut pump = PolicyPump::new(
@@ -359,22 +377,27 @@ pub(super) fn prepare(
 
 pub(super) fn decision_policies<'a>(
     policies: &PolicyBundle,
-    camera_ids: impl IntoIterator<Item = &'a str>,
-) -> Result<BTreeMap<String, DecisionPolicy>, OutputError> {
-    camera_ids
-        .into_iter()
-        .map(|camera_id| {
-            let policy =
-                cameras::admitted_fall(policies, camera_id).map_err(OutputError::Policy)?;
-            Ok((
-                camera_id.to_owned(),
+    camera_domains: impl IntoIterator<Item = (&'a str, DecisionDomain)>,
+) -> Result<BTreeMap<String, BTreeMap<DecisionDomain, DecisionPolicy>>, OutputError> {
+    let mut resolved = BTreeMap::new();
+    for (camera_id, domain) in camera_domains {
+        let policy = match domain {
+            DecisionDomain::Fall => cameras::admitted_fall(policies, camera_id),
+            DecisionDomain::BedExit => cameras::admitted_bed(policies, camera_id),
+        }
+        .map_err(OutputError::Policy)?;
+        resolved
+            .entry(camera_id.to_owned())
+            .or_insert_with(BTreeMap::new)
+            .insert(
+                domain,
                 DecisionPolicy {
                     module_qualified_id: format!("{}.v{}", policy.module_id, policy.module_version),
                     effective_policy_id: policy.effective_policy_id.clone(),
                 },
-            ))
-        })
-        .collect()
+            );
+    }
+    Ok(resolved)
 }
 
 fn default_capacities() -> seeon_worker::fall::FallCapacities {
@@ -710,6 +733,7 @@ pub(super) mod tests {
                     .map(|(source_id, ..)| CameraPolicy {
                         source_id: *source_id,
                         stage: None,
+                        bed_stage: None,
                     })
                     .collect(),
                 None,

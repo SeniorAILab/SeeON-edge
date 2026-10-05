@@ -3,6 +3,8 @@
 //! durable event identity (G20).
 
 pub mod bed;
+pub mod bed_exit;
+pub mod bed_exit_input;
 pub mod coverage;
 pub mod emit;
 pub mod fall;

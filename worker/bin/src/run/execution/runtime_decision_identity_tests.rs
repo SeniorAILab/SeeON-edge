@@ -22,7 +22,9 @@ fn genuine_normal_triggered_and_outside_snapshots_keep_scores_and_event_handoff(
     let event = sink.triggered[0].event.clone();
     let outside = input(19, sequence, &[7]);
     stage
-        .skip_outside_window(&outside, &mut |update| sink.decision(update))
+        .skip_outside_window(&outside, &mut |update| {
+            sink.decision(update).expect("bounded test decision")
+        })
         .unwrap();
     fixture.deliver(&mut sink).unwrap();
     let records = fixture.drain(19);
@@ -191,7 +193,7 @@ fn camera_override_and_default_fallback_produce_distinct_canonical_trace_ids() {
     for source_id in [19, 20] {
         stage(source_id)
             .skip_outside_window(&input(source_id, 3, &[7]), &mut |update| {
-                sink.decision(update)
+                sink.decision(update).expect("bounded test decision")
             })
             .unwrap();
     }

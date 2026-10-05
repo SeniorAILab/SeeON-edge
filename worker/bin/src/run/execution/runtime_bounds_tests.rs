@@ -52,6 +52,7 @@ fn camera(source_id: u32) -> CameraPolicy {
     CameraPolicy {
         source_id,
         stage: Some(crate::policy::fall::FallStage::new(decider, 1.0).expect("valid calibration")),
+        bed_stage: None,
     }
 }
 
@@ -180,8 +181,8 @@ fn due(
         pump_queue_turn(
             pump,
             &ends.poses,
-            &ends.requests,
-            &ends.responses,
+            Some(&ends.requests),
+            Some(&ends.responses),
             stop,
             sink,
             budget(1, 4),
@@ -218,8 +219,8 @@ fn accepted_prefix_survives_capacity_refusal() {
     let error = pump_queue_turn(
         &mut pump,
         &ends.poses,
-        &ends.requests,
-        &ends.responses,
+        Some(&ends.requests),
+        Some(&ends.responses),
         &stop,
         &mut held,
         budget(0, 2),
@@ -255,8 +256,8 @@ fn completing_a_frame_drains_every_accepted_track_with_post_update_generation() 
     pump_queue_turn(
         &mut pump,
         &ends.poses,
-        &ends.requests,
-        &ends.responses,
+        Some(&ends.requests),
+        Some(&ends.responses),
         &stop,
         &mut held,
         budget(0, requests.len()),
@@ -309,8 +310,8 @@ fn response_budget_exhaustion_preserves_a_newer_queued_pose() {
     pump_queue_turn(
         &mut pump,
         &ends.poses,
-        &ends.requests,
-        &ends.responses,
+        Some(&ends.requests),
+        Some(&ends.responses),
         &stop,
         &mut held,
         budget(1, 1),
@@ -338,6 +339,15 @@ fn response_arriving_between_poses_is_consumed_before_the_next_pose() {
         response: Option<FallResponse>,
     }
     impl PolicySink for InjectResponse<'_> {
+        fn preflight_fall_decisions(
+            &mut self,
+            batches: usize,
+        ) -> Result<(), crate::run::pump::PumpError> {
+            self.held.preflight_fall_decisions(batches)
+        }
+        fn preflight_bed_decision(&mut self) -> Result<(), crate::run::pump::PumpError> {
+            self.held.preflight_bed_decision()
+        }
         fn frame_failure(
             &mut self,
             frame: FrameIdentity,
@@ -345,14 +355,24 @@ fn response_arriving_between_poses_is_consumed_before_the_next_pose() {
         ) -> Result<(), crate::run::pump::PumpError> {
             self.held.frame_failure(frame, error)
         }
-        fn decision(&mut self, update: crate::policy::fall::DecisionUpdate<'_>) {
+        fn bed_decision(
+            &mut self,
+            update: crate::policy::bed_exit::BedDecisionUpdate<'_>,
+        ) -> Result<(), crate::run::pump::PumpError> {
+            self.held.bed_decision(update)
+        }
+        fn decision(
+            &mut self,
+            update: crate::policy::fall::DecisionUpdate<'_>,
+        ) -> Result<(), crate::run::pump::PumpError> {
             let inject = update.frame.source_id == 20;
-            self.held.decision(update);
+            self.held.decision(update)?;
             if inject {
                 self.sender
                     .send(self.response.take().expect("first pose decision"))
                     .unwrap();
             }
+            Ok(())
         }
         fn score(
             &mut self,
@@ -381,8 +401,8 @@ fn response_arriving_between_poses_is_consumed_before_the_next_pose() {
     pump_queue_turn(
         &mut pump,
         &ends.poses,
-        &ends.requests,
-        &ends.responses,
+        Some(&ends.requests),
+        Some(&ends.responses),
         &stop,
         &mut injecting,
         budget(2, 2),
@@ -421,8 +441,8 @@ fn continuous_pose_refill_cannot_exceed_the_turn_bound() {
     pump_queue_turn(
         &mut pump,
         &ends.poses,
-        &ends.requests,
-        &ends.responses,
+        Some(&ends.requests),
+        Some(&ends.responses),
         &stop,
         &mut held,
         budget(bound, 0),
@@ -445,8 +465,8 @@ fn zero_pose_budget_ignores_disconnected_pose_channel_and_drains_live_responses(
     pump_queue_turn(
         &mut pump,
         &ends.poses,
-        &ends.requests,
-        &ends.responses,
+        Some(&ends.requests),
+        Some(&ends.responses),
         &stop,
         &mut held,
         budget(0, 1),
@@ -457,8 +477,8 @@ fn zero_pose_budget_ignores_disconnected_pose_channel_and_drains_live_responses(
         pump_queue_turn(
             &mut pump,
             &ends.poses,
-            &ends.requests,
-            &ends.responses,
+            Some(&ends.requests),
+            Some(&ends.responses),
             &stop,
             &mut held,
             budget(1, 1),
@@ -487,8 +507,8 @@ fn frame_local_ingest_and_gap_failures_preserve_both_sources_pending_work() {
     pump_queue_turn(
         &mut pump,
         &ends.poses,
-        &ends.requests,
-        &ends.responses,
+        Some(&ends.requests),
+        Some(&ends.responses),
         &stop,
         &mut held,
         budget(2, 4),
@@ -535,8 +555,8 @@ fn frame_local_ingest_and_gap_failures_preserve_both_sources_pending_work() {
     pump_queue_turn(
         &mut pump,
         &ends.poses,
-        &ends.requests,
-        &ends.responses,
+        Some(&ends.requests),
+        Some(&ends.responses),
         &stop,
         &mut held,
         budget(0, 4),
@@ -569,8 +589,8 @@ fn routing_and_accelerator_faults_never_become_frame_local_diagnostics() {
         pump_queue_turn(
             &mut pump,
             &ends.poses,
-            &ends.requests,
-            &ends.responses,
+            Some(&ends.requests),
+            Some(&ends.responses),
             &stop,
             &mut held,
             budget(1, 4)
@@ -585,8 +605,8 @@ fn routing_and_accelerator_faults_never_become_frame_local_diagnostics() {
         pump_queue_turn(
             &mut pump,
             &ends.poses,
-            &ends.requests,
-            &ends.responses,
+            Some(&ends.requests),
+            Some(&ends.responses),
             &stop,
             &mut held,
             budget(1, 4),
@@ -610,8 +630,8 @@ fn routing_and_accelerator_faults_never_become_frame_local_diagnostics() {
     let error = pump_queue_turn(
         &mut pump,
         &ends.poses,
-        &ends.requests,
-        &ends.responses,
+        Some(&ends.requests),
+        Some(&ends.responses),
         &stop,
         &mut held,
         budget(0, 4),
@@ -714,6 +734,7 @@ fn failed_score_handoff_retains_pending_suffix_and_unrelated_events() {
             vec![CameraPolicy {
                 source_id: 19,
                 stage: None,
+                bed_stage: None,
             }],
             None,
             Arc::new(SystemClock::new()),
@@ -917,6 +938,7 @@ fn recording_admission_failure_retains_failed_event_and_does_not_restage() {
             vec![CameraPolicy {
                 source_id: 19,
                 stage: None,
+                bed_stage: None,
             }],
             None,
             Arc::new(SystemClock::new()),

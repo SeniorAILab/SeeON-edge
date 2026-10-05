@@ -77,6 +77,7 @@ impl Fixture {
                     .map(|(source_id, ..)| CameraPolicy {
                         source_id: *source_id,
                         stage: None,
+                        bed_stage: None,
                     })
                     .collect(),
                 None,
@@ -116,8 +117,12 @@ impl Fixture {
             .get_mut("camera-20")
             .unwrap()
             .insert("fall".into(), override_policy);
-        session.decision_policies =
-            output::decision_policies(&policies, ids.iter().map(String::as_str)).unwrap();
+        session.decision_policies = output::decision_policies(
+            &policies,
+            ids.iter()
+                .map(|id| (id.as_str(), output::DecisionDomain::Fall)),
+        )
+        .unwrap();
         let lanes = Arc::new(Lanes::new(capacity).unwrap());
         session.records = Some(Arc::clone(&lanes));
         // Exercise the same handoff used by shutdown drains without native media.
@@ -240,7 +245,7 @@ pub(super) fn consume(
                 },
                 &mut |update| {
                     snapshots.extend_from_slice(update.snapshots);
-                    sink.decision(update);
+                    sink.decision(update).expect("bounded test decision");
                 },
             )
             .unwrap();
