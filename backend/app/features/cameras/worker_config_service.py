@@ -2,64 +2,21 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import Any
 
+from backend.app.features.cameras.bed_zone_store import BedZone
 from backend.app.features.cameras.camera_values import CameraRegistryData
 from backend.app.features.detection_settings.policy_models import PolicyCameraIdentity
+from backend.app.features.detection_settings.store import DomainDetectionSetting
+from contracts.worker_config import PulledWorkerConfig
 from shared.detection_policies import PolicyBundle
-
-
-@dataclass(frozen=True, slots=True)
-class _PulledView:
-    config_version: int
-    restart_epoch: int
-    night_window: Any
-    detection_windows: Mapping[str, Any]
-    cameras: Any
-
-if TYPE_CHECKING:
-    class _PolicyWindow(Protocol):
-        tz: str
-        def as_dict(self) -> dict[str, object]: ...
-
-    class PulledLike(Protocol):
-        config_version: int
-        restart_epoch: int
-        night_window: _PolicyWindow | None
-        detection_windows: Mapping[str, _PolicyWindow]
-        cameras: tuple[object, ...]
-    # Back-compat alias for clarity in annotations below.
-    PulledWorkerConfig = PulledLike
-
-    class DomainDetectionSetting(Protocol):
-        on: bool
-        mode: str
-        start: str | None
-        end: str | None
-
-    class BedZone(Protocol):
-        regions: tuple[Any, ...]
-        image_width: int
-        image_height: int
-        def as_dict(self) -> dict[str, object]: ...
-else:
-    class DomainDetectionSetting(Protocol):
-        on: bool
-        mode: str
-        start: str | None
-        end: str | None
-    class BedZone(Protocol):
-        regions: tuple[Any, ...]
-        image_width: int
-        image_height: int
-        def as_dict(self) -> dict[str, object]: ...
 
 
 @dataclass(frozen=True, slots=True)
 class WorkerConfigInputs:
     registry_snapshot: CameraRegistryData | Mapping[str, Any]
     bed_zones: Mapping[str, BedZone]
-    pulled: PulledLike | None
+    pulled: PulledWorkerConfig | None
     live_config_version: int
     live_restart_epoch: int
     detection_settings: Mapping[str, DomainDetectionSetting]
@@ -162,11 +119,11 @@ def _build_camera_entries(
 
 
 def _resolve_live_pulled(
-    pulled: PulledLike | None, config_version: int, restart_epoch: int
-) -> _PulledView | None:
+    pulled: PulledWorkerConfig | None, config_version: int, restart_epoch: int
+) -> PulledWorkerConfig | None:
     if pulled is None:
         return None
-    return _PulledView(
+    return PulledWorkerConfig(
         config_version=int(config_version),
         restart_epoch=int(restart_epoch),
         night_window=pulled.night_window,
@@ -179,7 +136,7 @@ def _apply_local_detection_overrides(
     *,
     response: dict[str, Any],
     stored: Mapping[str, DomainDetectionSetting],
-    live_pulled: _PulledView | PulledLike | None,
+    live_pulled: PulledWorkerConfig | None,
 ) -> None:
     if not stored:
         return
@@ -239,7 +196,7 @@ def _as_window_dict_map(value: Any) -> dict[str, dict[str, Any]]:
     }
 
 
-def _resolved_tz(live_pulled: _PulledView | PulledLike | None, domain: str) -> str:
+def _resolved_tz(live_pulled: PulledWorkerConfig | None, domain: str) -> str:
     if live_pulled is not None:
         window = live_pulled.detection_windows.get(domain)
         if window is None and domain == "bed_exit":
@@ -264,7 +221,8 @@ def _apply_numeric_detection_policies(
     if generation == 0:
         return
     # Router resolves bundle for nonzero generations; keep service pure.
-    assert bundle is not None, "policy bundle must be provided for nonzero generation"
+    if bundle is None:
+        raise RuntimeError("policy bundle must be provided for nonzero generation")
     response["detection_policies"] = bundle.as_dict()
     response_cameras = response.get("cameras")
     if facility_id is not None and isinstance(response_cameras, list):
