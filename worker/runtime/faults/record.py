@@ -56,7 +56,7 @@ def _frame_hash(image: object) -> str | None:
 
         if isinstance(image, np.ndarray):
             return hashlib.sha256(image.tobytes()).hexdigest()
-    except Exception:  # noqa: BLE001 S110
+    except Exception:
         pass
     return None
 
@@ -69,7 +69,7 @@ def _truncate_message(message: str) -> str:
 
 def persist_first_fault(record: FirstFaultRecord, *, state_dir: Path | None = None) -> bool:
     """Schedule a first-fault queue admission without delaying fatal exit."""
-    global _written  # noqa: PLW0603
+    global _written
     with _write_lock:
         if _written:
             return False
@@ -84,7 +84,7 @@ def persist_first_fault(record: FirstFaultRecord, *, state_dir: Path | None = No
 
     try:
         result = DeliveryQueue(directory, recover=False).try_admit_nonblocking(entry)
-    except Exception as error:  # noqa: BLE001
+    except Exception as error:
         LOGGER.warning("first-fault record unavailable: %s", error)
         return False
     if not result.accepted:
@@ -136,7 +136,7 @@ def make_fault_record(
 
         if isinstance(image, np.ndarray):
             frame_shape = tuple(image.shape)
-    except Exception:  # noqa: BLE001 S110
+    except Exception:
         pass
     return FirstFaultRecord(
         pid=os.getpid(),

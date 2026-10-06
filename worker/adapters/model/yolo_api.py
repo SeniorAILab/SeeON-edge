@@ -251,7 +251,7 @@ def _construct_with_timeout(
     def _run() -> None:
         try:
             outcome.append(construct(path))
-        except Exception as exc:  # noqa: BLE001 -- re-raised verbatim below, in the caller thread
+        except Exception as exc:
             outcome.append(exc)
         finally:
             done.set()

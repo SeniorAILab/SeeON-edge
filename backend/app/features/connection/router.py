@@ -282,7 +282,7 @@ def _heartbeat_relay_view(app: FastAPI) -> dict[str, object]:
 def _trigger_roster_sync(app: FastAPI) -> None:
     try:
         sync_camera_roster(app, _force=True, _refresh=True)
-    except Exception:  # noqa: BLE001, S110
+    except Exception:
         pass
 
 

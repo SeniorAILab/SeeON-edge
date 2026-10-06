@@ -314,7 +314,7 @@ def default_verifiers(
 
         try:
             verify_flow_boot_inputs(os.environ)
-        except Exception as error:  # noqa: BLE001 - reported as a boot verdict
+        except Exception as error:
             return VerifyResult(False, "flow", "flow_engine_identity", str(error))
         result = device_resident()
         return VerifyResult(result.ok, "flow", result.stage, result.reason)

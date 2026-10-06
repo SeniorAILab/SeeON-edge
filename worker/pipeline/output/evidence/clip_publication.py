@@ -95,7 +95,7 @@ class ClipPublisher:
                 reservation.final_dir / "thumbnail.jpg",
                 metadata.duration_s,
             )
-        except Exception as exc:  # noqa: BLE001 - a thumbnail failure must not block the clip
+        except Exception as exc:
             LOGGER.warning(
                 "thumbnail generation failed stage=thumbnail clip_id=%s exception_class=%s",
                 reservation.clip_id,
@@ -143,7 +143,7 @@ class ClipPublisher:
                     duration_ms=manifest.duration_ms,
                 )
             )
-        except Exception as exc:  # noqa: BLE001 - analysis admission cannot undo publication
+        except Exception as exc:
             LOGGER.warning(
                 "clip analysis ready hook failed stage=clip_analysis_ready "
                 "clip_id=%s exception_class=%s",
@@ -401,7 +401,7 @@ def _adopt_media(source_path: Path, destination: Path) -> None:
     """
     remuxer = shutil.which("ffmpeg")
     if remuxer is not None:
-        result = subprocess.run(  # noqa: S603 - fixed argv, operator-owned binary
+        result = subprocess.run(
             [
                 remuxer,
                 "-nostdin",

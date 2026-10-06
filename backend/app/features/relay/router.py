@@ -148,7 +148,7 @@ class BoundedBodyRoute(APIRoute):
             return original
 
         async def bounded_handler(request: Request) -> Response:
-            request._receive = _bounded_receive(request.receive, max_bytes)  # noqa: SLF001 - wrap ASGI receive at the route boundary
+            request._receive = _bounded_receive(request.receive, max_bytes)
             return await original(request)
 
         return bounded_handler

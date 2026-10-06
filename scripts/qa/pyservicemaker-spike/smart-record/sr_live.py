@@ -24,7 +24,7 @@ events: list[dict] = []
 done = threading.Event()
 
 
-def on_done(*args) -> None:  # noqa: ANN002 - vendor callback shape
+def on_done(*args) -> None:
     events.append({"t": time.monotonic(), "event": "sr-done", "args": [str(a) for a in args]})
     done.set()
 
@@ -83,7 +83,7 @@ def _write_report() -> None:
 threading.Thread(target=drive, daemon=True).start()
 try:
     flow()
-except Exception as exc:  # noqa: BLE001 - measurement records the failure
+except Exception as exc:
     events.append({"t": time.monotonic(), "event": "flow-error", "args": [repr(exc)]})
 
 _write_report()

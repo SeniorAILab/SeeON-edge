@@ -357,7 +357,7 @@ def test_unwritable_retention_does_not_stall_the_queue(queue_dir: Path) -> None:
             # what it tolerated.
             try:
                 sender.run_once()
-            except Exception as caught:  # noqa: BLE001 - mirrors the production loop
+            except Exception as caught:
                 swallowed.append(caught)
 
     assert not swallowed, (
@@ -418,7 +418,7 @@ def test_a_failing_acknowledge_does_not_monopolise_the_queue(queue_dir: Path) ->
         for _ in range(30):
             try:
                 sender.run_once()
-            except Exception as caught:  # noqa: BLE001 - mirrors the production loop
+            except Exception as caught:
                 swallowed.append(caught)
 
     assert not swallowed, f"run_once raised {swallowed[0]!r} instead of handling it"

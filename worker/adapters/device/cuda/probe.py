@@ -86,22 +86,22 @@ def probe_cuda_capability(*, importer: TorchImporter = _import_torch) -> CudaCap
     """
     try:
         torch = importer()
-    except Exception as exc:  # noqa: BLE001 - optional runtime dependency boundary
+    except Exception as exc:
         return CudaCapability(available=False, reason=f"torch import failed: {type(exc).__name__}")
 
     try:
         arch_list = tuple(torch.cuda.get_arch_list())
-    except Exception:  # noqa: BLE001,S110 - arch probe must not break startup
+    except Exception:
         arch_list = ()
 
     try:
         device_count = int(torch.cuda.device_count())
-    except Exception:  # noqa: BLE001,S110 - device-count probe must not break startup
+    except Exception:
         device_count = 0
 
     try:
         available = bool(torch.cuda.is_available())
-    except Exception as exc:  # noqa: BLE001 - backend probe must not break startup
+    except Exception as exc:
         return CudaCapability(
             available=False,
             reason=f"torch.cuda.is_available() raised {type(exc).__name__}",
@@ -214,7 +214,7 @@ def probe_nvenc_capability(
         return NvencCapability(
             False, f"ffmpeg encoder probe failed with exit code {error.returncode}"
         )
-    except Exception as error:  # noqa: BLE001 - encode probe must never break startup
+    except Exception as error:
         return NvencCapability(False, f"ffmpeg encoder probe failed: {type(error).__name__}")
 
     if _NVENC_ENCODER_PATTERN.search(encoders):

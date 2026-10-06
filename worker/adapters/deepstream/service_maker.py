@@ -218,7 +218,7 @@ class DeepStreamMediaPlane(MediaPlane):
     def _run_flow(self) -> None:
         try:
             self._flow()
-        except Exception as error:  # noqa: BLE001 - surfaced through status, never swallowed
+        except Exception as error:
             self._flow_error = error
         finally:
             self._flow_finished.set()
@@ -456,7 +456,7 @@ class DeepStreamMediaPlane(MediaPlane):
             command, done, result = self._commands.get()
             try:
                 value: Any = command()
-            except Exception as error:  # noqa: BLE001 - the caller re-raises on its own thread
+            except Exception as error:
                 value = error
             if result is not None:
                 result.append(value)
@@ -515,7 +515,7 @@ class DeepStreamMediaPlane(MediaPlane):
         if not self._config.snapshot_branch_enabled:
             return flow
         fork = flow.fork()
-        tee = fork._streams[0].originator  # noqa: SLF001 - Flow has no public stream endpoint
+        tee = fork._streams[0].originator
         tee_queue = "snapshot-tee-queue"
         valve = "snapshot-valve"
         tiler = "snapshot-tiler"
@@ -616,7 +616,7 @@ class DeepStreamMediaPlane(MediaPlane):
             return
         try:
             self._publish_frame(frame_meta, camera_id)
-        except Exception:  # noqa: BLE001 - an SDK probe must never raise
+        except Exception:
             self._record_probe_failure(camera_id)
 
     def _record_probe_failure(self, camera_id: str) -> None:
@@ -714,7 +714,7 @@ class DeepStreamMediaPlane(MediaPlane):
                     height=int(info.height),
                 )
             )
-        except Exception as error:  # noqa: BLE001 - an SDK callback must not abort the process
+        except Exception as error:
             # This runs on the pipeline thread: an exception here terminates the
             # worker and takes every camera down with it. The sealed media and
             # its contributor sidecar are already on disk, so the publication is

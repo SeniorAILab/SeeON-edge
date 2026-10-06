@@ -28,7 +28,7 @@ class Counter(BatchMetadataOperator):
         self.last_ns: int | None = None
         self.cuda_apps_out = cuda_apps_out
 
-    def handle_metadata(self, batch_meta) -> None:  # noqa: ANN001 - vendor type
+    def handle_metadata(self, batch_meta) -> None:
         started = time.perf_counter_ns()
         if self.first_ns is None:
             self.first_ns = started
@@ -107,7 +107,7 @@ def main() -> int:
             .attach(what=Probe("counter", counter))
             .render(enable_osd=False, sync=args.sync)()
         )
-    except Exception as exc:  # noqa: BLE001 - the measurement records the failure
+    except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
     elapsed = time.perf_counter() - started
 

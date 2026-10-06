@@ -143,7 +143,7 @@ def export(snapshot: Path, clip_store: Path, output: Path) -> tuple[int, int, fl
         if clip is not None:
             with_clip += 1
         records.append(
-            {key: row[key] for key in row.keys()}  # noqa: SIM118 - sqlite3.Row
+            {key: row[key] for key in row.keys()}
             | {
                 "clip_id": clip["clip_id"] if clip else None,
                 "clip_path": clip["clip_path"] if clip else None,

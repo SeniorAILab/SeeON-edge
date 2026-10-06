@@ -41,7 +41,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ClipAnalysisFailed as exc:
         _error("ClipAnalysisFailed", str(exc))
         return 3
-    except Exception:  # noqa: BLE001 - tool boundary maps every failure to exit 3
+    except Exception:
         _error("ClipAnalysisFailed", "tool_failed")
         return 3
     return 0

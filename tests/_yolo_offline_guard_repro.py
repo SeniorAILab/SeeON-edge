@@ -53,9 +53,9 @@ def main() -> None:
 
     if args.skip_guard:
         os.environ.pop("YOLO_OFFLINE", None)
-        import ultralytics  # noqa: F401 -- first-ever import in this process
+        import ultralytics
     else:
-        import worker.adapters.model.yolo_api  # noqa: F401 -- sets YOLO_OFFLINE at import time
+        import worker.adapters.model.yolo_api
 
     print("SUBPROCESS_COMPLETED", flush=True)
 

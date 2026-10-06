@@ -26,7 +26,7 @@ def try_emit(sink: ExecutionRecordSink | None, record: WireRecord | None) -> boo
         return False
     try:
         return bool(sink.try_emit(record))
-    except Exception:  # noqa: BLE001 - producers must never raise
+    except Exception:
         LOGGER.warning(
             "execution-record sink.try_emit failed camera_id=%s record_kind=%s",
             record.camera_id,

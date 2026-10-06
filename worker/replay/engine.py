@@ -44,7 +44,7 @@ from worker.replay.inputs import (
 )
 from worker.types import BusinessEvent, DecisionTraceSnapshot
 
-_STATIC_CLOCK = lambda: datetime(1970, 1, 1, tzinfo=UTC)  # noqa: E731
+_STATIC_CLOCK = lambda: datetime(1970, 1, 1, tzinfo=UTC)
 
 
 class ReplayConfigurationError(ValueError):

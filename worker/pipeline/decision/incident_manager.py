@@ -63,7 +63,7 @@ class IncidentManager:
             raise IncidentConfigurationError(self.cooldown_sec)
         try:
             self._identities = EventIdentityStore(self.identity_path)
-        except Exception:  # noqa: BLE001 - durability never suppresses detection
+        except Exception:
             # Same principle as a resolve failure, one step earlier. A journal
             # left malformed by an earlier crash made construction raise, so the
             # camera never activated at all and detected nothing until someone
@@ -104,7 +104,7 @@ class IncidentManager:
         source_identity = event.identity
         try:
             edge_event_id = self._identities.resolve(_source_key(event))
-        except Exception:  # noqa: BLE001 - durability never suppresses an alert
+        except Exception:
             # The journal exists so a restart reuses the same edge event id and
             # the backend can deduplicate. It is a durability aid, not the
             # decision. Unguarded, any journal I/O failure -- a full disk, a

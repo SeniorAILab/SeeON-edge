@@ -34,7 +34,7 @@ def retry_teardown(
     for _ in range(attempts):
         try:
             terminate(process)
-        except Exception:  # noqa: BLE001 - shutdown must exhaust bounded proof retries
+        except Exception:
             LOGGER.exception("clip analysis shutdown teardown retry failed")
         else:
             return True

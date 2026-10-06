@@ -117,7 +117,7 @@ def parse_manifest_content(path: Path) -> tuple[ClipManifest, bytes, dict[str, o
                 manifest = UnavailableClipManifest.model_validate(payload)
             case _:
                 raise ClipEvidenceError(EvidenceReasonCode.CORRUPT, "manifest state invalid")
-        return manifest, content, payload  # noqa: TRY300 - one guarded parse boundary
+        return manifest, content, payload
     except (
         OSError,
         UnicodeDecodeError,

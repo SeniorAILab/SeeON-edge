@@ -193,7 +193,7 @@ def _canonical_backend_camera_id(registry: object | None, camera_id: str) -> str
 def _send_one(client: object, camera_id: str) -> tuple[bool, str | None]:
     try:
         camera_client = client.for_camera(camera_id)  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001 - backend egress must never crash the loop
+    except Exception:
         return False, None
     # Prefer the classified result path (send_heartbeat_result) when the
     # client offers one; fall back to the plain bool send_heartbeat() for
@@ -203,7 +203,7 @@ def _send_one(client: object, camera_id: str) -> tuple[bool, str | None]:
     if callable(result_sender):
         try:
             sent = result_sender()
-        except Exception:  # noqa: BLE001 - ditto
+        except Exception:
             return False, None
         return bool(getattr(sent, "ok", False)), getattr(sent, "error_class", None)
     sender = getattr(camera_client, "send_heartbeat", None)
@@ -211,7 +211,7 @@ def _send_one(client: object, camera_id: str) -> tuple[bool, str | None]:
         return False, None
     try:
         return bool(sender()), None
-    except Exception:  # noqa: BLE001 - ditto
+    except Exception:
         return False, None
 
 

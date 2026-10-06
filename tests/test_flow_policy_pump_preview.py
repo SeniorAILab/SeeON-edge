@@ -17,17 +17,17 @@ from worker.types import DecisionInput
 
 def _pump_for(decider: object) -> NativePolicyPump:
     pump = object.__new__(NativePolicyPump)
-    pump._decision = SimpleNamespace(  # noqa: SLF001
+    pump._decision = SimpleNamespace(
         last_trace_snapshots=decider.last_trace_snapshots
     )
-    pump._preview_states_lock = threading.Lock()  # noqa: SLF001
-    pump._preview_states = MappingProxyType({})  # noqa: SLF001
+    pump._preview_states_lock = threading.Lock()
+    pump._preview_states = MappingProxyType({})
     return pump
 
 
 def _sync_preview(pump: NativePolicyPump, decider: object) -> None:
-    pump._decision.last_trace_snapshots = decider.last_trace_snapshots  # noqa: SLF001
-    pump._refresh_preview_states()  # noqa: SLF001
+    pump._decision.last_trace_snapshots = decider.last_trace_snapshots
+    pump._refresh_preview_states()
 
 
 class _ImmediateClassifier:
@@ -102,7 +102,7 @@ def test_preview_states_follow_real_fall_decider_normal_and_suspected_traces() -
         time_sec=1.0,
     )
     pump = _pump_for(decider)
-    pump._refresh_preview_states()  # noqa: SLF001
+    pump._refresh_preview_states()
 
     normal = pump.preview_states()
     assert normal[9].status == "normal"
@@ -126,7 +126,7 @@ def test_never_scored_warmup_track_is_not_published_as_normal() -> None:
     decider = _domain_decider(_SilentClassifier())
     _ = decider.update(_fall_input(time_sec=1.0, frame_index=1))
     pump = _pump_for(decider)
-    pump._refresh_preview_states()  # noqa: SLF001
+    pump._refresh_preview_states()
 
     assert decider.last_trace_snapshots[0].reason == "score-missing"
     assert decider.last_trace_snapshots[0].current_state == "unknown"
@@ -143,7 +143,7 @@ def test_scored_track_keeps_its_state_through_stride_gaps() -> None:
     )
     _ = decider.update({9: FallProbabilities(0.8, 0.1, 0.1)}, (9,), frame_index=1, time_sec=1.0)
     pump = _pump_for(decider)
-    pump._refresh_preview_states()  # noqa: SLF001
+    pump._refresh_preview_states()
     assert pump.preview_states()[9].status == "normal"
 
     _ = decider.update({}, (9,), frame_index=2, time_sec=1.1)
@@ -185,7 +185,7 @@ def test_open_episode_stays_suspected_through_a_score_gap_after_votes_age_out() 
 
     _ = decider.update({}, (9,), frame_index=9, time_sec=9.0)
     pump = _pump_for(decider)
-    pump._refresh_preview_states()  # noqa: SLF001
+    pump._refresh_preview_states()
 
     assert decider.last_trace_snapshots[0].reason == "score-missing"
     assert decider.last_trace_snapshots[0].current_state == "transition-confirmed"
@@ -196,7 +196,7 @@ def test_coast_preserves_the_previous_preview_map() -> None:
     decider = _domain_decider(_ImmediateClassifier())
     _ = decider.update(_fall_input(time_sec=1.0, frame_index=1))
     pump = _pump_for(decider)
-    pump._refresh_preview_states()  # noqa: SLF001
+    pump._refresh_preview_states()
     assert pump.preview_states()[9].status == "normal"
 
     _ = decider.coast()

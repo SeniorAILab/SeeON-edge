@@ -114,14 +114,14 @@ def _compose_bed_and_fall(
     *,
     identities: tuple[DecisionIdentity | None, ...],
 ) -> EventAggregator:
-    original = pump._decision  # noqa: SLF001
+    original = pump._decision
     aggregator = EventAggregator(
         deciders=(*original.deciders, monitor),  # type: ignore[arg-type]
         incidents=original.incidents,
         identities=identities,
     )
-    pump._decision = aggregator  # noqa: SLF001
-    pump._scene.persisted_bed_regions = (BoundingBox(0, 0, 80, 100, 0.99),)  # noqa: SLF001
+    pump._decision = aggregator
+    pump._scene.persisted_bed_regions = (BoundingBox(0, 0, 80, 100, 0.99),)
     return aggregator
 
 
@@ -286,11 +286,11 @@ def test_g11_1_duplicate_pts_coasts_through_backend_query(
         try:
             exporter = _exporter(lanes, backend.base_url, backend.relay_token)
             exporter.start()
-            child = pump._child  # noqa: SLF001
+            child = pump._child
             assert isinstance(child, UUID)
-            pump._process(_metadata(child=child, seq=0, pts=100))  # noqa: SLF001
-            pump._process(_metadata(child=child, seq=1, pts=100))  # noqa: SLF001
-            pump._process(_metadata(child=child, seq=2, pts=100 + _PTS_STEP_NS))  # noqa: SLF001
+            pump._process(_metadata(child=child, seq=0, pts=100))
+            pump._process(_metadata(child=child, seq=1, pts=100))
+            pump._process(_metadata(child=child, seq=2, pts=100 + _PTS_STEP_NS))
 
             def _coasted_visible() -> bool:
                 body = _query(backend)
@@ -327,11 +327,11 @@ def test_g11_2_nonmonotonic_pts_coasts_then_resumes_through_backend_query(
     """
     refuse_lanes = ExecutionRecordLanes(lane_capacity=64)
     refuse_pump = _pump(refuse_lanes, identity=_fall_identity(), fall_transition=0.1)
-    refuse_child = refuse_pump._child  # noqa: SLF001
+    refuse_child = refuse_pump._child
     assert isinstance(refuse_child, UUID)
-    refuse_pump._process(_metadata(child=refuse_child, seq=0, pts=200))  # noqa: SLF001
+    refuse_pump._process(_metadata(child=refuse_child, seq=0, pts=200))
     try:
-        refuse_pump._process(_metadata(child=refuse_child, seq=1, pts=100))  # noqa: SLF001
+        refuse_pump._process(_metadata(child=refuse_child, seq=1, pts=100))
     except TypeError as error:
         assert "stream-epoch reset" in str(error)
     else:
@@ -353,13 +353,13 @@ def test_g11_2_nonmonotonic_pts_coasts_then_resumes_through_backend_query(
         try:
             exporter = _exporter(lanes, backend.base_url, backend.relay_token)
             exporter.start()
-            child = pump._child  # noqa: SLF001
+            child = pump._child
             assert isinstance(child, UUID)
             first_pts = 200
             later_pts = first_pts + _PTS_STEP_NS
-            pump._process(_metadata(child=child, seq=0, pts=first_pts))  # noqa: SLF001
-            pump._process(_metadata(child=child, seq=1, pts=100))  # noqa: SLF001
-            pump._process(_metadata(child=child, seq=2, pts=later_pts))  # noqa: SLF001
+            pump._process(_metadata(child=child, seq=0, pts=first_pts))
+            pump._process(_metadata(child=child, seq=1, pts=100))
+            pump._process(_metadata(child=child, seq=2, pts=later_pts))
 
             def _seq2_visible() -> bool:
                 return any(row["frame_seq"] == 2 for row in _fall_decisions(_query(backend)))
@@ -410,7 +410,7 @@ def test_g11_3_bed_exit_episode_already_open_through_backend_query(
         try:
             exporter = _exporter(lanes, backend.base_url, backend.relay_token)
             exporter.start()
-            child = pump._child  # noqa: SLF001
+            child = pump._child
             assert isinstance(child, UUID)
             in_bed = _person(IN_BED_A)
             outside = _person(OUTSIDE_BEDS)
@@ -419,7 +419,7 @@ def test_g11_3_bed_exit_episode_already_open_through_backend_query(
             # accumulates toward `in_bed_dwell_sec`.
             boxes = (in_bed, in_bed, outside, outside, outside)
             for seq, person in enumerate(boxes):
-                pump._process(  # noqa: SLF001
+                pump._process(
                     _bed_metadata(
                         child=child,
                         seq=seq,
@@ -476,7 +476,7 @@ def test_g11_4_bed_exit_outside_window_through_backend_query(
         event_sink=_binding(tmp_path, lanes),
     )
     monitor = _night_monitor()
-    monitor._clock = _bed_clock_at(hour=12)  # noqa: SLF001
+    monitor._clock = _bed_clock_at(hour=12)
     _compose_bed_and_fall(pump, monitor, identities=(_fall_identity(), _bed_identity()))
     exporter = None
     with serve_backend(
@@ -490,7 +490,7 @@ def test_g11_4_bed_exit_outside_window_through_backend_query(
         try:
             exporter = _exporter(lanes, backend.base_url, backend.relay_token)
             exporter.start()
-            child = pump._child  # noqa: SLF001
+            child = pump._child
             assert isinstance(child, UUID)
             in_bed = _person(IN_BED_A)
             outside = _person(OUTSIDE_BEDS)
@@ -498,7 +498,7 @@ def test_g11_4_bed_exit_outside_window_through_backend_query(
             # frame that would trigger if not for the closed night window.
             boxes = (in_bed, in_bed, outside, outside)
             for seq, person in enumerate(boxes):
-                pump._process(  # noqa: SLF001
+                pump._process(
                     _bed_metadata(
                         child=child,
                         seq=seq,

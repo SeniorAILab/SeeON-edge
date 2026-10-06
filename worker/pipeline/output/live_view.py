@@ -244,7 +244,7 @@ class LiveViewSubscriber:
             return False
         try:
             jpeg = self._renderer.encode_jpeg(packet, observation, debug_snapshots)
-        except Exception:  # noqa: BLE001 - preview output must not stop the live lane
+        except Exception:
             return False
         self._store.publish_jpeg(
             camera_id,

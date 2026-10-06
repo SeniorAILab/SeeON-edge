@@ -49,7 +49,7 @@ class _WorkerServer(ThreadingHTTPServer):
 
 
 class _WorkerHandler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         self._respond(
             self.server.response_status
             if self.server.get_response_status is None
@@ -59,7 +59,7 @@ class _WorkerHandler(BaseHTTPRequestHandler):
             else self.server.get_response_body,
         )
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         self.server.requests.append(
             (

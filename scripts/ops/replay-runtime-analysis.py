@@ -25,7 +25,7 @@ _REPO = Path(__file__).resolve().parents[2]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-from shared.events.replay_wire import MAX_REPLAY_BODY_BYTES  # noqa: E402
+from shared.events.replay_wire import MAX_REPLAY_BODY_BYTES
 
 
 @dataclass(frozen=True, slots=True)
