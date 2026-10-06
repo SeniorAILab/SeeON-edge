@@ -6,8 +6,6 @@ import hashlib
 import hmac
 import json
 import logging
-import urllib.error
-import urllib.request
 import uuid
 from typing import Annotated, Literal
 
@@ -38,6 +36,12 @@ from backend.app.features.cameras.bed_zone_store import BedZone, BedZoneStore
 from backend.app.features.cameras.dependencies import (
     camera_sync_view,
     sync_camera_roster,
+)
+from backend.app.features.cameras.rtsp_probe_service import (
+    RTSPProbeInputs as _RTSPProbeInputs,
+)
+from backend.app.features.cameras.rtsp_probe_service import (
+    probe_rtsp_url as _service_probe_rtsp_url,
 )
 from backend.app.features.cameras.store import (
     CameraRegistryData,
@@ -1392,59 +1396,14 @@ def _validated_rtsp_url(rtsp_url: str) -> str:
 
 
 def _probe_rtsp_url(request: Request, rtsp_url: str) -> ProbeResult:
-    # Re-check (including DNS answers) at the probe boundary so a future
-    # caller cannot bypass create/update admission.
-    try:
-        endpoint = assert_rtsp_endpoint_allowed(rtsp_url)
-    except ValueError:
-        return ProbeResult(ok=False, error_class="unsupported")
-    rtsp_url = endpoint.original_url
     settings = get_settings()
-    origin = settings.worker_probe_origin.strip().rstrip("/")
-    if not origin:
-        # worker probe origin(Settings.worker_probe_origin)이 비어 있다 --
-        # worker에 요청을 보낼 주소가 없다. 옛 ML_API_WORKER_PROBE_ORIGIN
-        # 환경변수는 폐기되어(core.config._RETIRED_BACKEND_ENV) 더는 이 값을
-        # 주입하지 못한다. worker가 살아서 "디코드 실패"라고 답한 것과 전혀
-        # 다른 상황이므로 error_class를 채우지 않는다 (이슈 #151).
-        return ProbeResult(ok=False, probe_unavailable=True)
-    token = _expected_relay_token(request)
-    if token is None:
-        # relay 토큰 미설정 -- 마찬가지로 검사 요청 자체를 보낼 수 없다.
-        return ProbeResult(ok=False, probe_unavailable=True)
-    body = json.dumps({"rtsp_url": rtsp_url}, separators=(",", ":")).encode("utf-8")
-    probe_request = urllib.request.Request(
-        f"{origin}{PROBE_PATH}",
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            RELAY_TOKEN_HEADER: token,
-        },
-        method="POST",
+    inputs = _RTSPProbeInputs(
+        rtsp_url=rtsp_url,
+        origin=settings.worker_probe_origin,
+        relay_token=_expected_relay_token(request),
+        timeout_s=settings.worker_probe_timeout_s,
     )
-    try:
-        with urllib.request.urlopen(
-            probe_request,
-            timeout=settings.worker_probe_timeout_s,
-        ) as response:
-            payload = json.loads(response.read().decode("utf-8") or "{}")
-    except TimeoutError:
-        # worker에 보낸 HTTP 요청이 timeout한 것이지 RTSP가 timeout한 게
-        # 아니다 -- RTSP 타임아웃은 worker가 살아서 payload로 알려주고
-        # (_probe_result_from_worker), 그쪽에서 error_class="timeout"이
-        # 채워진다. 여기까지 왔다는 건 worker가 제때 답을 못 했다는 뜻이므로
-        # "검사 불가"로 분류한다 (이슈 #151).
-        return ProbeResult(ok=False, probe_unavailable=True)
-    except (OSError, urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError):
-        # 연결 거부/DNS 실패/HTTP 레벨 오류 등 -- worker에 닿지 못했거나
-        # 응답을 아예 받지 못한 경우다. worker가 실제로 응답했는데 그
-        # 내용이 디코드 실패였던 것(_probe_result_from_worker 경로)과는
-        # 구분해야 한다 (이슈 #151: RTSP 401을 "디코드 실패"로 오진했던
-        # 원인 중 하나가 이 catch-all이었다).
-        return ProbeResult(ok=False, probe_unavailable=True)
-    if not isinstance(payload, dict):
-        return ProbeResult(ok=False, error_class="decode")
-    return _probe_result_from_worker(payload)
+    return _service_probe_rtsp_url(inputs)
 
 
 def _probe_result_from_worker(payload: dict[object, object]) -> ProbeResult:
