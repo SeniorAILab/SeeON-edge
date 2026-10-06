@@ -248,6 +248,8 @@ class RelaySnapshotMetadata(BaseModel):
 
 
 class RelaySnapshotAttachmentRequest(BaseModel):
+    """An immutable snapshot reference; snapshot bytes never cross this route."""
+
     model_config = ConfigDict(extra="forbid")
 
     edge_event_id: str = Field(min_length=1, max_length=envelope_limits.EDGE_EVENT_ID_MAX_CHARS)
@@ -264,6 +266,8 @@ class RelaySnapshotAttachmentRequest(BaseModel):
 
 
 class RelaySnapshotDispositionRequest(BaseModel):
+    """A terminal, explicit statement that a snapshot cannot be delivered."""
+
     model_config = ConfigDict(extra="forbid")
 
     edge_event_id: str = Field(min_length=1, max_length=envelope_limits.EDGE_EVENT_ID_MAX_CHARS)
@@ -473,6 +477,12 @@ def relay_alert(
     request: Request,
     _: Annotated[None, Depends(require_relay_alert)],
 ) -> dict[str, str]:
+    """Commit the incident and its delivery obligation, then answer.
+
+    Every response is built after the admission COMMIT, so a failure before it
+    is never acknowledged. A worker retry after a lost response lands on the
+    same committed row instead of creating a second incident.
+    """
     binding = _camera_binding(request, payload.camera_id, payload.facility_id)
     bound_camera_id = binding.get("backend_camera_id")
     backend_camera_id = (
@@ -692,6 +702,8 @@ def relay_snapshot_attachment(
     request: Request,
     _: Annotated[None, Depends(require_relay_snapshot_attachment)],
 ) -> dict[str, str]:
+    """Record one immutable media reference without accepting media bytes."""
+
     projection = _snapshot_projection(request)
     audit = mutation_audit(
         request,
@@ -719,6 +731,8 @@ def relay_snapshot_disposition(
     request: Request,
     _: Annotated[None, Depends(require_relay_snapshot_disposition)],
 ) -> dict[str, str]:
+    """Durably record an unavailable or failed snapshot without touching its event."""
+
     projection = _snapshot_projection(request)
     audit = mutation_audit(
         request,
