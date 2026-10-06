@@ -174,7 +174,6 @@ ignore = ["TRY003"]
 "tests_support/**" = ["RUF012", "PERF401", "SIM102"]
 "scripts/**" = ["SLF001", "PERF401"]
 "backend/**" = ["SIM102", "SIM105", "SIM117"]
-# Temporary until #708/#709 land: avoid a spurious RUF100 on the cameras router.
 "backend/app/features/cameras/router.py" = ["RUF100"]
 # Literals here are split on purpose so the repository privacy scan does not match
 # its own fixtures; joining them (ISC001) makes the scan fail.
