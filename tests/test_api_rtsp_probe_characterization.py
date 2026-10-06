@@ -29,7 +29,11 @@ def test_camera_probe_unavailable_when_origin_blank(monkeypatch: pytest.MonkeyPa
     # Fake store with one camera
     class _FakeStore:
         def get(self, camera_id: str) -> dict[str, Any] | None:
-            return {"id": camera_id, "rtsp_url": "rtsp://camera.invalid/a"} if camera_id == "cam1" else None
+            return (
+                {"id": camera_id, "rtsp_url": "rtsp://camera.invalid/a"}
+                if camera_id == "cam1"
+                else None
+            )
 
     import backend.app.features.cameras.router as cameras_router
 
@@ -68,7 +72,11 @@ def test_camera_probe_maps_worker_payload(monkeypatch: pytest.MonkeyPatch) -> No
     # Fake store with one camera
     class _FakeStore:
         def get(self, camera_id: str) -> dict[str, Any] | None:
-            return {"id": camera_id, "rtsp_url": "rtsp://camera.invalid/b"} if camera_id == "cam2" else None
+            return (
+                {"id": camera_id, "rtsp_url": "rtsp://camera.invalid/b"}
+                if camera_id == "cam2"
+                else None
+            )
 
     import backend.app.features.cameras.router as cameras_router
 
@@ -87,16 +95,16 @@ def test_camera_probe_maps_worker_payload(monkeypatch: pytest.MonkeyPatch) -> No
 
     # Fake successful HTTP call returning a worker payload
     class _Resp:
-        def __enter__(self) -> "._Resp":
+        def __enter__(self) -> _Resp:
             return self
 
         def __exit__(self, *_) -> None:
             return None
 
         def read(self) -> bytes:
-            return json.dumps({"ok": False, "error_class": "timeout", "width": 640, "height": 480}).encode(
-                "utf-8"
-            )
+            return json.dumps(
+                {"ok": False, "error_class": "timeout", "width": 640, "height": 480}
+            ).encode("utf-8")
 
     import urllib.request as urllib_request
 
@@ -131,7 +139,12 @@ def test_create_camera_invalid_rtsp_returns_400(monkeypatch: pytest.MonkeyPatch)
     with TestClient(app) as client:
         resp = client.post(
             "/api/v1/cameras",
-            json={"label": "X", "rtsp_url": "rtsp://bad.invalid", "space_id": None, "force_register": False},
+            json={
+                "label": "X",
+                "rtsp_url": "rtsp://bad.invalid",
+                "space_id": None,
+                "force_register": False,
+            },
             headers=RELAY_HEADERS,
         )
     assert resp.status_code == 400
@@ -146,7 +159,11 @@ def test_update_camera_invalid_rtsp_returns_400(monkeypatch: pytest.MonkeyPatch)
 
     class _FakeStore:
         def get(self, camera_id: str) -> dict[str, Any] | None:
-            return {"id": camera_id, "rtsp_url": "rtsp://camera.invalid/x"} if camera_id == "cam3" else None
+            return (
+                {"id": camera_id, "rtsp_url": "rtsp://camera.invalid/x"}
+                if camera_id == "cam3"
+                else None
+            )
 
     monkeypatch.setattr(cameras_router, "_store", lambda app: _FakeStore(), raising=True)
     monkeypatch.setattr(
