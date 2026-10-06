@@ -156,10 +156,6 @@ select = [
 # informative inline `raise ValueError(f"...")` messages ARE the explicit-refusal
 # style this codebase wants; demanding a custom exception class per message
 # discourages raising. All other TRY rules stay on.
-# TRY003 (no long messages outside exception class) is ignored deliberately:
-# informative inline `raise ValueError(f"...")` messages ARE the explicit-refusal
-# style this codebase wants; demanding a custom exception class per message
-# discourages raising. All other TRY rules stay on.
 ignore = ["TRY003"]
 
 [tool.ruff.lint.per-file-ignores]
