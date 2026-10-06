@@ -219,11 +219,6 @@ def _apply_numeric_detection_policies(
 ) -> None:
     if generation == 0:
         return
-    if bundle is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="detection policy bundle is unavailable",
-        )
     response["detection_policies"] = bundle.as_dict()
     response_cameras = response.get("cameras")
     if facility_id is not None and isinstance(response_cameras, list):
