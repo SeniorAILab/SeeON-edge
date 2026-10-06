@@ -123,7 +123,7 @@ _POLYGONS: Final = (_DIAMOND, _NOTCHED_L, _PENTAGON, _SELF_INTERSECTING)
 # Any person box sampled at least this many pixels away from the polygon's
 # own edges (measured as a margin inward/outward from its AABB) is immune to
 # the sub-pixel scan-conversion differences documented in `_rasterize_rows`.
-_EDGE_SAFETY_MARGIN: Final = 4
+_EDGE_SAFETY_MARGIN_PX: Final = 4
 
 
 def _cv2_mask(polygon: tuple[tuple[int, int], ...]) -> tuple[np.ndarray, int, int]:
@@ -170,7 +170,7 @@ def _bed(polygon: tuple[tuple[int, int], ...]) -> BoundingBox:
 def _margin_safe_person_box(
     rng: random.Random, polygon: tuple[tuple[int, int], ...]
 ) -> BoundingBox | None:
-    """A random small box whose every pixel is >= `_EDGE_SAFETY_MARGIN` from
+    """A random small box whose every pixel is >= `_EDGE_SAFETY_MARGIN_PX` from
     every polygon edge -- either solidly inside or solidly outside, never
     straddling the boundary where the two rasterizers can legitimately
     disagree by a pixel."""
@@ -201,7 +201,7 @@ def _margin_safe_person_box(
 
     tight_area = max(0, x2 - x1) * max(0, y2 - y1)
     tight_sum = _sum(x1, y1, x2, y2)
-    margin = _EDGE_SAFETY_MARGIN
+    margin = _EDGE_SAFETY_MARGIN_PX
     expanded_sum = _sum(x1 - margin, y1 - margin, x2 + margin, y2 + margin)
     expanded_area = max(0, (x2 - x1) + 2 * margin) * max(0, (y2 - y1) + 2 * margin)
     tight_full = tight_sum == tight_area
