@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import FrozenInstanceError
-from typing import Any, Mapping
+from typing import Any
 
 import pytest
 
@@ -90,7 +91,7 @@ def test_apply_clip_storage_override_threads_selection() -> None:
 
 class _FakeBundle:
     def __init__(self, *, digest_prefix: str) -> None:
-        self.content_sha256 = f"{digest_prefix}ffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        self.content_sha256 = digest_prefix + ("0" * 56)
 
     def as_dict(self) -> dict[str, object]:
         return {"module_id": "fall", "schema_id": "fall.policy", "values": {"t": 0.7}}
@@ -172,5 +173,5 @@ def test_worker_config_inputs_is_frozen() -> None:
         policy_bundle=None,
     )
     with pytest.raises(FrozenInstanceError):
-        object.__setattr__(inputs, "live_config_version", 1)
+        inputs.live_config_version = 1  # type: ignore[misc]
 
