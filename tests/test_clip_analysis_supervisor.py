@@ -387,9 +387,9 @@ def test_notify_is_not_blocked_by_probe_and_cancelled_preprobe_never_launches(
         assert supervisor.status("first").reason == "cancelled"
         assert launches == []
         deadline = monotonic() + 1
-        while supervisor._cancelled and monotonic() < deadline:
+        while supervisor._cancelled and monotonic() < deadline:  # noqa: SLF001
             threading.Event().wait(0.01)
-        assert not supervisor._cancelled
+        assert not supervisor._cancelled  # noqa: SLF001
         assert _trigger(supervisor, "first", clip, "a" * 64) == Admission.QUEUED
         assert _wait(supervisor, "first") == "failed"
     finally:
@@ -509,11 +509,11 @@ def test_terminal_statuses_are_bounded_but_queued_and_active_never_evicted(tmp_p
         probe=_probe,
     )
     try:
-        with supervisor._condition:
-            supervisor._statuses.record("queued", ClipAnalysisStatus("queued"))
-            supervisor._statuses.record("running", ClipAnalysisStatus("running"))
+        with supervisor._condition:  # noqa: SLF001
+            supervisor._statuses.record("queued", ClipAnalysisStatus("queued"))  # noqa: SLF001
+            supervisor._statuses.record("running", ClipAnalysisStatus("running"))  # noqa: SLF001
             for number in range(257):
-                supervisor._statuses.record(
+                supervisor._statuses.record(  # noqa: SLF001
                     f"terminal-{number}", ClipAnalysisStatus("failed")
                 )
         assert supervisor.status("queued").state == "queued"
@@ -555,9 +555,9 @@ def test_teardown_proof_failure_fails_admission_and_never_launches_next(
         assert _trigger(supervisor, "event-1", clip, "a" * 64)
         assert _wait(supervisor, "event-1") == "failed"
         assert supervisor.status("event-1").reason == "teardown_unproved"
-        with supervisor._condition:
-            assert supervisor._active is not None
-            assert supervisor._process is not None
+        with supervisor._condition:  # noqa: SLF001
+            assert supervisor._active is not None  # noqa: SLF001
+            assert supervisor._process is not None  # noqa: SLF001
         assert _trigger(supervisor, "event-2", clip, "e" * 64) == Admission.STOPPED
         assert pids == [pids[0]]
     finally:

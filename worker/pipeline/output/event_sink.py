@@ -143,7 +143,7 @@ class EvidenceEventSink:
                     self._record_snapshot_disposition(
                         edge_event_id, snapshot_id, "UNAVAILABLE", "stage_capacity"
                     )
-                except Exception:
+                except Exception:  # noqa: BLE001 - optional media must not affect the event
                     LOGGER.exception(
                         "snapshot staging failed: camera_id=%s edge_event_id=%s",
                         event.camera_id,
@@ -160,7 +160,7 @@ class EvidenceEventSink:
                 snapshot_store.publish(staged_snapshot)
                 self.stager.attach_snapshot(edge_event_id, snapshot_payload)
                 snapshot_store.commit(staged_snapshot)
-            except Exception:
+            except Exception:  # noqa: BLE001 - durable transition resumes at startup
                 LOGGER.exception(
                     (
                         "snapshot publication remains staged for reconciliation: "
@@ -192,7 +192,7 @@ class EvidenceEventSink:
     ) -> None:
         try:
             self.stager.record_snapshot_disposition(edge_event_id, snapshot_id, disposition, reason)
-        except Exception:
+        except Exception:  # noqa: BLE001 - event remains authoritative
             LOGGER.exception(
                 "snapshot disposition admission failed: edge_event_id=%s", edge_event_id
             )

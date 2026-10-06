@@ -343,7 +343,7 @@ def test_g3_6_unwrap_decider_self_ref_terminates() -> None:
     def _call() -> None:
         try:
             result.append(unwrap_decider(wrapped))
-        except BaseException as exc:
+        except BaseException as exc:  # noqa: BLE001 - hang guard must surface any failure
             errors.append(exc)
 
     thread = threading.Thread(target=_call, name="unwrap-self-ref", daemon=True)

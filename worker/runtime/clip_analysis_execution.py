@@ -47,7 +47,7 @@ def execute_job(
         )
     except ModelLoadError as exc:
         return ClipAnalysisStatus("failed", clip_analysis_process.reason(exc))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - supervisor must remain available
         return ClipAnalysisStatus("failed", clip_analysis_process.reason(exc))
     return status
 
@@ -64,7 +64,7 @@ def settle_job(
     if process is not None:
         try:
             terminate(process)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             status, teardown_failed = (
                 ClipAnalysisStatus("failed", clip_analysis_process.reason(exc)),
                 True,

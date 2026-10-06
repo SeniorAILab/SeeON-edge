@@ -243,8 +243,8 @@ def test_fall_classifier_is_constructed_and_warmed_on_the_cpu_before_cameras(
     )
     profile = PROFILE_REGISTRY["flow"]
     boot = BootContext(profile, profile.device, profile.decode, profile.encode)
-    _ = runtime._initialize_models(boot)
-    warmed = runtime._warm_models()
+    _ = runtime._initialize_models(boot)  # noqa: SLF001
+    warmed = runtime._warm_models()  # noqa: SLF001
 
     assert "fall-classifier" in warmed
     assert fall_runner.warmup_calls == 1

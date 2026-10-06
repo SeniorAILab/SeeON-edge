@@ -25,7 +25,7 @@ def test_every_worker_module_imports_cleanly() -> None:
             continue
         try:
             importlib.import_module(module.name)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - report every breakage, not the first
             failures.append((module.name, f"{type(error).__name__}: {error}"))
 
     assert not failures, "worker modules that fail to import:\n" + "\n".join(

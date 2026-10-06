@@ -158,7 +158,7 @@ def test_a_failing_replay_is_counted_and_never_blocks_activation(
     ]
 
     with caplog.at_level(logging.ERROR):
-        failures = WorkerRuntime._replay_sealed_clips(bindings)
+        failures = WorkerRuntime._replay_sealed_clips(bindings)  # noqa: SLF001
 
     assert failures == 1
     assert "camera-a" in caplog.text

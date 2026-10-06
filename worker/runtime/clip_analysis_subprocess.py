@@ -31,7 +31,7 @@ def bootstrap_child(*, expected_parent: int, cpu_index: int, control_fd: int) ->
     """
     try:
         _arm_lifetime(expected_parent, cpu_index)
-    except Exception:
+    except Exception:  # noqa: BLE001 - an unarmed child must die, whatever failed
         os._exit(3)
 
     def watch_control_pipe() -> None:

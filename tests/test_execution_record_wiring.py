@@ -252,8 +252,8 @@ def _pump(
             execution_records=sink,
         ),
     )
-    pump._slot = slot
-    pump._child = UUID(binding.child_instance_id)
+    pump._slot = slot  # noqa: SLF001
+    pump._child = UUID(binding.child_instance_id)  # noqa: SLF001
     return pump
 
 
@@ -267,10 +267,10 @@ def _kinds(lanes: ExecutionRecordLanes) -> set[str]:
 def test_policy_path_emits_sdk_model_and_policy_records_to_a_fake_sink() -> None:
     lanes = ExecutionRecordLanes(lane_capacity=32)
     pump = _pump(lanes)
-    slot = pump._slot
-    metadata = _metadata(child=pump._child)
+    slot = pump._slot  # noqa: SLF001
+    metadata = _metadata(child=pump._child)  # noqa: SLF001
     assert slot.publish(metadata) is True
-    pump._process(metadata)
+    pump._process(metadata)  # noqa: SLF001
     emit_policy_consume(
         lanes,
         metadata,
@@ -289,11 +289,11 @@ def test_policy_invariance_with_sink_on_and_off() -> None:
     off_pump = _pump(None)
     on_lanes = ExecutionRecordLanes(lane_capacity=32)
     on_pump = _pump(on_lanes)
-    off_metadata = _metadata(child=off_pump._child)
-    on_metadata = _metadata(child=on_pump._child)
-    off_pump._process(off_metadata)
-    on_pump._process(on_metadata)
-    assert off_pump._decision.last_trace_snapshots == on_pump._decision.last_trace_snapshots
+    off_metadata = _metadata(child=off_pump._child)  # noqa: SLF001
+    on_metadata = _metadata(child=on_pump._child)  # noqa: SLF001
+    off_pump._process(off_metadata)  # noqa: SLF001
+    on_pump._process(on_metadata)  # noqa: SLF001
+    assert off_pump._decision.last_trace_snapshots == on_pump._decision.last_trace_snapshots  # noqa: SLF001
     assert on_lanes.queued() > 0
 
 
@@ -311,8 +311,8 @@ def test_alert_audit_and_policy_decision_record_share_one_decision_trace_id() ->
     # transition_votes=3 within transition_window=5: three scored frames trigger.
     for seq in range(3):
         # ~15 fps PTS spacing so the resampler sees three distinct rows.
-        pump._process(
-            _metadata(child=pump._child, seq=seq, pts=100 + seq * 66_666_667)
+        pump._process(  # noqa: SLF001
+            _metadata(child=pump._child, seq=seq, pts=100 + seq * 66_666_667)  # noqa: SLF001
         )
 
     drained = lanes.drain_for("cam-1", "boot-1", limit=64)
@@ -330,7 +330,7 @@ def test_alert_audit_and_policy_decision_record_share_one_decision_trace_id() ->
     # and both equal the single-source function over the triggering snapshot
     snapshot = next(
         s
-        for s in pump._decision.last_trace_snapshots
+        for s in pump._decision.last_trace_snapshots  # noqa: SLF001
         if s.triggered and s.track_id == event.person_id  # type: ignore[attr-defined]
     )
     assert audit["decision_trace_id"] == decision_trace_id(
@@ -343,7 +343,7 @@ def test_alert_audit_and_policy_decision_record_share_one_decision_trace_id() ->
 def test_policy_decision_record_carries_no_trace_id_without_identity() -> None:
     lanes = ExecutionRecordLanes(lane_capacity=32)
     pump = _pump(lanes, identity=None)
-    pump._process(_metadata(child=pump._child))
+    pump._process(_metadata(child=pump._child))  # noqa: SLF001
     drained = lanes.drain_for("cam-1", "boot-1", limit=64)
     assert drained is not None
     for record in drained.records:
@@ -420,10 +420,10 @@ def test_model_score_is_not_emitted_for_tracks_the_classifier_skipped_this_call(
             return super().update(rows, live_track_ids)
 
     stride = _StrideClassifier()
-    pump._decision.deciders[0].classifier = stride  # type: ignore[attr-defined]
+    pump._decision.deciders[0].classifier = stride  # type: ignore[attr-defined]  # noqa: SLF001
     for seq in range(4):
-        pump._process(
-            _metadata(child=pump._child, seq=seq, pts=100 + seq * 66_666_667)
+        pump._process(  # noqa: SLF001
+            _metadata(child=pump._child, seq=seq, pts=100 + seq * 66_666_667)  # noqa: SLF001
         )
     drained = lanes.drain_for("cam-1", "boot-1", limit=64)
     assert drained is not None
@@ -551,13 +551,13 @@ def test_non_fall_snapshots_are_attributed_to_their_own_module_not_fall() -> Non
     # Rebuild the aggregator with a second, identified decider.
     from worker.pipeline.decision import EventAggregator
 
-    original = pump._decision
-    pump._decision = EventAggregator(
+    original = pump._decision  # noqa: SLF001
+    pump._decision = EventAggregator(  # noqa: SLF001
         deciders=(*original.deciders, second),
         incidents=original.incidents,
         identities=(fall_identity, bed_identity),
     )
-    pump._process(_metadata(child=pump._child, seq=0))
+    pump._process(_metadata(child=pump._child, seq=0))  # noqa: SLF001
 
     drained = lanes.drain_for("cam-1", "boot-1", limit=64)
     assert drained is not None
@@ -592,13 +592,13 @@ def test_unidentified_decider_snapshots_carry_no_module_claim_and_no_trace_id() 
     second = _SecondDomainDecider()
     from worker.pipeline.decision import EventAggregator
 
-    original = pump._decision
-    pump._decision = EventAggregator(
+    original = pump._decision  # noqa: SLF001
+    pump._decision = EventAggregator(  # noqa: SLF001
         deciders=(*original.deciders, second),
         incidents=original.incidents,
         identities=(None, None),
     )
-    pump._process(_metadata(child=pump._child, seq=0))
+    pump._process(_metadata(child=pump._child, seq=0))  # noqa: SLF001
     drained = lanes.drain_for("cam-1", "boot-1", limit=64)
     assert drained is not None
     from worker.pipeline.diagnostics.record_builder import NO_MODULE
@@ -655,7 +655,7 @@ def test_alert_from_second_decider_is_stamped_with_its_own_identity() -> None:
     lanes = ExecutionRecordLanes(lane_capacity=8)
     pump = _pump(lanes, identity=fall_identity, fall_transition=0.1)
     second = _TriggeringSecond()
-    original = pump._decision
+    original = pump._decision  # noqa: SLF001
     aggregator = EventAggregator(
         deciders=(*original.deciders, second),
         incidents=original.incidents,
@@ -692,8 +692,8 @@ def test_coasted_frame_never_re_emits_previous_snapshots_with_the_new_identity()
         identity=DecisionIdentity("fall.v2", "a" * 64),
         fall_transition=0.9,
     )
-    first = _metadata(child=pump._child, seq=0, pts=100)
-    pump._process(first)
+    first = _metadata(child=pump._child, seq=0, pts=100)  # noqa: SLF001
+    pump._process(first)  # noqa: SLF001
     first_batch = lanes.drain_for("cam-1", "boot-1", limit=64)
     assert first_batch is not None
     first_decisions = [r for r in first_batch.records if r.record_kind == "policy.decision"]
@@ -701,7 +701,7 @@ def test_coasted_frame_never_re_emits_previous_snapshots_with_the_new_identity()
     assert all(r.outcome != "coasted" for r in first_decisions)
 
     # Same PTS again: the resampler yields no row and the decider coasts.
-    pump._process(_metadata(child=pump._child, seq=1, pts=100))
+    pump._process(_metadata(child=pump._child, seq=1, pts=100))  # noqa: SLF001
     second = lanes.drain_for("cam-1", "boot-1", limit=64)
     assert second is not None
     second_decisions = [r for r in second.records if r.record_kind == "policy.decision"]

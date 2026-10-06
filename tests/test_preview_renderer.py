@@ -137,7 +137,7 @@ def test_missing_font_fails_at_construction(tmp_path: Path) -> None:
 
 
 def test_person_label_reads_confidence_bed_and_state_without_tracker_counter() -> None:
-    label = PreviewRenderer._person_label
+    label = PreviewRenderer._person_label  # noqa: SLF001 - label text is the contract under test
     assert label(0.84, None, None) == "사람 84%"
     assert label(0.28, FallPreviewState(7, "normal", 0.08), None) == "사람 28% · 정상"
     assert (
@@ -170,11 +170,11 @@ def test_absent_fall_state_is_unknown_not_normal(
     )
     assert not np.array_equal(absent[45, 80], normal[45, 80])
     assert absent[45, 80, 2] > absent[45, 80, 1]
-    assert "정상" not in PreviewRenderer._person_label(0.9, None, None)
+    assert "정상" not in PreviewRenderer._person_label(0.9, None, None)  # noqa: SLF001
 
 
 def test_bed_number_uses_the_box_foot_point_inside_a_saved_polygon() -> None:
-    beds = PreviewRenderer._bed_number_at
+    beds = PreviewRenderer._bed_number_at  # noqa: SLF001
     square = (((10, 10), (50, 10), (50, 50), (10, 50)),)
     two = (((10, 10), (50, 10), (50, 50), (10, 50)), ((60, 10), (90, 10), (90, 50), (60, 50)))
     assert beds((30, 30), square) == 1

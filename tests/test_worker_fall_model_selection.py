@@ -642,7 +642,7 @@ def test_create_fall_model_refuses_when_unconfigured_and_never_touches_serving(
     runtime = _runtime(_config(), _ForbiddenServingClient(), tmp_path)
 
     with pytest.raises(RuntimeError, match="fall model must be explicitly configured"):
-        runtime._create_fall_model()
+        runtime._create_fall_model()  # noqa: SLF001
 
 
 def test_create_fall_model_uses_the_configured_bundle_artifact_on_the_cpu(
@@ -679,7 +679,7 @@ def test_create_fall_model_uses_the_configured_bundle_artifact_on_the_cpu(
     monkeypatch.setattr(ort_pose_bbox56, "load_packaged_fall_bundle", fake_load_packaged_bundle)
     runtime = _runtime(config, _ForbiddenServingClient(), tmp_path)
 
-    model = runtime._create_fall_model()
+    model = runtime._create_fall_model()  # noqa: SLF001
 
     assert model is sentinel
     fall_config = config.models.fall
@@ -717,7 +717,7 @@ def test_boot_and_fetch_share_packaged_bundle_load_failure(
     runtime = _runtime(config, _ForbiddenServingClient(), tmp_path)
 
     with pytest.raises(ModelLoadError, match="shared bundle sentinel"):
-        runtime._create_fall_model()
+        runtime._create_fall_model()  # noqa: SLF001
 
     fetch_bundle = tmp_path / "fetch" / "fall" / "pose-bbox56-gru"
     fetch_bundle.mkdir(parents=True)
@@ -747,12 +747,12 @@ def test_flow_composition_uses_the_loaded_bundle_published_weights_digest(tmp_pa
     )
     runtime = _runtime(config, _ForbiddenServingClient(), tmp_path)
 
-    graph = runtime._initialize_flow_policy_graph(_flow_boot())
+    graph = runtime._initialize_flow_policy_graph(_flow_boot())  # noqa: SLF001
     fall = next(
         identity for identity in graph.identities if identity.component_id == "fall-classifier"
     )
 
-    assert fall.artifact_digest == runtime._packaged_fall_member_digest()
+    assert fall.artifact_digest == runtime._packaged_fall_member_digest()  # noqa: SLF001
     # The swap proof: this synthetic bundle's digest is NOT the shipped model's,
     # and the manifest names it anyway, with no identity refusal and no code
     # change. Changing the model alone changes what the receipts name.
@@ -784,13 +784,13 @@ def test_packaged_bundle_applies_a_runtime_manifest_with_nvdec_camera(
     )
     runtime = _runtime(config, _ForbiddenServingClient(), tmp_path)
     boot = _flow_boot()
-    runtime._boot = boot
-    runtime._initialize_flow_policy_graph(boot)
-    plan = runtime._preflight_camera_graph(config.cameras[0])
+    runtime._boot = boot  # noqa: SLF001 - reproduce the initialized runtime seam
+    runtime._initialize_flow_policy_graph(boot)  # noqa: SLF001
+    plan = runtime._preflight_camera_graph(config.cameras[0])  # noqa: SLF001
 
-    runtime._apply_runtime_manifest(boot, {"camera-a": plan})
+    runtime._apply_runtime_manifest(boot, {"camera-a": plan})  # noqa: SLF001
 
-    manifest = runtime._runtime_manifest
+    manifest = runtime._runtime_manifest  # noqa: SLF001
     assert manifest is not None
     [camera] = json.loads(manifest.canonical_json)["cameras"]
     assert camera["effective_decode_backend"] == "nvdec"
@@ -820,10 +820,10 @@ def test_selected_bundle_composes_a_runtime_manifest_with_runner_preprocessing_i
     assert models.selected == selected_config
     config = _config().model_copy(update={"models": models})
     runtime = _runtime(config, _ForbiddenServingClient(), tmp_path)
-    runtime._admit_selected_fall_bundle()
+    runtime._admit_selected_fall_bundle()  # noqa: SLF001
     boot = _flow_boot()
-    runtime._boot = boot
-    graph = runtime._initialize_flow_policy_graph(boot)
+    runtime._boot = boot  # noqa: SLF001 - reproduce the initialized runtime seam
+    graph = runtime._initialize_flow_policy_graph(boot)  # noqa: SLF001
     [fall] = [
         identity for identity in graph.identities if identity.component_id == "fall-classifier"
     ]
@@ -831,10 +831,10 @@ def test_selected_bundle_composes_a_runtime_manifest_with_runner_preprocessing_i
     assert fall.preprocessing_identity == selection.preprocessing_identity
     assert fall.preprocessing_identity != selection.input_observation_schema
 
-    plan = runtime._preflight_camera_graph(config.cameras[0])
-    runtime._apply_runtime_manifest(boot, {"camera-a": plan})
+    plan = runtime._preflight_camera_graph(config.cameras[0])  # noqa: SLF001
+    runtime._apply_runtime_manifest(boot, {"camera-a": plan})  # noqa: SLF001
 
-    manifest = runtime._runtime_manifest
+    manifest = runtime._runtime_manifest  # noqa: SLF001
     assert manifest is not None
     [camera] = json.loads(manifest.canonical_json)["cameras"]
     assert camera["effective_decode_backend"] == "nvdec"

@@ -28,7 +28,7 @@ IMAGE_NAMESPACE = "ghcr.io/seniorailab/eldercare-fall-ml"
 
 
 def _git(*args: str) -> str:
-    return subprocess.run(
+    return subprocess.run(  # noqa: S603 - fixed argv, no shell, repo-local git
         ["git", "-C", str(REPO_ROOT), *args],
         check=True,
         capture_output=True,
@@ -94,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
     head = args.head
     if head is None:
         commit = f"{args.tag}^{{commit}}"
-        exists = subprocess.run(
+        exists = subprocess.run(  # noqa: S603 - fixed argv, no shell
             ["git", "-C", str(REPO_ROOT), "rev-parse", "--verify", "--quiet", commit],
             check=False,
             capture_output=True,

@@ -297,7 +297,7 @@ def test_real_workerruntime_constructs_with_fake_collaborators_without_typeerror
     assert exit_code == 0
     assert len(constructed) == 1
     runtime = constructed[0]
-    assert runtime._serving is fake_serving
+    assert runtime._serving is fake_serving  # noqa: SLF001
 
 
 # --- restart_check wiring ------------------------------------------------
@@ -312,7 +312,7 @@ def test_restart_check_wired_from_config_relay_settings(
     calls: list[tuple[str, str, RestartDirective, object]] = []
     release_identity_calls: list[str] = []
     startup_calls: list[tuple[str, str | None]] = []
-    sentinel_check = lambda: False
+    sentinel_check = lambda: False  # noqa: E731
 
     def _fake_make_restart_check(
         relay_url: str,
@@ -361,7 +361,7 @@ def test_restart_check_wired_from_config_relay_settings(
     assert relay_token == "relay-token-1"
     assert boot_directive == RestartDirective(generation=4, version=9)
     assert callable(pull_config)
-    assert constructed[0]._restart_check is sentinel_check
+    assert constructed[0]._restart_check is sentinel_check  # noqa: SLF001
 
     live_update = WorkerConfigPoll(
         restart_config=PulledWorkerConfig(
@@ -380,7 +380,7 @@ def test_restart_check_wired_from_config_relay_settings(
     )
 
     assert pull_config(relay_url, relay_token) is live_update.restart_config
-    assert constructed[0]._clip_export_policy.enabled() is True
+    assert constructed[0]._clip_export_policy.enabled() is True  # noqa: SLF001
 
 
 def test_restart_check_rejects_retired_relay_url_override(
@@ -425,7 +425,7 @@ def test_max_frames_per_camera_wired_to_workerruntime_constructor(
 
     assert exit_code == 0
     assert len(constructed) == 1
-    assert constructed[0]._max_frames_per_camera == 3200
+    assert constructed[0]._max_frames_per_camera == 3200  # noqa: SLF001
 
 
 def test_max_frames_per_camera_defaults_to_none_when_flag_omitted(
@@ -446,7 +446,7 @@ def test_max_frames_per_camera_defaults_to_none_when_flag_omitted(
 
     assert exit_code == 0
     assert len(constructed) == 1
-    assert constructed[0]._max_frames_per_camera is None
+    assert constructed[0]._max_frames_per_camera is None  # noqa: SLF001
 
 
 @pytest.mark.parametrize("raw", ["0", "-1", "abc", "3.5"])

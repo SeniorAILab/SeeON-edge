@@ -29,7 +29,7 @@ MAX_BODY: Final = 2 * 1024 * 1024
 class RelayHandler(BaseHTTPRequestHandler):
     server_version = "SeeONCanaryRelay/1"
 
-    def do_GET(self) -> None:
+    def do_GET(self) -> None:  # noqa: N802
         if self.path == "/health/live":
             body = b'{"status":"ok"}\n'
         elif self.path == "/health/release-identity":
@@ -59,7 +59,7 @@ class RelayHandler(BaseHTTPRequestHandler):
         self.end_headers()
         _ = self.wfile.write(body)
 
-    def do_POST(self) -> None:
+    def do_POST(self) -> None:  # noqa: N802
         authorization = self.headers.get("Authorization", "")
         relay_token = self.headers.get("X-Edge-Relay-Token", "")
         if authorization not in {f"Bearer {TOKEN}", TOKEN} and relay_token != TOKEN:

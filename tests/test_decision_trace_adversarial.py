@@ -88,7 +88,7 @@ class _SnapshotDecider:
 def test_closed_window_emits_current_not_evaluated_trace_instead_of_stale_trigger() -> None:
     now = [datetime(2026, 1, 1, 23, 0, tzinfo=UTC)]
     inner = _SnapshotDecider()
-    gated = worker_module._WindowGatedDecider(
+    gated = worker_module._WindowGatedDecider(  # noqa: SLF001
         inner,
         DetectionWindow(start="21:00", end="06:00", tz="UTC"),
         clock=lambda: now[0],

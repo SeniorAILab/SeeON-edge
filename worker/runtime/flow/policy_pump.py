@@ -334,7 +334,7 @@ class NativePolicyPump:
                     self.camera_id,
                     error,
                 )
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001 - the alert outranks its thumbnail
                 # A snapshot is optional evidence; an admitted safety event is
                 # not. Admission has already consumed the onset, so a failure
                 # here must degrade to "no snapshot", never drop the alert.

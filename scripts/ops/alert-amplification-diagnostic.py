@@ -18,10 +18,10 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import httpx
+import httpx  # noqa: E402
 
-from backend.app.features.connection import hub_url
-from tests_support.alert_amplification_harness import (
+from backend.app.features.connection import hub_url  # noqa: E402
+from tests_support.alert_amplification_harness import (  # noqa: E402
     INSECURE_HTTP_ENV,
     ClockSample,
     CorrelationRow,
@@ -41,7 +41,7 @@ from tests_support.alert_amplification_harness import (
     validate_temporal_order,
     verify_tmpfs_destroyed,
 )
-from tests_support.local_backend_fixture import LocalBackendFixture
+from tests_support.local_backend_fixture import LocalBackendFixture  # noqa: E402
 
 _AUTH = {"Authorization": "Bearer fixture-token"}
 _SNAPSHOT_ID = "0197f671-3a31-7a6c-a6e4-83ed412de801"
@@ -241,7 +241,7 @@ def _availability_command(
 
 
 def _fixture_preflight() -> dict[str, Any]:
-    from fastapi.testclient import TestClient
+    from fastapi.testclient import TestClient  # noqa: PLC0415
 
     fixture = LocalBackendFixture()
     client = TestClient(fixture.app)

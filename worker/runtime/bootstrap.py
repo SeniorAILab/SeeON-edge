@@ -180,7 +180,7 @@ def run_stages(stages: Iterable[Stage]) -> BootstrapResult:
                 FATAL_ACCELERATOR_EXIT_CODE,
                 str(exc) or type(exc).__name__,
             ) from exc
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - any global-stage failure is fatal
             raise BootstrapStageError(
                 stage.name,
                 stage.exit_code,
@@ -470,7 +470,7 @@ def run_camera_stage(camera_id: str, run: Callable[[], object]) -> CameraStageOu
         _ = run()
     except FatalAcceleratorError:
         raise
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - a per-camera failure degrades one camera
         LOGGER.warning(
             "camera %s stage failed; degrading this camera only: %s",
             camera_id,

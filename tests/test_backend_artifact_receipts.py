@@ -81,7 +81,7 @@ class SqliteReceiptStore:
             if committed != receipt:
                 _raise_receipt_conflict()
             self.connection.execute("COMMIT")
-            return committed
+            return committed  # noqa: TRY300
         except Exception:
             if self.connection.in_transaction:
                 self.connection.execute("ROLLBACK")

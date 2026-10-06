@@ -112,7 +112,7 @@ class ExecutionRecordExporter:
             body["records"] = []
             body["gaps"] = []
             envelope_bytes = len(canonical_json(body).encode())
-        except Exception:
+        except Exception:  # noqa: BLE001 - malformed diagnostics remain accounted
             # No record has been selected for an attempted chunk yet.
             self._failed(
                 DrainedLane(drained.camera_id, drained.worker_boot_id, (), drained.gaps),
@@ -138,7 +138,7 @@ class ExecutionRecordExporter:
             )
             try:
                 item_bytes = len(canonical_json(item.to_json()).encode())
-            except Exception:
+            except Exception:  # noqa: BLE001 - one invalid payload cannot stop later items
                 if not is_record:
                     self._failed(
                         single, DeliveryFailure(DeliveryDisposition.PERMANENT, "ENCODING_ERROR")
@@ -210,12 +210,12 @@ class ExecutionRecordExporter:
             if len(batch.encode()) > MAX_EXECUTION_RECORD_BODY_BYTES:
                 self._failed(drained, DeliveryFailure(DeliveryDisposition.PERMANENT, "OVERSIZE"))
                 return False
-        except Exception:
+        except Exception:  # noqa: BLE001 - final serialization validates nested values
             self._failed(drained, DeliveryFailure(DeliveryDisposition.PERMANENT, "ENCODING_ERROR"))
             return False
         try:
             result = self._client.post_batch(batch)
-        except Exception:
+        except Exception:  # noqa: BLE001 - transport exceptions cannot kill the drain thread
             self._failed(drained, DeliveryFailure(DeliveryDisposition.RETRY, "TRANSPORT_EXCEPTION"))
             return False
         if isinstance(result, DeliveryFailure):

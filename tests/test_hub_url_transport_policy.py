@@ -78,7 +78,7 @@ class TestEnrollmentNeverSendsBearerToRejectedOrigin:
     ) -> None:
         calls: list[object] = []
 
-        def _boom(request: object, timeout: float = 0) -> object:
+        def _boom(request: object, timeout: float = 0) -> object:  # noqa: ARG001
             calls.append(request)
             raise AssertionError("urlopen must not run for rejected Hub origin")
 

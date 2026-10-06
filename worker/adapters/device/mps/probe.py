@@ -82,17 +82,17 @@ def probe_mps_capability(*, importer: TorchImporter = _import_torch) -> MpsCapab
     """
     try:
         torch = importer()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - optional runtime dependency boundary
         return MpsCapability(available=False, reason=f"torch import failed: {type(exc).__name__}")
 
     try:
         is_built = bool(torch.backends.mps.is_built())
-    except Exception:
+    except Exception:  # noqa: BLE001,S110 - build-flag probe must not break startup
         is_built = False
 
     try:
         available = bool(torch.backends.mps.is_available())
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - backend probe must not break startup
         return MpsCapability(
             available=False,
             reason=f"torch.backends.mps.is_available() raised {type(exc).__name__}",

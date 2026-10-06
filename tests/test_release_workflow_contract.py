@@ -57,7 +57,7 @@ def _jobs(workflow: dict[str, object]) -> dict[str, dict[str, object]]:
 
 
 def _tracked(*patterns: str) -> list[str]:
-    listed = subprocess.run(
+    listed = subprocess.run(  # noqa: S603 - fixed argv, no shell
         ["git", "-C", str(REPO_ROOT), "ls-files", "--", *patterns],
         check=True,
         capture_output=True,

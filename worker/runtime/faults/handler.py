@@ -49,7 +49,7 @@ class FaultHandler:
         self,
         profile: str,
         *,
-        hard_exit: Callable[[int], None] = os._exit,
+        hard_exit: Callable[[int], None] = os._exit,  # noqa: SLF001
         state_dir: Path | None = None,
     ) -> None:
         self._profile = profile

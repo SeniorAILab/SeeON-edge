@@ -25,7 +25,7 @@ pytest_plugins = ("tests_support.postgres_sandbox",)
 class _TopologyHandler(BaseHTTPRequestHandler):
     requests: list[tuple[str, str | None, bytes]] = []
 
-    def do_PUT(self) -> None:
+    def do_PUT(self) -> None:  # noqa: N802
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
         self.__class__.requests.append((self.path, self.headers.get("Authorization"), body))

@@ -156,7 +156,7 @@ def _send_heartbeat_on_start(config: WorkerConfig) -> None:
                 encode_json(payload),
                 _HEARTBEAT_ON_START_TIMEOUT_SEC,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - startup heartbeat is best-effort
             failure = DeliveryFailure(
                 DeliveryDisposition.RETRY,
                 "UNEXPECTED",
@@ -211,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         reject_retired_worker_environment(os.environ)
     except WorkerConfigError as exc:
-        LOGGER.error("worker configuration refused: %s", exc)
+        LOGGER.error("worker configuration refused: %s", exc)  # noqa: TRY400
         return CONFIG_ERROR_EXIT_CODE
 
     # Ordering note: legacy edge/runtime/edge_worker.py:141-149 runs
@@ -463,7 +463,7 @@ def main(argv: list[str] | None = None) -> int:
         runtime.run()
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else GENERIC_RUNTIME_ERROR_EXIT_CODE
-    except Exception:
+    except Exception:  # noqa: BLE001 - top-level CLI boundary must not crash uncaught
         LOGGER.exception("worker runtime error")
         return GENERIC_RUNTIME_ERROR_EXIT_CODE
     else:

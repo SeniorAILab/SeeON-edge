@@ -25,7 +25,7 @@ from typing import Any
 
 sys.path.insert(0, "/app")
 
-from worker.adapters.deepstream.tensor_rows import rows_from_tensor
+from worker.adapters.deepstream.tensor_rows import rows_from_tensor  # noqa: E402
 
 _SCORE_MIN = 0.25
 

@@ -82,7 +82,7 @@ def probe_nvml_gpu_status(*, importer: NvmlImporter = _import_pynvml) -> NvmlGpu
     """
     try:
         pynvml = importer()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - optional runtime dependency boundary
         return NvmlGpuStatus(
             nvml_available=False,
             reason=f"pynvml import failed: {type(exc).__name__}: {exc}",
@@ -90,7 +90,7 @@ def probe_nvml_gpu_status(*, importer: NvmlImporter = _import_pynvml) -> NvmlGpu
 
     try:
         pynvml.nvmlInit()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - NVML init must not break startup
         return NvmlGpuStatus(
             nvml_available=False,
             reason=f"nvmlInit failed: {type(exc).__name__}: {exc}",
@@ -109,7 +109,7 @@ def _read_gpu_status(pynvml: Any) -> NvmlGpuStatus:
 
     try:
         device_count = int(pynvml.nvmlDeviceGetCount())
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - device-count query must not break startup
         return NvmlGpuStatus(
             nvml_available=False,
             reason=f"nvmlDeviceGetCount failed: {type(exc).__name__}: {exc}",
@@ -135,7 +135,7 @@ def _read_gpu_status(pynvml: Any) -> NvmlGpuStatus:
 def _read_driver_version(pynvml: Any) -> str | None:
     try:
         return str(pynvml.nvmlSystemGetDriverVersion())
-    except Exception:
+    except Exception:  # noqa: BLE001,S110 - driver-version query must not break startup
         return None
 
 
@@ -143,7 +143,7 @@ def _read_first_device_name(pynvml: Any) -> str | None:
     try:
         handle = pynvml.nvmlDeviceGetHandleByIndex(0)
         return str(pynvml.nvmlDeviceGetName(handle))
-    except Exception:
+    except Exception:  # noqa: BLE001,S110 - device-name query must not break startup
         return None
 
 

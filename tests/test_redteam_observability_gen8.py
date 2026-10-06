@@ -127,14 +127,14 @@ def _compose_bed_and_fall(
     *,
     identities: tuple[DecisionIdentity | None, ...],
 ) -> EventAggregator:
-    original = pump._decision
+    original = pump._decision  # noqa: SLF001
     aggregator = EventAggregator(
         deciders=(*original.deciders, monitor),  # type: ignore[arg-type]
         incidents=original.incidents,
         identities=identities,
     )
-    pump._decision = aggregator
-    pump._scene.persisted_bed_regions = (BoundingBox(0, 0, 80, 100, 0.99),)
+    pump._decision = aggregator  # noqa: SLF001
+    pump._scene.persisted_bed_regions = (BoundingBox(0, 0, 80, 100, 0.99),)  # noqa: SLF001
     return aggregator
 
 
@@ -232,12 +232,12 @@ def test_g8_1_real_bed_exit_monitor_attributed_through_backend_query(
         try:
             exporter = _exporter(lanes, backend.base_url, backend.relay_token)
             exporter.start()
-            child = pump._child
+            child = pump._child  # noqa: SLF001
             assert isinstance(child, UUID)
             in_bed = PersonBox(10, 10, 70, 90, 0.95)
             only_bed = PersonBox(40, 120, 100, 190, 0.94)
             for seq in range(3):
-                pump._process(
+                pump._process(  # noqa: SLF001
                     _bed_metadata(
                         child=child,
                         seq=seq,
@@ -247,7 +247,7 @@ def test_g8_1_real_bed_exit_monitor_attributed_through_backend_query(
                     )
                 )
             exclusive_seq = 3
-            pump._process(
+            pump._process(  # noqa: SLF001
                 _bed_metadata(
                     child=child,
                     seq=exclusive_seq,
@@ -338,9 +338,9 @@ def test_g8_3_empty_identities_leave_every_row_unattributed_on_no_module_units()
     pump = _pump(lanes, identity=None, fall_transition=0.1)
     monitor = _night_monitor()
     aggregator = _compose_bed_and_fall(pump, monitor, identities=())
-    child = pump._child
+    child = pump._child  # noqa: SLF001
     assert isinstance(child, UUID)
-    pump._process(
+    pump._process(  # noqa: SLF001
         _bed_metadata(child=child, seq=0, person=PersonBox(10, 10, 70, 90, 0.95))
     )
     drained = lanes.drain_for("cam-1", "boot-1", limit=64)

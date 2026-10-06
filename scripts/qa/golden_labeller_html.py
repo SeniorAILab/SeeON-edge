@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Render a golden worksheet CSV as a single offline HTML labelling page.
 
 The page plays each candidate clip from the local clip store, lets the owner

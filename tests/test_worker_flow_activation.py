@@ -62,17 +62,17 @@ class _Reporter:
 
 def _runtime(plane: _Plane, announced: list[str] | None = None) -> WorkerRuntime:
     runtime = WorkerRuntime.__new__(WorkerRuntime)
-    runtime._execution_record_lanes = None
+    runtime._execution_record_lanes = None  # noqa: SLF001 - seam default: recording off
     cameras = tuple(
         SimpleNamespace(camera_id=camera_id) for camera_id in sorted(plane.metadata._bindings)
     )
     runtime.config = SimpleNamespace(cameras=cameras)
-    runtime._shared_graph = object()
-    runtime._boot = SimpleNamespace(profile=SimpleNamespace(name="flow"))
+    runtime._shared_graph = object()  # noqa: SLF001 - isolated warmup branch
+    runtime._boot = SimpleNamespace(profile=SimpleNamespace(name="flow"))  # noqa: SLF001
     runtime.fall_model = object()
-    runtime._flow_media_plane = plane
+    runtime._flow_media_plane = plane  # noqa: SLF001
     runtime._warm_one = lambda model, device: plane.calls.append(f"warm:{device}")
-    runtime._warmed_component_ids = frozenset({"fall-classifier"})
+    runtime._warmed_component_ids = frozenset({"fall-classifier"})  # noqa: SLF001
     return runtime
 
 
@@ -83,7 +83,7 @@ def _pump(camera_id: str) -> SimpleNamespace:
 def test_flow_warm_models_warms_only_the_cpu_fall_model() -> None:
     plane = _Plane(bindings={}, accept_after=0)
     runtime = _runtime(plane)
-    assert runtime._warm_models() == ("fall-classifier",)
+    assert runtime._warm_models() == ("fall-classifier",)  # noqa: SLF001
     # No bootstrap source, no subscription: the accepted-frame warmup belongs
     # to activation, after the roster is registered and the Flow is running.
     assert plane.calls == ["warm:cpu"]
@@ -104,7 +104,7 @@ def test_a_camera_is_announced_ready_only_after_its_own_accepted_frame(
     )
     plane = _Plane(bindings={"a": "bind-a", "b": "bind-b"}, accept_after=2)
     runtime = _runtime(plane, announced)
-    runtime._await_flow_first_frame([_pump("a"), _pump("b")], timeout_sec=5.0)
+    runtime._await_flow_first_frame([_pump("a"), _pump("b")], timeout_sec=5.0)  # noqa: SLF001
     assert announced == ["b"]
 
 
@@ -112,7 +112,7 @@ def test_warmup_without_registered_sources_is_a_typed_boot_failure() -> None:
     plane = _Plane(bindings={}, accept_after=5)
     runtime = _runtime(plane)
     with pytest.raises(FlowWarmupTimeout, match="no registered source"):
-        runtime._await_flow_first_frame([_pump("a")], timeout_sec=0.5)
+        runtime._await_flow_first_frame([_pump("a")], timeout_sec=0.5)  # noqa: SLF001
 
 
 def test_warmup_times_out_typed_when_no_source_publishes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -121,13 +121,13 @@ def test_warmup_times_out_typed_when_no_source_publishes(monkeypatch: pytest.Mon
     plane = _Plane(bindings={"a": "bind-a"}, accept_after=0)
     runtime = _runtime(plane)
     with pytest.raises(FlowWarmupTimeout, match="accepted metadata frame from any source"):
-        runtime._await_flow_first_frame([_pump("a")], timeout_sec=0.5)
+        runtime._await_flow_first_frame([_pump("a")], timeout_sec=0.5)  # noqa: SLF001
     assert plane.calls == ["subscribe:bind-a", "wait:bind-a"]
 
 
 def test_flow_status_tick_reads_actor_and_plane_counters() -> None:
     runtime = WorkerRuntime.__new__(WorkerRuntime)
-    runtime._execution_record_lanes = None
+    runtime._execution_record_lanes = None  # noqa: SLF001 - seam default: recording off
     runtime.diagnostics = WorkerDiagnostics()
     lifecycle_ticks: list[str] = []
     runtime._flow_media_plane = SimpleNamespace(
@@ -142,7 +142,7 @@ def test_flow_status_tick_reads_actor_and_plane_counters() -> None:
         counters=lambda camera_id: SimpleNamespace(outages=6, recoveries=7),
     )
 
-    runtime._refresh_flow_recording_telemetry()
+    runtime._refresh_flow_recording_telemetry()  # noqa: SLF001
 
     snapshot = runtime.diagnostics.snapshot().cameras[0]
     assert snapshot.smart_record_extended_total == 3
@@ -175,7 +175,7 @@ def test_flow_composes_and_starts_the_evidence_sender(
             calls.append("unlocked")
 
     runtime = WorkerRuntime.__new__(WorkerRuntime)
-    runtime._execution_record_lanes = None
+    runtime._execution_record_lanes = None  # noqa: SLF001 - seam default: recording off
     runtime.config = SimpleNamespace(
         cameras=(SimpleNamespace(camera_id="camera-a"),),
         relay=SimpleNamespace(
@@ -183,9 +183,9 @@ def test_flow_composes_and_starts_the_evidence_sender(
             token=SimpleNamespace(get_secret_value=lambda: "relay-token"),
         ),
     )
-    runtime._state_dir = tmp_path / "state"
-    runtime._clip_export_policy = SimpleNamespace(enabled=lambda: True)
-    runtime._resolved_clip_store_dir = lambda: tmp_path / "clips"
+    runtime._state_dir = tmp_path / "state"  # noqa: SLF001
+    runtime._clip_export_policy = SimpleNamespace(enabled=lambda: True)  # noqa: SLF001
+    runtime._resolved_clip_store_dir = lambda: tmp_path / "clips"  # noqa: SLF001
     monkeypatch.setattr(
         "worker.runtime.worker.EvidenceExportRuntime.from_config",
         lambda **kwargs: calls.append(kwargs) or _ExportRuntime(),
@@ -195,8 +195,8 @@ def test_flow_composes_and_starts_the_evidence_sender(
         lambda _store: _Lock(),
     )
 
-    runtime._compose_evidence_export()
-    runtime._start_export_sender()
+    runtime._compose_evidence_export()  # noqa: SLF001
+    runtime._start_export_sender()  # noqa: SLF001
 
     [composition] = [call for call in calls if isinstance(call, dict)]
     assert composition["queue_directory"] == tmp_path / "state" / "delivery-queue"
@@ -262,21 +262,21 @@ def test_build_flow_camera_composes_ffmpeg_thumbnail_generator(
         schedule={},
     )
     runtime = WorkerRuntime.__new__(WorkerRuntime)
-    runtime._execution_record_lanes = None
+    runtime._execution_record_lanes = None  # noqa: SLF001 - seam default: recording off
     runtime.config = SimpleNamespace(
         version=1,
         detection_policies=SimpleNamespace(defaults={}),  # no fall policy: no decision identity
     )
-    runtime._state_dir = tmp_path / "state"
-    runtime._flow_media_plane = _MediaPlane()
-    runtime._live_frames = _LiveFrames()
+    runtime._state_dir = tmp_path / "state"  # noqa: SLF001
+    runtime._flow_media_plane = _MediaPlane()  # noqa: SLF001
+    runtime._live_frames = _LiveFrames()  # noqa: SLF001
     runtime.diagnostics = _Diagnostics()
-    runtime._worker_boot_uuid = "boot-1"
-    runtime._runtime_manifest = None
-    runtime._camera_evidence_attachers = {}
-    runtime._native_policy_pumps_by_camera = {}
-    runtime._resolved_clip_store_dir = lambda: tmp_path / "clips"
-    runtime._preflight_camera_graph = lambda _camera, **_kwargs: plan
+    runtime._worker_boot_uuid = "boot-1"  # noqa: SLF001
+    runtime._runtime_manifest = None  # noqa: SLF001
+    runtime._camera_evidence_attachers = {}  # noqa: SLF001
+    runtime._native_policy_pumps_by_camera = {}  # noqa: SLF001
+    runtime._resolved_clip_store_dir = lambda: tmp_path / "clips"  # noqa: SLF001
+    runtime._preflight_camera_graph = lambda _camera, **_kwargs: plan  # noqa: SLF001
     runtime.temporal_profile = SimpleNamespace(
         decision_interval_frames=lambda _module_id: 1,
     )
@@ -288,7 +288,7 @@ def test_build_flow_camera_composes_ffmpeg_thumbnail_generator(
     pumps: list[object] = []
     sealed_bindings: list[object] = []
 
-    runtime._build_flow_camera(camera, pumps, sealed_bindings)
+    runtime._build_flow_camera(camera, pumps, sealed_bindings)  # noqa: SLF001
 
     assert len(thumbnail_generators) == 1
     assert isinstance(thumbnail_generators[0], FfmpegThumbnailGenerator)

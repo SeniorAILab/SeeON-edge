@@ -562,7 +562,7 @@ def _fetch_backend_config(
             cameras=_pulled_cameras(parsed.get("cameras")),
             detection_windows=detection_windows,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - best-effort pull must never crash boot/serve
         print(f"failed to pull backend ml config: {exc}", file=sys.stderr)
         return None
 

@@ -277,7 +277,7 @@ class BedExitMonitor:
                     self._grace_positive_transitions,
                     self._assignments_made,
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - telemetry never blocks detection
                 _LOGGER.warning(
                     "bed-exit scoring recorder failed for camera %s; detection continues",
                     self._config.camera_id,
