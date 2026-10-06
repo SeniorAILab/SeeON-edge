@@ -74,7 +74,7 @@ class NvidiaBedZoneRecognizer:
                 runner = self._serving_client.create(
                     "bed", device="cpu", confidence=0.05, max_points=16
                 )
-            except Exception as exc:  # noqa: BLE001 - HTTP seam exposes a typed failure
+            except Exception as exc:
                 raise BedZoneRecognizerUnavailableError(
                     "CPU bed-zone recognizer could not be constructed"
                 ) from exc

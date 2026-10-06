@@ -360,17 +360,17 @@ def test_publication_sequence_gap_does_not_assert_rejection_or_coalescing_cause(
 
 def test_policy_pump_timeout_clears_stale_preview_state_without_reopening_gap() -> None:
     pump = object.__new__(NativePolicyPump)
-    pump._binding = _binding()  # noqa: SLF001
-    pump._stop = threading.Event()  # noqa: SLF001
-    pump._observation_coverage = ObservationCoverage(_binding())  # noqa: SLF001
-    pump._preview_states_lock = threading.Lock()  # noqa: SLF001
-    pump._preview_states = MappingProxyType(  # noqa: SLF001
+    pump._binding = _binding()
+    pump._stop = threading.Event()
+    pump._observation_coverage = ObservationCoverage(_binding())
+    pump._preview_states_lock = threading.Lock()
+    pump._preview_states = MappingProxyType(
         {7: FallPreviewState(track_id=7, status="suspected", probability=0.93)}
     )
-    pump._replay_trace = None  # noqa: SLF001
-    pump._trace_epoch = None  # noqa: SLF001
-    pump._trace_source_lost = False  # noqa: SLF001
-    pump._recreate_decision = None  # noqa: SLF001
+    pump._replay_trace = None
+    pump._trace_epoch = None
+    pump._trace_source_lost = False
+    pump._recreate_decision = None
 
     class TimeoutSlot:
         def subscribe(self, binding: SourceBinding) -> AcceptanceToken:
@@ -383,37 +383,37 @@ def test_policy_pump_timeout_clears_stale_preview_state_without_reopening_gap() 
             timeout_sec: float,
         ) -> MetadataFrame:
             assert timeout_sec == 0.5
-            pump._stop.set()  # noqa: SLF001
+            pump._stop.set()
             raise TimeoutError
 
         def expected_binding(self, camera_id: str) -> SourceBinding:
             assert camera_id == "camera-a"
             return _binding()
 
-    pump._metadata = TimeoutSlot()  # type: ignore[assignment]  # noqa: SLF001
+    pump._metadata = TimeoutSlot()  # type: ignore[assignment]
     pump.run()
 
-    first_gap = pump._observation_coverage.open_gap  # noqa: SLF001
-    pump._record_observation_timeout()  # noqa: SLF001
+    first_gap = pump._observation_coverage.open_gap
+    pump._record_observation_timeout()
 
     assert pump.preview_states() == {}
     assert first_gap is not None
-    assert pump._observation_coverage.open_gap is first_gap  # noqa: SLF001
+    assert pump._observation_coverage.open_gap is first_gap
 
 
 def test_policy_pump_records_observation_before_processing_failure() -> None:
     metadata = _metadata(seq=31, pts_ns=1234, publish_sequence=12)
     detection_attempts: list[str] = []
     pump = object.__new__(NativePolicyPump)
-    pump._binding = _binding()  # noqa: SLF001
-    pump._stop = threading.Event()  # noqa: SLF001
-    pump._observation_coverage = ObservationCoverage(_binding())  # noqa: SLF001
-    pump._diagnostics = SimpleNamespace(  # noqa: SLF001
+    pump._binding = _binding()
+    pump._stop = threading.Event()
+    pump._observation_coverage = ObservationCoverage(_binding())
+    pump._diagnostics = SimpleNamespace(
         record_native_detection_attempt=detection_attempts.append
     )
     pump.failure_count = 0
     pump.processed_count = 0
-    pump._execution_records = None  # noqa: SLF001 - seam default: recording off
+    pump._execution_records = None
 
     class OneFrameSlot:
         def subscribe(self, binding: SourceBinding) -> AcceptanceToken:
@@ -426,18 +426,18 @@ def test_policy_pump_records_observation_before_processing_failure() -> None:
             timeout_sec: float,
         ) -> MetadataFrame:
             assert timeout_sec == 0.5
-            pump._stop.set()  # noqa: SLF001
+            pump._stop.set()
             return metadata
 
     def fail_processing(frame: MetadataFrame) -> None:
         assert frame is metadata
         raise ValueError("scripted processing failure")
 
-    pump._metadata = OneFrameSlot()  # type: ignore[assignment]  # noqa: SLF001
-    pump._process = fail_processing  # type: ignore[method-assign]  # noqa: SLF001
+    pump._metadata = OneFrameSlot()  # type: ignore[assignment]
+    pump._process = fail_processing  # type: ignore[method-assign]
     pump.run()
 
-    actual = pump._observation_coverage.last_actual  # noqa: SLF001
+    actual = pump._observation_coverage.last_actual
     assert actual is not None
     assert actual.seq == 31
     assert actual.source_pts_ns == 1234

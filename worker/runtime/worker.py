@@ -678,7 +678,7 @@ class NativeHeartbeatLoop:
                     self._reporters[camera_id].mark_ready(camera_id)
                 except FatalAcceleratorError:
                     raise
-                except Exception:  # noqa: BLE001 - relay I/O is a non-fatal boundary
+                except Exception:
                     LOGGER.warning(
                         "native heartbeat failed: camera_id=%s", camera_id, exc_info=True
                     )
@@ -703,7 +703,7 @@ class WorkerRuntime:
         env: Mapping[str, str] | None = None,
         acquire_lease: bootstrap.LeaseAcquirer | None = None,
         boot_dependencies: bootstrap.BootDependencies | None = None,
-        hard_exit: Callable[[int], None] = os._exit,  # noqa: SLF001
+        hard_exit: Callable[[int], None] = os._exit,
         restart_check: Callable[[], bool] | None = None,
         clip_export_policy: LiveClipExportPolicy | None = None,
         max_frames_per_camera: int | None = None,
@@ -1073,7 +1073,7 @@ class WorkerRuntime:
         )
         try:
             sender.start()
-        except Exception:  # noqa: BLE001 - runtime-status delivery is a non-fatal camera boundary
+        except Exception:
             LOGGER.warning("runtime status sender failed to start", exc_info=True)
             return
         self._runtime_status_sender = sender
@@ -1400,7 +1400,7 @@ class WorkerRuntime:
                 "evidence delivery is misconfigured: relay URL, relay token, "
                 "and a probe identity are required"
             ) from exc
-        except Exception as exc:  # noqa: BLE001 - delivery startup is required
+        except Exception as exc:
             raise EvidenceDeliveryError(
                 "evidence delivery failed to initialize under the clip-store lock"
             ) from exc
@@ -1412,7 +1412,7 @@ class WorkerRuntime:
             raise EvidenceDeliveryError("evidence delivery was not composed")
         try:
             self._evidence_export_runtime.start_sender()
-        except Exception as exc:  # noqa: BLE001 - delivery startup is required
+        except Exception as exc:
             raise EvidenceDeliveryError("evidence export sender failed to start") from exc
 
     def _compose_execution_records(self) -> None:
@@ -1471,7 +1471,7 @@ class WorkerRuntime:
         for binding in bindings:
             try:
                 binding.replay_sealed()
-            except Exception:  # noqa: BLE001 - a stale clip must never brick the boot
+            except Exception:
                 failures += 1
                 LOGGER.exception(
                     "replaying a sealed clip failed for camera_id=%s; the media and its "
@@ -1738,7 +1738,7 @@ class WorkerRuntime:
                 boot_instance_id=self._boot_instance_id,
                 applied_at=datetime.now(UTC).isoformat(),
             )
-        except Exception:  # noqa: BLE001 - provenance must not stop camera activation
+        except Exception:
             self._runtime_manifest = None
             if self._selected_bundle_admission is not None:
                 raise

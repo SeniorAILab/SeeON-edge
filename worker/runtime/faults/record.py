@@ -69,7 +69,7 @@ def _truncate_message(message: str) -> str:
 
 def persist_first_fault(record: FirstFaultRecord, *, state_dir: Path | None = None) -> bool:
     """Schedule a first-fault queue admission without delaying fatal exit."""
-    global _written  # noqa: PLW0603
+    global _written
     with _write_lock:
         if _written:
             return False

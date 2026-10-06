@@ -180,7 +180,7 @@ def run_stages(stages: Iterable[Stage]) -> BootstrapResult:
                 FATAL_ACCELERATOR_EXIT_CODE,
                 str(exc) or type(exc).__name__,
             ) from exc
-        except Exception as exc:  # noqa: BLE001 - any global-stage failure is fatal
+        except Exception as exc:
             raise BootstrapStageError(
                 stage.name,
                 stage.exit_code,

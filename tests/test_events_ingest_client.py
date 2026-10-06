@@ -13,7 +13,7 @@ from shared.events.evidence_export_contract import EventReceipt
 class _RecordingHandler(BaseHTTPRequestHandler):
     received: list[tuple[str, dict[str, str | None], MutableEventPayload]] = []
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
         payload = json.loads(body.decode("utf-8"))
@@ -169,7 +169,7 @@ def test_edge_ingest_client_omits_missing_clip_id_for_backward_compatibility() -
 
 def test_edge_ingest_client_counts_backend_failure() -> None:
     class _RejectingHandler(_RecordingHandler):
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             self.send_response(500)
             self.end_headers()
 
@@ -219,7 +219,7 @@ def test_edge_ingest_client_send_alert_receipt_calls_on_accepted_with_wall_clock
     # code path (distinct from the edge_event_id-less send_alert path exercised
     # by the tests above).
     class _ReceiptHandler(_RecordingHandler):
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             length = int(self.headers.get("Content-Length", "0"))
             body = self.rfile.read(length)
             payload = json.loads(body.decode("utf-8"))
@@ -285,7 +285,7 @@ def test_edge_ingest_client_skips_snapshot_put_for_a_local_accept_receipt(monkey
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        def send_event_payload(self, payload, edge_event_id, on_accepted=None):  # noqa: ANN001
+        def send_event_payload(self, payload, edge_event_id, on_accepted=None):
             del payload
             return EventReceipt("accepted_local", edge_event_id, "")
 
