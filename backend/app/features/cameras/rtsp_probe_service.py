@@ -63,7 +63,7 @@ def probe_rtsp_url(inputs: RTSPProbeInputs) -> ProbeResult:
 
     Mirrors the legacy router behavior byte-for-byte:
     - Admission policy re-checks and maps ValueError to unsupported.
-    - Blank origin or missing relay token => probe_unavailable=True.
+    - Blank origin or no configured relay credential: the probe reports unavailable.
     - Timeout/OS/HTTP/JSON errors => probe_unavailable=True.
     - Non-dict payload => error_class=decode.
     """

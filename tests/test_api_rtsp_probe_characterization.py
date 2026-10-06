@@ -9,8 +9,7 @@ from fastapi.testclient import TestClient
 from backend.app.main import create_app, no_lifespan
 
 RELAY_HEADER_NAME: Final = "X-Edge-Relay-Token"
-# Use the repository's safe placeholder style to avoid secrets scanners.
-RELAY_HEADERS = {RELAY_HEADER_NAME: "<relay-token>"}
+RELAY_HEADERS = {RELAY_HEADER_NAME: "relay-token"}
 
 class _Endpoint:
     def __init__(self, original_url: str) -> None:
@@ -19,7 +18,7 @@ class _Endpoint:
 
 def _app() -> Any:
     app = create_app(lifespan=no_lifespan)
-    app.state.edge_relay_token = "<relay-token>"
+    app.state.edge_relay_token = "relay-token"
     return app
 
 
