@@ -1,4 +1,17 @@
-"""Durable, no-clobber archival transfer of owner-preserved working-tree files.
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import subprocess
+import sys
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Final
+
+_DESCRIPTION = """Durable, no-clobber archival transfer of owner-preserved working-tree files.
 
 Moves a fixed set of owner-owned files out of the repository into a pinned
 non-ephemeral archive root, then restores/removes the in-repo originals -- but
@@ -26,19 +39,6 @@ instant. It does not prove the copy is durable, independent, or unique:
 Every source mutation is gated behind the whole batch succeeding. On any
 failure at any step the transaction halts having touched zero sources.
 """
-
-from __future__ import annotations
-
-import argparse
-import hashlib
-import json
-import os
-import subprocess
-import sys
-from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Final
 
 MANIFEST_NAME: Final = "manifest.json"
 MANIFEST_SCHEMA: Final = 1
@@ -308,7 +308,7 @@ UNTRACKED: Final = (
 
 
 def main(argv: Iterable[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=_DESCRIPTION)
     parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--archive-root", type=Path, required=True)
     parser.add_argument(

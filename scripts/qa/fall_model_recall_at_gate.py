@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-"""Score a packaged fall model against recorded live-camera traces.
-
-Clean 300-frame training clips never exercise PTS resampling, track-id churn,
-or reconnect padding -- the exact continuity bugs this bundle exists to catch.
-This script instead replays recorded ``replay-trace-v2`` JSONL captures (real
-NvDCF track lifecycles, real gaps) through ``worker.replay.engine.replay()``,
-the same production compositor the worker boots, so the effective transition
-threshold (receipt vs. policy default) is resolved exactly as it is live.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -25,6 +15,16 @@ from shared.detection_policies import FallPolicyV2, make_effective_policy
 from worker.adapters.model.ort_pose_bbox56 import OrtPoseBbox56Runner
 from worker.domains.registry import _effective_transition_threshold
 from worker.replay.engine import ReplayRun, replay
+
+_DESCRIPTION = """Score a packaged fall model against recorded live-camera traces.
+
+Clean 300-frame training clips never exercise PTS resampling, track-id churn,
+or reconnect padding -- the exact continuity bugs this bundle exists to catch.
+This script instead replays recorded ``replay-trace-v2`` JSONL captures (real
+NvDCF track lifecycles, real gaps) through ``worker.replay.engine.replay()``,
+the same production compositor the worker boots, so the effective transition
+threshold (receipt vs. policy default) is resolved exactly as it is live.
+"""
 
 DEFAULT_HIT_WINDOW_SEC = 10.0
 DEFAULT_EXCLUSION_WINDOW_SEC = 20.0
@@ -231,7 +231,7 @@ def write_receipt(out: Path, receipt: dict[str, Any]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=_DESCRIPTION)
     parser.add_argument("--bundle", type=Path, default=Path("models/fall/pose-bbox56-gru"))
     parser.add_argument("--traces-dir", type=Path, required=True)
     parser.add_argument(

@@ -1,5 +1,23 @@
 #!/usr/bin/env python
-"""Inspect and requeue evidence the backend refused.
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPOSITORY_ROOT))
+
+from shared.events.delivery_queue import (  # noqa: E402
+    MAX_DEAD_LETTERED_BYTES,
+    MAX_DEAD_LETTERED_ENTRIES,
+    DeliveryQueue,
+)
+
+_DESCRIPTION = """Inspect and requeue evidence the backend refused.
 
 A 422 means the backend rejected a payload. The entry is retained rather than
 deleted, because deleting refused evidence and reporting it delivered is how 41
@@ -20,27 +38,9 @@ Exit codes:
   3  requeue could not complete because the live queue is at capacity
 """
 
-from __future__ import annotations
-
-import argparse
-import json
-import sys
-from collections import Counter
-from pathlib import Path
-
-_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPOSITORY_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPOSITORY_ROOT))
-
-from shared.events.delivery_queue import (  # noqa: E402
-    MAX_DEAD_LETTERED_BYTES,
-    MAX_DEAD_LETTERED_ENTRIES,
-    DeliveryQueue,
-)
-
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=_DESCRIPTION)
     parser.add_argument(
         "--state-dir",
         type=Path,

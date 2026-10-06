@@ -1,5 +1,3 @@
-"""Export the nano pose weights to a dynamic-batch, digest-pinned ONNX artifact."""
-
 from __future__ import annotations
 
 import argparse
@@ -12,6 +10,8 @@ from pathlib import Path
 from contracts.artifacts import pose_weight_path
 from worker.adapters.model.errors import ModelLoadError
 from worker.runtime.flow.onnx_shape import batch_axis_is_dynamic, input_dims
+
+_DESCRIPTION = """Export the nano pose weights to a dynamic-batch, digest-pinned ONNX artifact."""
 
 Exporter = Callable[[Path], Path]
 
@@ -85,7 +85,7 @@ def export_pose_onnx(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=_DESCRIPTION)
     parser.add_argument("model_path", nargs="?", type=Path, default=pose_weight_path("n"))
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()

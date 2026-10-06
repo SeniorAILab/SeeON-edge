@@ -1,4 +1,13 @@
-"""Refuse to release unless every version carrier agrees with the tag.
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+import tomllib
+from pathlib import Path
+
+_DESCRIPTION = """Refuse to release unless every version carrier agrees with the tag.
 
 A release of this repository is cut by pushing an annotated tag shaped
 ``seeon-edge-v<semver>``. That tag is the only thing an operator sees, so it
@@ -15,15 +24,6 @@ Run it by hand before tagging:
     python3 scripts/release_guard.py                       # lockstep only
     python3 scripts/release_guard.py --tag seeon-edge-v0.1.0
 """
-
-from __future__ import annotations
-
-import argparse
-import json
-import re
-import sys
-import tomllib
-from pathlib import Path
 
 TAG_PREFIX = "seeon-edge-v"
 
@@ -72,7 +72,7 @@ def check(carriers: dict[str, str], tag: str | None) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=_DESCRIPTION)
     parser.add_argument(
         "--tag",
         default=None,

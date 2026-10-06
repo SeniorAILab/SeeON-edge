@@ -1,5 +1,3 @@
-"""Create missing browser playback renditions for immutable evidence clips."""
-
 from __future__ import annotations
 
 import argparse
@@ -23,6 +21,8 @@ from worker.pipeline.output.evidence.playback_rendition import (
     probe_video_codec,
 )
 from worker.pipeline.output.evidence.playback_rendition_publish import write_playback_rendition
+
+_DESCRIPTION = """Create missing browser playback renditions for immutable evidence clips."""
 
 LOGGER = logging.getLogger(__name__)
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -207,7 +207,7 @@ def _manifest_duration(clip_dir: Path) -> float:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=_DESCRIPTION)
     parser.add_argument("clip_store", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--renditions", action="store_true")

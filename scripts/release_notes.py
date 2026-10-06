@@ -1,4 +1,10 @@
-"""Compose the release notes for a ``seeon-edge-v<semver>`` tag.
+from __future__ import annotations
+
+import argparse
+import subprocess
+from pathlib import Path
+
+_DESCRIPTION = """Compose the release notes for a ``seeon-edge-v<semver>`` tag.
 
 The body has three parts:
 
@@ -14,12 +20,6 @@ The body has three parts:
 Both the rehearsal path and the real release path run this same code, so a
 rehearsal proves the notes compose before a tag is ever pushed.
 """
-
-from __future__ import annotations
-
-import argparse
-import subprocess
-from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -81,7 +81,7 @@ def compose(tag: str, head: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=_DESCRIPTION)
     parser.add_argument("--tag", required=True, help="the release tag, e.g. seeon-edge-v0.1.0")
     parser.add_argument(
         "--head",

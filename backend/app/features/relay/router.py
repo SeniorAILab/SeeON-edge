@@ -248,9 +248,14 @@ class RelaySnapshotMetadata(BaseModel):
 
 
 class RelaySnapshotAttachmentRequest(BaseModel):
-    """An immutable snapshot reference; snapshot bytes never cross this route."""
-
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "description": (
+                "An immutable snapshot reference; snapshot bytes never cross this route."
+            ),
+        },
+    )
 
     edge_event_id: str = Field(min_length=1, max_length=envelope_limits.EDGE_EVENT_ID_MAX_CHARS)
     snapshot_id: str = Field(min_length=1, max_length=envelope_limits.SNAPSHOT_ID_MAX_CHARS)
@@ -266,9 +271,12 @@ class RelaySnapshotAttachmentRequest(BaseModel):
 
 
 class RelaySnapshotDispositionRequest(BaseModel):
-    """A terminal, explicit statement that a snapshot cannot be delivered."""
-
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "description": "A terminal, explicit statement that a snapshot cannot be delivered.",
+        },
+    )
 
     edge_event_id: str = Field(min_length=1, max_length=envelope_limits.EDGE_EVENT_ID_MAX_CHARS)
     snapshot_id: str = Field(min_length=1, max_length=envelope_limits.SNAPSHOT_ID_MAX_CHARS)
@@ -471,18 +479,22 @@ def bump_restart(
     return {RESTART_EPOCH_KEY: request.app.state.restart_epoch}
 
 
-@router.post("/alerts", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/alerts",
+    status_code=status.HTTP_202_ACCEPTED,
+    description=(
+        "Commit the incident and its delivery obligation, then answer.\n"
+        "\n"
+        "Every response is built after the admission COMMIT, so a failure before it\n"
+        "is never acknowledged. A worker retry after a lost response lands on the\n"
+        "same committed row instead of creating a second incident."
+    ),
+)
 def relay_alert(
     payload: RelayAlertRequest,
     request: Request,
     _: Annotated[None, Depends(require_relay_alert)],
 ) -> dict[str, str]:
-    """Commit the incident and its delivery obligation, then answer.
-
-    Every response is built after the admission COMMIT, so a failure before it
-    is never acknowledged. A worker retry after a lost response lands on the
-    same committed row instead of creating a second incident.
-    """
     binding = _camera_binding(request, payload.camera_id, payload.facility_id)
     bound_camera_id = binding.get("backend_camera_id")
     backend_camera_id = (
@@ -696,14 +708,16 @@ def _replayed_alert_response(
     )
 
 
-@router.post("/snapshot-attachments", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/snapshot-attachments",
+    status_code=status.HTTP_202_ACCEPTED,
+    description="Record one immutable media reference without accepting media bytes.",
+)
 def relay_snapshot_attachment(
     payload: RelaySnapshotAttachmentRequest,
     request: Request,
     _: Annotated[None, Depends(require_relay_snapshot_attachment)],
 ) -> dict[str, str]:
-    """Record one immutable media reference without accepting media bytes."""
-
     projection = _snapshot_projection(request)
     audit = mutation_audit(
         request,
@@ -725,14 +739,16 @@ def relay_snapshot_attachment(
     return {"status": "accepted"}
 
 
-@router.post("/snapshot-dispositions", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/snapshot-dispositions",
+    status_code=status.HTTP_202_ACCEPTED,
+    description="Durably record an unavailable or failed snapshot without touching its event.",
+)
 def relay_snapshot_disposition(
     payload: RelaySnapshotDispositionRequest,
     request: Request,
     _: Annotated[None, Depends(require_relay_snapshot_disposition)],
 ) -> dict[str, str]:
-    """Durably record an unavailable or failed snapshot without touching its event."""
-
     projection = _snapshot_projection(request)
     audit = mutation_audit(
         request,
