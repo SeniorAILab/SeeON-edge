@@ -87,7 +87,7 @@ def probe_mps_capability(*, importer: TorchImporter = _import_torch) -> MpsCapab
 
     try:
         is_built = bool(torch.backends.mps.is_built())
-    except Exception:  # noqa: BLE001,S110 - build-flag probe must not break startup
+    except Exception:  # noqa: BLE001 - build-flag probe must not break startup
         is_built = False
 
     try:

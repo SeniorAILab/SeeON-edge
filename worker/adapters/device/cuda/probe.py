@@ -91,12 +91,12 @@ def probe_cuda_capability(*, importer: TorchImporter = _import_torch) -> CudaCap
 
     try:
         arch_list = tuple(torch.cuda.get_arch_list())
-    except Exception:  # noqa: BLE001,S110 - arch probe must not break startup
+    except Exception:  # noqa: BLE001 - arch probe must not break startup
         arch_list = ()
 
     try:
         device_count = int(torch.cuda.device_count())
-    except Exception:  # noqa: BLE001,S110 - device-count probe must not break startup
+    except Exception:  # noqa: BLE001 - device-count probe must not break startup
         device_count = 0
 
     try:

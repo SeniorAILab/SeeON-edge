@@ -88,7 +88,7 @@ def response_json(response: Response) -> dict[str, JsonValue]:
 class OKHandler(BaseHTTPRequestHandler):
     received_auth: list[str | None] = []
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         self.__class__.received_auth.append(self.headers.get("Authorization"))
         body = json.dumps({"configVersion": 1, "cameras": []}).encode("utf-8")
         self.send_response(200)
@@ -103,7 +103,7 @@ class OKHandler(BaseHTTPRequestHandler):
 
 
 class AuthFailHandler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         self.send_response(401)
         self.end_headers()
 
@@ -118,7 +118,7 @@ class EnrollmentVerifyHandler(BaseHTTPRequestHandler):
     received_bodies: list[dict[str, JsonValue]] = []
     response_status = 200
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         body = cast(dict[str, JsonValue], json.loads(self.rfile.read(length)))
         self.__class__.received_auth.append(self.headers.get("Authorization"))
@@ -154,7 +154,7 @@ class EnrollmentVerifyHandler(BaseHTTPRequestHandler):
 
 
 class HangHandler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         time.sleep(5)
 
     @override

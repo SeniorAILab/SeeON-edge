@@ -147,7 +147,7 @@ def test_persist_first_fault_admits_exactly_one_queue_record(tmp_path: Path) -> 
     # Module-level _written flag is per-import, so we reset it between tests.
     import worker.runtime.faults.record as mod
 
-    mod._written = False  # noqa: SLF001
+    mod._written = False
 
     rec = _record()
     wrote_first = persist_first_fault(rec, state_dir=tmp_path)
@@ -173,7 +173,7 @@ def test_persist_first_fault_degrades_to_false_when_queue_parent_is_uncreatable(
     for the handler-level version of this contract."""
     import worker.runtime.faults.record as mod
 
-    mod._written = False  # noqa: SLF001
+    mod._written = False
 
     blocker = tmp_path / "blocker-file"
     blocker.write_text("not a directory")
@@ -190,7 +190,7 @@ def test_persist_first_fault_is_independent_of_the_delivery_queue(tmp_path: Path
     """Fault persistence cannot be blocked by the SQLite-free delivery queue."""
     import worker.runtime.faults.record as mod
 
-    mod._written = False  # noqa: SLF001
+    mod._written = False
 
     rec = _record()
     started = time_module.monotonic()
@@ -208,7 +208,7 @@ def test_persist_first_fault_writes_to_production_delivery_queue(
     """The production state-dir default must publish into its delivery queue."""
     import worker.runtime.faults.record as mod
 
-    mod._written = False  # noqa: SLF001
+    mod._written = False
 
     monkeypatch.setattr(mod, "resolve_state_dir", lambda: tmp_path)
 
@@ -230,12 +230,12 @@ def test_persist_first_fault_returns_immediately_under_held_queue_lock(
     """A held delivery-queue lock must make fatal admission fail immediately."""
     import worker.runtime.faults.record as mod
 
-    mod._written = False  # noqa: SLF001
+    mod._written = False
 
     monkeypatch.setattr(mod, "resolve_state_dir", lambda: tmp_path)
 
     queue = DeliveryQueue(tmp_path / "delivery-queue")
-    holder = queue._lock_path.open("a+b")  # noqa: SLF001
+    holder = queue._lock_path.open("a+b")
     import fcntl
 
     fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
@@ -258,7 +258,7 @@ def test_persist_first_fault_returns_immediately_under_held_queue_lock(
 def test_persist_first_fault_includes_frame_hash(tmp_path: Path) -> None:
     import worker.runtime.faults.record as mod
 
-    mod._written = False  # noqa: SLF001
+    mod._written = False
 
     image = np.zeros((4, 4, 3), dtype=np.uint8)
     rec = make_fault_record(
@@ -289,7 +289,7 @@ def test_fault_handler_stops_all_loops_and_exits(tmp_path: Path) -> None:
     rec = _record()
     import worker.runtime.faults.record as mod
 
-    mod._written = False  # noqa: SLF001
+    mod._written = False
 
     handler.handle(FatalAcceleratorError("CUDA error"), rec)
 
@@ -307,7 +307,7 @@ def test_fault_handler_is_idempotent(tmp_path: Path) -> None:
 
     import worker.runtime.faults.record as mod
 
-    mod._written = False  # noqa: SLF001
+    mod._written = False
 
     rec = _record()
     t1 = threading.Thread(target=handler.handle, args=(FatalAcceleratorError("CUDA error"), rec))
@@ -327,7 +327,7 @@ def test_fault_handler_exits_even_when_fault_storage_is_unavailable(tmp_path: Pa
     exiting with FATAL_ACCELERATOR_EXIT_CODE."""
     import worker.runtime.faults.record as mod
 
-    mod._written = False  # noqa: SLF001
+    mod._written = False
 
     blocker = tmp_path / "blocker-file"
     blocker.write_text("not a directory")

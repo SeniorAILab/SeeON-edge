@@ -241,7 +241,7 @@ def _availability_command(
 
 
 def _fixture_preflight() -> dict[str, Any]:
-    from fastapi.testclient import TestClient  # noqa: PLC0415
+    from fastapi.testclient import TestClient
 
     fixture = LocalBackendFixture()
     client = TestClient(fixture.app)

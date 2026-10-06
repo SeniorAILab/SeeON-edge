@@ -246,7 +246,7 @@ class RuntimeStatusSender:
         """
         try:
             self._diagnostics.log_snapshot()
-        except Exception:  # noqa: BLE001 - local logging must never break relay delivery
+        except Exception:
             LOGGER.warning("worker diagnostics log_snapshot failed", exc_info=True)
 
     def _take_latest(self) -> list[RelayRuntimeStatusPayload] | None:

@@ -149,7 +149,7 @@ class EvidenceSender:
         """
         try:
             return queue.dead_letter(entry_id, status_code)
-        except Exception:  # noqa: BLE001 - retention I/O never stalls the queue
+        except Exception:
             _LOGGER.exception(
                 "could not retain evidence entry %s; the retention area is "
                 "unwritable, so the entry stays queued and undelivered",
@@ -294,7 +294,7 @@ class EvidenceSender:
             return SenderStep.RETRY_SCHEDULED
         try:
             result = self._send(entry)
-        except Exception:  # noqa: BLE001 - one bad entry never starves the queue
+        except Exception:
             # The outer loop catches this too, but silently and without moving
             # on, so a corrupt or unserialisable entry was reselected on every
             # iteration and nothing behind it was ever delivered. Defer it and
@@ -422,7 +422,7 @@ class EvidenceSender:
         self._attempts.pop(entry_id, None)
         try:
             queue.acknowledge(entry_id)
-        except Exception:  # noqa: BLE001 - a delivered entry never stalls the queue
+        except Exception:
             # The backend has it; only our removal failed. Unguarded, a
             # filesystem fault here re-selected the same entry on every
             # iteration: the backend was flooded with duplicates of one event
