@@ -221,8 +221,51 @@ def test_coding_lines_with_prose_or_inexact_form_fail(line: str, code: str) -> N
     assert codes(f"{line}\nx = 1\n") == [(1, code)]
 
 
-def test_shebang_after_line_one_is_a_comment() -> None:
-    assert codes("x = 1\n#!/usr/bin/env python3\n") == [(2, NO_COMMENT)]
+@pytest.mark.parametrize(
+    "shebang",
+    [
+        "#!/usr/bin/env python3",
+        "#!/usr/bin/env python",
+        "#!/usr/bin/env -S uv run --script",
+        "#!/usr/bin/python3",
+    ],
+)
+def test_line_one_shebang_with_an_absolute_interpreter_path_passes(shebang: str) -> None:
+    assert codes(f"{shebang}\nx = 1\n") == []
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "scripts/ops/alert-amplification-diagnostic.py",
+        "scripts/ops/replay-runtime-analysis.py",
+        "scripts/ops/review-refused-evidence.py",
+        "scripts/qa/fall_model_recall_at_gate.py",
+        "scripts/qa/pyservicemaker-spike/spike.py",
+        "scripts/verify_scope_fidelity.py",
+    ],
+)
+def test_real_shebang_scripts_pass(script: str) -> None:
+    path = REPO_ROOT / script
+    assert path.read_text(encoding="utf-8").startswith("#!/")
+    assert check_file(path) == []
+
+
+@pytest.mark.parametrize("line", ["#! some prose", "#!python3", "#!", "#! /usr/bin/env python3"])
+def test_line_one_hash_bang_without_an_absolute_path_is_a_comment(line: str) -> None:
+    assert codes(f"{line}\nx = 1\n") == [(1, NO_COMMENT)]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "x = 1\n#!/usr/bin/env python3\n",
+        "\n#!/usr/bin/env python3\nx = 1\n",
+        "#!/usr/bin/env python3\n#!/usr/bin/python3\nx = 1\n",
+    ],
+)
+def test_shebang_after_line_one_is_a_comment(source: str) -> None:
+    assert codes(source) == [(2, NO_COMMENT)]
 
 
 def test_coding_line_after_line_two_is_a_comment() -> None:

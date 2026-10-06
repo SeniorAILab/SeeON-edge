@@ -155,7 +155,7 @@ def directive_matches(text: str) -> list[re.Match[str]]:
 def comment_kind(text: str, row: int, line: str) -> str:
     stripped = text.rstrip()
     whole_line = line.strip() == stripped
-    if row == 1 and stripped.startswith("#!") and line.startswith("#!"):
+    if row == 1 and line.startswith("#!/"):
         return "shebang"
     if row <= 2 and whole_line and CODING_LINE.fullmatch(stripped):
         return "coding"
