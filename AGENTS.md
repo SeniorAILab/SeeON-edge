@@ -89,6 +89,23 @@ pnpm --dir front build && pnpm --dir front lint
   are popups, overlay subjects are per-subject toggles that persist. See
   `front/AGENTS.md` "Owner UI preferences".
 
+## Enforced Rules
+
+Each rule below has a mechanical enforcer. A rule without one is a convention,
+not a guarantee; add the enforcer before relying on it.
+
+| Rule | Enforcer | Runs in |
+| --- | --- | --- |
+| No human comments or docstrings in Python. Allowed: a line-1 shebang, an exact PEP 263 coding line on line 1 or 2, and bare tool directives in use here (`# noqa: CODES`, `# ruff: noqa: CODES`, `# type: ignore[mypy-code]`, `# pragma: no cover`, `# pyright: ...`, `# fmt: off/on/skip`) with no prose. Intent goes into names, types, and tests. | `scripts/check_no_comments.py` (`tests/test_check_no_comments.py`) | pre-commit `no-comments`; CI `lint` (last step) |
+| Ruff lint set in `[tool.ruff.lint]` (incl. `RUF100` unused `# noqa`, `BLE` blind except, `TID` no relative imports, `SLF` private access) | `ruff check` | pre-commit `ruff`; CI `lint` |
+| Package and layer boundaries: `backend`/`worker` independence, `contracts` leaf, worker layer ladder, `worker.runtime` sole composition root, only `worker.adapters.deepstream` imports the SDK, `sqlite3` only in the one-time migration, routers never import `psycopg` | import-linter contracts in `[tool.importlinter]` | pre-commit `import-linter`; CI `lint` |
+| Facility identity and the camera roster are never provisionable through the environment | `scripts/verify_scope_fidelity.py --fixture` and `--repo` | CI `lint` |
+| The shipped edge env example renders | `docker compose --env-file .env.edge.prod.example -f compose.edge.yaml config -q` | CI `lint` |
+| No secrets in the tracked tree | gitleaks (`secrets` job) | CI `secrets` |
+| CI workflow policy: pinned actions, no Actions cache, a timeout on every job, shards exactly cover the suite, `ci-ok` asserts every job | `tests/test_public_repository_privacy.py` | CI `test` |
+| `real_stack`, `heavy`, `integration`, and `private_bundle` tests stay out of CI | pytest markers plus the `-m` filter in `ci.yml` | CI `test` |
+| `contracts/event.py` stays byte-identical to its upstream source | `tests/test_worker_event_payload_boundary.py`; `VENDORED_PATHS` in the checker keeps it out of comment removal | CI `test` |
+
 ## Anti-patterns
 
 - No `backend`↔`worker` imports. Relay HTTP only.

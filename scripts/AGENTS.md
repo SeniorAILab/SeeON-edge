@@ -29,7 +29,7 @@ spike receipts.
 - No `__init__.py` anywhere. `scripts.qa.*` resolves as a namespace package from the repo root.
 - Python tools: `argparse`, a `main()` returning an int, `raise SystemExit(main())`. CI-facing failures print `::error::` to stderr.
 - A script that imports repo packages prepends the repo root to `sys.path` and marks the late import `# noqa: E402`.
-- Read-only tools say so in the docstring and enforce it (`flow_alert_rate.py` opens SQLite `mode=ro`).
+- Read-only tools enforce it in code (`flow_alert_rate.py` opens SQLite `mode=ro`).
 - `ops/repair-clip-consistency.py` is dry-run unless `--apply`, and needs a quiescence receipt.
 - Shell is POSIX `sh` by default. `bash` only where arrays or `readonly` are needed (`diagnose-edge.sh`, `rollback-ml-worker-c6.sh`).
 - `ml-front-tailscale-serve.sh` pins `#!/bin/bash`, not `env bash`: Homebrew bash 5.3 hangs on a heredoc over `PIPE_BUF` (#9). `tests/test_shell_script_heredoc_contract.py` guards it.
