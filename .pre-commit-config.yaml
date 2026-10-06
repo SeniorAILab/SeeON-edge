@@ -20,5 +20,5 @@ repos:
         name: no comments or docstrings
         entry: uv run --group lint python scripts/check_no_comments.py
         language: system
-        types_or: [python, pyi]
+        files: \.pyi?$
         require_serial: true
