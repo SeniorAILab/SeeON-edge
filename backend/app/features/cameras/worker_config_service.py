@@ -5,13 +5,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from backend.app.features.cameras.bed_zone_store import BedZone
-from backend.app.features.cameras.store import CameraRegistryData
-from backend.app.features.detection_settings.policy_store import PolicyBundle, PolicyCameraIdentity
+from backend.app.features.cameras.camera_values import CameraRegistryData
+from backend.app.features.detection_settings.policy_store import PolicyCameraIdentity
+from shared.detection_policies import PolicyBundle
 from backend.app.features.detection_settings.store import DomainDetectionSetting
 from contracts.worker_config import PulledWorkerConfig
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class WorkerConfigInputs:
     registry_snapshot: CameraRegistryData | Mapping[str, Any]
     bed_zones: Mapping[str, BedZone]
@@ -32,7 +33,7 @@ def assemble_worker_config(inputs: WorkerConfigInputs) -> dict[str, Any]:
     """
     cameras = _build_camera_entries(inputs.registry_snapshot, inputs.bed_zones)
     response: dict[str, Any] = {
-        "registry_version": int(inputs.registry_snapshot.get("registry_version", 0)),  # type: ignore[call-overload]
+        "registry_version": int(inputs.registry_snapshot.get("registry_version", 0)),
         "cameras": cameras,
     }
     live_pulled = _resolve_live_pulled(
@@ -219,6 +220,8 @@ def _apply_numeric_detection_policies(
 ) -> None:
     if generation == 0:
         return
+    # Router resolves bundle for nonzero generations; keep service pure.
+    assert bundle is not None, "policy bundle must be provided for nonzero generation"
     response["detection_policies"] = bundle.as_dict()
     response_cameras = response.get("cameras")
     if facility_id is not None and isinstance(response_cameras, list):

@@ -72,6 +72,8 @@ jobs:
       # Stage 0 guardrail: declarative architecture contracts (import-linter).
       # Tightened per strangler stage.
       - run: uv run --group lint lint-imports
+      # Typed strictness for frozen service boundary (PR2 scope).
+      - run: uv run --group lint mypy backend/app/features/cameras/worker_config_service.py
 
       # Facility identity (facility id / facility token) and the camera roster
       # must never be provisionable through the environment: an env var reaches
