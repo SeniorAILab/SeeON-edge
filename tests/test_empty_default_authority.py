@@ -267,7 +267,7 @@ class TestLkgEmptyPull:
             ).RestartDirective(generation=0, version=2),
         )
 
-        def urlopen(request, timeout=5.0):  # noqa: ARG001
+        def urlopen(request, timeout=5.0):
             return _Resp()
 
         snap = load_worker_config_from_relay(

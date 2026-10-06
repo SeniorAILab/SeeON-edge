@@ -278,7 +278,7 @@ class FrameLease:
         if self._state.storage.descriptor.memory_kind is not MemoryKind.HOST:
             raise RuntimeError("frame is not host-resident; use a named materializer")
         storage = self._state.storage
-        assert isinstance(storage, _HostStorage)  # noqa: S101 - memory_kind gate above
+        assert isinstance(storage, _HostStorage)
         return storage.frame
 
     @property
@@ -287,7 +287,7 @@ class FrameLease:
         if self._state.storage.descriptor.memory_kind is MemoryKind.HOST:
             raise RuntimeError("frame is host-resident; use host_frame")
         storage = self._state.storage
-        assert isinstance(storage, _DeviceStorage)  # noqa: S101 - memory_kind gate above
+        assert isinstance(storage, _DeviceStorage)
         return storage.handle
 
     @property

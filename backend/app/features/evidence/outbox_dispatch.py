@@ -139,7 +139,7 @@ def dispatch(
         result = scoped_client(client, claim.backend_camera_id).send_alert_receipt(
             on_accepted=on_accepted, **alert_kwargs(claim.envelope)
         )
-    except Exception:  # noqa: BLE001 - a send failure has an unknown outcome; the row is resent
+    except Exception:
         _LOGGER.exception("backend outbox send raised; outcome unknown")
         result = DeliveryFailure(DeliveryDisposition.RETRY, "TRANSPORT_ERROR")
         _finish(delivery, claim, DeliveryOutcome.UNKNOWN, reason="TRANSPORT_ERROR")

@@ -463,7 +463,7 @@ def main(argv: list[str] | None = None) -> int:
         runtime.run()
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else GENERIC_RUNTIME_ERROR_EXIT_CODE
-    except Exception:  # noqa: BLE001 - top-level CLI boundary must not crash uncaught
+    except Exception:
         LOGGER.exception("worker runtime error")
         return GENERIC_RUNTIME_ERROR_EXIT_CODE
     else:

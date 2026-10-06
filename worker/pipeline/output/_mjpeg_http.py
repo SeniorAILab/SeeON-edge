@@ -134,7 +134,7 @@ def build_http_server(
     replay_fall_model: FallModelProtocol | None = None,
 ) -> HTTPServer:
     class Handler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802 - stdlib hook name
+        def do_GET(self) -> None:
             path = urlsplit(self.path).path
             analysis = clip_analysis_path(path)
             if analysis is not None and analysis[1] == "status":
@@ -159,7 +159,7 @@ def build_http_server(
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
-        def do_POST(self) -> None:  # noqa: N802 - stdlib hook name
+        def do_POST(self) -> None:
             path = urlsplit(self.path).path
             analysis = clip_analysis_path(path)
             if analysis is not None:
@@ -538,7 +538,7 @@ def build_http_server(
             self.wfile.write(frame.jpeg)
             self.wfile.write(b"\r\n")
 
-        def log_message(self, format: str, *args: str) -> None:  # noqa: A002
+        def log_message(self, format: str, *args: str) -> None:
             del format, args
 
     return _ThreadingHTTPServer((host, port), Handler)

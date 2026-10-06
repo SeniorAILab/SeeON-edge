@@ -714,7 +714,7 @@ class DeepStreamMediaPlane(MediaPlane):
                     height=int(info.height),
                 )
             )
-        except Exception as error:  # noqa: BLE001 - an SDK callback must not abort the process
+        except Exception as error:
             # This runs on the pipeline thread: an exception here terminates the
             # worker and takes every camera down with it. The sealed media and
             # its contributor sidecar are already on disk, so the publication is

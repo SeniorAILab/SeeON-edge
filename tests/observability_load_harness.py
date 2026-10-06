@@ -73,7 +73,7 @@ class _TimedClient:
         started = time.monotonic()
         try:
             return self.inner.post_batch(batch)
-        except Exception as error:  # noqa: BLE001 - measurement must not abort sampling
+        except Exception as error:
             self.exceptions.append(f"{type(error).__name__}: {error}")
             raise
         finally:
@@ -102,9 +102,9 @@ def _slope(points: Sequence[tuple[float, float]]) -> float | None:
 
 
 def _overflow_pending(lanes: Any) -> int:
-    with lanes._lock:  # noqa: SLF001
+    with lanes._lock:
         total = 0
-        for lane in lanes._lanes.values():  # noqa: SLF001
+        for lane in lanes._lanes.values():
             dropped = lane.overflow
             if dropped:
                 total += len(dropped)
@@ -171,7 +171,7 @@ def _start_mediamtx(work_dir: Path, rtsp_port: int, api_port: int) -> subprocess
     binary = shutil.which("mediamtx")
     if binary is None:
         raise ObservabilityLoadSkip("mediamtx is not on PATH")
-    return subprocess.Popen(  # noqa: S603 - local operator binary
+    return subprocess.Popen(
         [binary, str(config)],
         cwd=work_dir,
         stdout=subprocess.DEVNULL,
@@ -188,7 +188,7 @@ def _start_looping_publishers(
     publishers: list[subprocess.Popen[bytes]] = []
     for index in range(streams):
         url = f"rtsp://127.0.0.1:{rtsp_port}/cam-{index + 1}"
-        process = subprocess.Popen(  # noqa: S603 - local operator binary
+        process = subprocess.Popen(
             [
                 ffmpeg,
                 "-hide_banner",
@@ -412,14 +412,14 @@ def run_measurement(
                 env = _worker_env(backend.base_url)
                 runtime, worker_thread = _start_worker(config, env, tmp_path / "worker")
                 wait_until(
-                    lambda: runtime._execution_record_exporter is not None,  # noqa: SLF001
+                    lambda: runtime._execution_record_exporter is not None,
                     timeout=60.0,
                     what="worker execution-record exporter composition",
                 )
-                exporter = runtime._execution_record_exporter  # noqa: SLF001
-                lanes = runtime._execution_record_lanes  # noqa: SLF001
-                timed = _TimedClient(exporter._client)  # noqa: SLF001
-                exporter._client = timed  # noqa: SLF001
+                exporter = runtime._execution_record_exporter
+                lanes = runtime._execution_record_lanes
+                timed = _TimedClient(exporter._client)
+                exporter._client = timed
                 camera_ids = [f"cam-{index + 1}" for index in range(streams)]
                 samples: list[_Sample] = []
                 started = time.monotonic()

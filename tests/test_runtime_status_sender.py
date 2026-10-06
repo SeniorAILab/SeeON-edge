@@ -316,7 +316,7 @@ def test_sender_survives_a_log_snapshot_failure_and_keeps_delivering(
     assert any("log_snapshot" in record.getMessage() for record in caplog.records)
 
 
-def _wait_until(predicate, timeout_sec: float = 0.5) -> None:  # noqa: ANN001
+def _wait_until(predicate, timeout_sec: float = 0.5) -> None:
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
         if predicate():

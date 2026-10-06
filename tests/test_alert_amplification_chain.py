@@ -246,7 +246,7 @@ def test_a_failing_identity_journal_still_admits_the_alert(tmp_path: Path) -> No
     def _explode(_source_key: str) -> str:
         raise OSError("journal device is full")
 
-    manager._identities.resolve = _explode  # type: ignore[method-assign]  # noqa: SLF001
+    manager._identities.resolve = _explode  # type: ignore[method-assign]
 
     admitted = manager.admit(_transition("onset-journal-failure"), now_sec=100.0)
 

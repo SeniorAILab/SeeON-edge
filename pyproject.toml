@@ -156,11 +156,7 @@ select = [
 # informative inline `raise ValueError(f"...")` messages ARE the explicit-refusal
 # style this codebase wants; demanding a custom exception class per message
 # discourages raising. All other TRY rules stay on.
-# RUF100 (unused noqa) is ignored deliberately: this repo's `# noqa: BLE001 - <reason>`
-# on boundary catches is documentation of *why* the catch is broad, kept even where
-# BLE001 happens not to fire (e.g. the handler logs via `.exception`); the RUF100
-# autofix strips the reason along with the code.
-ignore = ["TRY003", "RUF100"]
+ignore = ["TRY003"]
 
 [tool.ruff.lint.per-file-ignores]
 # Tests poke at private members by design; a `# noqa: SLF001` per line adds nothing.
@@ -174,6 +170,7 @@ ignore = ["TRY003", "RUF100"]
 "tests_support/**" = ["RUF012", "PERF401", "SIM102"]
 "scripts/**" = ["SLF001", "PERF401"]
 "backend/**" = ["SIM102", "SIM105", "SIM117"]
+"backend/app/features/cameras/router.py" = ["RUF100"]
 # Literals here are split on purpose so the repository privacy scan does not match
 # its own fixtures; joining them (ISC001) makes the scan fail.
 "tests/test_public_repository_privacy.py" = ["ISC001", "ISC004"]

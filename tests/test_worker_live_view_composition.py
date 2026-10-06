@@ -125,11 +125,11 @@ def test_worker_composes_fall_preview_provider_into_flow_media_plane(
         state_dir=tmp_path,
     )
 
-    assert runtime._initialize_flow_media_plane(object()) is graph  # noqa: SLF001
+    assert runtime._initialize_flow_media_plane(object()) is graph
     provider = captured["fall_states"]
     assert callable(provider)
     assert provider("camera-without-pump") == {}
-    runtime._native_policy_pumps_by_camera["camera-a"] = SimpleNamespace(  # noqa: SLF001
+    runtime._native_policy_pumps_by_camera["camera-a"] = SimpleNamespace(
         preview_states=lambda: {3: FallPreviewState(3, "suspected", 0.88)}
     )
     assert provider("camera-a") == {3: FallPreviewState(3, "suspected", 0.88)}
@@ -173,16 +173,16 @@ def test_flow_live_view_injects_bed_recognizer_and_recognize_request_reaches_it(
         state_dir=tmp_path,
     )
     monkeypatch.setattr(worker_module, "ClipAnalysisSupervisor", _ClipAnalysisSupervisor)
-    runtime._boot = SimpleNamespace(profile=SimpleNamespace(name="flow"))  # noqa: SLF001
-    runtime._mjpeg_config = MjpegServerConfig(  # noqa: SLF001
+    runtime._boot = SimpleNamespace(profile=SimpleNamespace(name="flow"))
+    runtime._mjpeg_config = MjpegServerConfig(
         enabled=True, host="127.0.0.1", port=0, probe_token="relay-token"
     )
     fall_model = _FallModel()
     runtime.fall_model = fall_model
-    runtime._live_frames = LatestFrameStore()  # noqa: SLF001
-    runtime._live_frames.publish_jpeg("camera-a", _JPEG, frame_index=1)  # noqa: SLF001
+    runtime._live_frames = LatestFrameStore()
+    runtime._live_frames.publish_jpeg("camera-a", _JPEG, frame_index=1)
     plane = _FlowPlane()
-    runtime._flow_media_plane = plane  # noqa: SLF001
+    runtime._flow_media_plane = plane
     captured: dict[str, object] = {}
 
     def start_server(
@@ -216,14 +216,14 @@ def test_flow_live_view_injects_bed_recognizer_and_recognize_request_reaches_it(
 
     monkeypatch.setattr("worker.runtime.worker.start_optional_mjpeg_server", start_server)
 
-    runtime._start_live_view_server()  # noqa: SLF001
+    runtime._start_live_view_server()
     assert captured["bed_zone_recognizer"] is not None
     assert captured["replay_fall_model"] is fall_model
     assert captured["bed_zone_snapshot"] == plane.native_snapshot
     assert captured["clip_analysis_supervisor"] is not None
     assert captured["clip_analysis_cpu"] == 3
     assert captured["probe"] is probe_media_facts
-    server = runtime._mjpeg_server  # noqa: SLF001
+    server = runtime._mjpeg_server
     assert server is not None
     try:
         request = urllib.request.Request(
@@ -264,8 +264,8 @@ def test_flow_live_view_composes_disabled_analysis_seam_without_clip_analysis_cp
         serving_client=_ServingClient(),
         state_dir=tmp_path,
     )
-    runtime._boot = SimpleNamespace(profile=SimpleNamespace(name="flow"))  # noqa: SLF001
-    runtime._mjpeg_config = MjpegServerConfig(  # noqa: SLF001
+    runtime._boot = SimpleNamespace(profile=SimpleNamespace(name="flow"))
+    runtime._mjpeg_config = MjpegServerConfig(
         enabled=True, host="127.0.0.1", port=0, probe_token="relay-token"
     )
 
@@ -273,18 +273,18 @@ def test_flow_live_view_composes_disabled_analysis_seam_without_clip_analysis_cp
         captured["supervisor"] = clip_analysis_supervisor
 
     monkeypatch.setattr(worker_module, "start_optional_mjpeg_server", start_server)
-    runtime._start_live_view_server()  # noqa: SLF001
+    runtime._start_live_view_server()
     supervisor = captured["supervisor"]
     assert isinstance(supervisor, worker_module.ClipAnalysisDisabled)
     with pytest.raises(ClipAnalysisDisabledError, match="clip_analysis_disabled"):
         supervisor.status("camera-1")
     # The disabled seam owns the same lifecycle as a real supervisor: a bound
     # server stores it and normal shutdown must not crash on it.
-    runtime._mjpeg_server = SimpleNamespace(stop=lambda: None)  # noqa: SLF001
-    runtime._clip_analysis_supervisor = supervisor  # noqa: SLF001
-    runtime._context = SimpleNamespace(release_lease=lambda: None)  # noqa: SLF001
+    runtime._mjpeg_server = SimpleNamespace(stop=lambda: None)
+    runtime._clip_analysis_supervisor = supervisor
+    runtime._context = SimpleNamespace(release_lease=lambda: None)
     runtime.stop()
-    assert runtime._clip_analysis_supervisor is None  # noqa: SLF001
+    assert runtime._clip_analysis_supervisor is None
 
 
 def test_live_view_analysis_lookup_uses_mount_root_not_active_subdirectory(
@@ -363,12 +363,12 @@ def test_live_view_analysis_lookup_uses_mount_root_not_active_subdirectory(
         state_dir=tmp_path,
         clip_store_dir=tmp_path,
     )
-    runtime._boot = SimpleNamespace(profile=SimpleNamespace(name="flow"))  # noqa: SLF001
-    runtime._mjpeg_config = MjpegServerConfig(  # noqa: SLF001
+    runtime._boot = SimpleNamespace(profile=SimpleNamespace(name="flow"))
+    runtime._mjpeg_config = MjpegServerConfig(
         enabled=True, host="127.0.0.1", port=0, probe_token="relay-token"
     )
-    runtime._start_live_view_server()  # noqa: SLF001
-    server = runtime._mjpeg_server  # noqa: SLF001
+    runtime._start_live_view_server()
+    server = runtime._mjpeg_server
     assert server is not None
     try:
         request = urllib.request.Request(
@@ -407,13 +407,13 @@ def test_only_flow_stop_deadline_uses_terminal_exit(
         hard_exit=actual_exits.append,
     )
     plane = _FlowPlane(stop_error)
-    runtime._flow_media_plane = plane  # noqa: SLF001
+    runtime._flow_media_plane = plane
     if stop_error is None:
-        runtime._stop_flow_media_plane()  # noqa: SLF001
-        assert runtime._flow_media_plane is None  # noqa: SLF001
+        runtime._stop_flow_media_plane()
+        assert runtime._flow_media_plane is None
     else:
         with pytest.raises(type(stop_error)) as error:
-            runtime._stop_flow_media_plane()  # noqa: SLF001
+            runtime._stop_flow_media_plane()
         assert error.value is stop_error
-        assert runtime._flow_media_plane is plane  # noqa: SLF001
+        assert runtime._flow_media_plane is plane
     assert actual_exits == exit_codes
