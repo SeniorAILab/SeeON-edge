@@ -87,7 +87,7 @@ def sample_gpu() -> dict[str, float] | None:
     if binary is None:
         return None
     try:
-        completed = subprocess.run(  # noqa: S603 - fixed local binary, no shell
+        completed = subprocess.run(
             [binary, f"--query-gpu={_NVIDIA_SMI_QUERY}", "--format=csv,noheader,nounits"],
             capture_output=True,
             text=True,

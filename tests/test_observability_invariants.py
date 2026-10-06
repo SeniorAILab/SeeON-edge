@@ -26,7 +26,7 @@ import time
 
 import psycopg
 import pytest
-from test_execution_record_store import (  # noqa: E402 - sibling test module fixture reuse
+from test_execution_record_store import (
     CAMERA,
     _batch,
     _record,

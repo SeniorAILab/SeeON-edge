@@ -135,7 +135,7 @@ class FlowEvidenceBinding:
                 continue
             try:
                 self._publish_recovery(recovery)
-            except Exception:  # noqa: BLE001 - one bad sidecar must not block the rest
+            except Exception:
                 LOGGER.exception(
                     "sealed Flow clip replay failed clip_id=%s camera_id=%s",
                     recovery.sealed.clip_id,

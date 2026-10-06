@@ -135,7 +135,7 @@ def _read_gpu_status(pynvml: Any) -> NvmlGpuStatus:
 def _read_driver_version(pynvml: Any) -> str | None:
     try:
         return str(pynvml.nvmlSystemGetDriverVersion())
-    except Exception:  # noqa: BLE001,S110 - driver-version query must not break startup
+    except Exception:  # noqa: BLE001 - driver-version query must not break startup
         return None
 
 
@@ -143,7 +143,7 @@ def _read_first_device_name(pynvml: Any) -> str | None:
     try:
         handle = pynvml.nvmlDeviceGetHandleByIndex(0)
         return str(pynvml.nvmlDeviceGetName(handle))
-    except Exception:  # noqa: BLE001,S110 - device-name query must not break startup
+    except Exception:  # noqa: BLE001 - device-name query must not break startup
         return None
 
 

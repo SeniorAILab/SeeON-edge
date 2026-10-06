@@ -225,7 +225,7 @@ def test_recording_is_refused_before_the_source_has_published_a_frame() -> None:
 def test_start_uses_the_sdk_primitive_and_an_inflight_start_is_absorbed() -> None:
     plane, pipeline = _plane()
     plane.add_source("camera", "rtsp://one")
-    plane._live.add("camera")  # noqa: SLF001 - a frame has been published
+    plane._live.add("camera")
     sealed: list[object] = []
     session = plane.start_recording(
         "camera", lookback_sec=15, duration_sec=45, on_sealed=sealed.append
@@ -242,7 +242,7 @@ def test_a_session_that_never_seals_releases_its_slot_instead_of_silencing_the_c
     now = [1_000.0]
     plane, pipeline = _plane(clock=lambda: now[0])
     plane.add_source("camera", "rtsp://one")
-    plane._live.add("camera")  # noqa: SLF001 - a frame has been published
+    plane._live.add("camera")
     first = plane.start_recording(
         "camera", lookback_sec=15, duration_sec=45, on_sealed=lambda _: None
     )
@@ -272,7 +272,7 @@ def test_an_abandoned_slot_on_one_camera_does_not_affect_another() -> None:
     plane, pipeline = _plane(clock=lambda: now[0])
     for camera in ("camera", "other"):
         plane.add_source(camera, f"rtsp://{camera}")
-        plane._live.add(camera)  # noqa: SLF001 - a frame has been published
+        plane._live.add(camera)
     plane.start_recording("camera", lookback_sec=15, duration_sec=45, on_sealed=lambda _: None)
     now[0] += 200.0
     plane.start_recording("other", lookback_sec=15, duration_sec=45, on_sealed=lambda _: None)
@@ -283,7 +283,7 @@ def test_an_abandoned_slot_on_one_camera_does_not_affect_another() -> None:
 def test_early_stop_is_a_typed_refusal_not_a_silent_no_op() -> None:
     plane, _ = _plane()
     plane.add_source("camera", "rtsp://one")
-    plane._live.add("camera")  # noqa: SLF001
+    plane._live.add("camera")
     session = plane.start_recording(
         "camera", lookback_sec=1, duration_sec=2, on_sealed=lambda _: None
     )
@@ -296,7 +296,7 @@ def test_early_stop_is_a_typed_refusal_not_a_silent_no_op() -> None:
 def test_sealed_callback_fires_exactly_once_per_session() -> None:
     plane, pipeline = _plane()
     plane.add_source("camera", "rtsp://one")
-    plane._live.add("camera")  # noqa: SLF001
+    plane._live.add("camera")
     sealed: list[RecordingInfo] = []
     session = plane.start_recording(
         "camera", lookback_sec=1, duration_sec=2, on_sealed=sealed.append
@@ -322,7 +322,7 @@ def test_a_failed_handoff_is_logged_and_never_raises_into_the_sdk_callback(
     """
     plane, pipeline = _plane()
     plane.add_source("camera", "rtsp://one")
-    plane._live.add("camera")  # noqa: SLF001
+    plane._live.add("camera")
 
     def handoff(info: RecordingInfo) -> None:
         raise RuntimeError("publication failed")
@@ -375,9 +375,9 @@ def test_snapshot_without_an_active_osd_branch_is_typed_unavailable() -> None:
 def test_default_steady_state_builds_only_the_discard_sink() -> None:
     plane, _ = _plane()
     plane.add_source("camera", "rtsp://one")
-    plane._build_flow()  # noqa: SLF001 - assert the fake Flow's terminal sink
+    plane._build_flow()
 
-    flow = plane._flow  # noqa: SLF001 - the configured graph is adapter behaviour
+    flow = plane._flow
     assert isinstance(flow, _Flow)
     assert flow.render_calls == [{"mode": "discard", "enable_osd": False, "sync": False}]
 
@@ -385,7 +385,7 @@ def test_default_steady_state_builds_only_the_discard_sink() -> None:
 def test_snapshot_encoder_runs_only_for_the_alert_that_requested_a_snapshot() -> None:
     encoded: list[str] = []
     plane, pipeline = _plane()
-    plane._snapshot_encoder = lambda camera_id: (  # noqa: SLF001 - adapter seam
+    plane._snapshot_encoder = lambda camera_id: (
         encoded.append(camera_id) or _JPEG
     )
     plane.add_source("camera", "rtsp://one")
@@ -399,7 +399,7 @@ def test_snapshot_encoder_runs_only_for_the_alert_that_requested_a_snapshot() ->
 def test_enabled_snapshot_branch_uses_the_fork_as_the_discard_terminal() -> None:
     plane, pipeline = _plane(snapshot_branch_enabled=True)
     plane.add_source("camera", "rtsp://one")
-    plane._build_flow()  # noqa: SLF001 - topology is adapter behaviour
+    plane._build_flow()
 
     assert pipeline.links == [
         (
@@ -426,7 +426,7 @@ def test_enabled_snapshot_branch_uses_the_fork_as_the_discard_terminal() -> None
     assert pipeline["snapshot-osd"].properties["display-bbox"] == 1
     assert pipeline["snapshot-osd"].properties["display-text"] == 1
     assert pipeline["snapshot-sink"].properties["next-file"] == 0
-    flow = plane._flow  # noqa: SLF001 - the configured graph is adapter behaviour
+    flow = plane._flow
     assert isinstance(flow, _Flow)
     assert flow.render_calls == [{"mode": "discard", "enable_osd": False, "sync": False}]
 
@@ -440,7 +440,7 @@ def test_snapshot_refuses_a_source_that_has_not_published_a_frame() -> None:
         plane.snapshot("camera")
 
     assert pipeline["snapshot-valve"].properties["drop"] is True
-    assert tuple(plane._snapshot_dir.glob("snapshot-*.jpg")) == ()  # noqa: SLF001
+    assert tuple(plane._snapshot_dir.glob("snapshot-*.jpg")) == ()
     plane.stop()
 
 
@@ -456,7 +456,7 @@ def test_enabled_snapshot_branch_closes_its_valve_after_one_jpeg() -> None:
         if pipeline["snapshot-valve"].properties.get("drop") is False:
             break
         time.sleep(0.01)
-    (plane._snapshot_dir / "snapshot-0000000000.jpg").write_bytes(  # noqa: SLF001
+    (plane._snapshot_dir / "snapshot-0000000000.jpg").write_bytes(
         b"\xff\xd8burned\xff\xd9"
     )
     request.join(timeout=1)
@@ -509,7 +509,7 @@ def test_snapshot_waits_for_a_complete_jpeg(
     request = threading.Thread(target=capture)
     request.start()
     assert valve_opened.wait(timeout=1)
-    path = plane._snapshot_dir / "snapshot-0000000000.jpg"  # noqa: SLF001
+    path = plane._snapshot_dir / "snapshot-0000000000.jpg"
     path.write_bytes(b"\xff\xd8incomplete")
     assert incomplete_observed.wait(timeout=1)
     assert request.is_alive()
@@ -547,7 +547,7 @@ def test_snapshot_configures_requested_osd_mode_and_resets_to_evidence_default()
         expected = 1 if draw_objects is None else int(draw_objects)
         assert pipeline["snapshot-osd"].properties["display-bbox"] == expected
         assert pipeline["snapshot-osd"].properties["display-text"] == expected
-        (plane._snapshot_dir / "snapshot-0000000000.jpg").write_bytes(  # noqa: SLF001
+        (plane._snapshot_dir / "snapshot-0000000000.jpg").write_bytes(
             b"\xff\xd8capture\xff\xd9"
         )
         request.join(timeout=1)
@@ -596,7 +596,7 @@ def test_snapshots_serialize_the_shared_bridge_across_cameras() -> None:
     assert second.is_alive()
     assert pipeline["snapshot-tiler"].properties["show-source"] == 0
 
-    (plane._snapshot_dir / "snapshot-0000000000.jpg").write_bytes(  # noqa: SLF001
+    (plane._snapshot_dir / "snapshot-0000000000.jpg").write_bytes(
         b"\xff\xd8first\xff\xd9"
     )
     first.join(timeout=1)
@@ -607,7 +607,7 @@ def test_snapshots_serialize_the_shared_bridge_across_cameras() -> None:
         ):
             break
         time.sleep(0.01)
-    (plane._snapshot_dir / "snapshot-0000000000.jpg").write_bytes(  # noqa: SLF001
+    (plane._snapshot_dir / "snapshot-0000000000.jpg").write_bytes(
         b"\xff\xd8second\xff\xd9"
     )
     second.join(timeout=1)
@@ -636,7 +636,7 @@ def test_snapshot_read_error_closes_resets_and_cleans_the_shared_bridge(
             if pipeline["snapshot-valve"].properties.get("drop") is False:
                 break
             time.sleep(0.01)
-        (plane._snapshot_dir / "snapshot-0000000000.jpg").write_bytes(  # noqa: SLF001
+        (plane._snapshot_dir / "snapshot-0000000000.jpg").write_bytes(
             b"\xff\xd8capture\xff\xd9"
         )
 
@@ -655,7 +655,7 @@ def test_snapshot_read_error_closes_resets_and_cleans_the_shared_bridge(
     assert pipeline["snapshot-valve"].properties["drop"] is True
     assert pipeline["snapshot-osd"].properties["display-bbox"] == 1
     assert pipeline["snapshot-osd"].properties["display-text"] == 1
-    assert tuple(plane._snapshot_dir.glob("snapshot-*.jpg")) == ()  # noqa: SLF001
+    assert tuple(plane._snapshot_dir.glob("snapshot-*.jpg")) == ()
     plane.stop()
 
 
@@ -674,7 +674,7 @@ def test_snapshot_selects_the_requested_camera_before_opening_the_shared_valve()
             break
         time.sleep(0.01)
     assert pipeline["snapshot-tiler"].properties["show-source"] == 1
-    (plane._snapshot_dir / "snapshot-0000000000.jpg").write_bytes(  # noqa: SLF001
+    (plane._snapshot_dir / "snapshot-0000000000.jpg").write_bytes(
         b"\xff\xd8burned\xff\xd9"
     )
     request.join(timeout=1)
@@ -705,7 +705,7 @@ def test_a_source_failure_rotates_the_stream_identity_and_keeps_the_camera_id() 
     """
     plane, _ = _plane()
     first = plane.add_source("room-208", "rtsp://one")
-    plane._live.add("room-208")  # noqa: SLF001 - a frame has been published
+    plane._live.add("room-208")
 
     replacement = plane.source_failure("room-208", "timeout")
 
@@ -713,7 +713,7 @@ def test_a_source_failure_rotates_the_stream_identity_and_keeps_the_camera_id() 
     assert replacement.stream_epoch > first.stream_epoch or (
         replacement.source_generation > first.source_generation
     )
-    assert "room-208" not in plane._live  # noqa: SLF001 - liveness must be re-proven
+    assert "room-208" not in plane._live
     with pytest.raises(SnapshotUnavailable):
         plane.snapshot("room-208")
 

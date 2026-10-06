@@ -55,7 +55,7 @@ def _identity() -> DecisionIdentity:
 
 
 def _frame(pump: object, seq: int) -> MetadataFrame:
-    child = pump._child  # noqa: SLF001
+    child = pump._child
     assert isinstance(child, UUID)
     return _metadata(child=child, seq=seq, pts=100 + seq * _PTS_STEP_NS)
 
@@ -67,15 +67,15 @@ def _drive_frames(
     publish: bool,
     consume: bool,
 ) -> None:
-    slot = pump._slot  # noqa: SLF001
+    slot = pump._slot
     for seq in range(count):
         metadata = _frame(pump, seq)
         if publish:
             assert slot.publish(metadata) is True
-        pump._process(metadata)  # noqa: SLF001
+        pump._process(metadata)
         if consume:
             emit_policy_consume(
-                pump._execution_records,  # noqa: SLF001
+                pump._execution_records,
                 metadata,
                 before=MetadataCounters(),
                 after=slot.counters(),

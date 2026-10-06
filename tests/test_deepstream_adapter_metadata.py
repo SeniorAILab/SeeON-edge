@@ -300,7 +300,7 @@ def test_a_frame_without_pose_tensors_is_published_with_every_track_unmatched() 
     plane.publish_frame(frame)
 
     assert plane.published_frames("camera") == 1, "the frame must count as published"
-    assert "camera" in plane._live  # noqa: SLF001 - the camera is demonstrably alive
+    assert "camera" in plane._live
 
 
 def test_the_letterbox_inverse_reproduces_boxes_nvinfer_and_nvtracker_actually_produced() -> None:

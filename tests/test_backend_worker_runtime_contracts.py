@@ -170,22 +170,22 @@ def _path(url: str) -> str:
             lambda i: _path(streams_router._stream_url(ORIGIN, i)),
             live_view_api.stream_camera_id,
             "cam/one two",
-        ),  # noqa: SLF001
+        ),
         (
             lambda i: _path(streams_router._snapshot_url(ORIGIN, i)),
             live_view_api.snapshot_camera_id,
             "cam/one two",
-        ),  # noqa: SLF001
+        ),
         (
             lambda i: _path(streams_router._pose_url(ORIGIN, i)),
             live_view_api.pose_camera_id,
             "cam/one two",
-        ),  # noqa: SLF001
+        ),
         (
             lambda i: _path(bed_zone_router._bed_zone_url(ORIGIN, i)),
             live_view_api.bed_zone_camera_id,
             "cam/one two",
-        ),  # noqa: SLF001
+        ),
     ],
     ids=["stream", "snapshot", "pose", "bed-zone"],
 )
@@ -206,9 +206,9 @@ def test_backend_built_paths_are_matched_by_the_worker_route(
 def test_fixed_routes_headers_and_media_type_agree() -> None:
     assert router.PROBE_PATH == live_view_api.PROBE_PATH == "/probe"
     assert router.RELAY_TOKEN_HEADER == live_view_api.RELAY_TOKEN_HEADER
-    assert streams_router._RELAY_TOKEN_HEADER == live_view_api.RELAY_TOKEN_HEADER  # noqa: SLF001
-    assert bed_zone_router._RELAY_TOKEN_HEADER == live_view_api.RELAY_TOKEN_HEADER  # noqa: SLF001
-    assert streams_router._DEFAULT_MEDIA_TYPE == live_view_api.MJPEG_MEDIA_TYPE  # noqa: SLF001
+    assert streams_router._RELAY_TOKEN_HEADER == live_view_api.RELAY_TOKEN_HEADER
+    assert bed_zone_router._RELAY_TOKEN_HEADER == live_view_api.RELAY_TOKEN_HEADER
+    assert streams_router._DEFAULT_MEDIA_TYPE == live_view_api.MJPEG_MEDIA_TYPE
 
 
 # --- worker response bodies through the backend parsers ---------------------
@@ -226,7 +226,7 @@ def test_probe_response_round_trips_worker_sanitizer_to_backend_reader() -> None
     }
     wire = json.loads(json.dumps(live_view_api.ProbeResponse.sanitized(raw_success).as_dict()))
     assert wire == {"ok": True, "backend": "cpu_av", "width": 640, "height": 480}
-    assert router._probe_result_from_worker(wire) == ProbeResult(  # noqa: SLF001
+    assert router._probe_result_from_worker(wire) == ProbeResult(
         ok=True, width=640, height=480
     )
 
@@ -235,7 +235,7 @@ def test_probe_response_round_trips_worker_sanitizer_to_backend_reader() -> None
             {"ok": False, "error_class": raw_class}
         ).as_dict()
         assert wire == {"ok": False, "error_class": wire_class}
-        assert router._probe_result_from_worker(wire) == ProbeResult(  # noqa: SLF001
+        assert router._probe_result_from_worker(wire) == ProbeResult(
             ok=False, error_class=wire_class
         )
     assert live_view_api.parse_probe_request({"rtsp_url": "rtsp://x"}) == "rtsp://x"
@@ -250,11 +250,11 @@ def test_pose_overlay_body_round_trips_both_ways() -> None:
     ):
         body = live_view_api.overlay_selection_body(selection)
         wire = json.dumps(body).encode("utf-8")
-        parsed = streams_router._parse_pose_payload(wire)  # noqa: SLF001
+        parsed = streams_router._parse_pose_payload(wire)
         assert (parsed.person, parsed.bed) == (selection.person, selection.bed)
         assert live_view_api.parse_overlay_selection(json.loads(json.dumps(body))) == selection
     with pytest.raises(HTTPException):
-        streams_router._parse_pose_payload(b'{"mode": "fall"}')  # noqa: SLF001
+        streams_router._parse_pose_payload(b'{"mode": "fall"}')
     assert live_view_api.parse_overlay_selection({"mode": "fall"}) is None
     assert live_view_api.parse_overlay_selection({"person": True, "bed": False, "extra": 1}) is None
 
@@ -275,8 +275,8 @@ def test_bed_zone_response_round_trips_to_the_backend_parser() -> None:
         image_height=9,
     )
     wire = json.dumps(bed.as_dict()).encode("utf-8")
-    parsed = bed_zone_router._parse_worker_payload(wire)  # noqa: SLF001
+    parsed = bed_zone_router._parse_worker_payload(wire)
     assert parsed.model_dump(mode="json") == bed.as_dict()
     not_found = json.dumps(live_view_api.BED_ZONE_NOT_FOUND_BODY).encode("utf-8")
-    assert bed_zone_router._is_bed_not_found(not_found)  # noqa: SLF001
-    assert not bed_zone_router._is_bed_not_found(wire)  # noqa: SLF001
+    assert bed_zone_router._is_bed_not_found(not_found)
+    assert not bed_zone_router._is_bed_not_found(wire)

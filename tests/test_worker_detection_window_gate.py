@@ -72,7 +72,7 @@ def _input() -> DecisionInput:
 def test_window_gated_decider_skips_update_and_wrapped_state_outside_window() -> None:
     inner = _RecordingDecider()
     window = DetectionWindow(start="21:00", end="06:00", tz="UTC")
-    gated = worker_module._WindowGatedDecider(  # noqa: SLF001
+    gated = worker_module._WindowGatedDecider(
         inner, window, clock=lambda: datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     )
 
@@ -98,7 +98,7 @@ def test_window_gated_decider_passes_through_inside_window() -> None:
     )
     inner = _RecordingDecider(expected)
     window = DetectionWindow(start="21:00", end="06:00", tz="UTC")
-    gated = worker_module._WindowGatedDecider(  # noqa: SLF001
+    gated = worker_module._WindowGatedDecider(
         inner, window, clock=lambda: datetime(2026, 1, 1, 23, 0, tzinfo=UTC)
     )
 
@@ -118,7 +118,7 @@ def test_window_gated_decider_forwards_trace_snapshots_inside_window() -> None:
         values={"fall_transition_probability": 0.12},
     )
     inner = _TraceRecordingDecider((snapshot,))
-    gated = worker_module._WindowGatedDecider(  # noqa: SLF001
+    gated = worker_module._WindowGatedDecider(
         inner,
         DetectionWindow(start="21:00", end="06:00", tz="UTC"),
         clock=lambda: datetime(2026, 1, 1, 23, 0, tzinfo=UTC),
@@ -174,7 +174,7 @@ def _camera(runtime: WorkerRuntime) -> CameraRuntimeConfig:
 def test_fall_domain_is_ungated_24_7_when_no_window_configured() -> None:
     runtime = _runtime(_config())
 
-    decider = runtime._build_decider("fall", _camera(runtime), _FakeFallModel())  # noqa: SLF001
+    decider = runtime._build_decider("fall", _camera(runtime), _FakeFallModel())
 
     assert isinstance(decider, FallDomainDecider)
     assert isinstance(decider.policy, FallPolicyDecider)
@@ -185,9 +185,9 @@ def test_fall_domain_is_gated_by_the_common_wrapper_once_a_window_is_configured(
         _config(detection_windows={"fall": {"start": "21:00", "end": "06:00", "tz": "UTC"}})
     )
 
-    decider = runtime._build_decider("fall", _camera(runtime), _FakeFallModel())  # noqa: SLF001
+    decider = runtime._build_decider("fall", _camera(runtime), _FakeFallModel())
 
-    assert isinstance(decider, worker_module._WindowGatedDecider)  # noqa: SLF001
+    assert isinstance(decider, worker_module._WindowGatedDecider)
     assert decider.window == DetectionWindow(start="21:00", end="06:00", tz="UTC")
     assert isinstance(decider.decider, FallDomainDecider)
     assert isinstance(decider.decider.policy, FallPolicyDecider)
@@ -198,7 +198,7 @@ def test_bed_exit_is_never_wrapped_by_the_common_gate_even_with_a_window_configu
         _config(detection_windows={"bed_exit": {"start": "21:00", "end": "06:00", "tz": "UTC"}})
     )
 
-    decider = runtime._build_decider("bed_exit", _camera(runtime), _FakeFallModel())  # noqa: SLF001
+    decider = runtime._build_decider("bed_exit", _camera(runtime), _FakeFallModel())
 
     assert isinstance(decider, BedExitMonitor)
-    assert not isinstance(decider, worker_module._WindowGatedDecider)  # noqa: SLF001
+    assert not isinstance(decider, worker_module._WindowGatedDecider)

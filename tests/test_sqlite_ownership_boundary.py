@@ -179,11 +179,11 @@ def test_backend_only_sqlite_cutover_is_atomic() -> None:
     assert "worker-local-state:/var/lib/seeon-state" in services["ml-worker"]["volumes"]
     assert not any(volume.startswith("edge-state:") for volume in services["ml-worker"]["volumes"])
 
-    from backend.app.edge_db.migration.compatibility import (  # noqa: PLC0415
+    from backend.app.edge_db.migration.compatibility import (
         CURRENT_SCHEMA_RANGE,
         SCHEMA_19_IDENTITY,
     )
-    from shared.release_identity import EDGE_DATABASE_SCHEMA_VERSION  # noqa: PLC0415
+    from shared.release_identity import EDGE_DATABASE_SCHEMA_VERSION
 
     assert (
         CURRENT_SCHEMA_RANGE.minimum
