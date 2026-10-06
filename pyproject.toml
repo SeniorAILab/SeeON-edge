@@ -156,11 +156,11 @@ select = [
 # informative inline `raise ValueError(f"...")` messages ARE the explicit-refusal
 # style this codebase wants; demanding a custom exception class per message
 # discourages raising. All other TRY rules stay on.
-# RUF100 (unused noqa) is ignored deliberately: this repo's `# noqa: BLE001 - <reason>`
-# on boundary catches is documentation of *why* the catch is broad, kept even where
-# BLE001 happens not to fire (e.g. the handler logs via `.exception`); the RUF100
-# autofix strips the reason along with the code.
-ignore = ["TRY003", "RUF100"]
+# TRY003 (no long messages outside exception class) is ignored deliberately:
+# informative inline `raise ValueError(f"...")` messages ARE the explicit-refusal
+# style this codebase wants; demanding a custom exception class per message
+# discourages raising. All other TRY rules stay on.
+ignore = ["TRY003"]
 
 [tool.ruff.lint.per-file-ignores]
 # Tests poke at private members by design; a `# noqa: SLF001` per line adds nothing.
