@@ -33,7 +33,7 @@ spike receipts.
 - `ops/repair-clip-consistency.py` is dry-run unless `--apply`, and needs a quiescence receipt.
 - Shell is POSIX `sh` by default. `bash` only where arrays or `readonly` are needed (`diagnose-edge.sh`, `rollback-ml-worker-c6.sh`).
 - `ml-front-tailscale-serve.sh` pins `#!/bin/bash`, not `env bash`: Homebrew bash 5.3 hangs on a heredoc over `PIPE_BUF` (#9). `tests/test_shell_script_heredoc_contract.py` guards it.
-- Fixed-argv subprocess calls carry `# noqa: S603 - fixed argv, no shell`.
+- Fixed-argv `subprocess` calls carry no `# noqa`: of the flake8-bandit rules, `[tool.ruff.lint] select` enables only `S110` and `S112`, so `S603` is not checked, and `RUF100` rejects a `noqa` for a rule that is not enabled.
 - Scripts that reach `backend.app.*` (`catalog_*`, `migrate_camera_floor_to_int.py`, `ops/repair-clip-consistency.py`) are backend-side tools. Worker-side tools reach `shared`, `contracts`, and `worker` (`qa/fall_model_recall_at_gate.py`, `ops/review-refused-evidence.py`). Only `ops/alert-amplification-diagnostic.py` spans both, through `tests_support`.
 
 ## Anti-patterns
