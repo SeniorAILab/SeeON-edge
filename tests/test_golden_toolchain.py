@@ -55,7 +55,6 @@ def _labelled_copy(source: Path, output: Path, labeller: str) -> None:
         reader = csv.DictReader(handle)
         rows = list(reader)
         fields = list(reader.fieldnames or [])
-    # The browser exporter preserves worksheet columns and appends labeller.
     fields.append("labeller")
     for index, row in enumerate(rows):
         row["label"] = "real" if index == 0 else "false"

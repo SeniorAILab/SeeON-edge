@@ -18,8 +18,6 @@ from worker.runtime.config import (
 
 
 def test_to_worker_config_threads_pulled_detection_windows_into_domains_config() -> None:
-    """pull_models + config_resolver thread pulled detection_windows into the
-    resolved WorkerConfig for every domain, not just bed_exit (issue #24)."""
     payload = BackendWorkerConfigPayload.model_validate(
         {
             "config_version": 5,
@@ -49,10 +47,6 @@ def test_to_worker_config_threads_pulled_detection_windows_into_domains_config()
 
 
 def test_to_worker_config_threads_bed_zone_regions_into_camera_runtime_config() -> None:
-    """All persisted bed-zone regions are pulled down and must survive the
-    ``_CameraPayload`` -> ``CameraRuntimeConfig`` conversion unchanged, so
-    ``WorkerRuntime._build_camera`` can seed ``SceneState.persisted_bed_regions``
-    from it (issue: on-demand bed-zone recognition)."""
     regions = [
         {
             "id": f"bed-{index}",
@@ -101,11 +95,6 @@ def test_to_worker_config_threads_bed_zone_regions_into_camera_runtime_config() 
 
 
 def test_to_worker_config_with_empty_camera_list_boots_with_an_empty_roster() -> None:
-    """Issue #150: a fresh install with zero registered cameras must still
-    resolve to a bootable ``WorkerConfig`` -- ``to_worker_config`` used to
-    raise ``WorkerConfigError("worker config must include at least one
-    camera")`` here, which ``config_pull.py`` swallowed as a malformed pull,
-    so the worker could never boot before its first camera existed."""
     payload = BackendWorkerConfigPayload.model_validate({"config_version": 1, "cameras": []})
 
     worker_config = payload.to_worker_config("http://relay.test", "relay-token")
@@ -114,10 +103,6 @@ def test_to_worker_config_with_empty_camera_list_boots_with_an_empty_roster() ->
 
 
 def test_to_worker_config_with_every_camera_missing_rtsp_url_boots_with_an_empty_roster() -> None:
-    """Same as the empty-list case above, but for the more realistic
-    mid-onboarding shape: cameras exist in the dashboard but none has an RTSP
-    URL yet, so every entry is dropped by the ``camera.rtsp_url is not None``
-    filter and the resolved roster is empty rather than raising."""
     payload = BackendWorkerConfigPayload.model_validate(
         {
             "config_version": 1,
@@ -157,9 +142,6 @@ def test_to_worker_config_still_accepts_legacy_night_window_payload_field() -> N
 def test_to_worker_config_drops_start_equal_end_window_and_falls_open(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A degenerate start == end window fails open to ALWAYS (dropped from
-    detection_windows, logged loudly) rather than being threaded through as
-    a window that DetectionWindow.contains would treat as matching nothing."""
     payload = BackendWorkerConfigPayload.model_validate(
         {
             "config_version": 5,
@@ -178,8 +160,6 @@ def test_to_worker_config_drops_start_equal_end_window_and_falls_open(
 
     worker_config = payload.to_worker_config("http://relay.test", "relay-token")
 
-    # An empty detection_windows map is normalized to None by to_worker_config
-    # (falsy dict -> None), matching DomainsConfig's own default.
     assert worker_config.domains.detection_windows is None
     assert worker_config.domains.resolved_detection_window("bed_exit") is None
     err = capsys.readouterr().err
@@ -240,11 +220,6 @@ def test_to_pulled_config_drops_malformed_hhmm_and_falls_open(
 
 
 def test_to_worker_config_drops_explicit_null_domain_entry_without_crashing_payload() -> None:
-    """A stray ``null`` for one domain (e.g. a hand-edited LKG file, or a
-    version-skewed ml-api) must not fail pydantic validation for the whole
-    payload -- it's dropped at parse time (ALWAYS for that domain) exactly
-    like the contracts and lifespan.py boundaries, and the rest of the
-    payload (other domains, cameras) still parses normally."""
     payload = BackendWorkerConfigPayload.model_validate(
         {
             "config_version": 5,
@@ -271,9 +246,6 @@ def test_to_worker_config_drops_explicit_null_domain_entry_without_crashing_payl
 
 
 def test_pull_worker_config_returns_none_on_urllib_error() -> None:
-    # The worker transport (http_transport.stdlib_urlopen) is http.client-based,
-    # not urllib.request.urlopen, so the fake transport is injected via the
-    # `urlopen` parameter rather than monkeypatched globally.
     def _raise(request: urllib.request.Request, timeout: float) -> object:
         raise urllib.error.URLError("offline")
 
@@ -283,25 +255,14 @@ def test_pull_worker_config_returns_none_on_urllib_error() -> None:
 
 
 def test_load_on_fresh_central_edge_db_returns_none_not_migration_error(tmp_path) -> None:
-    # Regression: the LKG cache path is derived from the retired edge.sqlite3
-    # name, and on an unprovisioned first boot neither exists yet. Loading must
-    # degrade to "no LKG" (None) so `--check-config`'s static path exits 0
-    # without touching disk -- it must NOT propagate and crash.
     store = WorkerConfigLkgStore(tmp_path / "edge.sqlite3")
     assert not (tmp_path / "edge.sqlite3").exists()
 
     assert store.load() is None
-    # Read-only: reporting "no cache" must not provision the central DB.
     assert not (tmp_path / "edge.sqlite3").exists()
 
 
 def test_unavailable_pull_returns_none_and_preserves_existing_lkg(tmp_path) -> None:
-    # Regression: when ml-api has no backend config it returns 503, so the pull
-    # MUST return None and the worker MUST keep its existing LKG (not overwrite
-    # it with an empty placeholder). config_pull.load_worker_config_from_relay
-    # only persists the LKG (WorkerConfigLkgStore's config_current/
-    # config_history tables in worker-state.sqlite3) on a successful,
-    # validated pull.
     assert (
         pull_worker_config("http://ml-api:8000", "token", timeout_sec=0.01, urlopen=_raise_503)
         is None
@@ -341,7 +302,6 @@ def test_unavailable_pull_returns_none_and_preserves_existing_lkg(tmp_path) -> N
         urlopen=_raise_503,
     )
 
-    # Existing LKG is intact: an unavailable pull never clobbers last-known-good.
     assert stale is not None
     assert stale.source is ConfigSource.LKG
     assert stale.registry_version == 5

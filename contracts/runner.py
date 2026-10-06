@@ -12,10 +12,6 @@ from contracts.observation import DetectionResult
 Image: TypeAlias = NDArray[np.uint8]
 PoseOutput: TypeAlias = Sequence[Sequence[float]]
 BoxOutput: TypeAlias = Sequence[Sequence[float]]
-# One bed-instance row: (x1, y1, x2, y2, confidence) with an OPTIONAL 6th element
-# carrying the mask-contour polygon as a sequence of (x, y) points. The optional
-# polygon element is why this is NOT simply Sequence[float]; `_bed_box_from_output`
-# consumes both the 5-tuple and the 6-tuple (issue #243 bed instance segmentation).
 BedBoxPolygon: TypeAlias = Sequence[Sequence[int]]
 BedBoxOutput: TypeAlias = Sequence[float | BedBoxPolygon]
 RunnerResultKind: TypeAlias = Literal["pose", "person", "bed", "detection"]
@@ -72,10 +68,6 @@ class RunRunnerProtocol(Protocol):
     def run(self, image: Image) -> RunnerResult: ...
 
 
-# The camera per-frame runner seam: `CameraWorker._run_runner` invokes a runner
-# through `run(image)` or a plain callable only. Fall models are NOT camera
-# runners — they expose `predict(features) -> float` and are consumed by
-# `FallWindowClassifier`, so they intentionally do not implement this protocol.
 RunnerProtocol: TypeAlias = RunRunnerProtocol | Callable[[Image], RunnerResult]
 
 

@@ -1,5 +1,3 @@
-"""Real PostgreSQL targets and schema-19 SQLite sources for the migration tool tests."""
-
 from __future__ import annotations
 
 import base64
@@ -78,7 +76,6 @@ class MigrationNames:
 
 @pytest.fixture
 def migration_names() -> Iterator[MigrationNames]:
-    """Per-test schema, diagnostics schema and runtime role on the isolated PG18, dropped after."""
     dsn = os.environ.get("SEEON_TEST_POSTGRES_DSN")
     if dsn is None:
         pytest.fail(
@@ -92,7 +89,6 @@ def migration_names() -> Iterator[MigrationNames]:
     except (psycopg.Error, OSError, ValueError, TypeError):
         admin = None
     if admin is None:
-        # Outside the except block: do not chain a libpq error containing the DSN.
         pytest.fail("isolated PostgreSQL test database is unreachable", pytrace=False)
     names = MigrationNames(
         admin=admin,
@@ -155,7 +151,6 @@ def runtime_verifier(admin: psycopg.Connection, role: str) -> str | None:
 
 
 def scram_verifier_accepts(verifier: str, password: str) -> bool:
-    """Recompute RFC 5802 StoredKey and ServerKey from the stored salt and iterations."""
     prefix = "SCRAM-SHA-256$"
     assert verifier.startswith(prefix)
     parameters, keys = verifier.removeprefix(prefix).split("$")
@@ -174,7 +169,6 @@ def scram_verifier_accepts(verifier: str, password: str) -> bool:
 
 @contextmanager
 def runtime_database(dsn: str, schema: str) -> Iterator[PostgresDatabase]:
-    """The application transaction path the tool runs on; no outer transaction."""
     database = PostgresDatabase(dsn, schema, _BUDGET)
     database.start()
     try:
@@ -187,7 +181,6 @@ def runtime_database(dsn: str, schema: str) -> Iterator[PostgresDatabase]:
 def runtime_role_database(
     dsn: str, schema: str, runtime_role: str, budget: PoolBudget = _BUDGET
 ) -> Iterator[PostgresDatabase]:
-    """A pool whose every session runs as the runtime role, with only its grants."""
     conninfo = make_conninfo(dsn, options=f"-c role={runtime_role}")
     database = PostgresDatabase(conninfo, schema, budget)
     database.start()
@@ -198,8 +191,6 @@ def runtime_role_database(
 
 
 def ingest_live_record(database: PostgresDatabase, label: str) -> BatchReceipt:
-    """One synthetic live execution record through lane E's real ingest path."""
-
     def digest(value: str) -> str:
         return hashlib.sha256(value.encode()).hexdigest()
 
@@ -244,7 +235,6 @@ class MigrationTarget:
 
 @pytest.fixture
 def migration_target(migration_names: MigrationNames, tmp_path: Path) -> Iterator[MigrationTarget]:
-    """A provisioned, fenced generation-1 schema with its owner-only authority file."""
     authority_directory = tmp_path / "authority"
     authority_directory.mkdir(mode=0o700)
     authority_path = authority_directory / "authority.json"
@@ -304,7 +294,6 @@ def insert_row(connection: sqlite3.Connection, table: str, values: Mapping[str, 
 
 
 def seed_source(state_dir: Path) -> Path:
-    """Create the OLD schema-19 database and fill it with synthetic rows only."""
     source = create_schema19_source(state_dir / "edge.sqlite3")
     with closing(open_source_writer(source)) as writer:
         insert_row(
@@ -419,7 +408,6 @@ def seed_source(state_dir: Path) -> Path:
 
 
 def source_and_destination(root: Path) -> tuple[Path, Path]:
-    """The seeded old database under root/state and an unused snapshot path beside it."""
     state = root / "state"
     state.mkdir()
     snapshots = root / "snapshots"
@@ -451,7 +439,6 @@ def add_incident(connection: sqlite3.Connection, number: int) -> None:
 
 
 def append_audit(connection: sqlite3.Connection) -> None:
-    """Append one record chained to the tail, as the old runtime's audit writer does."""
     tail = connection.execute(
         "SELECT record_hash FROM audit_events ORDER BY audit_id DESC LIMIT 1"
     ).fetchone()
@@ -481,7 +468,6 @@ def append_audit(connection: sqlite3.Connection) -> None:
 
 
 def make_worker_state(root: Path) -> Path:
-    """A stopped old worker's state: lease and queue lock files, queued and dead-letter alerts."""
     state = root / "worker-state"
     queue = state / "delivery-queue"
     dead_letter = state / "delivery-queue-dead-letter"
@@ -497,7 +483,6 @@ def make_worker_state(root: Path) -> Path:
 
 
 def insert_in_flight_outbox(admin: psycopg.Connection, schema: str) -> None:
-    """A live sender's claim of event-1: PENDING insert, attempt insert, then IN_FLIGHT."""
     outbox = sql.Identifier(schema, "event_outbox")
     envelope = '{"edge_event_id":"event-1"}'
     with admin.transaction():

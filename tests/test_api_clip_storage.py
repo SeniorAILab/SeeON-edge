@@ -1,11 +1,3 @@
-"""API-level tests for the clip storage location slice (see
-backend/app/features/clips/storage_router.py):
-
-``GET /api/v1/clips/storage`` -- usage snapshot + selected subdirectory.
-``GET /api/v1/clips/storage/browse`` -- directories-only listing, traversal-safe.
-``PUT /api/v1/clips/storage/location`` -- validate + persist a new selection.
-"""
-
 from __future__ import annotations
 
 import os
@@ -145,12 +137,8 @@ def test_browse_rejects_a_symlink_escape(clip_store_env, app: FastAPI, tmp_path)
         root_listing = client.get("/api/v1/clips/storage/browse")
         walk_into_link = client.get("/api/v1/clips/storage/browse", params={"path": "escape-link"})
 
-    # A symlink is filtered out of the directory listing (not reported as a
-    # real directory)...
     assert root_listing.status_code == 200
     assert "escape-link" not in [d["name"] for d in root_listing.json()["directories"]]
-    # ...and walking into it directly is rejected as not-a-real-directory
-    # rather than silently followed outside the store root.
     assert walk_into_link.status_code == 404
 
 

@@ -14,8 +14,6 @@ _ArtifactT = TypeVar("_ArtifactT", covariant=True)
 
 @runtime_checkable
 class EncoderSession(Protocol):
-    """One long-lived derivative encoder session owned by a camera."""
-
     def write(self, packet: FramePacket) -> None: ...
 
     def close(self) -> None: ...
@@ -23,8 +21,6 @@ class EncoderSession(Protocol):
 
 @runtime_checkable
 class ClipEncoder(Protocol[_CameraT, _ProfileT, _GeometryT]):
-    """Open a camera encoder without resolving profile policy internally."""
-
     def open(
         self,
         camera: _CameraT,
@@ -35,8 +31,6 @@ class ClipEncoder(Protocol[_CameraT, _ProfileT, _GeometryT]):
 
 @runtime_checkable
 class ClipFinalizer(Protocol[_SegmentT, _ArtifactT]):
-    """Finalize selected completed segments into an immutable clip artifact."""
-
     def finalize(
         self,
         segments: Sequence[_SegmentT],
@@ -46,18 +40,6 @@ class ClipFinalizer(Protocol[_SegmentT, _ArtifactT]):
 
 @runtime_checkable
 class DeviceInputEncoder(Protocol):
-    """Encode explicit device-resident surfaces without host readback.
-
-    Distinct from ``ClipEncoder``/``EncoderSession`` (the production
-    host-buffer segment-muxer seam, fed one ``FramePacket`` at a time by
-    the concrete Flow recorder):
-    this port only accepts an already device-resident, ownership-tracked
-    ``FrameLease`` -- never a host array -- and never silently reads it back.
-    A caller that has only a host frame must materialize it through a named,
-    capability-validated converter before calling ``submit``; this port
-    itself performs zero implicit host<->device transfer.
-    """
-
     def submit(self, lease: FrameLease) -> None: ...
 
     def close(self) -> None: ...

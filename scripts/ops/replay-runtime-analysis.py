@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""Replay a captured analysis timeline through the worker control surface.
-
-Does not open SQLite. The captured timeline is a caller-supplied JSON file.
-Worker responses are parsed at this boundary into a typed success or a typed
-JSON refusal. Response reads are bounded by the same replay wire constant the
-worker uses for `/replay` request bodies.
-"""
 
 from __future__ import annotations
 
@@ -89,11 +82,6 @@ def _read_bounded_body(response: http.client.HTTPResponse) -> bytes:
 
 @contextmanager
 def _allow_wire_int_digits() -> Iterator[None]:
-    """Lift Python's 4300-digit conversion cap only around this parse/dump.
-
-    The owner contract has no independent digit cap. The body-size bound is the
-    resource guard. 0 means unlimited; the previous process limit is restored.
-    """
     previous = sys.get_int_max_str_digits()
     sys.set_int_max_str_digits(0)
     try:
@@ -103,7 +91,6 @@ def _allow_wire_int_digits() -> Iterator[None]:
 
 
 def parse_worker_replay(raw: bytes) -> AcceptedReplay:
-    """Parse one worker `/replay` body. Raises ReplayResponseError on any defect."""
     try:
         with _allow_wire_int_digits():
             payload = json.loads(raw)

@@ -37,7 +37,6 @@ def _git(*args: str) -> str:
 
 
 def previous_tag(tag: str) -> str | None:
-    """The highest existing release tag that is not ``tag`` itself."""
     listed = _git("tag", "--list", TAG_GLOB, "--sort=-version:refname").splitlines()
     for candidate in (line.strip() for line in listed):
         if candidate and candidate != tag:

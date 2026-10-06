@@ -1,5 +1,3 @@
-"""HTTP query and response schemas for the clips feature."""
-
 from __future__ import annotations
 
 from typing import ClassVar, Literal, Self, TypeAlias

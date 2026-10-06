@@ -70,8 +70,6 @@ class TopologyRecord:
 
 
 class LocalBackendFixture:
-    """Memory-only Hub fixture for deterministic edge delivery diagnostics."""
-
     def __init__(
         self,
         *,

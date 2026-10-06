@@ -1,5 +1,3 @@
-"""Serving application lifespan assembly."""
-
 from __future__ import annotations
 
 import asyncio
@@ -84,7 +82,7 @@ BACKEND_OUTBOX_SENDER_SHUTDOWN_WAIT_SEC = 1.0
 
 
 class InvalidBackendIngestTimeoutError(ValueError):
-    """The public ingest timeout is malformed or outside the finite positive domain."""
+    ...
 
 
 logger = logging.getLogger(__name__)
@@ -92,11 +90,6 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Boot ml-api as a thin backend gateway (ADR).
-
-    The PostgreSQL root opens first and closes last, so every task that
-    reads or writes product state has stopped before the pool drains.
-    """
     reject_retired_backend_environment(os.environ)
     owned = _configure_postgres(app)
     try:
@@ -162,10 +155,6 @@ async def _gateway_lifespan(app: FastAPI) -> AsyncIterator[None]:
         relay_stop = asyncio.Event()
         app.state.backend_heartbeat_relay_stop = relay_stop
     if relay_interval_sec > 0:
-        # Dedicated 1-worker executor, mirroring refresh_executor above,
-        # rather than sharing it: the relay tick and a backend-config pull
-        # are independent concerns and neither should be able to make the
-        # other wait behind it in the same executor's single worker thread.
         relay_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="backend-heartbeat-relay"
         )
@@ -175,12 +164,9 @@ async def _gateway_lifespan(app: FastAPI) -> AsyncIterator[None]:
             name="backend-heartbeat-relay",
         )
     else:
-        # env=0 or unset-invalid -- relay disabled (kill-switch).
         app.state.backend_heartbeat_relay_executor = None
         app.state.backend_heartbeat_relay_task = None
 
-    # The only background alert sender: it drains committed event_outbox
-    # obligations the relay route could not deliver right after its COMMIT.
     outbox_stop = asyncio.Event()
     app.state.backend_outbox_sender_executor = None
     app.state.backend_outbox_sender_task = None
@@ -239,22 +225,17 @@ async def _gateway_lifespan(app: FastAPI) -> AsyncIterator[None]:
                 )
             except TimeoutError:
                 outbox_task.cancel()
-            # An unfinished send keeps its lease; the next claim resends it
-            # under the same edge event id, which the Hub deduplicates.
             outbox_executor = app.state.backend_outbox_sender_executor
             if outbox_executor is not None:
                 outbox_executor.shutdown(wait=False, cancel_futures=True)
             app.state.backend_outbox_sender_executor = None
             app.state.backend_outbox_sender_task = None
 
-        # Audit writers have stopped; close the session before the pool drains.
         await asyncio.to_thread(close_audit_session, app)
 
         await stop_clip_catalog_indexer(app)
 
         if diagnostics_database is not None:
-            # Only the store this lifespan built goes away with its pool; an
-            # injected store stays owned by its injector.
             if hasattr(app.state, "execution_record_store"):
                 delattr(app.state, "execution_record_store")
             await asyncio.to_thread(close_postgres_database, diagnostics_database)
@@ -267,7 +248,6 @@ class _OwnedPostgres:
 
 
 def _configure_postgres(app: FastAPI) -> _OwnedPostgres | None:
-    """Install PostgreSQL stores; an injected root stays owned by its injector."""
     injected = getattr(app.state, "postgres_root", None)
     if isinstance(injected, PostgresRoot):
         install_postgres_stores(app, injected)
@@ -285,11 +265,6 @@ async def _release_postgres(app: FastAPI, owned: _OwnedPostgres) -> None:
 
 
 def _configure_execution_record_store(app: FastAPI) -> PostgresDatabase | None:
-    """Construct the diagnostics store only when the feature is explicitly enabled.
-
-    Returns the database this lifespan opened so it can close it; an injected
-    store or a disabled feature returns None.
-    """
     settings = get_settings()
     if not settings.execution_records_enabled:
         if hasattr(app.state, "execution_record_store"):
@@ -309,9 +284,6 @@ def _configure_execution_record_store(app: FastAPI) -> PostgresDatabase | None:
     app.state.backend_build_revision = revision
     if isinstance(getattr(app.state, "execution_record_store", None), ExecutionRecordStore):
         return None
-    # Its own schema and pool, not the product pool: execution-record
-    # telemetry is written and pruned on every worker flush and must never
-    # compete with alert/incident/policy writes for product connections.
     database = open_diagnostics_database()
     app.state.execution_record_store = ExecutionRecordStore(
         database, RetentionBudget(total_bytes=budget_bytes)
@@ -329,26 +301,18 @@ def _configure_backend_ingest(app: FastAPI) -> None:
                 app.state.backend_evidence_client = BackendEvidenceClient(
                     existing.events_url, existing.bearer_token, existing.timeout_sec
                 )
-        # A test/caller already assigned backend_ingest_client before lifespan
-        # ran (fixture-injection pattern, e.g. tests/test_api_ingest_relay.py).
-        # Leave it alone at boot -- runtime rebuilds only ever happen via an
-        # explicit apply_connection_settings(app) call (G003's settings-save
-        # route will be the caller), never from this boot path or the
-        # periodic refresh loop.
         return
 
     apply_connection_settings(app)
 
 
 def _require_outbox_delivery(app: FastAPI) -> None:
-    """Refuse to boot a Hub client whose alerts would have no durable sender."""
     wired = isinstance(getattr(app.state, "event_outbox_delivery", None), OutboxDelivery)
     if getattr(app.state, "backend_ingest_client", None) is not None and not wired:
         raise RuntimeError("backend ingest client is configured without event_outbox_delivery")
 
 
 def apply_connection_settings(app: FastAPI) -> None:
-    """Atomically publish all cloud clients for one persisted enrollment generation."""
     from backend.app.features.connection.dependencies import get_connection_settings_store
 
     settings = get_connection_settings_store(app).load()
@@ -380,12 +344,6 @@ def apply_connection_settings(app: FastAPI) -> None:
     assert settings.facility_token is not None
     assert settings.edge_installation_id is not None
     assert settings.enrollment_generation is not None
-    # camera_id fallback identity for the rebuilt EdgeIngestClient. Every real
-    # caller reaches the client through `.for_camera()` (relay/evidence
-    # routers), which overrides camera_id per request, so this default is
-    # currently inert -- kept only for EdgeIngestClient's required constructor
-    # field. The camera registry is the sole camera SSOT; nothing here reads
-    # a locally cached camera roster.
     timeout_sec = _backend_ingest_timeout_sec()
     ingest_client = EdgeIngestClient(
         events_url=settings.events_url,
@@ -417,12 +375,10 @@ def apply_connection_settings(app: FastAPI) -> None:
 
 
 def _pull_backend_config(app: FastAPI, stop_token: asyncio.Event) -> None:
-    """Boot-time backend config pull."""
     refresh_backend_config(app, stop_token)
 
 
 def refresh_backend_config(app: FastAPI, stop_token: asyncio.Event | None = None) -> bool:
-    """Refresh the cached backend roster without discarding last-known-good data."""
     if stop_token is None:
         candidate = getattr(app.state, "backend_config_refresh_stop", None)
         stop_token = candidate if isinstance(candidate, asyncio.Event) else None
@@ -462,7 +418,6 @@ def refresh_backend_config(app: FastAPI, stop_token: asyncio.Event | None = None
 async def _backend_config_refresh_loop(
     app: FastAPI, stop_event: asyncio.Event, executor: ThreadPoolExecutor
 ) -> None:
-    """Own the single periodic backend pull for this application instance."""
     while not stop_event.is_set():
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=_backend_config_refresh_sec())
@@ -481,13 +436,6 @@ async def _backend_heartbeat_relay_loop(
     executor: ThreadPoolExecutor,
     base_interval_sec: float,
 ) -> None:
-    """Own the periodic per-camera heartbeat relay to the external backend.
-
-    Mirrors ``_backend_config_refresh_loop``'s wait/tick/repeat shape. The
-    wait between ticks widens via ``relay_heartbeats_once``'s backoff state
-    after consecutive all-fail ticks (external backend down/unreachable) and
-    snaps back to ``base_interval_sec`` the moment any send succeeds.
-    """
     while not stop_event.is_set():
         relay_state = get_heartbeat_relay_state(app)
         wait_sec = effective_relay_interval_sec(base_interval_sec, relay_state)
@@ -503,12 +451,6 @@ async def _backend_heartbeat_relay_loop(
 async def _backend_outbox_sender_loop(
     app: FastAPI, stop_event: asyncio.Event, executor: ThreadPoolExecutor
 ) -> None:
-    """Drain due outbox obligations, backing off while the Hub keeps failing.
-
-    It waits before each tick, so the relay route usually delivers its own row
-    right after COMMIT. A lost race is harmless: the route answers "pending"
-    and the worker's same-ID retry reads the stored outcome.
-    """
     status: OutboxSenderStatus = app.state.backend_outbox_sender_status
     retry_after: float | None = None
     while not stop_event.is_set():
@@ -545,13 +487,9 @@ def _fetch_backend_config(
 ) -> PulledWorkerConfig | None:
     try:
         url = f"{bundle.config_url.rstrip('/')}/{bundle.facility_id}"
-        # The production backend guards the RTSP-bearing ml-config read with the
-        # same shared edge bearer the Event API ingest already sends.
         headers: dict[str, str] = {"Accept": "application/json"}
         headers["Authorization"] = f"Bearer {bundle.facility_token}"
         request = urllib.request.Request(url, headers=headers, method="GET")
-        # urlopen applies this timeout to both the connect and socket reads.
-        # Keep it within the lifespan shutdown wait bound.
         with urllib.request.urlopen(request, timeout=_backend_config_timeout_sec()) as response:
             parsed = _as_mapping(json.loads(response.read().decode("utf-8")))
         detection_windows = _pulled_detection_windows(parsed)
@@ -562,19 +500,12 @@ def _fetch_backend_config(
             cameras=_pulled_cameras(parsed.get("cameras")),
             detection_windows=detection_windows,
         )
-    except Exception as exc:  # noqa: BLE001 - best-effort pull must never crash boot/serve
+    except Exception as exc:  # noqa: BLE001
         print(f"failed to pull backend ml config: {exc}", file=sys.stderr)
         return None
 
 
 def _apply_backend_config(app: FastAPI, cfg: PulledWorkerConfig) -> None:
-    """Apply non-camera ml-config metadata only.
-
-    Detection windows / config_version land on app.state for worker-config
-    merge. Pulled ``cameras`` are intentionally ignored as a local admission
-    or enumeration authority -- the dashboard camera registry is the sole
-    camera SSOT (see AGENTS.md anti-pattern: no pre-provisioned camera rosters).
-    """
     app.state.pulled_config = cfg
     app.state.config_version = cfg.config_version
     app.state.backend_roster = {
@@ -620,7 +551,6 @@ class _BackendStatusBuffer:
 
 
 def _mark_app_backend_status(app: FastAPI, reachable: bool | None) -> None:
-    """Copy FastAPI dynamic state into a typed buffer, mutate, write back."""
     reachable_raw = getattr(app.state, "backend_reachable", None)
     last_ok_raw = getattr(app.state, "backend_last_ok_at", None)
     buffer = _BackendStatusBuffer(
@@ -652,10 +582,6 @@ def _backend_config_version(data: dict[str, object]) -> int:
 
 
 def _pulled_night_window(domain: str, value: object) -> PulledNightWindow | None:
-    """Parse and validate one raw ``{start,end,tz}`` window, failing open
-    (returning ``None``, i.e. ALWAYS/24-7 for that domain) on any structural
-    or semantic problem rather than raising -- a malformed value from a
-    single domain must never crash the whole backend-config pull."""
     if value is None:
         return None
     if not isinstance(value, dict):
@@ -686,17 +612,6 @@ def _log_invalid_window(domain: str, value: object, reason: str) -> None:
 
 
 def _pulled_detection_windows(parsed: dict[str, object]) -> dict[str, PulledNightWindow]:
-    """Parse backend ``detectionWindows`` (domain -> {start,end,tz} | null).
-
-    If ``detectionWindows`` is present at all, that map is the sole
-    authority for every domain and the legacy ``nightWindow`` field is
-    ignored entirely -- this is what makes a window an operator clears in
-    the dashboard stay cleared instead of being resurrected by a stale
-    ``nightWindow``. Only when ``detectionWindows`` is absent does the
-    legacy single ``nightWindow`` field fall back to the "bed_exit" domain.
-    Unknown domain names are kept in the map (forward-compatible) rather
-    than rejected.
-    """
     raw_map = parsed.get("detectionWindows")
     if raw_map is not None:
         if not isinstance(raw_map, dict):
@@ -790,12 +705,6 @@ def _backend_config_refresh_sec() -> float:
 
 
 def _backend_heartbeat_relay_sec() -> float:
-    """Relay interval in seconds; ``<= 0`` or unparseable disables the relay.
-
-    Unlike ``_backend_config_refresh_sec``, a malformed value here does NOT
-    fall back to the 30s default -- it fails safe to disabled, since a typo'd
-    env var should never silently start egress to an external backend.
-    """
     raw = os.environ.get(API_BACKEND_HEARTBEAT_RELAY_SEC_ENV)
     if raw is None:
         return 30.0

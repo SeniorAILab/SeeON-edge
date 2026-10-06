@@ -1,16 +1,3 @@
-"""One failing entry must not halt delivery of everything behind it.
-
-`entries()` returns a sorted, deterministic order and the sender always chose
-the first EVENT. An entry failing with a retryable status was therefore
-re-selected on every call, forever, and every other entry behind it -- including
-newer fall evidence -- was never sent at all. On a live deployment that is a
-silent, total halt of evidence delivery caused by a single bad row.
-
-Entries now carry an attempt budget: while they still have attempts they are
-retried, once exhausted they are passed over so the queue drains, and they are
-retained for an operator rather than retried forever or deleted.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -39,8 +26,6 @@ def _entry(index: int) -> EventEntry:
 
 
 class _PoisonTransport:
-    """Fails one specific event forever; delivers everything else."""
-
     def __init__(
         self,
         poisoned: str,
@@ -71,7 +56,6 @@ def _queue_dir(tmp_path: Path) -> Path:
 def test_a_permanently_failing_entry_does_not_block_the_ones_behind_it(
     queue_dir: Path,
 ) -> None:
-    """The decisive property: newer evidence still gets delivered."""
     queue = DeliveryQueue(queue_dir)
     entries = [_entry(index) for index in range(1, 4)]
     for entry in entries:
@@ -97,7 +81,6 @@ def test_a_permanently_failing_entry_does_not_block_the_ones_behind_it(
 
 
 def test_the_exhausted_entry_is_retained_not_deleted(queue_dir: Path) -> None:
-    """Unblocking the queue must not mean discarding the evidence."""
     queue = DeliveryQueue(queue_dir)
     entry = _entry(1)
     assert queue.try_admit(entry).accepted
@@ -116,13 +99,6 @@ def test_the_exhausted_entry_is_retained_not_deleted(queue_dir: Path) -> None:
 
 
 def test_a_transient_failure_is_never_dead_lettered(queue_dir: Path) -> None:
-    """A relay outage is what the durable queue exists to survive.
-
-    An attempt budget that counts transient failures turns an outage into mass
-    dead-lettering of perfectly good evidence: every entry exhausts its budget
-    while the relay is simply restarting. Transient failures must retry
-    indefinitely; only a failure attributable to the entry itself may exhaust.
-    """
     queue = DeliveryQueue(queue_dir)
     entry = _entry(1)
     assert queue.try_admit(entry).accepted
@@ -146,14 +122,6 @@ def test_a_transient_failure_is_never_dead_lettered(queue_dir: Path) -> None:
 def test_a_transiently_failing_entry_does_not_block_the_ones_behind_it(
     queue_dir: Path,
 ) -> None:
-    """The case only rotation covers.
-
-    A transient failure never exhausts the attempt budget -- correctly, because
-    a relay outage is what the durable queue exists to survive. So the budget
-    cannot be what keeps a transiently-failing head from starving everything
-    behind it; only rotating past it can. If one camera's entry is rejected by a
-    flapping upstream while others are fine, the others must still deliver.
-    """
     queue = DeliveryQueue(queue_dir)
     entries = [_entry(index) for index in range(1, 4)]
     for entry in entries:
@@ -181,14 +149,6 @@ def test_a_transiently_failing_entry_does_not_block_the_ones_behind_it(
 def test_a_full_retention_area_does_not_stall_the_live_queue(
     queue_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Retention refusing must not become a new head-of-line stall.
-
-    When retention is full, `dead_letter` returns False and the entry stays in
-    the live queue. Ignoring that return value meant the entry was reselected on
-    every call forever: the queue never drained, newer alerts behind it were
-    never delivered, and admission itself would eventually start failing. The
-    log also claimed the entry had been retained, which was false.
-    """
     from shared.events import delivery_queue as module
 
     queue = DeliveryQueue(queue_dir)
@@ -196,7 +156,6 @@ def test_a_full_retention_area_does_not_stall_the_live_queue(
     for entry in entries:
         assert queue.try_admit(entry).accepted
 
-    # Retention cannot accept anything at all.
     monkeypatch.setattr(module, "MAX_DEAD_LETTERED_ENTRIES", 0)
 
     transport = _PoisonTransport(
@@ -215,7 +174,6 @@ def test_a_full_retention_area_does_not_stall_the_live_queue(
         f"only {transport.delivered} delivered; a full retention area turned the "
         f"undeliverable entry into a permanent stall of the whole queue"
     )
-    # The undeliverable entry is still held, undelivered, and still counted.
     assert queue.capacity_snapshot.accepted_count == 1
     assert queue.capacity_snapshot.dead_lettered_count == 0
 
@@ -223,15 +181,6 @@ def test_a_full_retention_area_does_not_stall_the_live_queue(
 def test_a_422_with_retention_full_does_not_stall_the_queue(
     queue_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The branch where the deferral is genuinely load-bearing.
-
-    A 422 returns before the attempt counter is incremented, so a refused entry
-    sits at zero attempts forever and `_select`'s attempt filter never skips it.
-    If the failed `dead_letter` is ignored there, the same entry is reselected on
-    every call and nothing behind it is ever delivered. That is different from
-    the exhausted-attempt branch, where the attempt filter already rotates past
-    the entry and the deferral really is redundant.
-    """
     from shared.events import delivery_queue as module
 
     queue = DeliveryQueue(queue_dir)
@@ -271,14 +220,6 @@ def test_a_422_with_retention_full_does_not_stall_the_queue(
 
 
 def test_an_entry_that_raises_does_not_starve_the_queue(queue_dir: Path) -> None:
-    """An unexpected failure on one entry must not stop every other one.
-
-    The sender loop caught exceptions, but silently and without moving on, so a
-    corrupt or unserialisable entry was reselected on every iteration and newer
-    evidence behind it was never delivered. Nothing was logged, so the outage
-    looked like an idle queue.
-    """
-
     class _RaisingTransport:
         def __init__(self, poisoned: str) -> None:
             self._poisoned = poisoned
@@ -311,16 +252,6 @@ def test_an_entry_that_raises_does_not_starve_the_queue(queue_dir: Path) -> None
 
 
 def test_unwritable_retention_does_not_stall_the_queue(queue_dir: Path) -> None:
-    """Retention I/O can fail for the same reason delivery did.
-
-    `dead_letter` writes to the filesystem, so on a full or failing disk it
-    raises. Unguarded, that exception escaped the 422 branch entirely and the
-    outer sender loop caught it silently without deferring, so the same head was
-    reselected on every iteration and every newer resident event behind it was
-    blocked indefinitely.
-
-    A guard that depends on the resource it is guarding against is not a guard.
-    """
     import errno
     from unittest.mock import patch
 
@@ -352,12 +283,9 @@ def test_unwritable_retention_does_not_stall_the_queue(queue_dir: Path) -> None:
     swallowed: list[BaseException] = []
     with patch.object(queue_module.os, "link", side_effect=OSError(errno.ENOSPC, "no space")):
         for _ in range(40):
-            # Exactly what EvidenceExportRuntime._run_sender does: it catches
-            # and carries on. Collected rather than discarded so the test says
-            # what it tolerated.
             try:
                 sender.run_once()
-            except Exception as caught:  # noqa: BLE001 - mirrors the production loop
+            except Exception as caught:  # noqa: BLE001
                 swallowed.append(caught)
 
     assert not swallowed, (
@@ -374,13 +302,6 @@ def test_unwritable_retention_does_not_stall_the_queue(queue_dir: Path) -> None:
 
 
 def test_a_failing_acknowledge_does_not_monopolise_the_queue(queue_dir: Path) -> None:
-    """Removal failing must not stop newer evidence being delivered.
-
-    On the success path the backend already has the entry; only our removal
-    failed. Unguarded, a filesystem fault there re-selected the same entry on
-    every iteration: the backend was flooded with duplicates of one event while
-    every newer resident event behind it never left the queue at all.
-    """
     import errno
     from unittest.mock import patch
 
@@ -418,7 +339,7 @@ def test_a_failing_acknowledge_does_not_monopolise_the_queue(queue_dir: Path) ->
         for _ in range(30):
             try:
                 sender.run_once()
-            except Exception as caught:  # noqa: BLE001 - mirrors the production loop
+            except Exception as caught:  # noqa: BLE001
                 swallowed.append(caught)
 
     assert not swallowed, f"run_once raised {swallowed[0]!r} instead of handling it"

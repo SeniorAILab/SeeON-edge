@@ -1,9 +1,3 @@
-"""Dark, structural three-class fall-window classification.
-
-This module deliberately has no runtime or registry dependency.  A camera owns one
-classifier instance; model instances may be shared by the composition root later.
-"""
-
 from __future__ import annotations
 
 import math
@@ -24,8 +18,6 @@ _ZERO_ROW = (0.0,) * _ROW_WIDTH
 
 @dataclass(slots=True)
 class FallWindowClassifier:
-    """Maintain independent `[30, 56]` windows for the tracks of one camera."""
-
     model: FallModelProtocol
     _buffers: dict[int, deque[tuple[float, ...]]] = field(default_factory=dict, init=False)
     _last_rows: dict[int, tuple[float, ...]] = field(default_factory=dict, init=False)
@@ -44,19 +36,6 @@ class FallWindowClassifier:
         rows_by_track: Mapping[int, Sequence[float] | None],
         live_track_ids: Iterable[int],
     ) -> Mapping[int, FallProbabilities]:
-        """Append one row per live track and return predictions due this tick.
-
-        A missing row coasts by repeating that track's previous valid row. A
-        temporarily absent track also coasts through the shared 45-frame TTL:
-        it retains its window but is not returned as a live prediction. An
-        unknown or malformed row cannot become model input and is treated like a
-        missing row. After exact TTL expiry all classifier state is evicted. A
-        reused numeric id then immediately receives an inferable window of 29
-        zero rows plus its current row; ordinary first startup remains warming.
-        ``current_call_missing_score_reasons`` describes only this invocation:
-        non-due live tracks are stride-skipped, while due tracks without a full
-        window are warming.
-        """
         self._current_call_missing_score_reasons = {}
         self._frame_counter += 1
         live_ids = frozenset(live_track_ids)
@@ -105,7 +84,6 @@ class FallWindowClassifier:
     def current_call_missing_score_reasons(
         self,
     ) -> Mapping[int, DecisionTraceMissingReason]:
-        """Explain missing scores from the immediately preceding ``update`` only."""
         return MappingProxyType(self._current_call_missing_score_reasons)
 
     def probabilities_for(self, track_id: int) -> FallProbabilities | None:

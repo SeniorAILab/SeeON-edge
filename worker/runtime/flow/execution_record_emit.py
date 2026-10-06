@@ -1,5 +1,3 @@
-"""Read-only execution-record emission from the native policy pump."""
-
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -42,14 +40,6 @@ def emit_model_and_decision(
     metadata: MetadataFrame,
     decision: EventAggregator,
 ) -> None:
-    """Emit model.score and policy.decision for this frame, per producing decider.
-
-    Every snapshot is attributed to the decider that produced it (identity and
-    authority role come from the aggregator, never borrowed across deciders).
-    model.score is emitted only for snapshots of the fall decider whose track
-    the classifier actually scored on this call; bed-exit and window-gated
-    snapshots never yield a fall model record.
-    """
     if sink is None:
         return
     identity = metadata.identity
@@ -57,25 +47,16 @@ def emit_model_and_decision(
     fall = _fall_decider(decision)
     fall_index = None if fall is None else decision.index_of(fall)
     classifier = None if fall is None else getattr(fall, "classifier", None)
-    # FallDomainDecider enforces that every classifier reports which live
-    # tracks it deliberately did not score on this call; read it plainly.
-    # probabilities_for() would return the cached score for those tracks, and
-    # a model.score record must mean "this CPU model call".
     not_scored: Mapping[int, object] = (
         {} if classifier is None else classifier.current_call_missing_score_reasons
     )
     coasted_modules: dict[int, DecisionIdentity | None] = {}
     for attributed in decision.attributed_trace_snapshots():
         if not attributed.fresh:
-            # The producing decider coasted on this frame: its snapshots are
-            # from an earlier frame and must not be stamped with this frame's
-            # identity. Record the coast itself once per decider instead.
             coasted_modules.setdefault(attributed.producer_index, attributed.identity)
             continue
         snapshot = attributed.snapshot
         module_identity = attributed.identity
-        # Structural attribution: the snapshot came from the fall decider itself,
-        # whether or not composition supplied it an identity.
         is_fall = fall_index is not None and attributed.producer_index == fall_index
         track_id = snapshot.track_id
         generation = _generation(fall, classifier, track_id) if is_fall else None

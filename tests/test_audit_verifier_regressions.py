@@ -20,14 +20,12 @@ def _login(client: TestClient) -> None:
 
 
 def test_action_detail_catalog_is_exhaustive_and_versioned() -> None:
-    # Given: the machine-consumed action-specific declaration catalog.
     from backend.app.features.audit.catalog import (
         ACTION_DETAIL_CATALOG,
         assert_catalog_complete,
         empty_detail,
     )
 
-    # When/Then: every action has one v1 declaration and removing one is rejected.
     assert {declaration.action for declaration in ACTION_DETAIL_CATALOG} == set(AuditAction)
     assert all(declaration.version == 1 for declaration in ACTION_DETAIL_CATALOG)
     assert empty_detail(AuditAction.CLIP_LIST).json == '{"version":1}'
@@ -38,7 +36,6 @@ def test_action_detail_catalog_is_exhaustive_and_versioned() -> None:
 def test_runtime_settings_success_appends_exactly_one_audit_row(
     postgres_product_sandbox, postgres_audit_runtime
 ) -> None:
-    # Given: the native owner and verified audit runtime explicitly injected.
     sandbox = postgres_product_sandbox
     app = create_app(lifespan=no_lifespan)
     app.state.runtime_settings_store = RuntimeSettingsStore(sandbox.database, sandbox.authority)
@@ -50,7 +47,6 @@ def test_runtime_settings_success_appends_exactly_one_audit_row(
         _login(client)
         before = sandbox.admin.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
 
-        # When: the governed runtime setting mutates.
         response = client.put(
             "/api/v1/runtime-settings",
             json={"clip_export_enabled": True, "expected_version": 0},
@@ -58,7 +54,6 @@ def test_runtime_settings_success_appends_exactly_one_audit_row(
 
         after = sandbox.admin.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
 
-    # Then: state and exactly one audit event commit together.
     assert response.status_code == 200
     assert response.json() == {"clip_export_enabled": True, "version": 1}
     assert after - before == 1
@@ -73,7 +68,6 @@ def test_invalid_video_range_appends_no_success_audit(
     postgres_product_sandbox,
     postgres_audit_runtime,
 ) -> None:
-    # Given: one ten-byte descriptor-backed clip.
     root = tmp_path / "clips"
     clip_dir = root / "clips" / "range-clip"
     clip_dir.mkdir(parents=True)
@@ -108,7 +102,6 @@ def test_invalid_video_range_appends_no_success_audit(
             "SELECT COUNT(*) FROM audit_events WHERE action='clip.play'"
         ).fetchone()[0]
 
-        # When: range preparation rejects a non-overlapping request.
         response = client.get("/api/v1/clips/range-clip/video", headers={"Range": "bytes=999-1000"})
 
         after = sandbox.admin.execute(
@@ -123,6 +116,5 @@ def test_invalid_video_range_appends_no_success_audit(
             == after + 1
         )
 
-    # Then: 416 is not recorded as successful access.
     assert (response.status_code, response.content) == (416, b"")
     assert after == before

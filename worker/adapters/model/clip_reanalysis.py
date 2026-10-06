@@ -1,5 +1,3 @@
-"""Bounded CPU re-analysis of one sealed evidence clip."""
-
 from __future__ import annotations
 
 import hashlib
@@ -36,11 +34,11 @@ _BED_INPUT_SIZE: Final = 640
 
 
 class ClipAnalysisRejected(ValueError):
-    """The immutable input cannot be analyzed within its declared bounds."""
+    ...
 
 
 class ClipAnalysisFailed(RuntimeError):
-    """A bounded analysis failed after preflight."""
+    ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,7 +92,6 @@ def profile_sha256(profile: ClipAnalysisProfile) -> str:
 
 
 def analyze_clip(request: ClipAnalysisRequest, *, decoder_identity: str) -> ClipAnalysisResult:
-    """Analyze exact clip bytes, retaining only PTS-addressed evidence."""
     _validate_request(request)
     try:
         size = request.clip_path.stat().st_size

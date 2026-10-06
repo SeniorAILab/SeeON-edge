@@ -1,11 +1,3 @@
-"""Native evidence-receipt HTTP boundary: admission, publication ordering, drain.
-
-Exercises the real relay export route against a PostgreSQL owner and native audit
-runtime. The backend evidence client is a recording stub for the REMOTE boundary
-only; persistence and audit are genuinely native. No lifespan/root activation is
-claimed and no gate is run here.
-"""
-
 import hashlib
 import json
 from dataclasses import replace
@@ -47,8 +39,6 @@ TEST_OUTBOX_BUDGET = OutboxBudget(4, 64 * 1024)
 
 
 class _Backend:
-    """Records the remote boundary; never touches the database or audit runtime."""
-
     def __init__(self) -> None:
         self.ready_calls: list[BinaryIO] = []
         self.unavailable_calls: list[object] = []
@@ -68,8 +58,6 @@ class _Backend:
 
 
 class _ObservedStore(PostgresArtifactReceiptStore):
-    """Capture the route-owned descriptor without replacing native writes."""
-
     handle: BinaryIO | None = None
 
     def commit_verified(self, receipt, route_verified, *, after_write=None):  # type: ignore[no-untyped-def]
@@ -266,8 +254,6 @@ def test_ready_publishes_after_commit_before_remote_send(tmp_path, postgres_prod
     publish = setup.runtime.publish_committed
 
     def observed_publish(token):
-        # The COMMIT is done: the durable row is visible on the independent
-        # connection, and the remote send has not yet been attempted.
         assert sandbox.admin.execute(
             "SELECT publish_state FROM clips WHERE clip_id='clip-1'"
         ).fetchone() == ("PUBLISHED",)
@@ -298,7 +284,6 @@ def test_matching_ready_retry_appends_exactly_one_more_audit(tmp_path, postgres_
     clips, artifacts, audit = _counts(sandbox)
     assert _put(setup, _ready_payload()).status_code == 200
     assert _counts(sandbox) == (clips + 1, artifacts + 1, audit + 1)
-    # An identical receipt keeps one clip/artifact but records another required audit.
     assert _put(setup, _ready_payload()).status_code == 200
     assert _counts(sandbox) == (clips + 1, artifacts + 1, audit + 2)
     assert len(setup.backend.ready_calls) == 2
@@ -311,8 +296,6 @@ def test_missing_manifest_incident_rolls_back_without_remote_send(
     _media(tmp_path, event_id="event-unseeded")
     before = _counts(setup.sandbox)
     response = _put(setup, _ready_payload())
-    # A missing incident is a persistence error (retryable 503 with a static
-    # detail), not the empty-503 of an unavailable audit runtime.
     assert response.status_code == 503
     assert response.json()["detail"] == "artifact receipt persistence unavailable"
     assert setup.backend.ready_calls == [] and _counts(setup.sandbox) == before
@@ -359,8 +342,6 @@ def test_post_commit_unknown_retains_committed_state_without_remote_send(
     monkeypatch.setattr(sandbox.database, "transact", unknown_after_commit)
     response = _put(setup, _ready_payload())
     assert (response.status_code, response.content) == (503, b"")
-    # The real COMMIT persisted the receipt/audit; the send never ran and the
-    # runtime latches indeterminate without replaying the transaction.
     assert _counts(sandbox) == (clips + 1, artifacts + 1, audit + 1)
     assert setup.backend.ready_calls == []
     assert setup.store.handle is not None and setup.store.handle.closed
@@ -385,8 +366,6 @@ def test_admission_lost_after_commit_refuses_send_without_false_rollback(
         return result
 
     def admit_until_committed(owner=None):
-        # Admission is lost only once the receipt is durably committed and
-        # published; the post-commit recheck then refuses the remote send.
         if committed["done"]:
             raise AuditRuntimeUnavailable("mutation admission withdrawn")
         return admit(owner)
@@ -397,7 +376,6 @@ def test_admission_lost_after_commit_refuses_send_without_false_rollback(
     assert (response.status_code, response.content) == (503, b"")
     assert setup.backend.ready_calls == []
     assert setup.store.handle is not None and setup.store.handle.closed
-    # The committed receipt/audit are real and must not be reported as rolled back.
     assert _counts(sandbox) == (clips + 1, artifacts + 1, audit + 1)
     assert _incident_state(sandbox) == "COMPLETE"
 
@@ -421,7 +399,6 @@ def test_unavailable_remote_success_records_zero_audit(tmp_path, postgres_produc
     response = _put(setup, _unavailable_payload())
     assert response.status_code == 200
     assert len(setup.backend.unavailable_calls) == 1
-    # The approved unavailable-receipt contract records no audit row.
     assert _counts(sandbox) == (clips, artifacts + 1, audit)
     assert _incident_state(sandbox) == "FAILED"
     assert sandbox.admin.execute(
@@ -449,6 +426,5 @@ def test_unavailable_local_failure_after_remote_report_is_not_false_rollback(
         assert (response.status_code, response.content) == (503, b"")
     finally:
         sandbox.admin.execute("DROP TRIGGER reject_artifact ON artifacts")
-    # The remote report was genuinely issued; only the local write rolled back.
     assert len(setup.backend.unavailable_calls) == 1
     assert _counts(sandbox) == before and _incident_state(sandbox) == "OPEN"

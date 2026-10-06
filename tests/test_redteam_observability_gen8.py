@@ -1,5 +1,3 @@
-"""Generation-8 adversarial cases for the observability-16 attribution delta."""
-
 from __future__ import annotations
 
 from collections import defaultdict
@@ -158,8 +156,6 @@ def _event_tuple_bytes(events: tuple[BusinessEvent, ...]) -> bytes:
 
 
 class _ClampedShadowDecider:
-    """Trace provider whose declared shadow count is not a valid slice length."""
-
     def __init__(self, *, count: int, snapshots: tuple[DecisionTraceSnapshot, ...]) -> None:
         self.last_shadow_trace_count = count
         self.last_trace_snapshots = snapshots
@@ -213,7 +209,6 @@ def _domain_pair() -> tuple[FallDomainDecider, object]:
 def test_g8_1_real_bed_exit_monitor_attributed_through_backend_query(
     tmp_path, postgres_product_sandbox, postgres_audit_runtime, postgres_lifespan_diagnostics_schema
 ) -> None:
-    """Real BedExitMonitor + fall decider: query names bed_exit.v1, never fall units."""
     lanes = ExecutionRecordLanes(lane_capacity=256)
     fall_identity = _fall_identity()
     bed_identity = _bed_identity()
@@ -367,10 +362,6 @@ def test_g8_3_empty_identities_leave_every_row_unattributed_on_no_module_units()
             assert record.causal_unit_id != fall_unit
         elif item.producer_index == fall_index:
             fall_rows += 1
-            # emit_policy selects the fall track unit only when
-            # module_qualified_id == fall.v2. identities=() leaves every
-            # snapshot unattributed, so the fall decider's rows also sit on
-            # the NO_MODULE frame unit rather than cam-1:boot-1:3:9:0.
             assert f":{NO_MODULE}:" in record.causal_unit_id
             assert record.causal_unit_id != fall_unit
         else:

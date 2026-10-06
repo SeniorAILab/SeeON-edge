@@ -1,8 +1,3 @@
-"""Tests for todo 25: fatal accelerator fault containment.
-
-All tests are hardware-free — CUDA errors are injected via fakes.
-"""
-
 from __future__ import annotations
 
 import threading
@@ -27,10 +22,6 @@ from worker.runtime.faults.record import (
     make_fault_record,
     persist_first_fault,
 )
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _record(**kwargs) -> FirstFaultRecord:
@@ -75,11 +66,6 @@ class _FakeLoop:
         self.stopped = True
 
 
-# ---------------------------------------------------------------------------
-# FatalAcceleratorError classification
-# ---------------------------------------------------------------------------
-
-
 def test_cuda_keyword_raises_fatal_accelerator_error() -> None:
     exc = RuntimeError("CUDA error: device-side assert triggered")
     with pytest.raises(FatalAcceleratorError) as exc_info:
@@ -104,14 +90,8 @@ def test_cuda_classification_is_case_insensitive() -> None:
 
 
 def test_non_fatal_validation_error_stays_isolated() -> None:
-    """A ModelInputError (shape mismatch) is NOT a fatal accelerator fault."""
     err = ModelInputError("wrong frame shape")
     assert not isinstance(err, FatalAcceleratorError)
-
-
-# ---------------------------------------------------------------------------
-# predict_one wrapping
-# ---------------------------------------------------------------------------
 
 
 def test_predict_one_raises_fatal_on_cuda_error() -> None:
@@ -138,13 +118,7 @@ def test_predict_one_raises_forward_error_on_non_cuda() -> None:
         predict_one(_BadModel(), np.zeros((4, 4, 3), dtype=np.uint8), options)
 
 
-# ---------------------------------------------------------------------------
-# First-fault record persistence
-# ---------------------------------------------------------------------------
-
-
 def test_persist_first_fault_admits_exactly_one_queue_record(tmp_path: Path) -> None:
-    # Module-level _written flag is per-import, so we reset it between tests.
     import worker.runtime.faults.record as mod
 
     mod._written = False
@@ -154,7 +128,7 @@ def test_persist_first_fault_admits_exactly_one_queue_record(tmp_path: Path) -> 
     wrote_second = persist_first_fault(rec, state_dir=tmp_path)
 
     assert wrote_first is True
-    assert wrote_second is False  # second call is a no-op
+    assert wrote_second is False
 
     queue = DeliveryQueue(tmp_path / "delivery-queue")
     entries = tuple(queue.entries())
@@ -166,11 +140,6 @@ def test_persist_first_fault_degrades_to_false_when_queue_parent_is_uncreatable(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A storage failure (e.g. an unwritable/uncreatable state dir) must
-    degrade to False rather than raise. persist_first_fault runs on
-    FaultHandler's hard-exit boundary and must never prevent the process
-    from exiting -- see test_fault_handler_exits_even_when_fault_storage_is_unavailable
-    for the handler-level version of this contract."""
     import worker.runtime.faults.record as mod
 
     mod._written = False
@@ -187,7 +156,6 @@ def test_persist_first_fault_degrades_to_false_when_queue_parent_is_uncreatable(
 
 
 def test_persist_first_fault_is_independent_of_the_delivery_queue(tmp_path: Path) -> None:
-    """Fault persistence cannot be blocked by the SQLite-free delivery queue."""
     import worker.runtime.faults.record as mod
 
     mod._written = False
@@ -205,7 +173,6 @@ def test_persist_first_fault_writes_to_production_delivery_queue(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The production state-dir default must publish into its delivery queue."""
     import worker.runtime.faults.record as mod
 
     mod._written = False
@@ -227,7 +194,6 @@ def test_persist_first_fault_returns_immediately_under_held_queue_lock(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A held delivery-queue lock must make fatal admission fail immediately."""
     import worker.runtime.faults.record as mod
 
     mod._written = False
@@ -251,7 +217,7 @@ def test_persist_first_fault_returns_immediately_under_held_queue_lock(
         holder.close()
 
     assert written is False
-    assert elapsed < 1.0  # near-immediate; must never wait the default 5s bound
+    assert elapsed < 1.0
     assert "queue admission lock_unavailable" in caplog.text
 
 
@@ -270,12 +236,7 @@ def test_persist_first_fault_includes_frame_hash(tmp_path: Path) -> None:
         image=image,
     )
     assert rec.frame_hash_sha256 is not None
-    assert len(rec.frame_hash_sha256) == 64  # SHA-256 hex
-
-
-# ---------------------------------------------------------------------------
-# FaultHandler — stop all cameras, exit with code 4
-# ---------------------------------------------------------------------------
+    assert len(rec.frame_hash_sha256) == 64
 
 
 def test_fault_handler_stops_all_loops_and_exits(tmp_path: Path) -> None:
@@ -299,7 +260,6 @@ def test_fault_handler_stops_all_loops_and_exits(tmp_path: Path) -> None:
 
 
 def test_fault_handler_is_idempotent(tmp_path: Path) -> None:
-    """Concurrent calls from two camera threads must trigger exactly one exit."""
     exits: list[int] = []
     handler = FaultHandler("cuda", hard_exit=exits.append, state_dir=tmp_path)
     loop = _FakeLoop()
@@ -321,10 +281,6 @@ def test_fault_handler_is_idempotent(tmp_path: Path) -> None:
 
 
 def test_fault_handler_exits_even_when_fault_storage_is_unavailable(tmp_path: Path) -> None:
-    """The never-blocks-exit contract at the handler level: a storage failure
-    inside persist_first_fault (unwritable/uncreatable state dir) must not
-    prevent FaultHandler.handle() from stopping every camera loop and hard-
-    exiting with FATAL_ACCELERATOR_EXIT_CODE."""
     import worker.runtime.faults.record as mod
 
     mod._written = False
@@ -349,14 +305,7 @@ def test_fatal_exit_code_is_4() -> None:
     assert FATAL_ACCELERATOR_EXIT_CODE == 4
 
 
-# ---------------------------------------------------------------------------
-# lifecycle.py: FatalAcceleratorError propagates through ingest loop
-# ---------------------------------------------------------------------------
-
-
 def test_fatal_accelerator_propagates_through_ingest_loop() -> None:
-    """FatalAcceleratorError must not be swallowed by the broad except in lifecycle."""
-
     class _FatalBus:
         def publish(self, _packet) -> None:
             raise FatalAcceleratorError("CUDA error: illegal memory access")
@@ -374,7 +323,7 @@ def test_fatal_accelerator_propagates_through_ingest_loop() -> None:
                     bus.publish(None)
                 except FatalAcceleratorError:
                     raise
-                except Exception:  # noqa: BLE001 S110
+                except Exception:  # noqa: BLE001, S110
                     pass
 
     loop = _SimpleLoop()

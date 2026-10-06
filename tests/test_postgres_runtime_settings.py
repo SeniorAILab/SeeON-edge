@@ -1,5 +1,3 @@
-"""Singleton export settings against the real PostgreSQL product sandbox."""
-
 from __future__ import annotations
 
 from collections.abc import Iterator
@@ -63,7 +61,6 @@ def _independent_database(sandbox: ProductSandbox) -> Iterator[PostgresDatabase]
         database.start()
         yield database
     finally:
-        # Close every independent pool before the sandbox drops its unique namespace.
         database.close(timeout_sec=3.0)
 
 

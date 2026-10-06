@@ -1,11 +1,3 @@
-"""Index a no-lifespan app's clip store into its PostgreSQL clip catalogue.
-
-GET /clips reads only the catalogue; the lifespan indexes the store at startup
-and then on an interval. Route tests that skip the lifespan run the same
-``reconcile`` the lifespan runs, explicitly and without a clock, after writing
-manifests and before listing.
-"""
-
 from __future__ import annotations
 
 from fastapi import FastAPI
@@ -17,7 +9,6 @@ MAX_INDEX_PASSES = 64
 
 
 def app_clip_store(app: FastAPI) -> ClipStore:
-    """The clip store the routes serve, built from the environment on first use."""
     store = getattr(app.state, "clip_store", None)
     if not isinstance(store, ClipStore):
         store = ClipStore.from_env()
@@ -26,7 +17,6 @@ def app_clip_store(app: FastAPI) -> ClipStore:
 
 
 def index_clips(app: FastAPI) -> tuple[ReconcileOutcome, ...]:
-    """Reconcile until nothing is left to examine; return every pass's outcome."""
     indexer = app.state.clip_catalog_indexer
     assert isinstance(indexer, ClipCatalogIndexer)
     store = app_clip_store(app)

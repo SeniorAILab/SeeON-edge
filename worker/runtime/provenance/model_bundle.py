@@ -1,9 +1,3 @@
-"""Read-only admission for content-addressed model bundles.
-
-This module deliberately has no dependency on ``worker.tools``: provisioning and
-runtime admission have opposite authority and lifecycle boundaries.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -47,13 +41,11 @@ _BUNDLE_IDENTITY_FIELDS: Final = tuple(
 
 
 class ModelBundleAdmissionError(RuntimeError):
-    """A model bundle is unsafe or does not exactly satisfy desired state."""
+    ...
 
 
 @dataclass(frozen=True, slots=True)
 class DesiredModelBundle:
-    """The configured desired state; no on-disk value can expand this authority."""
-
     bundle_sha256: str
     identities: Mapping[str, object]
     selection: ModelSelection | None = None
@@ -72,14 +64,11 @@ class DesiredModelBundle:
 
 @dataclass(frozen=True, slots=True)
 class ModelBundleProof:
-    """Immutable observed and applied facts, suitable for later provenance output."""
-
     observed: Mapping[str, object]
     applied: Mapping[str, object]
 
 
 def desired_model_bundle_from_selection_document(raw: object) -> DesiredModelBundle:
-    """Map the canonical selection parser into admission identities."""
     try:
         selection = parse_model_selection(raw)
     except ContractError as exc:
@@ -102,10 +91,6 @@ def desired_model_bundle_from_selection_document(raw: object) -> DesiredModelBun
 
 
 def admit_model_bundle(models_root: Path, desired: DesiredModelBundle) -> ModelBundleProof:
-    """Verify one published bundle without mutating it or selecting an alternative.
-
-    Call this before model construction/warmup.  Any failed comparison is fatal.
-    """
     _require_directory(models_root, "models root")
     bundles_root = models_root / "bundles"
     _require_directory(bundles_root, "bundles root")
@@ -186,11 +171,6 @@ def _verify_selection_member_digests(
     _verify_selection_member_digest(
         member_digests, "calibration.json", selection.calibration_digest
     )
-    # The conformance document is bound by its content, not by a file name the
-    # publisher may not use: the shipped bundle keeps it at
-    # conformance/pose-bbox56-v1.json, so a check gated on "conformance.json"
-    # never ran. The digest the selection declares must be the content digest
-    # of exactly one member of the bundle, whatever that member is called.
     matching = [
         path for path, digest in member_digests.items() if digest == selection.conformance_digest
     ]
@@ -217,7 +197,6 @@ def _verify_selection_bundle_format(
     member_digests: Mapping[str, object],
     selection: ModelSelection | None,
 ) -> None:
-    """Bind the declared format to the packaged bundle manifest vocabulary."""
     if selection is None:
         return
     if "bundle-manifest.json" not in member_digests:
@@ -238,7 +217,6 @@ def _verify_selection_bundle_format(
 
 
 def _verify_selection_policy_digest(root: Path, selection: ModelSelection | None) -> None:
-    """Bind policy_digest to the canonical calibration temporal_rule object."""
     if selection is None:
         return
     raw = _read_regular(root / "calibration.json", "member calibration.json")

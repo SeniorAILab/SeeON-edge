@@ -23,19 +23,6 @@ from worker.runtime.telemetry.wire import (
     RelayRuntimeStatusPayload,
 )
 
-# test_sender_uses_latest_snapshot_and_bearer_auth (edge): payload shape, generation
-# bookkeeping, and bearer auth are superseded by tests/test_worker_telemetry_status_sender.py
-# ::test_sender_preserves_generation_and_monotonic_sequence and
-# ::test_relay_transport_uses_bounded_status_endpoint_and_parses_receipt (auth header lives
-# at the RelayRuntimeStatusTransport boundary now). Neither covers start()/stop() actually
-# delivering a queued snapshot through the background thread -- ported below.
-# test_sender_posts_separate_facility_payloads_with_only_bound_cameras (edge): per-facility
-# partitioning is superseded by
-# tests/test_worker_telemetry_status_sender.py::test_sender_partitions_cameras_by_facility
-# (exercised synchronously via publish_once()); the thread-lifecycle test below already drives
-# the same _run() loop for the single-facility case, so re-porting the multi-facility split
-# would only duplicate that loop, not add coverage.
-
 
 @final
 class _RecordingTransport:
@@ -195,13 +182,6 @@ def test_sender_publish_never_blocks_when_latest_slot_is_full() -> None:
 
 
 def test_before_publish_hook_refreshes_diagnostics_on_every_tick() -> None:
-    """#165: nothing previously re-read live clip-recorder counters into
-    ``WorkerDiagnostics`` after recorder start, so every runtime-status
-    payload's ``clip_recorder`` stayed frozen at its startup values for the
-    rest of the process. ``before_publish`` is the seam that fixes that --
-    this pins that it actually runs on every publish (including background
-    ticks), not just once at construction.
-    """
     diagnostics = _diagnostics()
     calls = {"count": 0}
 
@@ -226,19 +206,13 @@ def test_before_publish_hook_refreshes_diagnostics_on_every_tick() -> None:
     finally:
         sender.stop()
 
-    # Called on every tick, not cached from the first call.
     assert calls["count"] >= 2
-    # The most recently delivered payload reflects the latest live value,
-    # proving the hook re-runs (rather than a value snapshotted once).
     assert transport.payloads[-1]["clip_recorder"]["finalized_clips"] == calls["count"]
 
 
 def test_sender_logs_a_local_diagnostics_snapshot_on_its_own_tick(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """#207: the sender's existing background tick is reused to finally call
-    ``WorkerDiagnostics.log_snapshot()``, which had no production caller.
-    """
     diagnostics = _diagnostics()
     counters = BedRegionCacheCounters(fresh=2)
     diagnostics.record_bed_region("camera-a", BedRegionCacheState.FRESH, counters.snapshot())
@@ -269,11 +243,6 @@ def test_sender_logs_a_local_diagnostics_snapshot_on_its_own_tick(
 
 @final
 class _LogSnapshotAlwaysFailsDiagnostics:
-    """Delegates the relay-facing methods to a real ``WorkerDiagnostics`` but
-    makes ``log_snapshot()`` raise, to pin that a local-logging defect can
-    never take down relay delivery (issue #207).
-    """
-
     __slots__ = ("_inner",)
 
     def __init__(self, inner: WorkerDiagnostics) -> None:
@@ -311,7 +280,6 @@ def test_sender_survives_a_log_snapshot_failure_and_keeps_delivering(
         finally:
             sender.stop()
 
-    # Relay delivery happened despite log_snapshot() always raising.
     assert transport.payloads
     assert any("log_snapshot" in record.getMessage() for record in caplog.records)
 

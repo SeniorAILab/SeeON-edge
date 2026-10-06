@@ -1,10 +1,3 @@
-"""Fall scoring and proposal policy.
-
-Retains classifier votes, fallen/recovery streaks, and trace snapshots.
-It deliberately surrenders event emission, de-duplication, and identity
-minting to :mod:`worker.domains.episode`.
-"""
-
 from __future__ import annotations
 
 from collections import deque
@@ -29,16 +22,10 @@ class _TrackState:
     recovery_streak: int = 0
     fallen: bool = False
     initialized: bool = False
-    #: True when this call proposed a QUALIFYING onset (not a recovery/coast).
     proposed_this_call: bool = False
 
 
 def _trace_state(state: _TrackState | None, episode_state: str | None = None) -> str:
-    """Name the lifecycle state the episode authority actually holds.
-
-    The authority owns promotion, so an OPEN episode must trace as confirmed
-    even though this decider's own vote deque is only the proposal input.
-    """
     if state is None:
         return "unknown"
     if episode_state == "open":
@@ -72,13 +59,6 @@ def _missing_score_snapshot(
 
 @dataclass(slots=True)
 class FallPolicyDecider:
-    """Camera-local lifecycle and alert policy for model probabilities.
-
-    The caller creates one instance per camera.  State is keyed by track id and
-    monotonically increasing generation so a reused id is never deduplicated
-    with an evicted resident.
-    """
-
     camera_id: str
     facility_id: str
     boot_id: str
@@ -89,7 +69,6 @@ class FallPolicyDecider:
     _next_generations: dict[int, int] = field(default_factory=dict, init=False)
     _episodes: EpisodeAuthority = field(init=False)
     last_trace_snapshots: tuple[DecisionTraceSnapshot, ...] = field(default=(), init=False)
-    #: False after coast(): last_trace_snapshots are from an earlier frame.
     last_update_evaluated: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
@@ -115,12 +94,6 @@ class FallPolicyDecider:
         time_sec: float,
         missing_score_reasons: Mapping[int, DecisionTraceMissingReason] | None = None,
     ) -> tuple[BusinessEvent, ...]:
-        """Advance live tracks and emit every newly opened episode in track order.
-
-        Optional missing-score reasons must describe the same classifier call
-        that supplied ``probabilities_by_track``; cached probabilities are not
-        consulted to infer a current disposition.
-        """
         live_ids = frozenset(live_track_ids)
         self._evict_stale(live_ids, frame_index, time_sec)
         emitted: list[BusinessEvent] = []
@@ -128,8 +101,6 @@ class FallPolicyDecider:
         for track_id in sorted(live_ids):
             existing_state = self._states.get(track_id)
             if existing_state is not None:
-                # Classifier warming/stride gaps are still a live tracker
-                # observation. They must not turn into a synthetic reconnect.
                 existing_state.last_seen_frame = frame_index
             probability = probabilities_by_track.get(track_id)
             if probability is None:
@@ -162,17 +133,10 @@ class FallPolicyDecider:
         return tuple(emitted)
 
     def coast(self) -> tuple[BusinessEvent, ...]:
-        """A classifier gap never changes temporal counters or emits an event.
-
-        The snapshots from the last evaluated frame are left in place for the
-        preview, but are flagged stale so they are never recorded as this
-        frame's decision evidence.
-        """
         self.last_update_evaluated = False
         return ()
 
     def release_onset(self, event: BusinessEvent) -> None:
-        """Reopen only the exact undelivered onset that this policy emitted."""
         self._episodes.release(event)
 
     def generation_for(self, track_id: int) -> int | None:
@@ -198,10 +162,6 @@ class FallPolicyDecider:
         for track_id, state in tuple(self._states.items()):
             if track_id in live_ids:
                 continue
-            # An OPEN episode must become available for re-association as soon
-            # as its tracker id disappears. The TTL retains classifier state;
-            # it must not delay absorbing a replacement id that can complete
-            # its scoring window well before expiry.
             self._episodes.track_lost(
                 camera_id=self.camera_id,
                 frame_index=frame_index,
@@ -237,8 +197,6 @@ class FallPolicyDecider:
         )
         if not state.initialized:
             _ = self._episodes.reassociate_fall(proposal)
-        # A person first observed already fallen has internal state, but no
-        # synthetic transition alert.
         if not state.initialized:
             state.initialized = True
             if probability.fallen >= self.policy.fallen_threshold:
@@ -276,7 +234,6 @@ class FallPolicyDecider:
 
     @property
     def track_id_switch_absorbed_total(self) -> int:
-        """Re-associations the episode authority absorbed instead of re-alerting."""
         return self._episodes.track_id_switch_absorbed_total
 
     def _episode_state(self, track_id: int) -> str:
@@ -287,7 +244,6 @@ class FallPolicyDecider:
         )
 
     def _suppression_reason_for(self, state: _TrackState) -> str | None:
-        """Compiled reason when this call's qualifying onset was declined, else None."""
         if not state.proposed_this_call:
             return None
         return suppression_reason(self._episodes.last_disposition)
@@ -305,8 +261,6 @@ class FallPolicyDecider:
         if event is not None:
             reason = "transition-confirmed"
         elif suppressed is not None:
-            # This call proposed a qualifying onset and the episode authority
-            # declined it. Name why, so the non-event is explained.
             reason = suppressed
         elif state.fallen and previous_state == "fallen":
             reason = "fall-active"
@@ -335,8 +289,6 @@ class FallPolicyDecider:
 
 @dataclass(slots=True)
 class FallDomainDecider:
-    """Adapt the row classifier and temporal policy to the domain port."""
-
     classifier: object
     policy: FallPolicyDecider
     _resampler: PtsResampler[dict[int, tuple[float, ...]]] = field(
@@ -366,11 +318,6 @@ class FallDomainDecider:
         if not hasattr(classifier, "update") or not hasattr(
             classifier, "current_call_missing_score_reasons"
         ):
-            # One contract for every classifier, real or double: it scores, and
-            # it says which live tracks it deliberately did not score on this
-            # call. Both the policy's missing-score snapshot and the model.score
-            # record depend on that fact; a classifier that cannot report it
-            # would make "score-missing" indistinguishable from "scored".
             raise TypeError(
                 "fall classifier must provide update() and current_call_missing_score_reasons"
             )
@@ -382,9 +329,6 @@ class FallDomainDecider:
         for row in resampled:
             if row.valid:
                 probabilities = classifier.update(row.value, input_value.live_track_ids)
-                # Copy this valid call's fact immediately. Synthetic gap calls
-                # also update the classifier, but are not the result handed to
-                # policy for this source observation.
                 missing_score_reasons = dict(classifier.current_call_missing_score_reasons)
                 continue
             zero_rows = dict.fromkeys(input_value.live_track_ids, (0.0,) * 56)
@@ -429,14 +373,6 @@ class FallDomainDecider:
         pts_ns: int,
         rows: dict[int, tuple[float, ...]],
     ) -> tuple[ResampledRow[dict[int, tuple[float, ...]]], ...]:
-        """Use the shared PTS contract as the sole fall-input resampling owner.
-
-        NativePolicyPump deliberately forwards accepted native metadata at its
-        original PTS.  This adapter turns that stream into exactly one
-        66,666,667ns cadence row (or ``valid=0`` zero rows for skipped
-        buckets) before the 30-row classifier window sees it.  A decider is
-        reset at a PTS rollback, so the host path cannot retain an old epoch.
-        """
         return self._resampler.push(pts_ns, rows)
 
 

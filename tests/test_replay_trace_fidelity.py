@@ -38,19 +38,10 @@ def _alerts(run):
     return [(frame.pts_ns, event.event_type) for frame in run.frames for event in frame.events]
 
 
-_STEP_NS = 66_666_667  # matches these fixtures' own ~15fps frame spacing
+_STEP_NS = 66_666_667
 
 
 def _pad_before(rows, *, extra_frames: int, step_ns: int = _STEP_NS):
-    """Prepend `extra_frames` repeats of `rows[0]` (same track/state), each
-    `step_ns` earlier, then shift every existing row's seq/pts_ns forward so
-    the sequence stays contiguous. These fixtures were authored for the old
-    frame-count-based authority (grace_frames=1); the evidence-driven
-    authority gates on real PTS-second dwell (in_bed_dwell_sec=3.0,
-    outside_dwell_sec=2.0, production defaults with no policy override), so a
-    fixture's leading steady state must be stretched to actually span that
-    much time before its distinguishing event (gap/reconnect/id-switch).
-    """
     first = rows[0]
     prefix = tuple(
         replace(first, seq=index, pts_ns=index * step_ns) for index in range(extra_frames)
@@ -63,9 +54,6 @@ def _pad_before(rows, *, extra_frames: int, step_ns: int = _STEP_NS):
 
 
 def _pad_after(rows, *, extra_frames: int, step_ns: int = _STEP_NS):
-    """Append `extra_frames` repeats of `rows[-1]`, each `step_ns` later, so a
-    fixture's trailing steady state spans enough real time to cross the
-    outside-dwell threshold."""
     last = rows[-1]
     suffix = tuple(
         replace(last, seq=last.seq + 1 + index, pts_ns=last.pts_ns + (index + 1) * step_ns)
@@ -75,13 +63,6 @@ def _pad_after(rows, *, extra_frames: int, step_ns: int = _STEP_NS):
 
 
 def test_pts_gap_changes_the_full_replay_episode_outcome() -> None:
-    """Both variants share the same stretched in-bed lead-in (long enough to
-    arm under the real 3.0s dwell threshold). The control's outside phase is
-    stretched past the 2.0s outside-dwell threshold and exits; the gap
-    variant's dropped frames leave only a single post-gap observation, far
-    short of that threshold, so it never exits -- the differential outcome
-    this test is named for, now expressed in dwell-seconds instead of
-    frame-count grace."""
     control = _run_rows(
         _pad_after(_pad_before(_rows("gap-control-v2"), extra_frames=46), extra_frames=29)
     )
@@ -94,11 +75,6 @@ def test_pts_gap_changes_the_full_replay_episode_outcome() -> None:
 
 
 def test_reconnect_recreates_camera_local_decider_state_within_one_boot() -> None:
-    """The control's in-bed/outside phases are stretched past the real dwell
-    thresholds so it exits. `reconnect-axis-v2` is left untouched: its epoch-1
-    portion never accumulates any in-bed dwell of its own (a fresh Decider is
-    built per stream epoch), so it can never arm or exit regardless of length
-    -- padding it would prove nothing new."""
     control = _run_rows(
         _pad_after(_pad_before(_rows("reconnect-control-v2"), extra_frames=46), extra_frames=29)
     )
@@ -117,12 +93,6 @@ def test_control_rows_are_not_replay_frames() -> None:
 
 
 def test_id_switch_reports_churn_and_changes_declared_episode_outcome() -> None:
-    """Both variants get the same stretched in-bed lead-in and outside
-    trailer. `id-switch-axis-v2`'s track hands off mid-sequence (track 1
-    vanishes, track 2 appears in the same bed the same frame): this exercises
-    identity-handoff, which must carry the vanished track's armed/in-bed-dwell
-    progress to the successor so the switch alone doesn't reset dwell and the
-    episode still concludes in an exit, while still reporting the churn."""
     control = _run_rows(
         _pad_after(_pad_before(_rows("id-switch-control-v2"), extra_frames=46), extra_frames=29)
     )
@@ -150,7 +120,6 @@ def _open_row(template, *, seq: int, epoch: int):
 
 
 def _with_open(rows):
-    """Prefix a producer-shaped open control row (fixtures start truncated)."""
     from dataclasses import replace
 
     first = rows[0]
@@ -161,7 +130,6 @@ def _with_open(rows):
 
 
 def _rebooted(rows, *, epoch_offset: int = 0):
-    """Append the same frames again as a second boot: open(seq 0) then re-sequenced frames."""
     from dataclasses import replace
 
     frames = [row for row in rows if row.source_event == "frame"]
@@ -174,8 +142,6 @@ def _rebooted(rows, *, epoch_offset: int = 0):
 
 
 def test_second_boot_starts_with_fresh_cooldown_and_distinct_boot_identity() -> None:
-    """Two boots that each contain the same exit episode both alert: cooldown never leaks across
-    a worker boot, boot_ids come from open rows (not epochs), and frame keys stay unique."""
     padded = _pad_after(
         _pad_before(_rows("reconnect-control-v2"), extra_frames=46), extra_frames=29
     )
@@ -205,7 +171,7 @@ def test_truncated_prefix_forms_its_own_segment_before_the_first_open() -> None:
 
     rows = _rows("reconnect-control-v2")
     frames_only = tuple(row for row in rows if row.source_event == "frame")
-    truncated = _rebooted(frames_only)  # no open before the retained tail
+    truncated = _rebooted(frames_only)
     assert boot_segments(truncated)[: len(frames_only)] == (0,) * len(frames_only)
     assert set(boot_segments(truncated)[len(frames_only) :]) == {1}
     run = replay(camera_id="fixture", rows=truncated, module_id="bed_exit", policy=_policy())

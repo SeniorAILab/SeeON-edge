@@ -72,14 +72,9 @@ def _bundle(
     *,
     payload_identities: dict[str, str] | None = None,
 ) -> tuple[Path, object]:
-    """Write a bundle whose selection and on-disk payload agree, unless a test
-    supplies `payload_identities` to make the bundle contradict its selection."""
     members = (
         {
             "model.pt": b"model",
-            # Distinct content per member, as in a real bundle: admission binds
-            # the conformance document by its content digest, so identical
-            # bytes in several members would be an ambiguity, not a bundle.
             "arch.json": b'{"arch": true}',
             "metadata.yaml": b"metadata",
             "input-contract.json": b'{"input": true}',
@@ -91,8 +86,6 @@ def _bundle(
         if members is None
         else members
     )
-    # The calibration and conformance identities are the content digests of
-    # the members actually supplied, unless a test overrides them on purpose.
     derived = {}
     if "calibration.json" in members:
         derived["calibration"] = hashlib.sha256(members["calibration.json"]).hexdigest()
@@ -169,8 +162,6 @@ def test_admission_returns_immutable_content_proof(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("field", sorted(_IDENTITIES))
 def test_each_bundle_identity_mismatch_is_fatal(tmp_path: Path, field: str) -> None:
-    # The bundle on disk claims one identity for this field; the selection
-    # declares another. Every such contradiction is fatal at admission.
     contradiction = {field: "different" if field == "input" else "f" * 64}
     models_root, desired = _bundle(tmp_path, payload_identities=contradiction)
     with pytest.raises(ModelBundleAdmissionError, match=rf"{field} identity mismatch"):
@@ -186,8 +177,6 @@ def test_admission_rejects_extra_bundle_member(tmp_path: Path) -> None:
 
 
 def test_admission_uses_manifest_declared_member_set(tmp_path: Path) -> None:
-    """Admission walks the members the manifest declares, whatever they are
-    named - including a conformance document at a publisher-chosen path."""
     models_root, desired = _bundle(
         tmp_path,
         members={
@@ -210,9 +199,6 @@ def test_admission_uses_manifest_declared_member_set(tmp_path: Path) -> None:
 def test_admission_refuses_selection_calibration_digest_not_matching_member_content(
     tmp_path: Path,
 ) -> None:
-    # The selection declares one calibration digest; the member on disk has
-    # different content. The fixture would otherwise derive the digest from
-    # the member, so the declared value is pinned explicitly.
     declared = hashlib.sha256(b'{"calibration": true}').hexdigest()
     models_root, desired = _bundle(
         tmp_path,
@@ -235,8 +221,6 @@ def test_admission_refuses_selection_calibration_digest_not_matching_member_cont
 def test_admission_refuses_selection_conformance_digest_not_matching_member_content(
     tmp_path: Path,
 ) -> None:
-    """The conformance document is bound by content, whatever the member is
-    named: a declared digest that is the content of no member refuses."""
     declared = hashlib.sha256(b"{}").hexdigest()
     models_root, desired = _bundle(
         tmp_path,

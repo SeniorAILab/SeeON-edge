@@ -42,9 +42,6 @@ def test_transition_votes_emit_one_rising_edge_at_default_threshold() -> None:
     decider = _decider()
     transition = FallProbabilities(0.5, 0.5, 0.0)
 
-    # The first qualifying frame is the first vote (plan G7: CANDIDATE on the
-    # first qualifying proposal, OPEN after transition_votes), so a 2-of-2
-    # policy promotes on the second frame -- there is no silent warm-up frame.
     assert decider.update({7: transition}, (7,), frame_index=1, time_sec=1.0) == ()
     events = decider.update({7: transition}, (7,), frame_index=2, time_sec=2.0)
 
@@ -74,9 +71,6 @@ def test_confirmed_recovery_rearms_the_shared_episode_authority() -> None:
     transition = FallProbabilities(0.5, 0.5, 0.0)
     safe = FallProbabilities(0.9, 0.1, 0.1)
 
-    # A 1-of-1 policy opens on the first qualifying frame; the episode then
-    # stays silent until a confirmed recovery (2 consecutive clear scores)
-    # re-arms it, and only then may a second episode open.
     event = decider.update({9: transition}, (9,), frame_index=1, time_sec=1.0)[0]
     assert decider.update({9: transition}, (9,), frame_index=2, time_sec=2.0) == ()
     assert decider.update({9: safe}, (9,), frame_index=3, time_sec=3.0) == ()

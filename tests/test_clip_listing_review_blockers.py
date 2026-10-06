@@ -1,5 +1,3 @@
-"""Clip listing filter, facet and lifespan contracts on the PostgreSQL catalogue."""
-
 from __future__ import annotations
 
 import json

@@ -20,28 +20,17 @@ EDGE_RUNTIME_SERVICES: Final = {
     "ml-api": "Dockerfile.backend",
     "ml-worker": "Dockerfile.edge",
 }
-#: One-shot operator tool behind the `ops` profile. It never starts with the
-#: stack, but it is the only place the documented requeue command can run: the
-#: worker image carries no `scripts/ops` and the backend image has no writable
-#: worker-state mount.
 EDGE_OPS_SERVICES: Final = {"edge-refused-evidence"}
 
-#: One-shot model provisioner on the worker image. Models are a pinned external
-#: artifact, never baked into an image or bind-mounted from the checkout: this
-#: service fills the `worker-models` volume from the committed manifest and
-#: gates ml-worker through depends_on.
 EDGE_MODEL_FETCH_SERVICE: Final = "edge-model-fetch"
 EDGE_ENGINE_BUILD_SERVICE: Final = "edge-engine-build"
 MODELS_VOLUME: Final = "worker-models"
 
-#: Edge product state. edge-db-migrator provisions it before ml-api starts; the
-#: SQLite cutover runs from the ops-profile edge-db-cutover one-shot.
 EDGE_POSTGRES_SERVICE: Final = "postgres"
 EDGE_DB_CUTOVER_SERVICE: Final = "edge-db-cutover"
 CI_WORKFLOW: Final = ".github/workflows/ci.yml"
 EDGE_DEV_COMPOSE_FILE: Final = "compose.edge.dev.yaml"
 EDGE_ENV_EXAMPLE: Final = ".env.edge.prod.example"
-#: Compose secret name -> the required env var naming its host file.
 POSTGRES_SECRETS: Final = {
     "pg_superuser_password": "PG_SUPERUSER_PASSWORD_HOST_FILE",
     "pg_owner_dsn": "PG_OWNER_DSN_HOST_FILE",
@@ -147,8 +136,6 @@ def test_edge_worker_runtime_status_environment_contract() -> None:
     services = _compose_services(EDGE_COMPOSE_FILE)
     worker_environment = _mapping_field(services["ml-worker"], "environment")
 
-    # Explicit allowlist only: Flow topology, relay secret, and RTSP destination policy.
-    # Live clip export is a dashboard runtime setting and must never appear here.
     assert set(worker_environment) == {
         "RELAY_TOKEN",
         "ML_WORKER_PROFILE",
@@ -175,13 +162,10 @@ def test_edge_worker_runtime_status_environment_contract() -> None:
         "ML_RTSP_ALLOW_LOCAL_DESTINATIONS",
         "WORKER_REPLAY_TRACE_DIR",
     }
-    # Replay-trace capture is opt-in: empty by default (disabled).
     assert worker_environment["WORKER_REPLAY_TRACE_DIR"] == "${WORKER_REPLAY_TRACE_DIR:-}"
     assert worker_environment["ML_RTSP_ALLOW_PRIVATE_DESTINATIONS"] == (
         "${ML_RTSP_ALLOW_PRIVATE_DESTINATIONS:-0}"
     )
-    # Execution-record export is a seam: OFF by default, and the sizes have NO
-    # compose default so an enabled-but-unsized deployment refuses to start.
     assert worker_environment["ML_WORKER_EXECUTION_RECORDS_ENABLED"] == (
         "${ML_WORKER_EXECUTION_RECORDS_ENABLED:-0}"
     )
@@ -215,15 +199,12 @@ def test_edge_db_migrator_provisions_postgres_before_ml_api() -> None:
     api_depends_on = _mapping_field(services["ml-api"], "depends_on")
     worker_depends_on = _mapping_field(services["ml-worker"], "depends_on")
 
-    # The job waits for a server that accepts connections, then gates ml-api.
     assert _mapping_field(migrator, "depends_on") == {
         EDGE_POSTGRES_SERVICE: {"condition": "service_healthy"}
     }
     assert _list_field(healthcheck, "test")[:2] == ["CMD", "pg_isready"]
     assert migrator["restart"] == "no"
     assert "profiles" not in migrator, "must run on every `up`, not behind an opt-in profile"
-    # Idempotent: a rerun verifies the schema, runtime role, runtime password and
-    # authority file and changes none of them.
     assert command == [
         "python",
         "-m",
@@ -238,11 +219,9 @@ def test_edge_db_migrator_provisions_postgres_before_ml_api() -> None:
         "--authority-file",
         "/run/seeon-authority/authority.json",
     ]
-    # Provisioning is PostgreSQL-only; it never opens the SQLite state.
     assert _list_field(migrator, "volumes") == ["edge-pg-authority:/run/seeon-authority"]
     assert api_depends_on == {"edge-db-migrator": {"condition": "service_completed_successfully"}}
     assert api_environment["API_POSTGRES_SCHEMA"] == command[command.index("--schema") + 1]
-    # The worker waits on both the healthy API and a verified models volume.
     assert worker_depends_on == {
         "ml-api": {"condition": "service_healthy"},
         EDGE_MODEL_FETCH_SERVICE: {"condition": "service_completed_successfully"},
@@ -251,8 +230,6 @@ def test_edge_db_migrator_provisions_postgres_before_ml_api() -> None:
 
 
 def test_edge_postgres_publishes_no_port() -> None:
-    """The superuser password is the database's only barrier, so the server is
-    reachable only from the private Compose network."""
     services = _compose_services(EDGE_COMPOSE_FILE)
 
     assert not {"ports", "expose", "network_mode"}.intersection(services[EDGE_POSTGRES_SERVICE])
@@ -267,7 +244,6 @@ def test_edge_postgres_publishes_no_port() -> None:
 
 
 def test_edge_postgres_image_is_the_ci_digest() -> None:
-    """The edge server is the exact image the PostgreSQL tests ran against."""
     image = _compose_services(EDGE_COMPOSE_FILE)[EDGE_POSTGRES_SERVICE]["image"]
     jobs = _workflow(CI_WORKFLOW)["jobs"]
     assert isinstance(jobs, dict)
@@ -284,8 +260,6 @@ def test_edge_postgres_image_is_the_ci_digest() -> None:
 
 
 def test_edge_ml_api_holds_only_the_runtime_dsn() -> None:
-    """A compromised API process must not get DDL or superuser rights: only the
-    one-shots hold the owner DSN and only postgres reads the superuser password."""
     services = _compose_services(EDGE_COMPOSE_FILE)
     api = services["ml-api"]
     holders = {
@@ -309,9 +283,6 @@ def test_edge_ml_api_holds_only_the_runtime_dsn() -> None:
 
 
 def test_edge_owner_dsn_reaches_only_the_postgres_one_shots() -> None:
-    """The owner DSN can reach a service as a secret, a bind mount of its host
-    file or an environment value. Only the two one-shots may name it, and the
-    only one a plain `docker compose up` starts is the migrator, which exits."""
     references = ("pg_owner_dsn", POSTGRES_SECRETS["pg_owner_dsn"])
     holders: set[str] = set()
     for compose_file in (EDGE_COMPOSE_FILE, EDGE_DEV_COMPOSE_FILE):
@@ -327,9 +298,6 @@ def test_edge_owner_dsn_reaches_only_the_postgres_one_shots() -> None:
 
 
 def test_edge_postgres_credentials_are_required_secret_files() -> None:
-    """No credential has a default path or an inline value: a missing host file
-    stops the render instead of mounting a stale one, and nothing secret shows in
-    `docker inspect` or `docker compose config`."""
     services = _compose_services(EDGE_COMPOSE_FILE)
     secrets = _compose_top_level(EDGE_COMPOSE_FILE, "secrets")
 
@@ -350,8 +318,6 @@ def test_edge_postgres_credentials_are_required_secret_files() -> None:
 
 
 def test_edge_postgres_state_lives_in_named_volumes() -> None:
-    """The database and its authority file survive `down` and container
-    replacement, and ml-api cannot rewrite its own fence token."""
     services = _compose_services(EDGE_COMPOSE_FILE)
     volumes = _compose_top_level(EDGE_COMPOSE_FILE, "volumes")
     command = _list_field(services["edge-db-migrator"], "command")
@@ -377,15 +343,11 @@ def test_edge_postgres_state_lives_in_named_volumes() -> None:
         _mapping_field(services["ml-api"], "environment")["API_POSTGRES_AUTHORITY_FILE"]
         == authority_file
     )
-    # Project-scoped named volumes: not external, no fixed name, default driver.
     for volume_name in ("edge-pgdata", "edge-pg-authority", "edge-migration"):
         assert volumes[volume_name] == {}, volume_name
 
 
 def test_edge_db_cutover_is_an_ops_one_shot() -> None:
-    """Each cutover step is `docker compose run --rm edge-db-cutover <step>`. It
-    never starts with the stack, so it never holds the SQLite deployment lock or
-    repeats a transfer on restart."""
     cutover = _compose_services(EDGE_COMPOSE_FILE)[EDGE_DB_CUTOVER_SERVICE]
 
     assert cutover["profiles"] == ["ops"]
@@ -393,7 +355,6 @@ def test_edge_db_cutover_is_an_ops_one_shot() -> None:
     assert not {"ports", "expose", "healthcheck", "command"}.intersection(cutover)
     assert cutover["entrypoint"] == ["python", "-m", "backend.app.edge_db.migration"]
     assert _list_field(cutover, "secrets") == ["pg_owner_dsn"]
-    # edge-state is read-write: export takes deployment.lock beside the database.
     assert _list_field(cutover, "volumes") == [
         "edge-state:/var/lib/seeon-state",
         "worker-local-state:/var/lib/seeon-worker-state:ro",
@@ -406,7 +367,6 @@ def test_edge_db_cutover_is_an_ops_one_shot() -> None:
 
 
 def test_edge_dev_overlay_never_pulls_the_api_image() -> None:
-    """The dev overlay's ML_API_IMAGE is a local build tag; pulling it fails."""
     base = _compose_services(EDGE_COMPOSE_FILE)
     overlay = _compose_services(EDGE_DEV_COMPOSE_FILE)
     api_image_services = {
@@ -424,7 +384,6 @@ def test_edge_dev_overlay_never_pulls_the_api_image() -> None:
 
 
 def test_edge_env_example_declares_every_postgres_secret_path() -> None:
-    """CI renders compose.edge.yaml with this example; a missing path fails it."""
     lines = (REPO_ROOT / EDGE_ENV_EXAMPLE).read_text(encoding="utf-8").splitlines()
     entries = {
         key: value
@@ -433,14 +392,10 @@ def test_edge_env_example_declares_every_postgres_secret_path() -> None:
     }
 
     for path_variable in POSTGRES_SECRETS.values():
-        # An absolute path and nothing else: no DSN, host or password fits.
         assert re.fullmatch(r"/[\w./-]+", entries.get(path_variable, "")), path_variable
 
 
 def test_edge_model_fetch_owns_the_models_volume_before_worker_start() -> None:
-    """Owner decision 2026-08-28: models stay out of the images and are fetched
-    at a pinned revision by a worker-side one-shot, mirroring edge-db-migrator.
-    The backend never reads /app/models (Lane D), so only the worker mounts it."""
     services = _compose_services(EDGE_COMPOSE_FILE)
     fetch = services[EDGE_MODEL_FETCH_SERVICE]
 
@@ -464,9 +419,6 @@ def test_edge_model_fetch_owns_the_models_volume_before_worker_start() -> None:
 
     worker_volumes = _list_field(services["ml-worker"], "volumes")
     assert f"{MODELS_VOLUME}:/models:ro" in worker_volumes
-    # The selection document is an opt-in overlay: binding it unconditionally
-    # makes Docker create a directory on a host without one and the worker
-    # refuses to boot (#498).
     assert not any("model-selection.json" in str(volume) for volume in worker_volumes)
     overlay = yaml.safe_load(Path("compose.edge.model-selection.yaml").read_text(encoding="utf-8"))
     for service_name in ("edge-model-fetch", "ml-worker"):
@@ -479,8 +431,6 @@ def test_edge_model_fetch_owns_the_models_volume_before_worker_start() -> None:
         f"{MODELS_VOLUME}:/app/models:ro",
         "worker-engine-cache:/var/cache/seeon/tensorrt:rw",
     ]
-    # The engine build reads provisioned models but never writes them. Every
-    # other service stays off the models volume.
     excluded_services = {"edge-model-fetch", "ml-worker", EDGE_ENGINE_BUILD_SERVICE}
     for service_name in sorted(set(services) - excluded_services):
         volumes = _list_field(services[service_name], "volumes")
@@ -529,16 +479,9 @@ def test_edge_image_release_workflow_publishes_digest_env_artifact() -> None:
     assert isinstance(triggers, dict)
     assert "release" in triggers
     assert "workflow_dispatch" in triggers
-    # One build path: PRs and main pushes build both images in this workflow
-    # too (the separate edge-worker-image.yml gate is folded in).
     assert "pull_request" in triggers
     assert triggers["push"] == {"branches": ["main"]}
 
-    # `packages: write` is granted on the publishing job, not workflow-wide, so
-    # a job added to this file later starts read-only. The workflow runs on
-    # `pull_request` and `permissions:` takes no expression, so the grant cannot
-    # be event-scoped; tests/test_public_repository_privacy.py is what asserts
-    # every step able to spend the token stays gated on PUSH_IMAGES.
     permissions = workflow.get("permissions")
     assert isinstance(permissions, dict)
     assert permissions == {"contents": "read"}
@@ -549,8 +492,6 @@ def test_edge_image_release_workflow_publishes_digest_env_artifact() -> None:
 
     assert "file: Dockerfile.backend" in source
     assert "file: Dockerfile.edge" in source
-    # Actions are pinned to immutable commits (a tag is a pointer the upstream
-    # owner can move), with the released version kept in a trailing comment.
     assert "docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2" in source
     assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2" in source
     assert "steps.build-api.outputs.digest" in source
@@ -558,24 +499,14 @@ def test_edge_image_release_workflow_publishes_digest_env_artifact() -> None:
     assert "ML_API_IMAGE=" in source
     assert "ML_WORKER_IMAGE=" in source
     assert "edge-ml-image-refs.env" in source
-    # Digests are job outputs so a downstream job can pin `@sha256:` without
-    # parsing the artifact. They come from the resolve step rather than straight
-    # off a build, because a release may REUSE an already-published digest
-    # instead of building (docs/runbooks/edge-image-publish.md, "Per-image
-    # isolation at release time"). The build digests are still what that step
-    # consumes on the build path -- asserted above.
     outputs = workflow["jobs"]["publish"]["outputs"]
     assert outputs["ml-api-digest"] == "${{ steps.digests.outputs.ml-api }}"
     assert outputs["ml-worker-digest"] == "${{ steps.digests.outputs.ml-worker }}"
-    # Whether each image was built or reused travels with the digests, so a
-    # reviewer never has to infer it from the digest alone.
     assert outputs["ml-api-origin"] == "${{ steps.digests.outputs.ml-api-origin }}"
     assert outputs["ml-worker-origin"] == "${{ steps.digests.outputs.ml-worker-origin }}"
 
 
 def test_edge_image_workflow_never_pushes_from_pull_requests() -> None:
-    # Publish policy is unchanged: release/dispatch (and now main) push;
-    # pull requests never log in, push, or upload a pinnable artifact.
     source = (REPO_ROOT / EDGE_IMAGES_WORKFLOW).read_text(encoding="utf-8")
     workflow = _workflow(EDGE_IMAGES_WORKFLOW)
     job = workflow["jobs"]["publish"]
@@ -586,14 +517,12 @@ def test_edge_image_workflow_never_pushes_from_pull_requests() -> None:
     assert steps["Upload edge image refs"]["if"] == "env.PUSH_IMAGES == 'true'"
     for name in ("Build and push ml-api image", "Build and push ml-worker image"):
         assert steps[name]["with"]["push"] == "${{ env.PUSH_IMAGES == 'true' }}"
-    # Staging tag on main pushes only; the full-SHA tag is always present.
     assert 'if [ "${GITHUB_EVENT_NAME}" = "push" ]' in source
     assert "main-$SHORT_SHA" in source
     assert "$IMAGE_NAMESPACE/$image:$DEPLOY_SHA" in source
 
 
 def test_edge_worker_boot_smoke_runs_on_the_single_build() -> None:
-    """The shipped image is Dockerfile.edge's final stage and boots after direct load."""
     source = (REPO_ROOT / EDGE_IMAGES_WORKFLOW).read_text(encoding="utf-8")
     workflow = _workflow(EDGE_IMAGES_WORKFLOW)
     steps = workflow["jobs"]["publish"]["steps"]
@@ -608,9 +537,6 @@ def test_edge_worker_boot_smoke_runs_on_the_single_build() -> None:
     assert not (REPO_ROOT / ".github/workflows/edge-worker-image.yml").exists()
     assert worker_step["with"]["load"] == "${{ env.RELEASE_BUILD != 'true' }}"
     assert "outputs" not in worker_step["with"]
-    # A release still pushes an OCI index, because a release's digest is the one
-    # a later release may reuse and re-tagging only preserves a digest when the
-    # manifest is an index. See docs/runbooks/edge-image-publish.md.
     assert worker_step["with"]["provenance"] == "${{ env.RELEASE_BUILD == 'true' }}"
     assert worker_step["with"]["cache-from"] == "type=gha,scope=edge-ml-worker"
     assert worker_step["with"]["cache-to"] == (
@@ -625,8 +551,6 @@ def test_edge_worker_boot_smoke_runs_on_the_single_build() -> None:
     assert "python -m worker --check-config" in str(local_smoke["run"])
     assert 'test "$status" -eq 0' in str(local_smoke["run"])
 
-    # The reuse/release path still pulls the published bytes and boots them, so
-    # a seal never pins a worker digest that was not booted in this run.
     assert "$IMAGE_NAMESPACE/ml-worker@$ML_WORKER_DIGEST" in str(pull_smoke["run"])
     assert "docker run --rm" in str(pull_smoke["run"])
     assert "python -m worker --check-config" in str(pull_smoke["run"])
@@ -657,45 +581,23 @@ def test_edge_worker_boot_smoke_runs_on_the_single_build() -> None:
 
 
 def test_a_publishing_run_never_records_an_empty_digest() -> None:
-    """The seal must never carry `ml-api@` with nothing after it.
-
-    A pull request builds ml-api with no exporter (no push, no load), so buildx
-    reports no digest -- which the artifact used to interpolate straight into
-    `ML_API_IMAGE=.../ml-api@`, advertising an unpullable ref. That is harmless
-    only because a PR uploads no artifact. On a run that DOES publish, an empty
-    digest means the build did not export what the release is about to pin, and
-    it has to fail loudly instead.
-    """
     source = (REPO_ROOT / EDGE_IMAGES_WORKFLOW).read_text(encoding="utf-8")
     assert 'raise SystemExit(f"{image} was built but exported no digest")' in source
     assert 'if os.environ.get("PUSH_IMAGES") == "true":' in source
-    # ...and the reused branch has the same shape: no digest, no release.
     assert 'raise SystemExit(f"{image} was reused but no published digest was recorded")' in source
 
 
 def test_release_isolation_keys_on_the_dispatch_not_only_the_release_event() -> None:
-    """A release's images arrive by dispatch, so reuse must recognise that.
-
-    release.yml cannot rely on the `release` event to publish the images: a
-    release it creates with the default GITHUB_TOKEN raises no event that starts
-    a workflow run, so it dispatches this workflow on the tag instead (#460).
-    Keying reuse on `github.event_name == 'release'` alone would therefore be
-    dead code -- the isolation would never once engage on a real release, and
-    nothing would fail to say so. RELEASE_BUILD has to count both shapes.
-    """
     workflow = _workflow(EDGE_IMAGES_WORKFLOW)
     release_build = workflow["jobs"]["publish"]["env"]["RELEASE_BUILD"]
     assert "github.event_name == 'release'" in release_build, release_build
     assert "workflow_dispatch" in release_build, release_build
     assert "startsWith(inputs.ref, 'seeon-edge-v')" in release_build, release_build
 
-    # ...and the tag the seal is cut for comes from whichever shape it was.
     release_tag = workflow["jobs"]["publish"]["env"]["RELEASE_TAG"]
     assert "github.event.release.tag_name" in release_tag, release_tag
     assert "inputs.ref" in release_tag, release_tag
 
-    # The release workflow really does dispatch this workflow on the tag; if
-    # that step were dropped, the reuse path above would go dormant again.
     release_source = (REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
     assert "gh workflow run edge-images.yml" in release_source
 
@@ -801,23 +703,7 @@ def test_repo_does_not_own_rtsp_generation_surface() -> None:
     assert not failures, f"RTSP generation terms remain in active surface: {failures}"
 
 
-# ``test_worker_imports_no_api_or_serving_packages`` was removed with the legacy
-# ``edge/`` tree: it read ``edge/runtime/edge_worker.py`` directly. Its intent --
-# the worker must not reach into the API or serving packages -- is now enforced
-# by the import-linter contract "backend and worker are independent
-# (worker→backend relay boundary only)" in ``pyproject.toml`` and by
-# ``tests/test_serving_boundary_contract.py``.
-
-
 def test_edge_compose_keeps_backend_url_on_api_only() -> None:
-    """The external-backend URL env belongs to ml-api only; the worker never gets one.
-
-    ml-api derives its Event API / ml-config URLs from a single packaging-time
-    base var (API_BACKEND_BASE_URL). The old field-specific names
-    (API_BACKEND_EVENTS_URL / API_BACKEND_CONFIG_URL) remain valid overrides
-    on ml-api but must stay excluded from the worker too, so a future revert
-    to the old scheme can't accidentally leak a backend URL onto the worker.
-    """
     services = _compose_services(EDGE_COMPOSE_FILE)
     api_env = _mapping_field(services["ml-api"], "environment")
     worker_env = _mapping_field(services["ml-worker"], "environment")
@@ -922,7 +808,6 @@ def test_clip_export_is_not_managed_by_topology_environment() -> None:
 
 
 def test_edge_api_execution_records_seam_environment_contract() -> None:
-    """ml-api's execution-record seam: OFF by default, budget has no compose default."""
     services = _compose_services(EDGE_COMPOSE_FILE)
     api_environment = _mapping_field(services["ml-api"], "environment")
     assert api_environment["ML_API_EXECUTION_RECORDS_ENABLED"] == (
@@ -933,15 +818,10 @@ def test_edge_api_execution_records_seam_environment_contract() -> None:
     )
 
 
-#: The only interpolation form compose.edge.yaml uses for ml-api's ML_API_* keys.
 _COMPOSE_DEFAULT: Final = re.compile(r"\$\{(?P<name>\w+):-(?P<default>[^}]*)\}")
 
 
 def _rendered_api_settings_environment() -> dict[str, str]:
-    """ml-api's ML_API_* environment as `docker compose config` renders it from the example.
-
-    `${NAME:-default}` takes the default when NAME is unset or empty.
-    """
     lines = (REPO_ROOT / EDGE_ENV_EXAMPLE).read_text(encoding="utf-8").splitlines()
     example = {
         key: value
@@ -971,7 +851,6 @@ def _api_settings_from(monkeypatch: pytest.MonkeyPatch, environment: dict[str, s
 def test_ml_api_settings_accept_the_rendered_edge_example(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Compose renders the unset budget as ''; records stay off and the API boots."""
     environment = _rendered_api_settings_environment()
 
     settings = _api_settings_from(monkeypatch, environment)
@@ -994,7 +873,6 @@ def test_ml_api_settings_still_require_a_budget_when_records_are_enabled(
     with pytest.raises(ValidationError) as refused:
         _api_settings_from(monkeypatch, environment)
 
-    # The budget rule refused it, not an integer parse of the empty string.
     assert [(error["type"], error["loc"]) for error in refused.value.errors()] == [
         ("value_error", ())
     ]

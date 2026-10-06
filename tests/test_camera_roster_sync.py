@@ -101,7 +101,6 @@ def _ready_app(sandbox: ProductSandbox, base_url: str, monkeypatch: pytest.Monke
 def test_sync_camera_roster_sends_complete_stable_topology_without_local_secrets(
     postgres_product_sandbox: ProductSandbox, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Given
     _TopologyHandler.requests = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), _TopologyHandler)
     thread = _run_server(server)
@@ -112,10 +111,8 @@ def test_sync_camera_roster_sends_complete_stable_topology_without_local_secrets
             monkeypatch,
         )
 
-        # When
         result = sync_camera_roster(app)
 
-        # Then
         assert result.attempted is True
         assert result.status == "synced"
         assert len(_TopologyHandler.requests) == 1
@@ -138,7 +135,6 @@ def test_sync_camera_roster_sends_complete_stable_topology_without_local_secrets
 def test_sync_camera_roster_fails_closed_for_unmapped_camera(
     postgres_product_sandbox: ProductSandbox,
 ) -> None:
-    # Given
     app, store = _postgres_app(postgres_product_sandbox)
     store.create(
         camera_id="legacy-camera",
@@ -148,10 +144,8 @@ def test_sync_camera_roster_fails_closed_for_unmapped_camera(
         status="online",
     )
 
-    # When
     result = sync_camera_roster(app)
 
-    # Then
     assert result.attempted is False
     assert result.status == "pending"
     assert result.error_class == "unconfigured"
@@ -163,7 +157,6 @@ def test_floor_crud_emits_one_event_driven_sync_trigger(
     postgres_audit_runtime: PostgresAuditRuntime,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Given
     app, _store = _postgres_app(postgres_product_sandbox)
     app.state.audit_runtime = postgres_audit_runtime
     calls: list[tuple[bool, bool]] = []
@@ -174,7 +167,6 @@ def test_floor_crud_emits_one_event_driven_sync_trigger(
 
     monkeypatch.setattr(router_module, "sync_camera_roster", capture_sync)
 
-    # When
     with TestClient(app) as client:
         assert (
             client.post(
@@ -187,6 +179,5 @@ def test_floor_crud_emits_one_event_driven_sync_trigger(
             json={"edge_ref": "floor-1", "name": "First", "order_index": 1},
         )
 
-    # Then
     assert response.status_code == 201
     assert calls == [(True, True)]

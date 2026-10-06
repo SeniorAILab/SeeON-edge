@@ -1,11 +1,3 @@
-"""Descriptor-verified native receipt transactions, never HTTP acknowledgement.
-
-The injected database owns authority admission, transaction exit and pool return.
-An optional borrowed audit callback is tentative until this owner returns. It
-runs once on every successful ready operation, including an identical receipt.
-Unavailable receipts retain the existing zero-callback contract.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -84,7 +76,6 @@ class PostgresArtifactReceiptStore:
 
         def write(connection: psycopg.Connection) -> ArtifactReceipt:
             require_authority(connection, self.authority)
-            # Serialize absent clips too, before any incident lock is taken.
             lock_clip(connection, receipt.artifact_id)
             incidents = _manifest_incidents(connection, files.manifest.manifest.event_refs)
             projection = files.verify()
@@ -142,8 +133,6 @@ class PostgresArtifactReceiptStore:
 def _manifest_incidents(
     connection: psycopg.Connection, event_refs: tuple[str, ...]
 ) -> list[tuple[str, str]]:
-    # Event identities are immutable. All receipt writers take this same order,
-    # independent of the ordering of references in the immutable manifest bytes.
     incidents: list[tuple[str, str]] = []
     for event_ref in sorted(set(event_refs)):
         row = connection.execute(

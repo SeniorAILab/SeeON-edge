@@ -11,29 +11,11 @@ import pytest
 
 from worker.pipeline.output.evidence.snapshot_store import SnapshotConflictError, SnapshotStore
 
-# This file's use of the fd table is *instrumentation only* -- it resolves a
-# descriptor back to a path to assert fsync/replace ordering. ``snapshot_store.py``
-# itself never touches ``/proc``, so there is no reason for these tests to be
-# Linux-only.
-#
-# ``/proc/self/fd/N`` is a symlink on Linux, so ``os.readlink`` resolves it.
-# macOS has no ``/proc``; its ``/dev/fd/N`` is a character device, not a
-# symlink, so ``readlink`` fails with ``EINVAL`` -- which is why these tests
-# used to fail here. ``fcntl(F_GETPATH)`` is the macOS way to ask the same
-# question, and ``/dev/fd`` still enumerates the process's descriptors.
-#
-# Note this is *not* the same situation as `tests/test_clip_recorder.py`, where
-# `/proc/self/fd` is used by production code
-# (`worker/pipeline/output/evidence/evidence_media.py`) to hand ffprobe a
-# TOCTOU-safe reference to an already-open inode. That one is a genuine
-# Linux-only runtime dependency and its tests pin that floor deliberately.
-
 _FD_DIR = Path("/proc/self/fd") if Path("/proc/self/fd").exists() else Path("/dev/fd")
 _DescriptorIdentity = tuple[int, int, int]
 
 
 def _path_of_fd(descriptor: int) -> str:
-    """Resolve an open descriptor back to its path, on Linux or macOS."""
     if Path("/proc/self/fd") == _FD_DIR:
         return os.readlink(f"/proc/self/fd/{descriptor}")
     raw: bytes = fcntl.fcntl(descriptor, fcntl.F_GETPATH, bytes(1024))
@@ -317,7 +299,7 @@ def test_snapshot_store_serializes_same_identity_contention(
     second.join(timeout=2)
 
     assert len(results) == 2
-    assert calls == 2  # JPEG plus immutable metadata; the second caller did not write either.
+    assert calls == 2
 
 
 def test_snapshot_store_serializes_conflicting_identity_contention(

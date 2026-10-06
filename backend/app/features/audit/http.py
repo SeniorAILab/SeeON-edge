@@ -1,5 +1,3 @@
-"""HTTP boundary policy for fail-closed governed operations."""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -16,7 +14,7 @@ from backend.app.shared.dashboard_credentials import DashboardCredentialsStoreEr
 
 
 class AuditUnavailableError(RuntimeError):
-    """A governed response cannot start because its audit commit failed."""
+    ...
 
 
 _READY = {"ready": True, "status": "ready"}
@@ -27,7 +25,6 @@ _READINESS_LOCK = Lock()
 def publish_audit_readiness(
     app: FastAPI, runtime: PostgresAuditRuntime, *, boot: bool = False
 ) -> bool:
-    """Publish runtime-derived readiness; outside boot, only heal audit-owned degradation."""
     with _READINESS_LOCK:
         eligible = runtime.snapshot().eligible_to_attempt
         if not eligible:
@@ -38,7 +35,6 @@ def publish_audit_readiness(
 
 
 def audit_runtime(request: Request) -> PostgresAuditRuntime:
-    """Require the injected native runtime; never start a request-owned session."""
     runtime = getattr(request.app.state, "audit_runtime", None)
     if not isinstance(runtime, PostgresAuditRuntime):
         raise AuditUnavailableError("native audit runtime is not injected")
@@ -52,7 +48,6 @@ def mutation_audit(request: Request, event_factory: Callable[[], AuditEvent]) ->
 def append_governed(
     request: Request, *, actor_id: str, action: AuditAction, target_id: str
 ) -> None:
-    """Commit one governed success before FastAPI starts its response."""
     runtime = audit_runtime(request)
     event = AuditEvent(
         occurred_at=utc_now(),

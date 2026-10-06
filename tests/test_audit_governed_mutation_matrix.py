@@ -44,7 +44,6 @@ def _reject_audit_inserts(sandbox: ProductSandbox) -> None:
 
 
 def _edge_site(sandbox: ProductSandbox) -> list[tuple[object, ...]]:
-    # Every governed mutation in the matrix owns columns of the single edge_site row.
     return sandbox.admin.execute("SELECT * FROM edge_site ORDER BY 1").fetchall()
 
 
@@ -107,7 +106,6 @@ def test_real_postgres_audit_denial_rolls_back_each_governed_mutation(
     payload: dict[str, JsonValue],
     prepare: Callable[[Path, pytest.MonkeyPatch], None],
 ) -> None:
-    # Given: a valid governed mutation and a real PostgreSQL rejection only at audit INSERT.
     sandbox = postgres_product_sandbox
     prepare(tmp_path, monkeypatch)
     with TestClient(postgres_api_app(sandbox, postgres_audit_runtime)) as client:
@@ -115,10 +113,8 @@ def test_real_postgres_audit_denial_rolls_back_each_governed_mutation(
         before = _edge_site(sandbox)
         _reject_audit_inserts(sandbox)
 
-        # When: the route attempts its caller-owned transactional audit append.
         response = client.put(endpoint, json=payload)
 
-        # Then: no success bytes or business-state commit escape the failed transaction.
         assert response.status_code == 503
         assert response.content == b""
         assert _edge_site(sandbox) == before
@@ -130,7 +126,6 @@ def test_each_governed_mutation_commits_exactly_one_action(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Given: valid payloads for every mutation omitted by the first implementation.
     sandbox = postgres_product_sandbox
     _prepare_storage(tmp_path, monkeypatch)
     _prepare_connection(tmp_path, monkeypatch)
@@ -156,12 +151,10 @@ def test_each_governed_mutation_commits_exactly_one_action(
         ),
     )
 
-    # When: all four routes commit successfully.
     with TestClient(postgres_api_app(sandbox, postgres_audit_runtime)) as client:
         _login(client)
         responses = tuple(client.put(endpoint, json=payload) for endpoint, payload in mutations)
 
-    # Then: each closed action appears exactly once.
     assert [response.status_code for response in responses] == [200, 200, 200, 200]
     counts = dict(
         sandbox.admin.execute(

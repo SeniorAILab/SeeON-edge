@@ -1,15 +1,3 @@
-"""PostgreSQL clip catalogue: one background indexer writes, listings only read.
-
-Clip recording is always on, so the API always keeps the catalogue. The indexer
-reconciles the clip store once at startup (a failure refuses startup) and then
-every ``API_CLIP_CATALOG_INTERVAL_SEC``. Each pass walks the store once, trusts
-clips whose catalogued manifest and media path/size still match, and examines
-at most ``EXAMINE_BUDGET`` others (newest first); the remainder is picked up by
-the next pass without waiting. Every clip is applied under its own savepoint,
-so one malformed clip is counted and skipped instead of failing the pass.
-``GET /clips`` reads one keyset page from the catalogue and never writes it.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -45,9 +33,7 @@ DEFAULT_CLIP_CATALOG_INTERVAL_SEC = 5.0
 MAX_CLIP_CATALOG_INTERVAL_SEC = 300.0
 CLIP_CATALOG_SHUTDOWN_WAIT_SEC = 1.0
 EXAMINE_BUDGET = 200
-"""Upper bound on clips read and hashed per reconcile pass."""
 APPLY_CHUNK = 64
-"""Clips applied per transaction, so one pass never holds many row locks."""
 
 _UTC_TIMESTAMP_RE = re.compile(
     r"[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])"
@@ -57,7 +43,6 @@ _VISIBLE = (
     "local_state <> 'UNAVAILABLE' AND manifest_relpath IS NOT NULL "
     "AND local_reason IS DISTINCT FROM 'MANIFEST_MISSING'"
 )
-# Same key as the receipt path's clip lock, so indexer and receipts serialize.
 _LOCK_CLIP = "SELECT pg_advisory_xact_lock('clips'::regclass::oid::integer, hashtext(%s))"
 _LOCKED_ROW = """
 SELECT publish_state, retention_state,
@@ -104,7 +89,7 @@ WHERE clip_id=%s
 
 
 class InvalidClipCatalogIntervalError(ValueError):
-    """``API_CLIP_CATALOG_INTERVAL_SEC`` is not a finite number in (0, 300]."""
+    ...
 
 
 def clip_catalog_interval_sec() -> float:
@@ -166,8 +151,6 @@ class _PreparedClip:
 
 
 class ClipCatalogIndexer:
-    """The catalogue's only writer; borrows transactions from the API pool."""
-
     def __init__(self, database: PostgresDatabase, authority: AuthorityToken) -> None:
         self.database = database
         self.authority = authority
@@ -181,7 +164,6 @@ class ClipCatalogIndexer:
     def _reconcile(self, store: ClipStore) -> ReconcileOutcome:
         root = store.root
         if not root.is_dir():
-            # An unmounted or missing store is not evidence that clips were deleted.
             return ReconcileOutcome(0, 0, 0)
         catalogued = self.database.read(_catalogued)
         scanned, duplicates = store.scan_manifest_partition()
@@ -221,8 +203,6 @@ class ClipCatalogIndexer:
             try:
                 located = item.located()
                 if located is None or not _valid_timestamp(located.manifest.started_at):
-                    # Not (or no longer) a finalized, well-formed clip: filesystem
-                    # truth says there is nothing to list, as if the manifest were gone.
                     if item.clip_id in catalogued:
                         removals.add(item.clip_id)
                     continue
@@ -252,8 +232,6 @@ class ClipCatalogIndexer:
 
 
 class PostgresClipCatalog:
-    """Read-only keyset pages over the catalogue for ``GET /clips``."""
-
     def __init__(self, database: PostgresDatabase) -> None:
         self.database = database
 
@@ -296,7 +274,6 @@ def _catalogued(
 
 
 def _unchanged(root: Path, item: ScannedManifest, row: _CataloguedClip | None) -> bool:
-    """Trust a catalogued clip when manifest and media path/size still match."""
     if row is None or row.local_state != "AVAILABLE" or row.media_relpath is None:
         return False
     if row.manifest_relpath != item.manifest_path.relative_to(root).as_posix():
@@ -309,7 +286,6 @@ def _unchanged(root: Path, item: ScannedManifest, row: _CataloguedClip | None) -
 def _fingerprint(
     root: Path, item: ScannedManifest, dir_mtime_ns: int | None, row: _CataloguedClip | None
 ) -> tuple[object, ...]:
-    """Everything whose change could alter the outcome of examining ``item`` again."""
     media_size = (
         None
         if row is None or row.media_relpath is None
@@ -351,7 +327,6 @@ def _regular_size(path: Path) -> int | None:
 
 
 def _relative(root: Path, path: Path) -> str:
-    """``path`` relative to the store root, whether or not ``path`` was resolved."""
     try:
         return path.relative_to(root).as_posix()
     except ValueError:
@@ -412,12 +387,6 @@ def _media_identity(
     media_relpath: str,
     catalogued: tuple[str | None, str | None, int | None] | None,
 ) -> tuple[str, int]:
-    """Reuse the catalogued media hash when the file is byte-for-byte the same size.
-
-    The catalogue row is the durable receipt of a hash computed over these
-    bytes; anything not matching it (unknown clip, moved path, different size)
-    is hashed in full.
-    """
     if catalogued is not None:
         relpath, sha256, size_bytes = catalogued
         if sha256 is not None and relpath == media_relpath:
@@ -447,7 +416,6 @@ def _apply_chunk(
     token: AuthorityToken,
     operations: Sequence[str | _PreparedClip],
 ) -> int:
-    """Apply removals (clip ids) and upserts, each under its own savepoint."""
     require_authority(connection, token)
     now = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     isolated = 0
@@ -477,7 +445,6 @@ def _remove(connection: psycopg.Connection, clip_id: str, locked: tuple | None, 
     if stored[6] is None or stored[16] == "MANIFEST_MISSING":
         return
     if locked[0] != "WAITING":
-        # Already delivered: keep the durable identity, hide it until it returns.
         connection.execute(_MARK_CLIP, ("MANIFEST_MISSING", now, clip_id))
         return
     referenced = connection.execute(
@@ -504,7 +471,6 @@ def _upsert(
     stored = tuple(locked[2:19])
     merged = list(values)
     if merged[7] is None and stored[7] is not None:
-        # Missing media keeps the identity already catalogued (and possibly receipted).
         merged[7], merged[10], merged[13] = stored[7], stored[10], stored[13]
     observed = tuple(merged)
     if observed == stored:
@@ -520,11 +486,6 @@ def _upsert(
 
 
 def _identity_compatible(catalogued: tuple[object, ...], observed: tuple[object, ...]) -> bool:
-    """True when every identity fact the catalogue holds matches what is on disk.
-
-    A NULL catalogued fact is absence of knowledge, not a claim: only a known
-    hash or size that differs from the observed one is a content change.
-    """
     return all(
         known is None or known == seen for known, seen in zip(catalogued, observed, strict=True)
     )
@@ -577,11 +538,6 @@ def _page_rows(
 def _located_from_row(
     store: ClipStore, clip_id: str, manifest_relpath: object
 ) -> LocatedClip | None:
-    """Read a visible row's manifest at its catalogued path (no store walk).
-
-    A manifest that vanished since the last pass is skipped; the indexer
-    reconciles the row on its next pass.
-    """
     if not isinstance(manifest_relpath, str):
         return None
     manifest_path = store.root / manifest_relpath

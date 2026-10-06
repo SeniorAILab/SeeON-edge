@@ -1,23 +1,3 @@
-"""Global per-domain detection on/off + time-window settings routes.
-
-``GET``/``PUT /api/v1/detection-settings`` -- a dashboard-only, facility-wide
-toggle (applied to every camera) for whether each detection domain (``fall``,
-``bed_exit``) runs at all, and optionally restricts it to a nightly window.
-Persisted by the injected ``DetectionSettingsStore`` in the API-owned
-PostgreSQL ``edge_site`` row; once saved, these local settings take precedence over
-whatever the backend externally pulls, merged in at
-``cameras.router.worker_config_snapshot`` response-build time -- this router
-never touches ``app.state.pulled_config`` itself (see that function's
-``_apply_local_detection_overrides``).
-
-``GET`` with nothing yet persisted for a domain falls back to reflecting the
-live externally-pulled detection window for that domain (so an operator who
-has never opened this settings page sees the schedule that's actually in
-effect, not a fabricated default), and finally to on=true/mode=always if
-there is no external window either (matching the worker's own ambient
-default: no configured window means 24/7 detection).
-"""
-
 from __future__ import annotations
 
 import re
@@ -54,11 +34,6 @@ _HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
 def _backend_camera_id(record: object) -> str:
-    """Return the Hub-issued canonical id, or "" when the record is unmapped.
-
-    Never falls back to the edge-local registry id: the Hub rejects ids it did
-    not issue with FACILITY_BINDING_MISMATCH (issue #308).
-    """
     if not isinstance(record, dict):
         return ""
     backend_camera_id = record.get("backend_camera_id")
@@ -125,8 +100,6 @@ class DetectionPolicyChangeRequest(BaseModel):
     schema_version: int = Field(ge=1)
     camera_id: str | None = Field(default=None, min_length=1)
     values: dict[str, object] | None
-    # Required on apply. Diff ignores this field; token 0 is generation-zero /
-    # image-default / inherited camera state. None is never an unchecked write.
     expected_revision_id: int | None = Field(default=None, ge=0)
 
 
@@ -177,11 +150,6 @@ def get_detection_policies(
     facility_id = _require_enrolled_facility(request.app)
     store = _policy_store(request.app)
     registry = _registry(request.app)
-    # Kept as-is on purpose. Omitting unmapped cameras here drops them from the
-    # resolved policy bundle, which pairs with the worker-config projection that
-    # still serves them; a camera the worker watches but has no policy for is a
-    # second failure mode, not a fix. The issue #308 Hub-boundary fix belongs at
-    # the relay/report path -- tracked as a review blocker on this goal.
     camera_ids = tuple(
         PolicyCameraIdentity(str(record.get("backend_camera_id") or record["id"]))
         for record in registry.snapshot()["cameras"]
@@ -327,9 +295,6 @@ def rollback_detection_policy(
 
 def _to_domain_setting(payload: DomainSettingPayload) -> DomainDetectionSetting:
     if payload.mode == "always":
-        # Normalize away any stray start/end sent alongside mode=always so
-        # persisted state always matches the GET shape for an always-on
-        # domain (start/end null), regardless of what the client submitted.
         return DomainDetectionSetting(on=payload.on, mode="always", start=None, end=None)
     return DomainDetectionSetting(
         on=payload.on, mode="window", start=payload.start, end=payload.end
@@ -337,9 +302,6 @@ def _to_domain_setting(payload: DomainSettingPayload) -> DomainDetectionSetting:
 
 
 def current_settings_snapshot(app: FastAPI) -> dict[str, dict[str, object]]:
-    """The effective per-domain settings dict used by both the GET response
-    and (indirectly, via the same defaulting rule) documented for
-    ``cameras.router.worker_config_snapshot``'s local-override merge."""
     stored = _store(app).get_all()
     pulled = getattr(app.state, "pulled_config", None)
     result: dict[str, dict[str, object]] = {}

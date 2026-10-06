@@ -1,5 +1,3 @@
-"""Bounded coverage summary and query-truth availability ranges."""
-
 from __future__ import annotations
 
 from bisect import bisect_right
@@ -107,9 +105,6 @@ def downgrade_terminal_certainty(
     exact: bool,
     cause: str,
 ) -> None:
-    # Coverage may arrive after a watermark or be coarsened after pruning.
-    # Lower terminal certainty in this same transaction; never reopen a unit
-    # or upgrade a forced/previously unknown terminal to a known state.
     unknown = kind is not CoverageKind.MISSING_NOT_RECORDED or not exact
     connection.execute(
         """
@@ -181,18 +176,6 @@ def queryable_range(connection: psycopg.Connection, camera_id: str) -> Queryable
 def availability(
     connection: psycopg.Connection, camera_id: str, from_ns: int, to_ns: int
 ) -> tuple[AvailabilityRange, ...]:
-    """Paint the query window with the five availability words.
-
-    AVAILABLE is a *span*, not an instant: two consecutive records of one
-    (boot, producer) lane with adjacent ``producer_sequence`` prove nothing was
-    lost between them (the worker counts every drop as a coverage gap), so the
-    whole interval between them is available. That is an exact rule with no
-    cadence threshold. A sequence discontinuity, a lane boundary, or the edge
-    of the retained evidence ends a span. Everything else inside the retained
-    bounds is painted from coverage rows (MISSING_NOT_RECORDED /
-    DELETED_BY_CAPACITY exact, UNKNOWN_COARSENED otherwise) or is UNKNOWN;
-    outside the bounds it is UNKNOWN.
-    """
     if to_ns < from_ns:
         return ()
     rows = connection.execute(
@@ -255,11 +238,6 @@ def availability(
 
 
 def _lane_spans(rows: list[tuple[object, ...]]) -> list[tuple[int, int]]:
-    """[from, to] spans of contiguous producer_sequence within one lane.
-
-    ``rows`` are ordered by (boot, producer, producer_sequence). A single
-    record is a zero-length span at its own time.
-    """
     spans: list[tuple[int, int]] = []
     lane: tuple[object, object] | None = None
     span_from = span_to = 0
@@ -283,7 +261,6 @@ def _lane_spans(rows: list[tuple[object, ...]]) -> list[tuple[int, int]]:
 
 
 def _merge(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
-    """Union of spans across lanes: any lane available makes the time available."""
     merged: list[tuple[int, int]] = []
     for span_from, span_to in sorted(spans):
         if merged and span_from <= merged[-1][1] + 1:
@@ -303,8 +280,6 @@ def _atom_kind(
 ) -> AvailabilityKind:
     if earliest is None or latest is None or last < earliest or start > latest:
         return AvailabilityKind.UNKNOWN
-    # ``available`` is sorted and disjoint; an atom never straddles a span
-    # boundary because every boundary is an endpoint.
     index = bisect_right(available, (start, _INF)) - 1
     if index >= 0 and available[index][0] <= start and last <= available[index][1]:
         return AvailabilityKind.AVAILABLE

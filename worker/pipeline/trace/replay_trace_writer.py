@@ -1,5 +1,3 @@
-"""Bounded append-only production replay trace sink."""
-
 from __future__ import annotations
 
 import hashlib
@@ -12,8 +10,6 @@ DEFAULT_ROTATION_COUNT = 3
 
 
 class ReplayTraceWriter:
-    """Append rows to one camera file while retaining a bounded rotated history."""
-
     def __init__(
         self,
         directory: Path,

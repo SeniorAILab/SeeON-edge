@@ -1,5 +1,3 @@
-"""Dashboard GET/PUT API tests for connection settings."""
-
 from __future__ import annotations
 
 from http.server import ThreadingHTTPServer
@@ -19,10 +17,6 @@ from tests_support.connection_api import login as _login
 from tests_support.postgres_sandbox import ProductSandbox
 
 pytest_plugins = ("tests_support.postgres_sandbox",)
-
-# --------------------------------------------------------------------------
-# GET /connection
-# --------------------------------------------------------------------------
 
 
 def test_get_connection_requires_auth(
@@ -91,7 +85,6 @@ def test_get_connection_heartbeat_relay_absent_state_reads_disabled_with_nulls(
     postgres_audit_runtime: PostgresAuditRuntime,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # no_lifespan test apps never populate backend_heartbeat_relay_state.
     client = _client(postgres_product_sandbox, postgres_audit_runtime, monkeypatch)
     _login(client)
     response = client.get("/api/v1/connection")
@@ -113,7 +106,7 @@ def test_get_connection_heartbeat_relay_reflects_state_and_maps_korean_detail(
 
     client = _client(postgres_product_sandbox, postgres_audit_runtime, monkeypatch)
     _login(client)
-    client.app.state.backend_heartbeat_relay_task = object()  # loop "configured"
+    client.app.state.backend_heartbeat_relay_task = object()
     client.app.state.backend_heartbeat_relay_state = HeartbeatRelayState(
         last_error_class="auth", last_success_at="2026-01-01T00:00:00.000Z"
     )
@@ -138,7 +131,7 @@ def test_get_connection_heartbeat_relay_task_none_reads_disabled_even_with_state
 
     client = _client(postgres_product_sandbox, postgres_audit_runtime, monkeypatch)
     _login(client)
-    client.app.state.backend_heartbeat_relay_task = None  # disabled via env kill-switch
+    client.app.state.backend_heartbeat_relay_task = None
     client.app.state.backend_heartbeat_relay_state = HeartbeatRelayState()
 
     response = client.get("/api/v1/connection")
@@ -149,11 +142,6 @@ def test_get_connection_heartbeat_relay_task_none_reads_disabled_even_with_state
     assert body["enabled"] is False
     assert body["last_error_class"] is None
     assert body["detail"] is None
-
-
-# --------------------------------------------------------------------------
-# PUT /connection enrollment
-# --------------------------------------------------------------------------
 
 
 def test_put_connection_requires_auth(

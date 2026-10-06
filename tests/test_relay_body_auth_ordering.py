@@ -1,5 +1,3 @@
-"""Relay body bounds and auth run before expensive JSON parse work."""
-
 from __future__ import annotations
 
 import json
@@ -91,17 +89,12 @@ def test_authorized_small_heartbeat_is_accepted(app_with_camera: FastAPI) -> Non
 
 
 def test_authorize_relay_non_ascii_token_compares_constant_time_without_typeerror() -> None:
-    # hmac.compare_digest raises TypeError on non-ASCII str; the auth path must
-    # encode both sides to UTF-8 bytes first. A matching non-ASCII token
-    # authorizes; a mismatch is 403, never a 500. Exercised as a direct call
-    # (an HTTP header is a Latin-1 channel and could never carry a CJK token),
-    # matching test_api_camera_registry's _authorize_worker convention.
     from backend.app.features.relay.auth import authorize_relay
 
     state = SimpleNamespace(edge_relay_token="중계-토큰")
     request = SimpleNamespace(app=SimpleNamespace(state=state))
 
-    authorize_relay(request, "중계-토큰")  # must not raise
+    authorize_relay(request, "중계-토큰")
 
     with pytest.raises(HTTPException) as exc_info:
         authorize_relay(request, "wrong-token")
@@ -109,7 +102,6 @@ def test_authorize_relay_non_ascii_token_compares_constant_time_without_typeerro
 
 
 def _oversized_chunks(total_bytes: int, *, chunk: int = 512) -> Iterator[bytes]:
-    """Stream ``total_bytes`` of body with no Content-Length (chunked)."""
     sent = 0
     while sent < total_bytes:
         step = min(chunk, total_bytes - sent)
@@ -120,10 +112,6 @@ def _oversized_chunks(total_bytes: int, *, chunk: int = 512) -> Iterator[bytes]:
 def test_chunked_oversized_body_without_content_length_is_rejected(
     app_with_camera: FastAPI,
 ) -> None:
-    # httpx streams a generator body as Transfer-Encoding: chunked with no
-    # Content-Length, so the cheap header pre-check cannot catch it -- only the
-    # BoundedBodyRoute streaming bound can. Body far exceeds the 4 KiB heartbeat
-    # cap and must never be fully buffered for the Pydantic parse.
     over = relay_router.MAX_RELAY_HEARTBEAT_BODY_BYTES + 4096
     with TestClient(app_with_camera) as client:
         response = client.post(
@@ -141,8 +129,6 @@ def test_chunked_body_without_content_length_is_accepted(app_with_camera: FastAP
     body = json.dumps({"camera_id": "cam-1", "facility_id": "fac-1"}).encode("utf-8")
 
     def _stream() -> Iterator[bytes]:
-        # Two chunks, no Content-Length: proves the bounded read caches the body
-        # so the Pydantic model still parses the reassembled payload.
         yield body[: len(body) // 2]
         yield body[len(body) // 2 :]
 
@@ -162,8 +148,6 @@ def test_chunked_body_without_content_length_is_accepted(app_with_camera: FastAP
 def test_unauthorized_within_limit_body_is_rejected_before_pydantic_parse(
     app_with_camera: FastAPI,
 ) -> None:
-    # A within-limit body is read fine, then the auth dependency rejects the
-    # missing token (401) before the payload is validated -- auth-before-parse.
     with TestClient(app_with_camera) as client:
         response = client.post(
             "/api/v1/relay/heartbeat",
@@ -176,9 +160,6 @@ def test_unauthorized_within_limit_body_is_rejected_before_pydantic_parse(
 def test_unauthorized_oversized_chunked_body_is_rejected_at_transport_bound(
     app_with_camera: FastAPI,
 ) -> None:
-    # The body bound lives at the route boundary, so an oversized chunked body is
-    # rejected (413) before it is fully buffered -- an unauthenticated caller
-    # cannot force the server to buffer megabytes just to reach the 401.
     over = relay_router.MAX_RELAY_HEARTBEAT_BODY_BYTES + 4096
     with TestClient(app_with_camera) as client:
         response = client.post(
@@ -190,8 +171,6 @@ def test_unauthorized_oversized_chunked_body_is_rejected_at_transport_bound(
 
 
 class _StartupSignalServer(uvicorn.Server):
-    """uvicorn server that signals an event once its sockets are listening."""
-
     def __init__(self, config: uvicorn.Config) -> None:
         super().__init__(config)
         self.listening = threading.Event()
@@ -203,8 +182,6 @@ class _StartupSignalServer(uvicorn.Server):
 
 
 class _LiveApp:
-    """A relay app served by real uvicorn so bodies traverse a real socket."""
-
     def __init__(self, app: FastAPI) -> None:
         self.port = _free_tcp_port()
         config = uvicorn.Config(

@@ -1,24 +1,3 @@
-"""RTSP/RTSPS destination policy shared by API admission and worker probe.
-
-Only ``rtsp`` / ``rtsps`` absolute URLs are accepted. Destinations in the
-loopback, link-local, multicast, unspecified, metadata, and private ranges are
-rejected unless an explicit process allowance is enabled:
-
-* ``ML_RTSP_ALLOW_PRIVATE_DESTINATIONS=1`` -- RFC1918 / CGNAT private unicast
-  (typical on-LAN cameras at a facility).
-* ``ML_RTSP_ALLOW_LOCAL_DESTINATIONS=1`` -- loopback + link-local + private,
-  for local RTSP fixture QA only (never a production default).
-
-Literal IP hosts are classified directly. Non-literal hostnames are admitted
-only after every A/AAAA answer is checked against the same IP policy
-(``resolve_rtsp_endpoint``). Connect/probe callers should open the returned
-pinned IP URL so the decoder cannot re-resolve and TOCTOU/DNS-rebind past
-the check. Metadata and link-local answers stay denied even when
-``ML_RTSP_ALLOW_PRIVATE_DESTINATIONS=1``. Camera credentials in userinfo are
-permitted (RTSP cameras require them) and are never used for destination
-classification.
-"""
-
 from __future__ import annotations
 
 import ipaddress
@@ -46,7 +25,6 @@ _SPECIAL_HOSTNAMES: Final = frozenset(
         "instance-data.",
     }
 )
-# Cloud/instance metadata IPv6 uniquely-local range used by several clouds.
 _METADATA_NETWORKS: Final = (
     ipaddress.ip_network("169.254.169.254/32"),
     ipaddress.ip_network("fd00:ec2::254/128"),
@@ -57,8 +35,6 @@ HostAddressResolver = Callable[[str], Sequence[str]]
 
 @dataclass(frozen=True, slots=True)
 class ResolvedRtspEndpoint:
-    """Policy-checked RTSP destination with a connect-time pinned IP URL."""
-
     original_url: str
     pinned_url: str
     hostname: str
@@ -75,8 +51,6 @@ def allow_local_rtsp_from_env() -> bool:
 
 
 def _hostname(netloc: str) -> str:
-    """Host from a URL netloc with userinfo and port stripped."""
-
     _, _, hostport = netloc.rpartition("@")
     host = hostport
     if host.startswith("["):
@@ -88,8 +62,6 @@ def _hostname(netloc: str) -> str:
 
 
 def _port_suffix(netloc: str) -> str:
-    """Return ``:port`` from netloc when present, else empty string."""
-
     _, _, hostport = netloc.rpartition("@")
     if hostport.startswith("["):
         end = hostport.find("]")
@@ -128,12 +100,9 @@ def _is_blocked_ip(
             return None
         return "loopback destination is not permitted"
     if address.is_link_local:
-        # Link-local stays denied under PRIVATE-only facility opt-in; only the
-        # local-fixture flag admits it (and never metadata, checked above).
         if allow_local:
             return None
         return "link-local destination is not permitted"
-    # is_private covers RFC1918 and unique-local IPv6; CGNAT is separate.
     if address.is_private or address in ipaddress.ip_network("100.64.0.0/10"):
         if allow_private or allow_local:
             return None
@@ -149,12 +118,6 @@ def _literal_ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | No
 
 
 def resolve_host_a_aaaa(hostname: str) -> tuple[str, ...]:
-    """Resolve every A/AAAA answer for ``hostname`` (deduped, order preserved).
-
-    Injectable at call sites and via monkeypatch in tests. Raises ``OSError``
-    when the platform resolver fails.
-    """
-
     cleaned = hostname.strip()
     if not cleaned:
         return ()
@@ -188,8 +151,6 @@ def reject_resolved_addresses_reason(
     allow_private: bool | None = None,
     allow_local: bool | None = None,
 ) -> str | None:
-    """Reject when the answer set is empty or any answer violates IP policy."""
-
     if not addresses:
         return "rtsp destination could not be resolved"
     private = allow_private if allow_private is not None else allow_private_rtsp_from_env()
@@ -221,14 +182,6 @@ def reject_rtsp_url_reason(
     allow_private: bool | None = None,
     allow_local: bool | None = None,
 ) -> str | None:
-    """Return a human-readable rejection reason, or ``None`` when allowed.
-
-    This is the static/literal check (scheme, syntax, special names, IP
-    literals). Hostnames that are not on the special deny list return
-    ``None`` here; connect/probe callers must use ``resolve_rtsp_endpoint``
-    so DNS answers are enforced before open.
-    """
-
     cleaned = (url or "").strip()
     if not cleaned:
         return "rtsp URL is empty"
@@ -256,7 +209,6 @@ def reject_rtsp_url_reason(
         return "special hostname destination is not permitted"
     address = _literal_ip(host)
     if address is None:
-        # Non-literal hostname: deferred to resolve_rtsp_endpoint.
         return None
     return _is_blocked_ip(address, allow_private=private, allow_local=local)
 
@@ -268,15 +220,6 @@ def resolve_rtsp_endpoint(
     allow_local: bool | None = None,
     resolver: HostAddressResolver | None = None,
 ) -> ResolvedRtspEndpoint:
-    """Validate, resolve every A/AAAA answer, and pin a single connect URL.
-
-    Raises ``ValueError`` when the URL fails static policy, resolution fails,
-    the answer set is empty, or **any** answer violates IP policy (including
-    metadata/link-local under PRIVATE-only opt-in). The returned
-    ``pinned_url`` replaces the hostname with the selected IP literal so
-    decoder stacks that re-resolve hostnames cannot bypass the check.
-    """
-
     cleaned = (url or "").strip()
     reason = reject_rtsp_url_reason(
         cleaned,
@@ -333,12 +276,6 @@ def assert_rtsp_url_allowed(
     allow_private: bool | None = None,
     allow_local: bool | None = None,
 ) -> str:
-    """Return the stripped URL or raise ``ValueError`` with the rejection reason.
-
-    Static/literal admission only. Prefer ``resolve_rtsp_endpoint`` at
-    connect, probe, and API store boundaries that must honor DNS answers.
-    """
-
     cleaned = (url or "").strip()
     reason = reject_rtsp_url_reason(cleaned, allow_private=allow_private, allow_local=allow_local)
     if reason is not None:
@@ -353,8 +290,6 @@ def assert_rtsp_endpoint_allowed(
     allow_local: bool | None = None,
     resolver: HostAddressResolver | None = None,
 ) -> ResolvedRtspEndpoint:
-    """Resolve-and-pin admission used by API probe/store and worker open/probe."""
-
     return resolve_rtsp_endpoint(
         url,
         allow_private=allow_private,

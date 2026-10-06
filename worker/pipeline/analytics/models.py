@@ -29,8 +29,6 @@ class InvalidExtractorSpecError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class ExtractorSpec:
-    """Name one analytics result and the serving task that provisions it."""
-
     module_name: str
     task: str
     options: tuple[tuple[str, ServingOption], ...] = ()
@@ -38,8 +36,6 @@ class ExtractorSpec:
 
 @dataclass(frozen=True, slots=True)
 class NamedExtractor:
-    """Adapt one shared runner while preserving identity and output semantics."""
-
     module_name: str
     runner: RunnerProtocol = field(compare=False, hash=False, repr=False)
     _call: RunnerCall = field(compare=False, hash=False, repr=False)
@@ -64,7 +60,6 @@ def provision_extractors(
     *,
     clock: Clock = perf_counter,
 ) -> tuple[NamedExtractor, ...]:
-    """Validate all names, then provision each shared runner exactly once."""
     frozen_specs = tuple(specs)
     ensure_unique_module_names(tuple(spec.module_name for spec in frozen_specs))
     for spec in frozen_specs:

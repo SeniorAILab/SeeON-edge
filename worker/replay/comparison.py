@@ -1,12 +1,3 @@
-"""Structured, machine-consumed comparison between two deterministic replays.
-
-Compares event count/onset/probability, containment/state transitions, and
-per-frame decision snapshots between an original captured run and a replayed
-run, or between two replayed runs (A/B across policy/module/profile
-revisions). Every difference carries an explicit, finite reason -- never a
-free-text diff.
-"""
-
 from __future__ import annotations
 
 import json
@@ -53,8 +44,6 @@ class FrameMismatch:
 
 @dataclass(frozen=True, slots=True)
 class ReplayComparison:
-    """Deterministic, order-independent comparison summary between two runs."""
-
     baseline_effective_policy_id: str
     candidate_effective_policy_id: str
     baseline_event_count: int
@@ -84,14 +73,6 @@ _RUN_LEVEL_FRAME_KEY: tuple[str, str, int, int] = ("", "", -1, -1)
 
 
 def compare_runs(baseline: ReplayRun, candidate: ReplayRun) -> ReplayComparison:
-    """Compare two replay runs of the same camera trace frame-by-frame.
-
-    Both runs must have replayed the same ordered frame-key sequence (the
-    normal case: two policy/module revisions over one recovered camera
-    trace). A frame key present in one run but not the other is itself a
-    structured mismatch, not a silent skip. Snapshot and event extras are
-    never dropped via non-strict zip -- cardinality is an explicit reason.
-    """
     mismatches: list[FrameMismatch] = []
     if baseline.reproducible != candidate.reproducible or (
         baseline.non_reproducible_reason != candidate.non_reproducible_reason

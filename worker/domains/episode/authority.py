@@ -1,5 +1,3 @@
-"""Episode lifecycle and exact-once event authority for fall and bed exit."""
-
 from __future__ import annotations
 
 from collections import deque
@@ -10,8 +8,6 @@ from worker.types import BusinessEvent
 
 
 class ProposalDisposition(StrEnum):
-    """Why the last ``propose`` did or did not emit. Finite, for trace reasons."""
-
     EMITTED = "emitted"
     REASSOCIATED = "reassociated"
     ALREADY_OPEN = "already-open"
@@ -58,12 +54,6 @@ class _Episode:
 
 
 class EpisodeAuthority:
-    """Per-camera authority for event lifecycle, identity, and re-association.
-
-    Track loss deliberately moves an open episode to UNKNOWN rather than
-    resolving it. Only a scored confirmed recovery can re-arm RESOLVED.
-    """
-
     def __init__(self, *, boot_id: str, stream_epoch: str, source_generation: int) -> None:
         self._boot_id = boot_id
         self._stream_epoch = stream_epoch
@@ -87,7 +77,6 @@ class EpisodeAuthority:
         key = (proposal.camera_id, proposal.event_type, proposal.bed_id, proposal.track_id)
         episode = self._episodes.setdefault(key, _Episode())
         if episode.state is EpisodeState.UNKNOWN:
-            # Same id returning is re-association, never a second onset.
             if self._within_reassociation(episode, proposal):
                 episode.state = EpisodeState.OPEN
                 self.last_disposition = ProposalDisposition.REASSOCIATED
@@ -102,8 +91,6 @@ class EpisodeAuthority:
                 return ()
         if episode.state is EpisodeState.OPEN:
             if proposal.confirmed_recovery:
-                # A recovery is the sole re-arm signal.  RESOLVED is retained
-                # for unresolved loss/timeout, which must not re-arm.
                 episode.state = EpisodeState.NORMAL
                 episode.votes.clear()
                 self.last_disposition = ProposalDisposition.RECOVERY
@@ -152,7 +139,6 @@ class EpisodeAuthority:
         )
 
     def release(self, event: BusinessEvent) -> None:
-        """Reopen exactly the episode whose emitted event failed durable staging."""
         for episode in self._episodes.values():
             if episode.emitted_identity != event.identity:
                 continue
@@ -196,7 +182,6 @@ class EpisodeAuthority:
         return True
 
     def reassociate_bed_exit(self, proposal: EpisodeProposal) -> bool:
-        """Absorb one unknown bed-exit episode for the same bed into a new track."""
         candidates = sorted(
             track_id
             for (camera_id, event_type, bed_id, track_id), episode in self._episodes.items()
@@ -211,7 +196,6 @@ class EpisodeAuthority:
         return bool(candidates) and self.reassociate(proposal, candidates[0])
 
     def reassociate_fall(self, proposal: EpisodeProposal) -> bool:
-        """Absorb one unknown fall episode into a newly observed track."""
         candidates = sorted(
             track_id
             for (camera_id, event_type, bed_id, track_id), episode in self._episodes.items()
@@ -246,13 +230,6 @@ class EpisodeAuthority:
 
 
 def suppression_reason(disposition: ProposalDisposition | None) -> str | None:
-    """Compiled trace reason for a QUALIFYING onset the authority declined.
-
-    Returns None for dispositions that are not a suppression of an onset
-    (emitted, recovery, not-qualifying, or no proposal): callers keep the
-    snapshot's ordinary reason. This is the single mapping shared by every
-    domain; do not duplicate it.
-    """
     if disposition is ProposalDisposition.ALREADY_OPEN:
         return "episode-already-open"
     if disposition is ProposalDisposition.REASSOCIATED:

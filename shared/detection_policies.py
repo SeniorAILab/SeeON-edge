@@ -1,10 +1,3 @@
-"""Typed, versioned numeric policies shared by the edge API and worker.
-
-The wire parser is deliberately closed: qualified module identity, policy schema,
-field set, numeric type/range, cross-field constraints, and content identity are
-parsed together. Unknown or drifted documents never degrade into defaults.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -19,13 +12,11 @@ PolicySource: TypeAlias = Literal["image-default", "facility-default", "camera-o
 
 
 class PolicyDocumentError(ValueError):
-    """A policy boundary could not be parsed into a supported typed policy."""
+    ...
 
 
 @dataclass(frozen=True, slots=True)
 class FallPolicyV2:
-    """Frozen inactive fall-candidate temporal policy, not a policy document."""
-
     transition_threshold: float = 0.5
     transition_votes: int = 3
     transition_window: int = 5
@@ -279,13 +270,6 @@ def make_effective_policy(
 
 
 def _policy_source(value: object) -> PolicySource:
-    """Narrow an untyped document field to PolicySource, or reject it.
-
-    Returning each literal directly is what actually narrows the type. A set
-    membership test does not narrow, and a cast would only assert the narrowing
-    instead of establishing it -- mypy flagged that cast as redundant while the
-    value stayed a plain str at the call site.
-    """
     if value == "image-default":
         return "image-default"
     if value == "facility-default":

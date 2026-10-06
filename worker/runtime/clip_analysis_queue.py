@@ -1,5 +1,3 @@
-"""Bounded FIFO ownership for pending clip-analysis jobs."""
-
 from __future__ import annotations
 
 from collections import deque
@@ -26,8 +24,6 @@ class Admitted:
 
 
 class ClipAnalysisQueue:
-    """A bounded, de-duplicated queue whose head can accept manual work."""
-
     def __init__(self, capacity: int = 64) -> None:
         if capacity <= 0:
             raise ValueError("capacity must be positive")
@@ -59,7 +55,6 @@ class ClipAnalysisQueue:
         return Admitted(Admission.QUEUED, evicted)
 
     def add(self, job: ClipAnalysisJob, *, front: bool) -> Admission:
-        """Return only the admission kind for legacy callers."""
         return self.push(job, front=front).kind
 
     def _evict_tail_automatic(self) -> ClipAnalysisJob | None:

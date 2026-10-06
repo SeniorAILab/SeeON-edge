@@ -1,5 +1,3 @@
-"""Native snapshot-owner contracts; not HTTP/lifespan or transport qualification."""
-
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -364,8 +362,6 @@ def test_deferred_commit_rejection_rolls_back_callback_and_artifact(
 def test_owner_return_loss_preserves_failure_without_replay(
     projection, postgres_product_sandbox, monkeypatch, kind, outcome
 ):
-    """Inject after real COMMIT/exit; this does not simulate wire/pool loss."""
-
     class Cancelled(BaseException):
         pass
 
@@ -481,8 +477,6 @@ def test_outbox_preserves_conflict_boundary_for_a_preprojected_incident(
     sandbox = postgres_product_sandbox
 
     def seed_existing_fact(connection):
-        # A preprojected incident has no new outbox envelope to short-circuit
-        # comparison. This real row exercises the extracted SQL's conflict path.
         require_authority(connection, sandbox.authority)
         connection.execute(
             "INSERT INTO incidents (incident_id,edge_event_id,facility_id,camera_id,"

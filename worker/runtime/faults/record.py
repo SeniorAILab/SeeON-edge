@@ -1,5 +1,3 @@
-"""Best-effort first-fault publication on the durable delivery queue."""
-
 from __future__ import annotations
 
 import hashlib
@@ -56,7 +54,7 @@ def _frame_hash(image: object) -> str | None:
 
         if isinstance(image, np.ndarray):
             return hashlib.sha256(image.tobytes()).hexdigest()
-    except Exception:  # noqa: BLE001 S110
+    except Exception:  # noqa: BLE001, S110
         pass
     return None
 
@@ -68,7 +66,6 @@ def _truncate_message(message: str) -> str:
 
 
 def persist_first_fault(record: FirstFaultRecord, *, state_dir: Path | None = None) -> bool:
-    """Schedule a first-fault queue admission without delaying fatal exit."""
     global _written
     with _write_lock:
         if _written:
@@ -136,7 +133,7 @@ def make_fault_record(
 
         if isinstance(image, np.ndarray):
             frame_shape = tuple(image.shape)
-    except Exception:  # noqa: BLE001 S110
+    except Exception:  # noqa: BLE001, S110
         pass
     return FirstFaultRecord(
         pid=os.getpid(),

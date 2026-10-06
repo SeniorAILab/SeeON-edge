@@ -1,5 +1,3 @@
-"""Audit process session identity shared by the PostgreSQL session owner."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass

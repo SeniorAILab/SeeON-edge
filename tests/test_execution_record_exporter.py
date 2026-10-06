@@ -1,5 +1,3 @@
-"""Exporter batches lanes and reports export-failed gaps after a drop."""
-
 from __future__ import annotations
 
 import logging
@@ -142,7 +140,6 @@ def _sequences(batches: list[WireBatch]) -> list[int]:
 
 
 def _exact_cap_record(seq: int) -> WireRecord:
-    """One-record batch whose UTF-8 body is exactly the client cap, using multibyte text."""
     unit = "가"
     low, high, best = 0, 400_000, 0
     while low <= high:
@@ -162,10 +159,6 @@ def _exact_cap_record(seq: int) -> WireRecord:
     record = _record(seq, payload={"m": unit * best + "a" * pad})
     assert _batch_len((record,)) == MAX_EXECUTION_RECORD_BODY_BYTES
     return record
-
-
-# Issue 598 repros. Select with: pytest -k test_598_
-# Failure-before and pass-after are verified separately against exact source.
 
 
 def test_598_multibyte_payload_near_exact_byte_cap_stays_bounded() -> None:
@@ -591,7 +584,6 @@ def test_failed_flush_restores_current_normalized_gap_not_invalid_record(
 
 def test_598_client_exception_does_not_drop_later_chunk() -> None:
     lanes = ExecutionRecordLanes(lane_capacity=4)
-    # Sequences 0 and 1, each alone under the cap and together over it.
     first = _record(0, payload={"blob": "c" * 700_000})
     second = _record(1, payload={"blob": "c" * 700_000})
     assert _batch_len((first,)) <= MAX_EXECUTION_RECORD_BODY_BYTES

@@ -1,12 +1,3 @@
-"""The preserved-sidecar archival transaction never destroys an unarchived source.
-
-Each test forces one of the loss paths the transaction exists to close and
-asserts the same invariant: on failure, every source is still present and
-byte-identical. Hash comparison alone cannot prove that, which is why these
-cases inject aliasing, durability, and clobber failures rather than only
-checking the happy path.
-"""
-
 from __future__ import annotations
 
 import os
@@ -71,16 +62,13 @@ def test_happy_path_archives_every_file_and_publishes_a_matching_manifest(
     entries = load_manifest(manifest_path)
     assert len(entries) == len(sources)
     for entry in entries:
-        # The archived copy is independent of its source and digests identically.
         assert entry.destination.is_file()
         assert not entry.destination.is_symlink()
         assert digest_and_size(entry.destination) == (entry.sha256, entry.size_bytes)
         assert before[entry.source] == (entry.sha256, entry.size_bytes)
         assert os.stat(entry.destination).st_ino != os.stat(entry.source).st_ino
 
-    # Archival alone never touches a source.
     _assert_sources_untouched(sources, before)
-    # And the pre-destruction re-verification passes on an untouched batch.
     assert len(verify_batch(manifest_path)) == len(sources)
 
 
@@ -89,8 +77,6 @@ def test_symlink_destination_pointing_back_at_the_source_is_refused(
 ) -> None:
     before = _snapshot(sources)
     archive_root.mkdir(parents=True)
-    # The classic aliasing trap: the archive entry is a symlink back into the
-    # worktree, so a naive copy-then-compare would digest-match its own source.
     (archive_root / sources[0].name).symlink_to(sources[0])
 
     with pytest.raises(ArchivalError):
@@ -133,14 +119,12 @@ def test_source_drift_after_archival_halts_before_any_destruction(
     sources: list[Path], archive_root: Path
 ) -> None:
     manifest_path, _ = archive_batch(sources, archive_root)
-    # Someone edits a source in the window between archival and destruction.
     sources[1].write_bytes(b"edited after the archive was taken\n")
     after_drift = _snapshot(sources)
 
     with pytest.raises(ArchivalError):
         verify_batch(manifest_path)
 
-    # The drifted source, and every other source, survives untouched.
     _assert_sources_untouched(sources, after_drift)
 
 
@@ -183,7 +167,6 @@ def test_destruction_only_runs_after_verification_passes(
 
     def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
         calls.append(command)
-        # Simulate `git restore` returning the tracked file to HEAD content.
         sources[0].write_bytes(b"HEAD content\n")
         return subprocess.CompletedProcess(command, 0, "", "")
 
@@ -196,7 +179,6 @@ def test_destruction_only_runs_after_verification_passes(
     assert sources[0].read_bytes() == b"HEAD content\n"
     for path in untracked:
         assert not path.exists(), f"untracked source not removed: {path}"
-    # The archive still holds every original.
     for entry in load_manifest(manifest_path):
         assert digest_and_size(entry.destination) == (entry.sha256, entry.size_bytes)
 

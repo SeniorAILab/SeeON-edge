@@ -1,5 +1,3 @@
-"""Post-exec safety bootstrap for clip re-analysis children."""
-
 from __future__ import annotations
 
 import ctypes
@@ -9,11 +7,11 @@ import threading
 
 
 class ClipAnalysisPdeathsigUnavailable(RuntimeError):
-    """The host cannot guarantee that orphaned analysis children die."""
+    ...
 
 
 class ClipAnalysisBootstrapError(RuntimeError):
-    """The child cannot establish its required execution boundary."""
+    ...
 
 
 def require_pdeathsig() -> None:
@@ -24,14 +22,9 @@ def require_pdeathsig() -> None:
 
 
 def bootstrap_child(*, expected_parent: int, cpu_index: int, control_fd: int) -> None:
-    """Arm orphan protection before importing analysis/native runtime modules.
-
-    This function deliberately uses only the standard library and libc.  It exits
-    directly because the tool process is untrusted until this boundary is armed.
-    """
     try:
         _arm_lifetime(expected_parent, cpu_index)
-    except Exception:  # noqa: BLE001 - an unarmed child must die, whatever failed
+    except Exception:  # noqa: BLE001
         os._exit(3)
 
     def watch_control_pipe() -> None:

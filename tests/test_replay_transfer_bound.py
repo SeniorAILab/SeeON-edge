@@ -1,18 +1,3 @@
-"""A full retained timeline must actually transfer, not just a small fixture.
-
-The replay body cap was a bare 4 MiB constant while trace retention permitted
-3,000 frames per camera. A fully retained timeline measures 8.36 MiB, so the
-long window a fall investigation needs was refused at the boundary while short
-traces sailed through. A cap that silently excludes the interesting inputs is a
-fake capability: the tests pass, the feature demos, and the one case it exists
-for fails in production.
-
-The bound is now derived from the retention limit and both ends read the same
-value, so the two cannot drift. These tests pin that a maximum-size timeline
-fits, and that the derivation is real rather than a coincidentally larger
-literal.
-"""
-
 from __future__ import annotations
 
 from typing import Any
@@ -41,7 +26,6 @@ _TRUNCATION: dict[str, Any] = {
 
 
 def _frame(index: int) -> dict[str, Any]:
-    """A densely populated frame: two tracked people, a bed, three components."""
     return {
         "trace_id": f"trace-{index:06d}",
         "frame_key": f"key-{index:06d}",
@@ -98,7 +82,6 @@ def _timeline(frames: int) -> ReplayTrace:
 
 
 def test_a_fully_retained_timeline_fits_the_transfer_bound() -> None:
-    """The maximum retention window must transfer, or replay cannot see a fall."""
     encoded = _timeline(MAX_TRACE_FRAMES).canonical_json().encode()
 
     assert len(encoded) <= MAX_REPLAY_BODY_BYTES, (
@@ -109,25 +92,21 @@ def test_a_fully_retained_timeline_fits_the_transfer_bound() -> None:
 
 
 def test_the_bound_is_derived_from_retention_not_chosen() -> None:
-    """A literal would drift the moment retention changes."""
     assert MAX_REPLAY_BODY_BYTES == MAX_TRACE_FRAMES * MAX_TRACE_FRAME_BYTES
 
 
 def test_both_ends_read_the_same_bound() -> None:
-    """A worker that sends more than the backend accepts loses the trace."""
     assert WORKER_CAP == MAX_REPLAY_BODY_BYTES
 
 
 @pytest.mark.parametrize("frames", [1, 100, 1_000, MAX_TRACE_FRAMES])
 def test_timelines_across_the_retention_range_all_fit(frames: int) -> None:
-    """Not just the extremes: nothing in the permitted range may be refused."""
     encoded = _timeline(frames).canonical_json().encode()
 
     assert len(encoded) <= MAX_REPLAY_BODY_BYTES
 
 
 def test_the_per_frame_bound_is_not_optimistic() -> None:
-    """Guard the derivation: a too-small per-frame figure makes the cap a lie."""
     encoded = _timeline(MAX_TRACE_FRAMES).canonical_json().encode()
     observed_per_frame = len(encoded) / MAX_TRACE_FRAMES
 
@@ -151,6 +130,5 @@ def test_product_schema_does_not_grow_runtime_analysis_tables() -> None:
         EXPECTED_TARGET_TABLES,
     )
 
-    # Provisioning checks the PostgreSQL product and diagnostics schemas against these sets.
     tables = EXPECTED_TARGET_TABLES | DIAGNOSTICS_TARGET_TABLES
     assert not any(name.startswith("runtime_analysis_") for name in tables)

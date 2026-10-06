@@ -1,5 +1,3 @@
-"""Bounded HTTP transport and receipt parsing for evidence delivery."""
-
 from __future__ import annotations
 
 import http.client
@@ -34,15 +32,10 @@ MAX_TRANSPORT_ERROR_CHARS = 200
 
 
 class EvidenceClientConfigurationError(ValueError):
-    """Raised when evidence transport configuration is invalid."""
+    ...
 
 
 def _describe_exception(exc: BaseException) -> str:
-    """Render a transport exception's class + message for diagnostic logging.
-
-    Bounded in length -- some socket errors embed the full request URL or a
-    long OS error string, and this value flows straight into log messages.
-    """
     text = f"{type(exc).__name__}: {exc}"
     if len(text) > MAX_TRANSPORT_ERROR_CHARS:
         return text[: MAX_TRANSPORT_ERROR_CHARS - 1] + "…"
@@ -156,17 +149,6 @@ def parse_capabilities(body: bytes) -> BackendCapabilities | DeliveryFailure:
 def classify_http_failure(
     status: int, headers: Mapping[str, str], body: bytes | None = None
 ) -> DeliveryFailure:
-    # 401/403 are ambient auth/facility-config state, not a property of this
-    # specific payload (unlike 400/413/415/422, which are genuinely permanent
-    # -- retrying the exact same bytes cannot change a schema/size rejection).
-    # A wrong or not-yet-provisioned relay token/facility binding gets fixed
-    # out-of-band, and the event is still perfectly valid once it is -- so
-    # dead-lettering it forever turns a recoverable config error into data
-    # loss for no reason (see #183, #202). RETRY already has exactly the
-    # behavior this needs: the entry is deferred and re-polled on the sender's
-    # own tick (about every 1s, see EvidenceExportRuntime._run_sender) without
-    # consuming its attempt budget, indefinitely -- it never gives up on its
-    # own.
     failure_code = _failure_code(body)
     if failure_code is DeliveryFailureCode.CAMERA_MAPPING_MISSING:
         disposition = DeliveryDisposition.RETRY
@@ -242,12 +224,6 @@ def _event_receipt(body: bytes) -> EventReceipt | None:
     if not isinstance(edge_id, str):
         return None
     if status_value == "accepted_local":
-        # The edge backend recorded the event durably and decided it will never
-        # be pushed upstream (no Hub mapping yet, or no cloud client built), so
-        # there is no upstream id to echo and demanding one retries forever.
-        # This is terminal ONLY because the backend said so by name: an absent
-        # or unrecognized status still falls through to MALFORMED_RECEIPT, which
-        # is what a genuinely mangled response deserves.
         return EventReceipt("accepted_local", edge_id, "")
     if status_value != "accepted":
         return None

@@ -17,7 +17,6 @@ CudaProbeSource: TypeAlias = Callable[[], CudaProbe]
 
 
 def probe_cuda(source: CudaProbeSource | None = None) -> CudaProbe:
-    """Return an injected CUDA probe result, failing closed when absent."""
     if source is None:
         return CudaProbe(available=False, reason="CUDA capability probe is not configured")
     return source()

@@ -1,10 +1,3 @@
-"""Deterministic 45-value pose-window features used by trained fall models.
-
-The feature order is model-facing: 34 keypoint velocities, 2 centroid
-displacements, 3 box-aspect statistics, 1 torso tilt, 2 vertical velocities,
-2 torso-height statistics, and 1 motion-energy value.
-"""
-
 from __future__ import annotations
 
 import math
@@ -23,7 +16,6 @@ _D: Final = 45
 
 
 def extract_window_features(window: NDArray[np.float32]) -> NDArray[np.float32]:
-    """Return a finite ``float32[45]`` feature vector for a COCO-17 window."""
     normalized: NDArray[np.float32] = np.asarray(window, dtype=np.float32)
     time_steps = len(normalized)
     keypoint_count = len(normalized[0]) if time_steps > 0 else 0

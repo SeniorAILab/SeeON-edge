@@ -1,5 +1,3 @@
-"""Parse and latest-only latency helpers for API runtime status."""
-
 from __future__ import annotations
 
 import math
@@ -20,10 +18,8 @@ JsonObject: TypeAlias = dict[str, object]
 HealthMap: TypeAlias = dict[tuple[str, str], DetectionHealth]
 
 
-@dataclass(slots=True)  # policy: MUTABLE_OK
+@dataclass(slots=True)
 class LatestLatency:
-    """Process-local first-attempt latency totals. Mutation is the purpose."""
-
     _by_facility: dict[str, JsonObject] = field(default_factory=dict)
 
     def record(self, facility_id: str, detected_at: str, received_at: float) -> None:
@@ -50,14 +46,14 @@ class LatestLatency:
         return None if latency is None else deepcopy(latency)
 
 
-def require_int(value: object, *, field: str) -> int:  # policy: OBJECT_OK, GENERIC_ERR_OK
+def require_int(value: object, *, field: str) -> int:
     parsed = optional_int(value, field=field)
     if parsed is None:
-        raise TypeError(f"runtime status payload has invalid {field}")  # policy: GENERIC_ERR_OK
+        raise TypeError(f"runtime status payload has invalid {field}")
     return parsed
 
 
-def optional_int(value: object, *, field: str) -> int | None:  # policy: OBJECT_OK, GENERIC_ERR_OK
+def optional_int(value: object, *, field: str) -> int | None:
     if value is None:
         return None
     if isinstance(value, bool):

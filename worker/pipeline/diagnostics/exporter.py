@@ -1,5 +1,3 @@
-"""Runtime-owned byte-bounded diagnostic drain; every rejected item is accounted."""
-
 from __future__ import annotations
 
 import logging
@@ -31,8 +29,6 @@ _FAILURE_BACKOFF_SEC = 0.05
 
 
 class ExecutionRecordExporter:
-    """Drain thread. A failed chunk becomes explicit loss, never a model retry."""
-
     def __init__(
         self,
         *,
@@ -82,8 +78,6 @@ class ExecutionRecordExporter:
             return tuple(self._failures)
 
     def flush_once(self) -> None:
-        # One owner holds drained records through delivery or restoration.
-        # This lock is separate from the producers' short append-or-drop lock.
         with self._flush_lock:
             self._had_failure = False
             for camera_id, worker_boot_id in self._lanes.cameras_with_work():
@@ -96,12 +90,10 @@ class ExecutionRecordExporter:
             self._lanes.wait_for_work(timeout_sec=self._flush_sec, batch_max=self._batch_max)
             self.flush_once()
             if self._had_failure:
-                # A gap alone wakes the lane immediately: back off fast failures.
                 self._stop.wait(max(_FAILURE_BACKOFF_SEC, self._flush_sec))
 
     def _post(self, drained: DrainedLane) -> None:
         try:
-            # Derive the envelope from its owner, not a second wire definition.
             body = WireBatch(
                 drained.camera_id,
                 drained.worker_boot_id,
@@ -112,8 +104,7 @@ class ExecutionRecordExporter:
             body["records"] = []
             body["gaps"] = []
             envelope_bytes = len(canonical_json(body).encode())
-        except Exception:  # noqa: BLE001 - malformed diagnostics remain accounted
-            # No record has been selected for an attempted chunk yet.
+        except Exception:  # noqa: BLE001
             self._failed(
                 DrainedLane(drained.camera_id, drained.worker_boot_id, (), drained.gaps),
                 DeliveryFailure(DeliveryDisposition.PERMANENT, "ENCODING_ERROR"),
@@ -124,9 +115,6 @@ class ExecutionRecordExporter:
         records: list[WireRecord] = []
         gaps: list[WireGap] = []
         encoded_bytes = envelope_bytes
-        # Encode each member once for sizing. Arrays have independent commas;
-        # the SHA-256 batch identity always occupies the same 64 bytes.
-        # Commit already-known loss before records can advance lane watermarks.
         items = chain(drained.gaps, drained.records)
         for item in items:
             is_record = isinstance(item, WireRecord)
@@ -138,7 +126,7 @@ class ExecutionRecordExporter:
             )
             try:
                 item_bytes = len(canonical_json(item.to_json()).encode())
-            except Exception:  # noqa: BLE001 - one invalid payload cannot stop later items
+            except Exception:  # noqa: BLE001
                 if not is_record:
                     self._failed(
                         single, DeliveryFailure(DeliveryDisposition.PERMANENT, "ENCODING_ERROR")
@@ -166,8 +154,6 @@ class ExecutionRecordExporter:
                         drained.camera_id, drained.worker_boot_id, tuple(records), tuple(gaps)
                     )
                 ):
-                    # The current item may already be a record-invalid gap.
-                    # Only the failed chunk was attempted; never replay it.
                     self._restore_unattempted(drained, chain((item,), items))
                     return
                 records.clear()
@@ -210,12 +196,12 @@ class ExecutionRecordExporter:
             if len(batch.encode()) > MAX_EXECUTION_RECORD_BODY_BYTES:
                 self._failed(drained, DeliveryFailure(DeliveryDisposition.PERMANENT, "OVERSIZE"))
                 return False
-        except Exception:  # noqa: BLE001 - final serialization validates nested values
+        except Exception:  # noqa: BLE001
             self._failed(drained, DeliveryFailure(DeliveryDisposition.PERMANENT, "ENCODING_ERROR"))
             return False
         try:
             result = self._client.post_batch(batch)
-        except Exception:  # noqa: BLE001 - transport exceptions cannot kill the drain thread
+        except Exception:  # noqa: BLE001
             self._failed(drained, DeliveryFailure(DeliveryDisposition.RETRY, "TRANSPORT_EXCEPTION"))
             return False
         if isinstance(result, DeliveryFailure):

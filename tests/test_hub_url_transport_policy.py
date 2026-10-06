@@ -1,5 +1,3 @@
-"""Hub base / enrollment URL transport policy (HTTPS production contract)."""
-
 from __future__ import annotations
 
 import urllib.request
@@ -38,8 +36,6 @@ _CREDS = EnrollmentCredentials(
 
 @pytest.fixture(autouse=True)
 def production_hub_transport_contract(monkeypatch: pytest.MonkeyPatch) -> None:
-    """HTTPS policy tests must not inherit the suite's insecure-HTTP opt-in."""
-
     monkeypatch.delenv(API_BACKEND_ALLOW_INSECURE_HTTP_ENV, raising=False)
 
 

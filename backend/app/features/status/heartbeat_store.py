@@ -1,16 +1,3 @@
-"""API-owned per-camera heartbeat liveness store.
-
-The worker relays liveness facts to ml-api ``/relay/heartbeat``. ml-api records
-the local ``received_at`` per camera right after relay-token auth -- before
-registry binding is resolved and before any backend egress -- so ``/status``
-reflects edge-local truth that is independent both of backend reachability and
-of whether this camera has been onboarded onto the central backend's own roster
-yet (see #183, #202).
-
-Latest-only memory: a missing or stale observation is explicit. Process restart
-forgets every beat. Nothing here opens SQLite.
-"""
-
 from __future__ import annotations
 
 import threading
@@ -19,7 +6,6 @@ from dataclasses import dataclass, field
 from time import time
 from typing import TypeAlias
 
-# Default staleness window = heartbeat_interval (30s) x3. Configurable per-app.
 DEFAULT_STALE_AFTER_SEC: float = 90.0
 DEFAULT_MAX_CAMERAS: int = 256
 
@@ -41,8 +27,6 @@ class CameraHeartbeat:
 
 @dataclass(slots=True)
 class HeartbeatStore:
-    """Local, app-owned record of the most recent heartbeat per camera."""
-
     stale_after_sec: float = DEFAULT_STALE_AFTER_SEC
     retain_after_sec: float | None = None
     max_cameras: int = DEFAULT_MAX_CAMERAS
@@ -62,9 +46,6 @@ class HeartbeatStore:
         received_at: float | None = None,
         config_version: int | None = None,
     ) -> None:
-        """Record a relayed heartbeat. ``received_at`` is stamped by the caller
-        right after relay-token auth, before camera binding and before any
-        backend egress."""
         with self._lock:
             now = self.clock()
             stamped = now if received_at is None else received_at
@@ -84,13 +65,6 @@ class HeartbeatStore:
         *,
         now: float | None = None,
     ) -> dict[str, object]:
-        """Derive per-camera liveness over the union of expected + seen cameras.
-
-        ``expected_cameras`` is the registry-derived id index (never env
-        inventory). Local truth only: a camera is ``online`` while its last
-        heartbeat age is within ``stale_after_sec``, ``stale`` once it exceeds
-        it, and ``never_seen`` when it is expected but no heartbeat has arrived.
-        """
         with self._lock:
             current = self.clock() if now is None else now
             self._evict_expired_locked(current)
@@ -153,11 +127,6 @@ class HeartbeatStore:
 
 
 def get_heartbeat_store(app: object) -> HeartbeatStore:
-    """Return the app-owned heartbeat store, creating it on first use.
-
-    Lets relay/status routes work under ``no_lifespan`` test apps without a
-    cross-process dependency on the worker.
-    """
     state = _require_app_state(app)
     store = getattr(state, "heartbeat_store", None)
     if not isinstance(store, HeartbeatStore):
@@ -174,7 +143,6 @@ def _require_app_state(app: object) -> object:
 
 
 def _assign_state_attr(state: object, name: str, value: object) -> None:
-    """Write a dynamic app.state attribute without untyped attribute access."""
     inner = getattr(state, "_state", None)
     if isinstance(inner, dict):
         inner[name] = value

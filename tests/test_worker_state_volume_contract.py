@@ -1,20 +1,3 @@
-"""The worker must write its durable queue into the mounted volume.
-
-`resolve_state_dir()` returns `~/.local/state/ml-worker` and deliberately has no
-environment override. Inside a container that is `/root/.local/state/ml-worker`
--- the writable layer. The deployment mounted `worker-local-state` and then
-never told the worker to use it, so every pending evidence envelope lived in the
-container layer and was destroyed by any `--force-recreate`, image update, or
-restart that replaced the container.
-
-That voids the guarantee this entire release unit exists to provide: the durable
-delivery queue replaced runtime SQLite precisely so evidence survives a backend
-outage.
-
-The two views must agree: what the worker is told to use and what Compose mounts
-for it.
-"""
-
 from __future__ import annotations
 
 import re
@@ -39,7 +22,6 @@ def _mount_target(block: str, volume: str) -> str:
 
 
 def test_the_worker_is_told_to_use_its_mounted_state_volume() -> None:
-    """Without an explicit --state-dir the queue lands in the container layer."""
     block = _service_block("ml-worker")
     mounted = _mount_target(block, "worker-local-state")
 
@@ -56,12 +38,6 @@ def test_the_worker_is_told_to_use_its_mounted_state_volume() -> None:
 
 
 def test_the_worker_state_default_is_unsuitable_for_a_container() -> None:
-    """Guard the reasoning: the default really is home-relative.
-
-    If this ever becomes an absolute system path, the explicit --state-dir is
-    still correct but this test's rationale would be stale and should be
-    revisited rather than silently passing.
-    """
     from worker.runtime.state_dir import resolve_state_dir
 
     resolved = resolve_state_dir()
@@ -72,13 +48,6 @@ def test_the_worker_state_default_is_unsuitable_for_a_container() -> None:
 
 
 def test_the_refused_evidence_command_can_actually_be_run() -> None:
-    """A documented command with nowhere to run is not a remedy.
-
-    The worker image carries no `scripts/ops`, and the backend image has no
-    writable `worker-local-state` mount, so the requeue step in the runbook
-    could not have been executed in any container. That makes the retention
-    bound a gate the operator cannot clear.
-    """
     block = _service_block("edge-refused-evidence")
 
     mounted = _mount_target(block, "worker-local-state")

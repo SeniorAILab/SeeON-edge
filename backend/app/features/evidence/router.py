@@ -1,5 +1,3 @@
-"""Authenticated ml-worker to backend evidence export relay."""
-
 from __future__ import annotations
 
 import logging
@@ -164,11 +162,6 @@ def capabilities(
     _authorize(request, relay_token)
     if not _enabled(request):
         return CapabilityResponse(event_idempotency=1, clip_export=0)
-    # Fourth Hub egress path. The worker supplies camera_id straight off the query
-    # string, so without this the edge-local id addressed the backend even for a
-    # mapped camera (issue #308). Resolve to the Hub-issued id, and when there is
-    # none fall back to the same conservative answer the disabled path returns
-    # rather than probing under an id the Hub never issued.
     binding = _camera_binding(request, camera_id, "")
     bound_camera_id = binding.get("backend_camera_id")
     if not isinstance(bound_camera_id, str) or not bound_camera_id.strip():
@@ -226,8 +219,6 @@ def export_clip(
     client = _backend_client(request, bound_camera_id)
     if isinstance(payload, ReadyClipPayload):
         media = _ready_media(request, clip_id, payload)
-        # This route owns the supplied descriptor through persistence AND
-        # network egress, including cancellation and post-COMMIT failures.
         with media.handle:
             receipt = ArtifactReceipt(clip_id, payload.sha256, payload.size_bytes)
             with _receipt_errors(ready=True):
@@ -265,9 +256,6 @@ def export_clip(
             )
         )
         if not isinstance(result, DeliveryFailure):
-            # Keep the explicit unavailable-receipt zero-audit contract.
-            # Admission is rechecked after the external effect; refusing
-            # local persistence cannot undo a report already sent upstream.
             with _receipt_errors(ready=False):
                 audit.apply(
                     receipt_store,
@@ -287,7 +275,6 @@ def export_clip(
 
 @contextmanager
 def _receipt_errors(*, ready: bool) -> Iterator[None]:
-    """Map persistence errors only; external transport is not a write owner."""
     try:
         yield
     except ArtifactReceiptVerificationError as exc:

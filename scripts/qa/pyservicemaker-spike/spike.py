@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Measurement-only G8a pyservicemaker spike; never import this from worker code."""
 
 from __future__ import annotations
 

@@ -21,8 +21,6 @@ class AppliedRuntimeRecord:
 
 @dataclass(frozen=True, slots=True)
 class ProvenanceRetentionPolicy:
-    """Bounded local retention for immutable applied-manifest records."""
-
     max_boots: int = 512
     max_boots_per_camera: int = 128
 
@@ -35,8 +33,6 @@ DEFAULT_PROVENANCE_RETENTION_POLICY = ProvenanceRetentionPolicy()
 
 
 class AppliedRuntimeManifestStore:
-    """Persist local provenance without sending it through the alert queue."""
-
     def __init__(
         self,
         database_path: Path,

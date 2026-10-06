@@ -170,7 +170,6 @@ def test_one_hundred_heartbeat_ids_are_memory_only_and_lost_on_restart() -> None
     assert all(row["status"] == ONLINE for row in first["cameras"].values())
     assert all(row["status"] == NEVER_SEEN for row in lost["cameras"].values())
     assert all(row["last_heartbeat_at"] is None for row in lost["cameras"].values())
-    # Provisioning checks the PostgreSQL product and diagnostics schemas against these sets.
     tables = EXPECTED_TARGET_TABLES | DIAGNOSTICS_TARGET_TABLES
     assert "control_heartbeats" not in tables
     assert "runtime_latency" not in tables

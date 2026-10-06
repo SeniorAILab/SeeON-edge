@@ -278,8 +278,6 @@ def test_flow_live_view_composes_disabled_analysis_seam_without_clip_analysis_cp
     assert isinstance(supervisor, worker_module.ClipAnalysisDisabled)
     with pytest.raises(ClipAnalysisDisabledError, match="clip_analysis_disabled"):
         supervisor.status("camera-1")
-    # The disabled seam owns the same lifecycle as a real supervisor: a bound
-    # server stores it and normal shutdown must not crash on it.
     runtime._mjpeg_server = SimpleNamespace(stop=lambda: None)
     runtime._clip_analysis_supervisor = supervisor
     runtime._context = SimpleNamespace(release_lease=lambda: None)

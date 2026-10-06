@@ -44,7 +44,7 @@ class FrameDescriptor:
 
 
 class CompletionEvent(Protocol):
-    """Opaque accelerator event passed only to an injected stream/reclaimer seam."""
+    ...
 
 
 class ConsumerCompletion(Protocol):
@@ -85,16 +85,6 @@ class _HostStorage:
 
 @final
 class _HostRecycleAdapter:
-    """Narrow `_LeaseState`'s polymorphic `Frame | object` recycle payload back to `Frame`.
-
-    `_LeaseState._recycle` only ever invokes this callback with
-    `_HostStorage.frame` (never a device handle) for a lease built through
-    `from_host`, so the narrowing here is safe by construction -- it exists
-    purely to keep `from_host`'s public `on_recycle: Callable[[Frame], None]`
-    signature unchanged for every existing caller while `_LeaseState` itself
-    stays storage-kind-agnostic.
-    """
-
     __slots__ = ("_callback",)
 
     def __init__(self, callback: Callable[[Frame], None]) -> None:
@@ -108,17 +98,6 @@ class _HostRecycleAdapter:
 
 @dataclass(frozen=True, slots=True)
 class _DeviceStorage:
-    """Opaque non-host-resident storage handle plus its descriptor.
-
-    ``handle`` is deliberately typed ``object``: ``worker.types`` may import
-    only the standard library and ``contracts`` (see ``worker/types/AGENTS.md``),
-    so it can never name a concrete accelerator tensor/array type. The owning
-    media-plane adapter is the only code
-    that ever casts ``handle`` back to its real type; every other consumer of
-    a device-resident ``FrameLease`` treats it as opaque and forwards it
-    through named, capability-validated converters only.
-    """
-
     handle: object
     descriptor: FrameDescriptor
 
@@ -192,8 +171,6 @@ class _LeaseState:
 
 @final
 class FrameLease:
-    """One independently releasable handle over reference-counted frame storage."""
-
     __slots__ = ("_consumer", "_released", "_state", "_status_lock")
 
     def __init__(
@@ -248,15 +225,6 @@ class FrameLease:
         completion_reclaimer: CompletionReclaimer | None = None,
         on_recycle: Callable[[object], None] | None = None,
     ) -> FrameLease:
-        """Wrap an already-allocated non-host storage handle as a fresh lease.
-
-        Unlike ``from_host``, this never allocates or validates pixel data --
-        the owning adapter (e.g. a bounded device-resident pool) is
-        responsible for constructing ``handle`` and its matching
-        ``descriptor`` up front, and for reclaiming the handle in
-        ``on_recycle`` (typically returning it to that same bounded pool
-        rather than freeing device memory per frame).
-        """
         if descriptor.memory_kind is MemoryKind.HOST:
             raise ValueError("from_device requires a non-host memory kind")
         state = _LeaseState(
@@ -350,8 +318,6 @@ class FrameLease:
 
 @final
 class LeaseBatch:
-    """Atomically reserved fan-out references, sealed after dispatch."""
-
     __slots__ = ("_lock", "_remaining", "_sealed", "_state")
 
     def __init__(self, state: _LeaseState, count: int) -> None:

@@ -1,5 +1,3 @@
-"""Structural contracts for the inactive fall temporal policy."""
-
 from __future__ import annotations
 
 import json
@@ -110,7 +108,6 @@ def test_nonlive_track_cannot_confirm_an_alert_and_reconnect_before_ttl_keeps_ge
     for frame in range(2):
         assert _update(decider, _probability(0.7), frame) == ()
 
-    # A score associated with an absent identity is not a camera-OR candidate.
     assert decider.update({7: _probability(1.0)}, (), frame_index=2, time_sec=2.0) == ()
     assert decider.generation_for(7) == 0
 
@@ -137,20 +134,16 @@ def test_missing_live_coasts_until_exact_ttl_then_reconnect_zero_fills_fresh_win
         classifier.update({7: row}, (7,))
     assert model.windows[-1] == (row,) * 30
 
-    # The first 44 absent ticks preserve the same resident and coast its row.
     for _ in range(44):
         classifier.update({}, ())
     assert classifier.probabilities_for(7) is not None
     classifier.update({7: None}, (7,))
     assert model.windows[-1] == (row,) * 30
 
-    # Tick 45 after that reconnect is the exact expiration boundary.
     for _ in range(45):
         classifier.update({}, ())
     assert classifier.probabilities_for(7) is None
 
-    # The reused number has no row history. Its new window is zero-filled and
-    # therefore cannot carry a stale transition onset from the prior resident.
     for _ in range(30):
         classifier.update({7: None}, (7,))
     assert model.windows[-1] == ((0.0,) * 56,) * 30
@@ -166,8 +159,6 @@ def test_committed_reconnect_after_eviction_case_preloads_a_fresh_generation_win
     model = _RecordingModel()
     classifier = FallWindowClassifier(model)
 
-    # Align the initial live observation so the exact reconnect tick is stride
-    # due: 3 idle ticks + first live tick + 45 absent ticks + reconnect tick.
     for _ in range(3):
         classifier.update({}, ())
     classifier.update({7: reconnect_row}, (7,))
@@ -236,8 +227,6 @@ def test_immediate_track_switch_is_absorbed_before_replacement_scores() -> None:
         assert _update(decider, _probability(0.7), frame) == ()
     assert len(_update(decider, _probability(0.7), 2)) == 1
 
-    # The old id is absent for only one frame. The replacement can fill its
-    # confirmation window long before the 45-frame state TTL expires.
     assert decider.update({}, (), frame_index=3, time_sec=3.0) == ()
     assert _update(decider, _probability(0.7), 4, track=8) == ()
     assert _update(decider, _probability(0.7), 5, track=8) == ()
@@ -309,9 +298,6 @@ def test_policy_requires_immutable_boot_and_epoch_and_binds_onset_identity() -> 
 
 
 def test_qualifying_frame_after_onset_is_explained_as_episode_already_open() -> None:
-    """TC3-02 (fall): after the onset fires, another qualifying frame proposes
-    again and the episode authority declines. The snapshot must name that
-    suppression rather than read as an ordinary candidate frame."""
     decider = FallPolicyDecider(
         camera_id="camera",
         facility_id="facility",
@@ -330,16 +316,12 @@ def test_qualifying_frame_after_onset_is_explained_as_episode_already_open() -> 
     (suppressed,) = decider.last_trace_snapshots
     assert suppressed.triggered is False
     assert suppressed.reason == "episode-already-open"
-    # A frame that does not qualify carries no suppression claim.
     assert _update(decider, _probability(0.1), 4) == ()
     (plain,) = decider.last_trace_snapshots
     assert plain.reason != "episode-already-open"
 
 
 def test_non_suppression_dispositions_never_rewrite_a_reason() -> None:
-    """suppression_reason maps only genuine onset suppressions; the recovery and
-    not-qualifying dispositions (and no proposal) yield None so the row keeps
-    its ordinary reason."""
     from worker.domains.episode import ProposalDisposition, suppression_reason
 
     assert suppression_reason(ProposalDisposition.EMITTED) is None

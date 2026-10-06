@@ -1,5 +1,3 @@
-"""Local aggregation and structured logging helpers."""
-
 from __future__ import annotations
 
 import logging
@@ -98,11 +96,6 @@ def log_snapshot(snapshot: RuntimeDiagnosticsSnapshot) -> None:
                 "last_reason": camera.encode.last_reason,
             }
         )
-        # Issue #207: current cache state plus cumulative counts, so
-        # "is this camera's bed region alive?" is answerable from a
-        # worker log line alone -- never the polygon coordinates,
-        # RTSP URL, or camera IP (this repo is public; log lines get
-        # pasted into issues).
         bed_region = (
             None
             if camera.bed_region is None
@@ -112,13 +105,6 @@ def log_snapshot(snapshot: RuntimeDiagnosticsSnapshot) -> None:
                 "updated_at_sec": camera.bed_region.updated_at_sec,
             }
         )
-        # Issue #238: separates "person never scored inside the bed
-        # polygon" from "scored inside, but the exit counter never
-        # crossed the grace threshold" when bed_exit fires zero
-        # events -- `bed_region` above only says whether the region
-        # was usable, not what the monitor did with it. Numeric
-        # scores/counts only, same no-secrets discipline as
-        # `bed_region` (this repo is public).
         bed_exit_scoring = (
             None
             if camera.bed_exit_scoring is None
@@ -153,14 +139,6 @@ def log_snapshot(snapshot: RuntimeDiagnosticsSnapshot) -> None:
                 "forward_p95_sec": camera.forward_p95_sec,
             }
         )
-        # The entrypoint's `logging.basicConfig(format=...)`
-        # (worker/__main__.py) never references `extra` keys, so anything
-        # passed only via `extra=` is silently absent from the rendered log
-        # line -- the line prints as bare "worker.runtime.telemetry" with
-        # none of the values below. Render every value into the message
-        # itself so it survives regardless of handler/formatter
-        # configuration; `extra` is kept alongside for any future structured
-        # (e.g. JSON) log consumer.
         LOGGER.info(
             "worker.runtime.telemetry camera_id=%s failure_category=%s "
             "stage_timings=%s bus=%s encoder=%s encode=%s bed_region=%s "
@@ -168,9 +146,6 @@ def log_snapshot(snapshot: RuntimeDiagnosticsSnapshot) -> None:
             " smart_record_extended_total=%d smart_record_extension_raced_total=%d"
             " smart_record_start_refused_total=%d nvenc_sessions_active=%d"
             + (" decode_backend=%s" if decode_backend is not None else "")
-            # P1a-AC7: an operator threshold the runtime received but does not
-            # apply is named in the message itself, because basicConfig renders
-            # %(message)s only and an extra= field would be invisible.
             + (
                 " fall_unapplied_policy_threshold=%s"
                 if camera.fall_unapplied_policy_threshold is not None

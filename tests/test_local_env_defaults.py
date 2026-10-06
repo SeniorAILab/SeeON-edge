@@ -1,13 +1,3 @@
-"""Env-less packaged fall model default + #79 track 2 (aggregate boot-gate
-error reporting) for ``worker.runtime.config.local_env``.
-
-Nothing under ``models/`` is tracked: the packaged default is the published
-pose+bbox56 bundle pinned in ``worker/tools/fetch_models/manifest.json`` and
-provisioned by ``scripts/fetch-models.sh``. Tests that need the default to
-actually *resolve* build a synthetic bundle in ``tmp_path`` through the
-``packaged_fall_bundle`` fixture, so they are deterministic in CI.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -63,11 +53,6 @@ def test_bundle_runner_loads_and_predicts_from_packaged_default(
 def test_default_env_missing_weights_raises_actionable_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Deterministic regardless of whether *this* repo checkout has fetched
-    weights: chdir into an empty directory so the packaged default's
-    relative path (``models/fall/pose-bbox56-gru``) resolves to nothing there, and
-    assert the fail-closed error names the fetch script rather than silently
-    booting without a fall model."""
     monkeypatch.chdir(tmp_path)
 
     with pytest.raises(WorkerConfigError, match="missing model.pt"):
@@ -80,10 +65,6 @@ def test_models_config_refuses_when_no_fall_model_is_available() -> None:
 
 
 def _write_fake_packaged_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Chdir into an empty directory and populate a packaged-default bundle
-    there so ``fall_model_config_from_environment({})`` resolves
-    deterministically -- independent of whether *this* checkout has fetched
-    the real (gitignored) bundle via ``scripts/fetch-models.sh``."""
     monkeypatch.chdir(tmp_path)
     write_pose_bbox56_bundle(tmp_path / _PACKAGED_DEFAULT_ARTIFACT_DIR)
 
@@ -91,8 +72,6 @@ def _write_fake_packaged_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 def test_default_env_with_no_overrides_resolves_packaged_manifest_defaults(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Env absent (no ``ARTIFACT_DIR``, no window/stride/operating_threshold)
-    must resolve to the packaged manifest's own defaults, unchanged."""
     _write_fake_packaged_default(tmp_path, monkeypatch)
 
     config = fall_model_config_from_environment({})
@@ -144,9 +123,6 @@ def test_retired_manifest_environment_keys_fail_instead_of_warning() -> None:
 
 
 def test_explicit_artifact_dir_aggregates_multiple_invalid_env_vars(tmp_path: Path) -> None:
-    """Issue #79 (track 2): window/stride/operating_threshold are all
-    malformed at once -- all three must be named in a single raised error
-    instead of only the first one checked."""
     environ = {
         ML_WORKER_FALL_MODEL_ARTIFACT_DIR_ENV: str(tmp_path),
         ML_WORKER_FALL_MODEL_WINDOW_ENV: "not-an-int",

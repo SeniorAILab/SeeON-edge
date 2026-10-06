@@ -1,23 +1,3 @@
-"""Architecture-audit H3 semantic parity: the pure-Python numeric rewrites in
-`worker/domains/fall/preprocessing.py` and `worker/domains/bed_exit/geometry.py`
-must reproduce the same decisions as their previous NumPy/OpenCV-backed
-implementations.
-
-Fall preprocessing is checked against
-`worker.pipeline.perception.features.window_features.extract_window_features`
-(the still-NumPy sibling implementation used by the newer perception
-pipeline, kept independent of `worker/domains`), which computes the same 45
-engineered features via the same algorithm. Bed-exit polygon containment is
-checked against a direct `cv2.fillPoly` rasterization -- the same library
-call `worker/domains/bed_exit/geometry.py` used before this remediation --
-sampling person boxes with a safety margin away from polygon edges (both
-implementations use different, individually-reasonable scan-conversion
-tie-break rules at the pixel boundary itself; see
-`worker/domains/bed_exit/geometry.py`'s `_rasterize_rows` docstring) so a
-sub-pixel rasterization difference can never flip a containment decision
-that matters.
-"""
-
 from __future__ import annotations
 
 import math
@@ -57,7 +37,6 @@ def _random_window(
 
 
 def _falling_window(frame_count: int) -> tuple[NormalizedPose, ...]:
-    """A synthetic straight-down centroid drop -- the shape of an actual fall."""
     window: list[NormalizedPose] = []
     for frame_index in range(frame_count):
         base_y = 50 + frame_index * 30
@@ -111,8 +90,6 @@ def test_fall_features_match_oracle_across_many_random_windows() -> None:
         )
 
 
-# --- bed-exit polygon containment parity -----------------------------------
-
 _DIAMOND: Final = ((50, 0), (100, 50), (50, 100), (0, 50))
 _NOTCHED_L: Final = ((0, 0), (100, 0), (100, 60), (60, 60), (60, 100), (0, 100))
 _PENTAGON: Final = ((50, 0), (100, 40), (80, 100), (20, 100), (0, 40))
@@ -120,9 +97,6 @@ _SELF_INTERSECTING: Final = ((0, 0), (100, 0), (100, 100), (0, 100), (5, -5))
 
 _POLYGONS: Final = (_DIAMOND, _NOTCHED_L, _PENTAGON, _SELF_INTERSECTING)
 
-# Any person box sampled at least this many pixels away from the polygon's
-# own edges (measured as a margin inward/outward from its AABB) is immune to
-# the sub-pixel scan-conversion differences documented in `_rasterize_rows`.
 _EDGE_SAFETY_MARGIN_PX: Final = 4
 
 
@@ -136,9 +110,6 @@ def _cv2_mask(polygon: tuple[tuple[int, int], ...]) -> tuple[np.ndarray, int, in
         [[point[0] - origin_x, point[1] - origin_y] for point in polygon],
         dtype=np.int32,
     ).reshape((1, -1, 2))
-    # opencv-python-headless's bundled stub does not accept a bare ndarray
-    # for `pts` even though it is valid at runtime (the same stub gap the
-    # pre-remediation `worker/domains/bed_exit/geometry.py` had).
     cv2.fillPoly(mask, shifted, 1)  # pyright: ignore[reportCallIssue, reportArgumentType]
     return mask, origin_x, origin_y
 
@@ -170,10 +141,6 @@ def _bed(polygon: tuple[tuple[int, int], ...]) -> BoundingBox:
 def _margin_safe_person_box(
     rng: random.Random, polygon: tuple[tuple[int, int], ...]
 ) -> BoundingBox | None:
-    """A random small box whose every pixel is >= `_EDGE_SAFETY_MARGIN_PX` from
-    every polygon edge -- either solidly inside or solidly outside, never
-    straddling the boundary where the two rasterizers can legitimately
-    disagree by a pixel."""
     xs = [point[0] for point in polygon]
     ys = [point[1] for point in polygon]
     min_x, max_x = min(xs) - 20, max(xs) + 20
@@ -186,10 +153,6 @@ def _margin_safe_person_box(
     mask, origin_x, origin_y = _cv2_mask(polygon)
     height, width = mask.shape
 
-    # Reject if any pixel within the safety margin around the box's own
-    # rasterized footprint falls on both sides of a fill boundary (i.e. the
-    # box is near an edge): expand the box by the margin and require the
-    # expanded mask sum's "inside-ness" to match the tight box's.
     def _sum(bx1: int, by1: int, bx2: int, by2: int) -> int:
         left = max(bx1 - origin_x, 0)
         top = max(by1 - origin_y, 0)
@@ -212,7 +175,7 @@ def _margin_safe_person_box(
         return candidate
     if tight_empty and expanded_empty:
         return candidate
-    return None  # near an edge -- resample
+    return None
 
 
 def test_bed_exit_containment_matches_cv2_oracle_across_polygons() -> None:
@@ -236,10 +199,6 @@ def test_bed_exit_containment_matches_cv2_oracle_across_polygons() -> None:
 
 
 def test_bed_exit_containment_regression_scenarios() -> None:
-    # Same fixed scenarios as tests/test_worker_domains_bed_exit_geometry.py,
-    # re-asserted here as the H3 remediation's semantic parity proof: fully
-    # inside, fully outside-but-in-AABB, non-convex main body, non-convex
-    # notch, self-intersecting trace-closure artifact.
     scenarios = (
         (_DIAMOND, BoundingBox(40, 40, 60, 60, 0.9), 1.0),
         (_DIAMOND, BoundingBox(80, 80, 95, 95, 0.9), 0.0),

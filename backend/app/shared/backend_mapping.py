@@ -1,9 +1,3 @@
-"""Backend reachability status helpers used by lifespan.
-
-Per-camera ``push_camera``/``put_roster`` mapping is retired. Roster
-publication uses ``TopologyClient`` snapshots, not a mapper bundle slot.
-"""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime

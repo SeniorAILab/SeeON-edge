@@ -1,5 +1,3 @@
-"""Real isolated PostgreSQL event acceptance, fencing, and retry conservation."""
-
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -72,8 +70,6 @@ def audit_runtime(
         maximum_snapshot_age_sec=10,
         clock=audit_clock,
     )
-    # Exercise real verification and session establishment, not a seeded session.
-    # This component fixture is not evidence of HTTP/lifespan activation.
     assert runtime.verify_once()
     assert runtime.start_session_once()
     assert runtime.snapshot().ready
@@ -300,8 +296,6 @@ def test_deferred_commit_rejection_cannot_release_event_receipt(store, monkeypat
     assert _counts(admin) == (0, 0, 1)
     assert publications == [("failed", raised.value)]
     assert not outbox.audit_runtime.snapshot().ready
-    # The synchronous owner has completed rollback/exit; no tentative token
-    # remains to block closure. This is not an HTTP/lifespan drain proof.
     outbox.audit_runtime.stop()
     assert outbox.audit_runtime.close_session_once()
 
@@ -726,8 +720,6 @@ def test_recovery_publication_follows_complete_owned_return(store, monkeypatch):
 def test_injected_loss_after_owned_commit_never_publishes_success_or_replays(
     store, monkeypatch, kind
 ):
-    """Inject after a real full owned return; not a real wire/pool-exit fault."""
-
     class Cancelled(BaseException):
         pass
 
@@ -757,8 +749,6 @@ def test_injected_loss_after_owned_commit_never_publishes_success_or_replays(
     assert not runtime.snapshot().ready
     assert runtime.snapshot().indeterminate == (kind == "unknown")
     monkeypatch.setattr(outbox.database, "transact", transact)
-    # A producer's explicit replay can observe the committed identity without
-    # inventing another audit append or healing indeterminate runtime state.
     duplicate = outbox.accept(event, backend_camera_id=None, forward=False)
     assert duplicate.duplicate and duplicate.delivery_state == "PENDING"
     assert _counts(admin) == (1, 1, 2)
@@ -789,7 +779,6 @@ def test_missing_audit_receipt_aborts_before_commit(store, monkeypatch, invalid)
     outbox, admin = store
     runtime = outbox.audit_runtime
     publications = _publications(runtime, monkeypatch)
-    # Deliberately broken collaborator: never an implementation or gate fallback.
     monkeypatch.setattr(runtime, "append_borrowed", lambda connection, event: invalid)
     with pytest.raises(AuditRuntimeUnavailable, match="event audit publication is invalid"):
         outbox.accept(_event(), backend_camera_id="hub-camera", forward=True)
@@ -838,8 +827,6 @@ def test_semantic_invalid_receipt_rolls_back_without_consuming_unrelated_work(
     other = None
     original_session = None
     if kind == "foreign_owner":
-        # Two real runtimes are an adversarial ownership fixture, not an
-        # application assembly or preseeded-session qualification shortcut.
         other = PostgresAuditRuntime(
             PostgresAuditStore(outbox.database, outbox.authority),
             maximum_snapshot_age_sec=10,
@@ -855,8 +842,6 @@ def test_semantic_invalid_receipt_rolls_back_without_consuming_unrelated_work(
         candidate = _pending_publication(runtime, "consumed")
         assert runtime.publish_committed(candidate)
     else:
-        # Matching fields and another live operation's pending count are not
-        # proof that this receipt was ever minted by append_borrowed.
         candidate = PendingAuditPublication(runtime, unrelated._session, unrelated._revision)
     before = _counts(admin)
     publications = _publications(runtime, monkeypatch)
@@ -887,8 +872,6 @@ def test_semantic_invalid_receipt_rolls_back_without_consuming_unrelated_work(
 def test_secondary_publication_rejection_preserves_owned_failure_and_other_work(
     store, monkeypatch, caplog, kind
 ):
-    """Post-return injection tests precedence, not actual COMMIT/pool loss."""
-
     class Cancelled(BaseException):
         pass
 

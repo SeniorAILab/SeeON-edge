@@ -13,8 +13,6 @@ from worker.tools.edge_engine_build import EngineBuildError, build_engine, sha25
 def _write_onnx(
     path: Path, *, input_name: str = "frames", dims: list[int | str] | None = None
 ) -> None:
-    # A loadable graph, not just a signature: the build tool reads the input
-    # through onnxruntime, which refuses a model with no nodes.
     graph = helper.make_graph(
         [helper.make_node("Identity", [input_name], ["output0"])],
         "pose",
@@ -174,9 +172,6 @@ def test_nvinfer_is_invoked_for_the_declared_batch_and_cached_by_batch(tmp_path:
     build_engine(**kwargs, batch_size=14)
     assert builds[0][0] == "gst-launch-1.0"
     assert "nvinfer" in builds[0]
-    # The builder runs against a staged config in the writable cache, because
-    # nvinfer writes its engine beside the ONNX the config names and the model
-    # directory is mounted read-only in the deployment.
     build_config = next(
         str(part).split("=", 1)[1]
         for part in builds[0]
@@ -253,12 +248,6 @@ def test_builder_must_create_the_engine_before_identity_is_written(tmp_path: Pat
 
 
 def test_the_engine_nvinfer_writes_beside_the_onnx_is_adopted(tmp_path: Path) -> None:
-    """nvinfer ignores model-engine-file when it builds rather than deserialises.
-
-    It writes `<onnx>_b<N>_gpu0_fp16.engine` next to the model instead, and that
-    file is the one that actually serves, so the build must adopt it rather than
-    report success with nothing at the configured path.
-    """
     onnx_path = tmp_path / "model.onnx"
     _write_onnx(onnx_path)
     engine = tmp_path / "cache" / "model.engine"
@@ -285,12 +274,6 @@ def test_the_engine_nvinfer_writes_beside_the_onnx_is_adopted(tmp_path: Path) ->
 
 
 def test_the_build_never_writes_into_the_model_directory(tmp_path: Path) -> None:
-    """The deployment mounts the model directory read-only.
-
-    nvinfer writes its engine beside the ONNX it is pointed at, so the build
-    must point it at a staged copy in the writable cache; writing beside the
-    provisioned model would fail in production before the worker ever starts.
-    """
     models = tmp_path / "models"
     models.mkdir()
     onnx_path = models / "model.onnx"
@@ -299,7 +282,6 @@ def test_the_build_never_writes_into_the_model_directory(tmp_path: Path) -> None
     before = {entry.name for entry in models.iterdir()}
 
     def run(command, **_kwargs):
-        # Behave like nvinfer: write beside whichever ONNX the config names.
         config = next(
             str(part).split("=", 1)[1]
             for part in command

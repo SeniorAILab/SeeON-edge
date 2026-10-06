@@ -1,5 +1,3 @@
-"""In-process implementation of the worker model-serving seams."""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -25,8 +23,6 @@ class _BatchRunner(Protocol):
 
 
 class InProcessServingClient:
-    """Provision one process-local runner per task/options for single frames."""
-
     def __init__(self, registry: ModelRegistry | None = None) -> None:
         self._registry: ModelRegistry = DEFAULT_REGISTRY if registry is None else registry
         self._runners: dict[tuple[str, tuple[tuple[str, ModelOption], ...]], ModelAdapter] = {}
@@ -44,7 +40,6 @@ class InProcessServingClient:
 
     @property
     def batch_serving_client(self) -> InProcessBatchServingClient:
-        """A batch view sharing every runner/model provisioned by ``create``."""
         with self._runner_lock:
             if self._batch_client is None:
                 self._batch_client = InProcessBatchServingClient(self)
@@ -52,8 +47,6 @@ class InProcessServingClient:
 
 
 class InProcessBatchServingClient:
-    """Batch facade over an ``InProcessServingClient`` with no model copies."""
-
     def __init__(self, serving_client: InProcessServingClient) -> None:
         self._serving_client = serving_client
 
@@ -66,7 +59,6 @@ class InProcessBatchServingClient:
         frames: Sequence[FramePacket],
         **kwargs: ModelOption,
     ) -> tuple[RunnerResult, ...]:
-        """Issue one pose forward; result ``i`` belongs to frame ``i``."""
         ordered = tuple(frames)
         if task not in _BATCHED_TASKS:
             raise BatchInputError(

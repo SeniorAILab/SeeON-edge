@@ -1,5 +1,3 @@
-"""CPU ONNX Runtime runner for verified pose+bbox56 fall bundles."""
-
 from __future__ import annotations
 
 import hashlib
@@ -24,8 +22,6 @@ from worker.interfaces.fall_model import BinaryFallScoreEvidence, FallProbabilit
 from worker.types import FallModelInput
 
 _SHAPE: Final = (30, 56)
-#: The output contract this runner implements: one logit, read as a binary
-#: fall-transition score. The bundle calibration's class_order has two entries.
 OUTPUT_CLASS_COUNT: Final = 2
 OUTPUT_CLASS_ORDER: Final = ("non_fall", "fall_transition_proxy")
 _CPU_PROVIDER: Final = ("CPUExecutionProvider",)
@@ -46,8 +42,6 @@ class _AdmittedBundleProof(Protocol):
 
 @dataclass(frozen=True)
 class PackagedFallBundle:
-    """The verified CPU runner and its published identity fields."""
-
     runner: OrtPoseBbox56Runner
     published_weights_digest: str
     preprocessing_identity: str
@@ -55,8 +49,6 @@ class PackagedFallBundle:
 
 @dataclass(frozen=True)
 class PoseBbox56Conformance:
-    """Bundle-published input contract, parsed without importing its consumer."""
-
     relative_path: str
     preprocessing_identity: str
     vector_length: int
@@ -71,13 +63,6 @@ class PoseBbox56Conformance:
 
 
 class OrtPoseBbox56Runner:
-    """Verified ONNX pose+bbox56 binary proxy running exclusively on CPU.
-
-    Each result retains the observed pre-calibration logit and the loaded
-    temperature. The three policy fields remain the calibrated sigmoid's
-    complement, the calibrated sigmoid, and a synthetic zero respectively.
-    """
-
     device: Final[str] = "cpu"
 
     def __init__(
@@ -158,12 +143,6 @@ class OrtPoseBbox56Runner:
         *,
         session_factory: SessionFactory | None = None,
     ) -> OrtPoseBbox56Runner:
-        """Construct the selected ONNX runner from the already-admitted bundle."""
-        # The selection declares an output contract; this runner implements
-        # exactly one - a single logit read as a binary fall-transition score.
-        # A replacement that emits a different class count is a different
-        # structure, and it must refuse here rather than have its logit read
-        # as if it were this one.
         if selection.output_class_count != OUTPUT_CLASS_COUNT:
             raise ModelLoadError(
                 f"selected bundle declares output_class_count={selection.output_class_count}, "
@@ -189,10 +168,6 @@ class OrtPoseBbox56Runner:
             raise ModelLoadError("selected receipt threshold must be a probability")
         if selection.threshold_source not in {"default", "receipt"}:
             raise ModelLoadError("selected threshold_source must be default or receipt")
-        # A selection that says its threshold is the image default must declare
-        # the image default. Otherwise the document contradicts itself, and the
-        # policy would honour the source word and run at 0.5 while the declared
-        # number - the one the owner read - is silently discarded. Refuse.
         if selection.threshold_source == "default" and not math.isclose(
             float(threshold), FALL_POLICY_V2_DEFAULT.transition_threshold
         ):
@@ -218,10 +193,6 @@ class OrtPoseBbox56Runner:
         receipt_transition_votes, receipt_transition_window = _calibration_temporal_rule(
             calibration
         )
-        # A selection that claims its threshold comes from the receipt must be
-        # backed by the receipt. The bundle's own calibration states whether it
-        # is promotion-eligible and at what threshold; the word 'receipt' in a
-        # deployment document cannot grant what the publisher did not.
         if selection.threshold_source == "receipt":
             _require_calibration_grants_receipt(calibration, float(threshold))
         if session_factory is None:
@@ -273,7 +244,6 @@ class OrtPoseBbox56Runner:
 
 
 def load_packaged_fall_bundle(artifact_dir: Path) -> PackagedFallBundle:
-    """Load a packaged fall bundle and its published-weights identity."""
     root = artifact_dir.expanduser().resolve()
     runner = OrtPoseBbox56Runner.from_artifact_dir(root, device="cpu")
     manifest = read_json(root / "bundle-manifest.json")

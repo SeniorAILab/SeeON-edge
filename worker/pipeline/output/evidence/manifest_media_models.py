@@ -1,5 +1,3 @@
-"""Validated source-media facts embedded in evidence manifests."""
-
 from __future__ import annotations
 
 from fractions import Fraction

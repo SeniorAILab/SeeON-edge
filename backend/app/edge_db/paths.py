@@ -1,5 +1,3 @@
-"""Location of the retired edge SQLite file, read only by the one-time migration."""
-
 from __future__ import annotations
 
 from pathlib import Path

@@ -1,5 +1,3 @@
-"""Keyset reads and row decoding for immutable audit history."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -29,7 +27,7 @@ class AuditHistoryEvent:
 
 
 class AuditStoredIdentityError(ValueError):
-    """A verified audit row contains a non-integer identity."""
+    ...
 
 
 _SELECT = (

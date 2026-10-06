@@ -1,5 +1,3 @@
-"""Domain decision modules and their shared audit contracts."""
-
 from __future__ import annotations
 
 from worker.domains.base import (

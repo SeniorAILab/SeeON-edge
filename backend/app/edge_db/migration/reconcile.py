@@ -1,5 +1,3 @@
-"""Per-table reconciliation of a SQLite snapshot against the PostgreSQL product schema."""
-
 from __future__ import annotations
 
 import hashlib
@@ -52,12 +50,10 @@ REPORT_FORMAT: Final = "seeon-edge-pg-reconcile/1"
 PASS: Final = "PASS"
 FAIL: Final = "FAIL"
 _BATCH: Final = 2000
-# Status values are closed enums; anything else is reported by digest only.
 _STATUS_LABEL: Final = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
 
 def canonical_value(value: object) -> object:
-    """One JSON form per stored value, identical for SQLite and PostgreSQL drivers."""
     if value is None or type(value) is str or type(value) is int:
         return value
     if type(value) is float:
@@ -79,12 +75,10 @@ def row_sha256(row: Iterable[object]) -> str:
 def sqlite_rows(
     connection: sqlite3.Connection, mapping: TableMapping, *, load_order: bool = False
 ) -> Iterator[tuple[object, ...]]:
-    """Stream mapped columns in byte-wise key order (or foreign-key load order)."""
     columns = ", ".join(_quote(name) for name in mapping.column_names)
     order = [f"{_quote(name)} COLLATE BINARY" for name in mapping.primary_key]
     if load_order and mapping.spec.load_priority is not None:
         order.insert(0, mapping.spec.load_priority)
-    # Identifiers come from the validated catalog mapping, never from input.
     cursor = connection.execute(
         f"SELECT {columns} FROM {_quote(mapping.name)} ORDER BY {', '.join(order)}"
     )
@@ -98,7 +92,6 @@ def sqlite_rows(
 def postgres_rows(
     connection: psycopg.Connection, mapping: TableMapping, schema: str
 ) -> Iterator[tuple[object, ...]]:
-    """Stream mapped columns through a server-side cursor in byte-wise key order."""
     order = [
         sql.SQL('{} COLLATE "C"').format(sql.Identifier(name))
         if mapping.target_type(name) == "text"
@@ -137,7 +130,6 @@ class TableResult:
     name: str
     reference: TableSummary
     candidate: TableSummary
-    # Keys only in the reference, only in the candidate, and in both with other content.
     missing: int
     extra: int
     changed: int
@@ -165,8 +157,6 @@ class TableResult:
 
 
 class _Side:
-    """Order-checked running digests of one row stream."""
-
     __slots__ = ("content", "keys", "last", "mapping", "rows", "status")
 
     def __init__(self, mapping: TableMapping) -> None:
@@ -210,7 +200,6 @@ def compare_rows(
     reference: Iterable[tuple[object, ...]],
     candidate: Iterable[tuple[object, ...]],
 ) -> TableResult:
-    """Merge-join two key-ordered row streams without holding either in memory."""
     left = _Side(mapping)
     right = _Side(mapping)
     references = iter(reference)
@@ -269,7 +258,6 @@ def compare_sources(
 
 
 def fingerprint(results: Iterable[TableResult]) -> str:
-    """Digest of the reference side: binds the snapshot content to the mapping used."""
     body = [
         [
             result.name,
@@ -285,7 +273,6 @@ def fingerprint(results: Iterable[TableResult]) -> str:
 def source_identity_floors(
     connection: sqlite3.Connection, mappings: Iterable[TableMapping]
 ) -> dict[str, int]:
-    """The next identity value must exceed every used id and every AUTOINCREMENT high-water."""
     identities = {
         mapping.name: mapping.identity_column
         for mapping in mappings
@@ -333,7 +320,6 @@ def ledger_rows(connection: psycopg.Connection, schema: str) -> list[tuple[objec
 
 
 def authority_state(connection: psycopg.Connection, schema: str) -> dict[str, object]:
-    """Generation and switches only; the writer token never leaves the database."""
     rows = connection.execute(
         sql.SQL("SELECT generation, accepting, egress_enabled FROM {}").format(
             sql.Identifier(schema, "deployment_authority")
@@ -346,11 +332,6 @@ def authority_state(connection: psycopg.Connection, schema: str) -> dict[str, ob
 
 
 def seed_only_site(connection: psycopg.Connection, schema: str) -> bool:
-    """Whether edge_site holds nothing beyond the activation seed's id, time and defaults.
-
-    Any other value, including one equal to what a restored snapshot would hold,
-    can only have been written after activation.
-    """
     written = connection.execute(
         sql.SQL(
             "SELECT count(*) FROM {} AS site CROSS JOIN LATERAL jsonb_each("
@@ -392,7 +373,6 @@ def delivery_state(connection: psycopg.Connection, schema: str) -> dict[str, obj
 
 
 def diagnostics_state(connection: psycopg.Connection, schema: str) -> dict[str, object]:
-    """Live diagnostics are fresh, never imported: verify the layout and count rows only."""
     diagnostics = diagnostics_schema_name(schema)
     tables = postgres_table_names(connection, diagnostics)
     ledger: list[tuple[object, ...]] = []
@@ -442,13 +422,6 @@ def reconcile(
     after_transfer: bool = False,
     fence_receipt: Path | None = None,
 ) -> dict[str, object]:
-    """Compare the snapshot with the target; counts and digests only.
-
-    Before transfer the authority must be fenced. After transfer it must have moved
-    past generation 1, and the only difference transfer itself may leave is the
-    activation seed of an ``edge_site`` the snapshot never had. A source the fence
-    stamped is compared with its receipt by bytes, since SQLite refuses to open it.
-    """
     require_identifier(schema, "schema")
     if fence_receipt is not None and source_path is None:
         raise MigrationError("a fence receipt needs the source it fenced")
@@ -624,7 +597,6 @@ def _max_audit_id(connection: psycopg.Connection, schema: str) -> int | None:
 
 
 def _status_label(value: object) -> str:
-    # Raw only for short enum-like text; anything longer could be resident data.
     if value is None:
         return "<null>"
     text = value if isinstance(value, str) else canonical_json(canonical_value(value))

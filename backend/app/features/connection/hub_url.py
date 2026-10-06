@@ -1,11 +1,3 @@
-"""Hub / enrollment URL transport policy.
-
-Production and any public Hub origin must use HTTPS with normal certificate
-validation. Cleartext HTTP is permitted only for loopback destinations, or
-when the explicit development/test contract
-``API_BACKEND_ALLOW_INSECURE_HTTP=1`` is set (never a production default).
-"""
-
 from __future__ import annotations
 
 import ipaddress
@@ -17,14 +9,10 @@ API_BACKEND_ALLOW_INSECURE_HTTP_ENV: Final = "API_BACKEND_ALLOW_INSECURE_HTTP"
 
 
 def allow_insecure_http_from_env() -> bool:
-    """True only when the explicit dev/test HTTP contract is opted in."""
-
     return os.environ.get(API_BACKEND_ALLOW_INSECURE_HTTP_ENV, "").strip() == "1"
 
 
 def _hostname(netloc: str) -> str:
-    """Extract host from a URL netloc (userinfo and port stripped)."""
-
     _, _, hostport = netloc.rpartition("@")
     host = hostport
     if host.startswith("["):
@@ -46,11 +34,6 @@ def is_loopback_host(host: str) -> bool:
 
 
 def hub_url_transport_allowed(url: str, *, allow_insecure_http: bool | None = None) -> bool:
-    """Return whether ``url`` may be used as a Hub/enrollment origin.
-
-    ``allow_insecure_http`` defaults to the process env contract when omitted.
-    """
-
     cleaned = url.strip()
     if not cleaned:
         return False
@@ -71,8 +54,6 @@ def hub_url_transport_allowed(url: str, *, allow_insecure_http: bool | None = No
 
 
 def reject_hub_url_reason(url: str, *, allow_insecure_http: bool | None = None) -> str | None:
-    """Human-readable rejection reason, or ``None`` when the URL is allowed."""
-
     cleaned = (url or "").strip()
     if not cleaned:
         return "hub URL is empty"

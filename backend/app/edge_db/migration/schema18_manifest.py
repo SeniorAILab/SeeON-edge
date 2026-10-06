@@ -1,5 +1,3 @@
-"""Structural contract for schema 18 and 19, owned by the one-time migration."""
-
 from __future__ import annotations
 
 import sqlite3
@@ -98,7 +96,6 @@ def read_schema_manifest(connection: sqlite3.Connection) -> SchemaManifest:
 
 
 def compile_schema18_manifest() -> SchemaManifest:
-    """Compile the retained schema-18 contract used by the extension verifier."""
     return _compile_manifest(SCHEMA_18_STATEMENTS)
 
 

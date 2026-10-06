@@ -72,14 +72,6 @@ class _CameraPayload(BaseModel):
     fps: float | None = Field(default=None, gt=0)
     frame_stride: int | None = Field(default=None, gt=0)
     decode_backend: str | None = None
-    # ``None`` (the relay payload omitted this camera's ``domains`` key) and
-    # ``()`` (the relay explicitly declared this camera monitors zero
-    # domains) are different signals and must stay distinguishable -- see
-    # issue #191. Defaulting to ``()`` here would make every camera look
-    # like an explicit "no domains" opt-out even when the relay said
-    # nothing at all, which is exactly the ambiguity ``to_worker_config``
-    # needs to resolve to decide between the ambient registry default and a
-    # genuine opt-out.
     domains: tuple[str, ...] | None = None
     bed_zone_regions: tuple[BedZoneRegionConfig, ...] = Field(default=(), max_length=8)
     bed_zone_image_width: int | None = Field(default=None, gt=0)
@@ -87,11 +79,6 @@ class _CameraPayload(BaseModel):
 
     @property
     def resolved_facility_id(self) -> str:
-        """Local wire facility for RelayAlertRequest (min_length=1).
-
-        Not site identity: when worker-config omits facility_id, use the fixed
-        placeholder ``"local"``. space_id alone is not treated as facility.
-        """
         if self.facility_id is not None:
             return self.facility_id
         return "local"
@@ -107,50 +94,12 @@ class BackendWorkerConfigPayload(BaseModel):
     registry_version: int | None = Field(default=None, ge=0)
     config_version: int | None = Field(default=None, ge=0)
     restart_epoch: int | None = Field(default=None, ge=0)
-    # Deprecated alias for detection_windows["bed_exit"]; kept for old
-    # payload producers/LKG files.
     night_window: _NightWindowPayload | None = None
-    # A ``None`` value for one domain (e.g. a hand-edited LKG file, or a
-    # version-skewed ml-api) means ALWAYS for that domain and is dropped at
-    # parse time in ``resolved_detection_windows`` -- it must not fail
-    # pydantic validation for the whole payload over one domain's opinion.
-    #
-    # The value type is left as ``object`` (not ``_NightWindowPayload | None``)
-    # so a member with the *wrong shape* (a string, or an object missing
-    # start/end/tz) does not fail pydantic's dict validation for the whole
-    # payload either -- shape and semantic validation both happen per-domain
-    # in ``resolved_detection_windows``, mirroring
-    # ``contracts/worker_config.py``'s ``_pulled_detection_windows`` and
-    # ``backend/app/lifespan.py``'s ``_pulled_night_window``.
     detection_windows: dict[str, object] | None = None
-    # Same reasoning as ``detection_windows`` above: left as ``object`` so one
-    # malformed camera entry (bad field type, missing required field) is
-    # dropped per-camera in ``resolved_cameras`` rather than rejecting the
-    # whole payload.
     cameras: tuple[object, ...]
-    # ml-api-local per-domain enable/disable override (see
-    # ``backend/app/features/detection_settings``), keyed by domain name,
-    # e.g. ``{"fall": {"enabled": true}, "bed_exit": {"enabled": false}}``.
-    # Only present once an operator has saved detection settings at least
-    # once; absent otherwise, preserving the pre-existing ambient-default
-    # behavior (all domains enabled, driven by per-camera ``domains``).
-    # Left as ``object`` for the same fail-open reason as
-    # ``detection_windows``: a malformed per-domain entry is dropped in
-    # ``resolved_domain_enabled`` rather than rejecting the whole payload.
     domains: dict[str, object] | None = None
-    # ml-api-local clip storage subdirectory selection (see
-    # ``backend/app/features/clips/storage_location_store.py``), relative to
-    # the worker's fixed ``CLIP_STORE_DIR`` volume. Left as ``object`` (not
-    # ``str | None``) so a malformed value (wrong type, absolute path, ``..``
-    # traversal) is dropped in ``resolved_clip_store_subdir`` -- falling back
-    # to the store root -- rather than rejecting the whole payload.
     clip_store_subdir: object = None
-    # Closed versioned numeric policy bundle. Unlike legacy windows/toggles,
-    # this is one fail-closed unit: partial application would change detection
-    # semantics differently across modules/cameras.
     detection_policies: object = None
-    # Persisted ml-api runtime policy. Missing fields from old payloads and
-    # last-known-good rows are deliberately OFF at version zero.
     clip_export_enabled: StrictBool = False
     clip_export_version: StrictInt = Field(default=0, ge=0)
 
@@ -188,21 +137,10 @@ class BackendWorkerConfigPayload(BaseModel):
 
     @property
     def resolved_detection_windows(self) -> dict[str, PulledNightWindow]:
-        """Per-domain windows, preferring ``detection_windows`` over the
-        deprecated single ``night_window`` (mapped to "bed_exit").
-
-        A member with the wrong shape (not an object, or missing
-        start/end/tz) and a well-shaped but invalid/degenerate window (bad
-        HH:MM, unknown tz, start == end) both fail open to ALWAYS/24-7
-        detection for that one domain -- dropped from the map with a loud
-        stderr log -- rather than raising and discarding the whole pulled
-        payload.
-        """
         if self.detection_windows is not None:
             windows: dict[str, PulledNightWindow] = {}
             for domain, window in self.detection_windows.items():
                 if window is None:
-                    # Explicit null for this domain: ALWAYS, not an error.
                     continue
                 if not isinstance(window, dict):
                     _log_invalid_detection_window(domain, window, "must be an object or null")
@@ -224,10 +162,6 @@ class BackendWorkerConfigPayload(BaseModel):
 
     @property
     def resolved_domain_enabled(self) -> dict[str, bool]:
-        """Per-domain enable/disable overrides, degrading like
-        ``resolved_detection_windows``: a malformed entry (wrong shape, bad
-        ``enabled`` type, or an unrecognized domain name) is dropped and
-        logged rather than failing the whole payload."""
         if self.domains is None:
             return {}
         resolved: dict[str, bool] = {}
@@ -247,9 +181,6 @@ class BackendWorkerConfigPayload(BaseModel):
 
     @property
     def resolved_clip_store_subdir(self) -> str | None:
-        """The pulled clip storage subdirectory, or ``None`` if absent or
-        malformed (falls open to the store root, same fail-open shape as
-        ``resolved_detection_windows``)."""
         value = self.clip_store_subdir
         if value is None:
             return None
@@ -264,12 +195,6 @@ class BackendWorkerConfigPayload(BaseModel):
 
     @property
     def resolved_cameras(self) -> tuple[_CameraPayload, ...]:
-        """Camera roster entries, degrading like ``resolved_detection_windows``:
-        an entry with the wrong shape (not an object, a bad field type such
-        as ``fps``, or missing the required facility_id/space_id location)
-        is dropped and logged by camera identity rather than failing the
-        whole payload.
-        """
         cameras: list[_CameraPayload] = []
         for entry in self.cameras:
             if not isinstance(entry, dict):
@@ -296,8 +221,6 @@ class BackendWorkerConfigPayload(BaseModel):
 
     def to_pulled_config(self) -> PulledWorkerConfig:
         detection_windows = self.resolved_detection_windows
-        # Restart polling parses policies too. A higher revision with malformed
-        # semantics must not stop the running LKG worker at the next poll.
         _ = self.resolved_detection_policies
         return PulledWorkerConfig(
             config_version=self.directive.version,
@@ -329,18 +252,6 @@ class BackendWorkerConfigPayload(BaseModel):
         clip: ClipRecordingConfig | None = None,
         dev_mjpeg: DevMjpegConfig | None = None,
     ) -> WorkerConfig:
-        """Build the effective ``WorkerConfig`` from a relay pull.
-
-        The backend-pulled payload only ever carries fleet-level state
-        (relay/domains/cameras); ``models``/``clip``/``dev_mjpeg`` are
-        locally-sourced (env, or local YAML when ``--config`` is passed)
-        and must be passed in explicitly by the caller (``config_pull.py``'s
-        ``resolve_local_overrides``) rather than silently dropped -- see
-        issues #66/#68 (models/clip) and #113 (dev_mjpeg: an explicit local
-        ``dev_mjpeg.enabled: true`` used to be silently reset to the pydantic
-        default -- disabled -- on every successful pull, so the operator
-        diagnostic MJPEG port never bound and never logged why).
-        """
         token = "" if relay_token is None else relay_token.strip()
         if not token:
             raise WorkerConfigError("RELAY_TOKEN is required for pulled worker config")
@@ -348,28 +259,6 @@ class BackendWorkerConfigPayload(BaseModel):
         cameras = tuple(
             _runtime_camera(camera) for camera in resolved_cameras if camera.rtsp_url is not None
         )
-        # Issue #150: an *empty roster* (`self.cameras == ()`) is a legitimate
-        # config now -- a fresh install has no cameras until an operator
-        # registers one, and the worker must still boot so its probe/MJPEG
-        # server is reachable to validate that first camera's RTSP URL. This
-        # used to raise, and `config_pull.py` swallowed it as "malformed
-        # payload", so the first registration was structurally impossible.
-        #
-        # But "the payload declared cameras and every one of them failed to
-        # parse" is a different thing entirely, and still malformed. `cameras`
-        # is typed `tuple[object, ...]` precisely so one bad entry degrades
-        # per-camera in `resolved_cameras` instead of rejecting the payload --
-        # if that degradation consumed the *whole* roster, the payload is
-        # corrupt and we must not hand back an empty config. Doing so would
-        # silently discard a good last-known-good roster and stop monitoring
-        # every room. Raising here keeps the LKG fallback in charge.
-        #
-        # Note this checks `resolved_cameras` (parsed OK), not `cameras`
-        # (parsed OK *and* carries an RTSP URL). A roster whose entries all
-        # parse but have no `rtsp_url` is a real, non-corrupt state -- a
-        # camera registered in the cloud that this edge has no local record
-        # for yet -- and must boot with an empty usable roster rather than
-        # reject the pull.
         if self.cameras and not resolved_cameras:
             raise WorkerConfigError("worker config declared cameras but none of them parsed")
         detection_windows: dict[str, NightWindowConfig | None] = {
@@ -378,17 +267,6 @@ class BackendWorkerConfigPayload(BaseModel):
         }
         domain_enabled = self.resolved_domain_enabled
         if self.domains is not None:
-            # An explicit local override wins outright over the
-            # per-camera-domains-derived set below, but is threaded through
-            # as a *partial* per-domain overlay -- only the domains this
-            # override actually names -- rather than the legacy
-            # replace-list. A domain it never mentions is simply absent from
-            # both per-domain fields below, which ``DomainsConfig
-            # .resolved_overrides`` reads as "no opinion, defer to the
-            # registry" rather than forcing it on (the previous
-            # ``domain_enabled.get(name, True)`` hardcoded that default
-            # here instead of letting the registry decide it -- the
-            # config-replaces-registry defect this overlay exists to fix).
             domains_config = DomainsConfig(
                 fall=(
                     FallDomainConfig(enabled=domain_enabled["fall"])
@@ -403,10 +281,6 @@ class BackendWorkerConfigPayload(BaseModel):
                 detection_windows=detection_windows or None,
             )
         else:
-            # Same None-vs-empty distinction as the override above, one
-            # level down: a camera whose ``domains`` is ``None`` said
-            # nothing, but a camera whose ``domains`` is ``()`` explicitly
-            # opted out, and the union must not blur the two (issue #191).
             camera_declared_domains = any(camera.domains is not None for camera in resolved_cameras)
             camera_domains = (
                 tuple(
@@ -419,16 +293,6 @@ class BackendWorkerConfigPayload(BaseModel):
                 enabled=camera_domains,
                 detection_windows=detection_windows or None,
             )
-        # Issue #191's fresh-install failure -- a pull with no domains
-        # signal at all (no override, no per-camera domains, no detection
-        # windows) silently resolving to zero active domains -- no longer
-        # needs special-casing here. ``domains_config`` is always passed
-        # through unconditionally: ``WorkerConfig.enabled_domains`` resolves
-        # every domain against the registry (``DOMAIN_REGISTRY[name]
-        # .enabled``) overlaid by ``domains_config.resolved_overrides()``,
-        # and a ``DomainsConfig`` carrying no real signal produces an empty
-        # overrides map, which reads as "defer to the registry" rather than
-        # "nothing is active" -- whether or not the field was ever "set".
         base_clip = clip if clip is not None else ClipRecordingConfig()
         subdir = self.resolved_clip_store_subdir
         resolved_clip = (
@@ -506,11 +370,6 @@ def _validation_error_reason(exc: ValidationError) -> str:
 def _runtime_camera(payload: _CameraPayload) -> CameraRuntimeConfig:
     if payload.rtsp_url is None:
         raise WorkerConfigError("worker camera is missing an RTSP URL")
-    # payload.fps is a declared hint stored on the camera record. It does
-    # not own ingest pacing: CapturePolicy.target_fps is taken from the
-    # TemporalProfile passed at compose time. When the relay omits fps we
-    # still fill the field with CURRENT so existing camera-record readers
-    # keep a positive value; the profile remains the effective owner.
     return CameraRuntimeConfig(
         camera_id=payload.camera_id,
         facility_id=payload.resolved_facility_id,

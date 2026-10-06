@@ -1,12 +1,3 @@
-"""Runtime-loader coverage for retired mutable YAML authority.
-
-Model artifacts are validated after versioned config is pulled. A local YAML
-model policy must therefore be rejected by the loader itself, even when its
-artifact is missing, rather than becoming a fallback configuration source.
-The complete camera/model/domain/clip rejection matrix lives in the related
-YAML authority tests.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path

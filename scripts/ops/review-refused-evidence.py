@@ -76,8 +76,6 @@ def main(argv: list[str] | None = None) -> int:
         sorted(path for path in retention.iterdir() if path.is_file()) if retention.is_dir() else []
     )
 
-    # The refusal status is the leading filename component, so the operator sees
-    # why each entry is held without opening any payload.
     reasons = Counter(path.name.split(".", 1)[0] for path in retained)
     total_bytes = sum(path.stat().st_size for path in retained)
 
@@ -100,8 +98,6 @@ def main(argv: list[str] | None = None) -> int:
 
     requeued = 0
     for path in retained:
-        # The queue owns its lock, bounds and atomic publication; re-admitting
-        # by writing the file back would bypass all three.
         if not queue.requeue_dead_lettered(path):
             print(
                 json.dumps(

@@ -23,8 +23,6 @@ from worker.types.trace import DecisionTraceMissingReason
 
 
 class _ImmediateClassifier:
-    """Scores every live track on every call, so no track is ever "not scored"."""
-
     def __init__(self) -> None:
         self.current_call_missing_score_reasons: dict[int, str] = {}
 
@@ -47,7 +45,6 @@ class _RecordingModel:
 
 
 def _traceable_fall(*, camera_id: str, facility_id: str) -> FallDomainDecider:
-    """The production decider records compiled-vocabulary trace snapshots itself."""
     return FallDomainDecider(
         classifier=_ImmediateClassifier(),
         policy=FallPolicyDecider(
@@ -106,7 +103,6 @@ def _input(
 def test_fall_trace_records_transition_confirmation() -> None:
     detector = _traceable_fall(camera_id="camera-a", facility_id="facility-a")
 
-    # transition_votes=1: the first qualifying frame confirms the transition.
     events = detector.update(_input(BoundingBox(10, 10, 70, 90, 0.9), frame_index=1))
 
     assert len(events) == 1
@@ -237,18 +233,6 @@ def test_fall_classifier_dispositions_are_camera_local_with_a_shared_model() -> 
 
 
 def test_bed_exit_trace_distinguishes_outside_dwell_exit_from_stale_track_clear() -> None:
-    """Absence never emits; only a live, posture-confirmed dwell can arm and exit.
-
-    Supersedes the deleted shadow state machine's assertion that a track
-    disappearing one frame after leaving the bed ("live-grace" ->
-    "stale-track-exit") should fire -- that was exactly the absence-emit bug
-    (issue: bed-exit firehose). Under the dwell model: a track must be
-    observed lying/sitting in its own bed for `in_bed_dwell_sec` before it is
-    armed, then observed outside continuously for `outside_dwell_sec` on
-    live frames before it fires; a track vanishing is retired silently
-    ("stale-track-clear", triggered=False) regardless of how far its dwell
-    timers had climbed.
-    """
     detector = BedExitMonitor(
         config=BedExitConfig(
             camera_id="camera-bed",
@@ -268,11 +252,7 @@ def test_bed_exit_trace_distinguishes_outside_dwell_exit_from_stale_track_clear(
     outside = BoundingBox(100, 10, 160, 90, 0.9)
     lying = frame_pose_features(lying_in_bed(track_id=9, bed_id=0))
 
-    # Frame 0: assigns to bed 0 (hold_frames=1); no dwell math on the
-    # assignment frame itself.
     assert detector.update(_input(inside, frame_index=0, time_sec=0.0)) == ()
-    # Frame 1: still inside, posture-confirmed for a full in_bed_dwell_sec ->
-    # arms. Never triggers by itself.
     assert (
         detector.update(_input(inside, frame_index=1, time_sec=1.0, bed_pose_features=lying)) == ()
     )
@@ -282,8 +262,6 @@ def test_bed_exit_trace_distinguishes_outside_dwell_exit_from_stale_track_clear(
     assert armed_trace.values["in_bed_dwell_sec"] == 1.0
     assert armed_trace.values["in_bed_dwell_threshold_sec"] == 1.0
 
-    # Frame 2: outside for a full outside_dwell_sec while armed -> fires
-    # exactly one event.
     events = detector.update(_input(outside, frame_index=2, time_sec=2.0))
     assert len(events) == 1
     exit_trace = detector.last_trace_snapshots[0]
@@ -293,9 +271,6 @@ def test_bed_exit_trace_distinguishes_outside_dwell_exit_from_stale_track_clear(
     assert exit_trace.values["outside_dwell_sec"] == 1.0
     assert exit_trace.values["outside_dwell_threshold_sec"] == 1.0
 
-    # The same track returns to bed but is never observed long enough to
-    # re-arm (no posture evidence this time), then disappears entirely.
-    # Absence must not fire -- the track is simply retired.
     assert detector.update(_input(inside, frame_index=3, time_sec=3.0)) == ()
     assert (
         detector.update(_input(outside, frame_index=4, time_sec=4.0)) == ()

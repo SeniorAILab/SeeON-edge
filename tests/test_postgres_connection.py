@@ -1,5 +1,3 @@
-"""Native connection settings against an explicitly isolated real PostgreSQL server."""
-
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -353,7 +351,6 @@ def test_postgres_character_bounds_accept_limit_and_reject_overflow_before_sql(
 ) -> None:
     sandbox = postgres_product_sandbox
     store = ConnectionSettingsStore(sandbox.database, sandbox.authority)
-    # PostgreSQL length(text) counts characters, not UTF-8 bytes.
     value = "가" * limit
     saved = store.save(_enrollment() | {field_name: value, "enrollment_generation": 2**63 - 1})
     assert getattr(saved, field_name) == value
@@ -493,7 +490,6 @@ def test_unknown_commit_propagates_without_replay_or_reloading_local_state(
         store.save(_enrollment(), after_write=after_write)
     monkeypatch.setattr(psycopg.Connection, "commit", commit)
     assert len(hook_pids) == len(commit_calls) == 1
-    # The real commit happened, but save must not turn an unknown outcome into success.
     assert sandbox.admin.execute("SELECT facility_id FROM edge_site").fetchone() == ("facility-1",)
     assert sandbox.admin.execute("SELECT count(*) FROM audit_events").fetchone() == (1,)
     assert store.load().facility_id == "facility-1"

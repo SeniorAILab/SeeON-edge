@@ -1,5 +1,3 @@
-"""Strict, image-free wire representation for backend-owned replay."""
-
 from __future__ import annotations
 
 import json
@@ -8,7 +6,7 @@ from typing import Final
 
 
 class ReplayWireError(ValueError):
-    """The replay request is incomplete or not a faithful trace representation."""
+    ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,23 +62,10 @@ def decode_replay_trace(payload: object) -> ReplayTrace:
     return ReplayTrace(camera_id, tuple(normalized_frames), truncation)
 
 
-#: Frames a single camera may retain in one replay request. This is the replay
-#: wire's own bound. Declared here because both the worker sender and the
-#: backend receiver must agree, and neither may import the other.
 MAX_TRACE_FRAMES: Final = 3_000
 
-#: Measured upper bound for one serialized frame. A frame carrying two persons
-#: with seventeen keypoints each, one bed with a four-point polygon, and three
-#: components serializes to about 2.9 KiB; this rounds up and leaves room for a
-#: denser scene without inviting unbounded growth.
 MAX_TRACE_FRAME_BYTES: Final = 6 * 1024
 
-#: Transfer bound, DERIVED rather than chosen. It previously was a bare
-#: 4 MiB constant while retention permitted 3,000 frames, and a full retained
-#: timeline measures 8.36 MiB -- so exactly the long window a fall investigation
-#: needs was refused at the boundary while short traces succeeded. A cap that
-#: silently excludes the interesting inputs is a fake capability, so this is
-#: computed from the retention bound and cannot drift away from it.
 MAX_REPLAY_BODY_BYTES: Final = MAX_TRACE_FRAMES * MAX_TRACE_FRAME_BYTES
 
 __all__ = [

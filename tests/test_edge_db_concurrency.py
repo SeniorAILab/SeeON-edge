@@ -62,11 +62,3 @@ def test_snapshot_export_refuses_while_another_process_holds_the_deployment_lock
         runtime.join(10)
     assert runtime.exitcode == 0
     assert list(snapshots.iterdir()) == []
-
-
-# The diagnostics-file isolation this used to cover (a writer on
-# edge-diagnostics.sqlite3 never blocking edge.sqlite3) is now exercised
-# through the real production wiring instead -- see
-# tests/test_api_execution_records.py::
-# test_lifespan_diagnostics_query_and_product_write_skip_a_pending_diagnostics_write
-# (#579/#580, S4).

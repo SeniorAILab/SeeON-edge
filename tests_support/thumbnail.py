@@ -1,13 +1,9 @@
-"""Deterministic thumbnail doubles for evidence-publication tests."""
-
 from __future__ import annotations
 
 from pathlib import Path
 
 
 class DeterministicThumbnailGenerator:
-    """Write stable bytes, or raise when a test needs unavailable evidence."""
-
     def __init__(self, *, error: Exception | None = None) -> None:
         self._error = error
 

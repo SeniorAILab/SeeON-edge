@@ -1,12 +1,3 @@
-"""Capability protocol for worker-internal PerceptionFrame adaptation.
-
-Channel payloads (`PersonBoxChannel`, `HumanPoseChannel`, `BedRegionChannel`,
-`AssociationResult`) live only as frozen dataclasses in
-``worker.types.perception_frame``. They are not re-declared as Protocols here:
-a second object with the same name would make imports ambiguous for C4, and
-``@runtime_checkable`` only checks attribute presence, not types.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -24,8 +15,6 @@ from worker.types.perception_frame import (
 
 @runtime_checkable
 class PerceptionFrameAdapter(Protocol):
-    """Map inference outputs onto PerceptionFrameV1 or a typed failure."""
-
     def adapt(
         self,
         *,

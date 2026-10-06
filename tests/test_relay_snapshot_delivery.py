@@ -1,9 +1,3 @@
-"""Snapshot companion routes on the PostgreSQL product root.
-
-The oracles read committed ``artifacts``, ``incidents`` and ``audit_events``
-rows through the sandbox admin connection.
-"""
-
 from __future__ import annotations
 
 import json

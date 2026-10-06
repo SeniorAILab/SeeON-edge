@@ -1,10 +1,3 @@
-"""The private fall bundle gate fails selected tests without the bundle; it never skips.
-
-Each case runs this suite's own conftest.py in a throwaway pytest session whose
-rootdir has no models/ unless the case provisions the sentinel, under
-``--strict-markers`` with the marker list read from this repository's pyproject.toml.
-"""
-
 from __future__ import annotations
 
 import tomllib
@@ -26,9 +19,6 @@ def gated(pytester: pytest.Pytester) -> pytest.Pytester:
         markers = tomllib.load(handle)["tool"]["pytest"]["ini_options"]["markers"]
     pytester.makeini("[pytest]\nmarkers =\n" + "".join(f"    {m}\n" for m in markers))
     pytester.makeconftest(_CONFTEST.read_text(encoding="utf-8"))
-    # The listed basename sits in a package so it imports as
-    # bundle_probe.test_fetch_models: this in-process session shares sys.modules
-    # with a suite run that has already imported tests/test_fetch_models.py.
     listed = pytester.mkpydir("bundle_probe") / "test_fetch_models.py"
     listed.write_text("def test_listed_module():\n    pass\n", encoding="utf-8")
     pytester.makepyfile(

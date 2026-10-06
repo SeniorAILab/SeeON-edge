@@ -37,17 +37,11 @@ from tests_support.postgres_sandbox import ProductSandbox
 pytest_plugins = ("tests_support.postgres_sandbox",)
 
 TOKEN = "relay-token"
-# The wire payload carries Hub-facing UUIDv4 references while the receipt owner
-# resolves incidents from the clip manifest's own event identity below. The two
-# are deliberately unequal; nothing here asserts metadata equality between them.
 EVENT_ID = "00000000-0000-4000-8000-000000000001"
-# One accepted event per native client; an explicit test budget, not a deployment policy.
 TEST_OUTBOX_BUDGET = OutboxBudget(4, 64 * 1024)
 
 
 class SqliteReceiptStore:
-    """Test-only implementation of the migrated backend receipt table."""
-
     def __init__(self, path: Path) -> None:
         self.connection = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         self.connection.execute("PRAGMA synchronous = FULL")
@@ -189,8 +183,6 @@ def _client(tmp_path: Path, store: ArtifactReceiptStore, sandbox: ProductSandbox
     settings.set_clip_export_enabled(True)
     app.state.runtime_settings_store = settings
     if isinstance(store, PostgresArtifactReceiptStore):
-        # The manifest incident comes from the real acceptance owner sharing this
-        # runtime, database and authority, under an explicit small test budget.
         EventOutbox(
             sandbox.database, sandbox.authority, TEST_OUTBOX_BUDGET, audit_runtime=runtime
         ).accept(
@@ -220,7 +212,6 @@ def _native_store(
 
 
 def _counts(sandbox: ProductSandbox) -> tuple[int, ...]:
-    """Read published clips, artifacts and audit rows on the independent connection."""
     return tuple(
         sandbox.admin.execute("SELECT count(*) FROM " + table).fetchone()[0]
         for table in ("clips", "artifacts", "audit_events")
@@ -266,7 +257,6 @@ def test_real_route_rejects_media_swap_before_native_commit(
     swap_kind: str,
     postgres_product_sandbox: ProductSandbox,
 ) -> None:
-    # Given: route verification has opened the declared inode.
     original = b"verified video"
     replacement = b"tampered bytes"
     assert len(original) == len(replacement)
@@ -312,14 +302,12 @@ def test_real_route_rejects_media_swap_before_native_commit(
         swap_then_commit,
     )
 
-    # When: the real relay route crosses verification -> native commit.
     response = client.put(
         "/api/v1/relay/clips/clip-1",
         json=_payload(original),
         headers={"X-Edge-Relay-Token": TOKEN},
     )
 
-    # Then: pathname/inode drift is rejected and no publication or audit fact commits.
     assert response.status_code == 409
     assert verified_handle is not None and verified_handle.closed
     if observed_inode is not None:
@@ -331,7 +319,6 @@ def test_real_route_rejects_swap_after_preflight_before_transaction(
     tmp_path: Path,
     postgres_product_sandbox: ProductSandbox,
 ) -> None:
-    # Given: pathname identity is captured, then equal-size replacement occurs before DB open.
     original = b"verified video"
     replacement = b"tampered bytes"
     sandbox = postgres_product_sandbox
@@ -350,14 +337,12 @@ def test_real_route_rejects_swap_after_preflight_before_transaction(
     client = _client(tmp_path, store, sandbox)
     before = _counts(sandbox)
 
-    # When: the real route reaches the exact post-preflight/pre-transaction hook.
     response = client.put(
         "/api/v1/relay/clips/clip-1",
         json=_payload(original),
         headers={"X-Edge-Relay-Token": TOKEN},
     )
 
-    # Then: the first in-transaction guard rejects replacement before any SQL write.
     assert response.status_code == 409
     assert inode_proof is not None and inode_proof[0] != inode_proof[1]
     assert _counts(sandbox) == before
@@ -369,7 +354,6 @@ def test_real_route_rolls_back_swap_during_receipt_transaction(
     swap_kind: str,
     postgres_product_sandbox: ProductSandbox,
 ) -> None:
-    # Given: SQL writes occur, then the current pathname is replaced before commit.
     original = b"verified video"
     replacement = b"tampered bytes"
     sandbox = postgres_product_sandbox
@@ -401,14 +385,12 @@ def test_real_route_rolls_back_swap_during_receipt_transaction(
     client = _client(tmp_path, store, sandbox)
     before = _counts(sandbox)
 
-    # When: the deterministic hook swaps after SQL but before transaction commit.
     response = client.put(
         "/api/v1/relay/clips/clip-1",
         json=_payload(original),
         headers={"X-Edge-Relay-Token": TOKEN},
     )
 
-    # Then: the final in-transaction guard rolls back every native write, audit included.
     assert response.status_code == 409
     if inode_proof is not None:
         assert inode_proof[0] != inode_proof[1]
@@ -419,7 +401,6 @@ def test_real_route_valid_native_receipt_commits_and_closes_descriptor(
     tmp_path: Path,
     postgres_product_sandbox: ProductSandbox,
 ) -> None:
-    # Given: valid bytes remain on the same pathname for both transaction guards.
     data = b"verified video"
     sandbox = postgres_product_sandbox
     media = _media(tmp_path, data)
@@ -427,8 +408,6 @@ def test_real_route_valid_native_receipt_commits_and_closes_descriptor(
     captured_handle: BinaryIO | None = None
 
     class ObservedStore(PostgresArtifactReceiptStore):
-        """Record the route descriptor; every native write still runs below."""
-
         def commit_verified(
             self,
             receipt: ArtifactReceipt,
@@ -452,14 +431,12 @@ def test_real_route_valid_native_receipt_commits_and_closes_descriptor(
     client = _client(tmp_path, store, sandbox)
     clips, artifacts, audit_events = _counts(sandbox)
 
-    # When: the real route completes a descriptor-bound native receipt.
     response = client.put(
         "/api/v1/relay/clips/clip-1",
         json=_payload(data),
         headers={"X-Edge-Relay-Token": TOKEN},
     )
 
-    # Then: both timing seams execute, computed identity commits, and the FD closes.
     assert response.status_code == 200
     assert hook_order == ["after-preflight", "before-final-check"]
     assert captured_handle is not None and captured_handle.closed
@@ -469,7 +446,6 @@ def test_real_route_valid_native_receipt_commits_and_closes_descriptor(
     assert sandbox.admin.execute(
         "SELECT lifecycle_state FROM incidents WHERE edge_event_id='event-1'"
     ).fetchone() == ("COMPLETE",)
-    # One required publication for a new receipt, on the independent connection.
     assert _counts(sandbox) == (clips + 1, artifacts + 1, audit_events + 1)
 
 
@@ -523,25 +499,12 @@ def test_verification_failure_is_typed(tmp_path: Path) -> None:
 def test_a_receipt_that_exists_must_be_accepted_and_must_match(
     tmp_path: Path, postgres_product_sandbox: ProductSandbox
 ) -> None:
-    """The receipt binds the bytes; it does not license the viewing.
-
-    This used to also require a receipt to EXIST before an operator could play
-    anything. A receipt is only committed after a successful upstream export,
-    which needs clip export enabled (Hub-owned config, off by default) and a
-    Hub-issued camera id, so on a real deployment none was ever written and
-    every clip became permanently unplayable -- verified HEVC on disk, listed
-    as available, and the browser answering "영상을 재생하지 못했습니다" forever.
-
-    What the receipt actually guarantees -- that served bytes are the recorded
-    ones, and that a refused artifact stays refused -- is unchanged below.
-    """
     data = b"verified video"
     media = _media(tmp_path, data)
     store = SqliteReceiptStore(tmp_path / "receipts.sqlite3")
     client = _client(tmp_path, store, postgres_product_sandbox)
     _login(client)
 
-    # No receipt yet: local evidence is still reviewable.
     unrecorded = client.get("/api/v1/clips/clip-1/video")
     assert unrecorded.status_code == 200
     assert unrecorded.content == data

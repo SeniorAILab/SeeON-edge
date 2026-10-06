@@ -1,5 +1,3 @@
-"""event.delivery and backend.acceptance payloads."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -14,19 +12,6 @@ from worker.pipeline.diagnostics.record_builder import (
     wall_or,
 )
 
-#: Closed vocabulary for the sender's own event.delivery dispositions.
-#: These are not Hub acceptance; backend.acceptance is the only record that
-#: says accepted_local / hub-accepted.
-#:
-#: retry-transient: DeliveryDisposition.RETRY / 5xx / unreachable; attempt
-#:     budget is not consumed.
-#: retry-counted: attempt consumed (send exception, PERMANENT non-4xx, or
-#:     receipt edge_event_id mismatch).
-#: refused-retained: PERMANENT 4xx retained in the dead-letter directory.
-#: refused-retention-full: PERMANENT 4xx but the retention area is full; the
-#:     entry stays queued.
-#: exhausted-retained / exhausted-retention-full: attempt budget spent.
-#: ack-removal-deferred: delivered but queue.acknowledge failed.
 DELIVERY_ATTEMPT_OUTCOMES: Final = (
     "retry-transient",
     "retry-counted",
@@ -53,11 +38,6 @@ def event_delivery_record(
     reason: str | None = None,
     observed_at_ns: int | None = None,
 ) -> WireRecord | None:
-    """Stream-scoped queue admission observed against the triggering frame.
-
-    ``admitted`` must be the durable queue's proof (try_admit.accepted, or
-    the queue's AdmissionResult.accepted being True). Never pass True without that proof.
-    """
     return make_record(
         record_kind="event.delivery",
         camera_id=camera_id,
@@ -96,21 +76,6 @@ def delivery_attempt_record(
     queue_kind: str = "EVENT",
     observed_at_ns: int | None = None,
 ) -> WireRecord | None:
-    """Record that *this* boot observed a sender disposition for ``edge_event_id``.
-
-    These are the sender's own dispositions — not Hub acceptance.
-    ``backend.acceptance`` remains the only record that says accepted_local
-    or hub-accepted.
-
-    The durable delivery queue can outlive the boot that staged the event, and
-    a queue entry carries no origin boot/generation/epoch. A sender
-    event.delivery is therefore process-scoped in the same way as
-    backend.acceptance: the row stamps the boot that observed the attempt with
-    PROCESS_SCOPE for generation/epoch, and joins to the originating stream
-    through ``causal_unit_id == edge_event_id`` (the stream-scoped admission
-    event.delivery carries the full origin identity). ``dead_letter_dir`` is
-    the directory name, never a full path.
-    """
     if outcome not in DELIVERY_ATTEMPT_OUTCOMES:
         return None
     dir_name = None if dead_letter_dir is None else Path(dead_letter_dir).name
@@ -147,17 +112,6 @@ def backend_acceptance_record(
     hub_event_id: str,
     observed_at_ns: int | None = None,
 ) -> WireRecord | None:
-    """Record that *this* boot observed the Backend receipt for ``edge_event_id``.
-
-    The durable delivery queue can outlive the boot that staged the event, and
-    a queue entry carries no origin boot/generation/epoch. backend.acceptance is
-    therefore a *process-scoped* kind (declared in the wire contract): the row
-    stamps the boot that observed the receipt with PROCESS_SCOPE for
-    generation/epoch, and joins to the originating stream through
-    ``causal_unit_id == edge_event_id`` (the event.delivery record carries the
-    full origin identity). Origin fields are ``null`` in the payload, never a
-    fabricated value.
-    """
     if status == "accepted_local":
         outcome = "accepted_local"
     elif status == "accepted":
@@ -182,7 +136,6 @@ def backend_acceptance_record(
             "accepted_local": status == "accepted_local",
             "hub_accepted": status == "accepted" and bool(hub_event_id),
             "observing_boot_id": observing_boot_id,
-            # The queue entry does not carry these; join through causal_unit_id.
             "origin_boot_id": None,
             "origin_source_generation": None,
             "origin_stream_epoch": None,

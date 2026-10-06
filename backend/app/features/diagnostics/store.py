@@ -1,5 +1,3 @@
-"""Backend-owned execution-record persistence (schema 19)."""
-
 from __future__ import annotations
 
 import json
@@ -52,8 +50,6 @@ def _receipt_from_json(text: str) -> BatchReceipt:
 
 
 class ExecutionRecordStore:
-    """Idempotent batch ingest and query over the six execution_* tables."""
-
     def __init__(
         self,
         database: PostgresDatabase,
@@ -91,10 +87,6 @@ class ExecutionRecordStore:
     def _ingest(
         self, connection: psycopg.Connection, batch: IngestBatch, now_ns: int
     ) -> BatchReceipt:
-        # One writer at a time: the batch-id
-        # lookup, retention measurement and prune below all assume no
-        # concurrent ingest. The lock conflicts only with itself and
-        # stronger modes, so snapshot readers never wait on it.
         connection.execute("LOCK TABLE execution_batches IN SHARE ROW EXCLUSIVE MODE")
         existing = connection.execute(
             "SELECT receipt FROM execution_batches WHERE batch_id = %s",
@@ -104,9 +96,6 @@ class ExecutionRecordStore:
             prior_receipt = _receipt_from_json(str(existing[0]))
             if prior_receipt.storage_state is not StorageState.STORAGE_UNAVAILABLE:
                 return prior_receipt
-            # Only a refusal is retryable. Remove it before the savepoint so
-            # either outcome can replace it under the same id. The enclosing
-            # write transaction restores it if ingestion raises.
             connection.execute(
                 "DELETE FROM execution_batches WHERE batch_id = %s", (batch.batch_id,)
             )
@@ -124,9 +113,6 @@ class ExecutionRecordStore:
         gap_lanes: set[tuple[str, str, int, int]] = set()
         for gap in batch.gaps:
             scoped = gap.source_generation is not None and gap.stream_epoch is not None
-            # (0, 0) is only a storage bucket for legacy unresolved loss.
-            # Its UNKNOWN marker explicitly applies across this camera/boot;
-            # no batch neighbour establishes the lost observation's scope.
             generation = gap.source_generation if scoped else 0
             epoch = gap.stream_epoch if scoped else 0
             insert_coverage(
@@ -162,9 +148,6 @@ class ExecutionRecordStore:
             storage_state=StorageState.COMMITTED,
             committed_at_ns=now_ns,
         )
-        # The receipt row is part of the control envelope, so it must exist
-        # before the budget is enforced; otherwise every commit lands a few
-        # hundred bytes over the line it was just checked against.
         _write_batch_row(connection, batch, receipt, now_ns)
         self._meter.accrue(ingested.written_bytes)
         if not enforce_budget(connection, self.budget, now_ns, meter=self._meter):
@@ -186,7 +169,6 @@ class ExecutionRecordStore:
                 cause="capacity",
                 recorded_at_ns=now_ns,
             )
-            # Budget enforcement's coarsening rolled back with ingest.
             coarsen_coverage(
                 connection,
                 self.budget.coverage_rows_per_epoch,
@@ -207,10 +189,6 @@ class ExecutionRecordStore:
             "SELECT 1 FROM execution_batches WHERE batch_id = %s", (batch.batch_id,)
         ).fetchone()
         if still_recorded is None:
-            # Capacity pruned every record this batch contributed, which also
-            # dropped its receipt. Keep the receipt anyway: it is the truthful
-            # answer to a retry of this batch id, and the prune is already
-            # visible as DELETED_BY_CAPACITY coverage.
             _write_batch_row(connection, batch, receipt, now_ns)
         return receipt
 

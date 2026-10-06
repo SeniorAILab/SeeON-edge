@@ -39,18 +39,13 @@ class IncidentConfigurationError(ValueError):
         return f"cooldown_sec must be non-negative, received {self.cooldown_sec}"
 
 
-@dataclass(slots=True)  # policy: MUTABLE_OK - owns per-camera cooldown state
+@dataclass(slots=True)
 class IncidentManager:
     cooldown_sec: float = 30.0
     identity_path: Path | None = None
     _last_seen: dict[CooldownKey, float] = field(default_factory=dict, init=False)
-    #: Cooldown key each admitted event was recorded under, so a release can
-    #: undo the exact record. Recomputing the key from the ADMITTED event would
-    #: silently miss for the identity-keyed branch, because admit() replaces the
-    #: identity -- a no-op release that looks like it worked.
     _admitted_keys: dict[str, CooldownKey] = field(default_factory=dict, init=False)
     _identities: EventIdentityStore = field(init=False, repr=False)
-    #: Alerts admitted with a fresh identity because the journal failed.
     identity_journal_failures: int = field(default=0, init=False)
     cooldown_suppressed_total: int = field(default=0, init=False)
     last_audit_snapshot: IncidentAuditSnapshot | None = field(
@@ -64,20 +59,6 @@ class IncidentManager:
         try:
             self._identities = EventIdentityStore(self.identity_path)
         except Exception:
-            # Same principle as a resolve failure, one step earlier. A journal
-            # left malformed by an earlier crash made construction raise, so the
-            # camera never activated at all and detected nothing until someone
-            # noticed and deleted the file by hand. Losing the stored identities
-            # costs deduplication across this restart; losing the camera costs
-            # every fall it would have seen.
-            # In-memory, with no path at all. An earlier version of this
-            # fallback created a scratch journal in a temporary directory, which
-            # reintroduced the exact defect it was fixing: if the disk is full
-            # -- a very likely reason the real journal failed in the first place
-            # -- mkdtemp raises too and the camera still never activates.
-            # EventIdentityStore(None) performs no I/O on construction or on
-            # resolve, so it cannot fail for the same reason. The unusable file
-            # is left exactly where it is for an operator to inspect.
             self._identities = EventIdentityStore(None)
             self.identity_journal_failures += 1
             _LOGGER.error(
@@ -105,14 +86,6 @@ class IncidentManager:
         try:
             edge_event_id = self._identities.resolve(_source_key(event))
         except Exception:
-            # The journal exists so a restart reuses the same edge event id and
-            # the backend can deduplicate. It is a durability aid, not the
-            # decision. Unguarded, any journal I/O failure -- a full disk, a
-            # permission change, an fsync error -- propagated out of admit() and
-            # the resident's event was never admitted, never queued and never
-            # delivered. A fresh identity risks a duplicate alert after a
-            # restart, which the backend already deduplicates; a missing alert
-            # is the accident this system exists to prevent.
             edge_event_id = str(uuid4())
             self.identity_journal_failures += 1
             _LOGGER.error(
@@ -151,16 +124,6 @@ class IncidentManager:
         return self.admit(event, now_sec=now_sec)
 
     def release(self, event: BusinessEvent, *, now_sec: float | None = None) -> None:
-        """Undo the consumption of a decision whose envelope was never admitted.
-
-        `admit` records a cooldown entry, which is what stops the same fall
-        being reported once per frame. If the envelope then fails to reach the
-        durable queue, that record is the reason the NEXT frame produces
-        nothing: the rising edge has been spent and the fall is lost for good,
-        even though staging would have succeeded a frame later.
-
-        A decision must not stay consumed unless its envelope is durable.
-        """
         del now_sec
         key = self._admitted_keys.pop(str(event.identity), None)
         if key is not None:
@@ -172,15 +135,6 @@ class IncidentManager:
         event_time: float | None = None,
     ) -> CooldownKey:
         del event_time
-        # The episode authority (worker/domains/episode/) is the lifecycle
-        # owner: it already emits at most one event per episode and re-arms
-        # only on a confirmed recovery. This cooldown is overload protection
-        # for a producer that re-emits an identity it already emitted, so it
-        # keys on the episode identity. A camera-wide key would instead
-        # suppress a genuine second episode -- a different resident, or the
-        # same one after a confirmed recovery -- which is exactly the alert
-        # loss the episode machine exists to prevent. Every suppression here
-        # is therefore a defect signal, counted in cooldown_suppressed_total.
         return (event.camera_id, event.domain, event.event_type, event.identity)
 
     def reset(self) -> None:

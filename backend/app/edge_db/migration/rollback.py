@@ -1,5 +1,3 @@
-"""Snapshot-only rollback predicate over every durable PostgreSQL record class."""
-
 from __future__ import annotations
 
 from contextlib import closing
@@ -37,13 +35,6 @@ def rollback_check(
     source: Path,
     fence_receipt: Path,
 ) -> dict[str, object]:
-    """ALLOW a snapshot restore only when PostgreSQL holds nothing the snapshot lacks.
-
-    A missing new event is not enough: delivery, execution, audit, status and
-    diagnostics history written only to PostgreSQL each deny, as does a live
-    authority. The fenced SQLite file must also still hold exactly the bytes
-    the fence left, compared without opening it.
-    """
     require_identifier(schema, "schema")
     fence = read_fence_receipt(fence_receipt)
     source_sha256 = snapshot_sha256(snapshot_path)
@@ -75,7 +66,6 @@ def rollback_check(
     if diagnostics["result"] != PASS:
         reasons.append("diagnostics:schema")
     else:
-        # Diagnostics are never imported, so every row is history SQLite never saw.
         reasons.extend(
             f"diagnostics_history:{table}" for table, count in diagnostics["rows"].items() if count
         )
@@ -83,8 +73,6 @@ def rollback_check(
     if len(ledger) != 1:
         reasons.append("ledger:entries")
     elif not imported:
-        # A failed or skipped import must have left the target empty, but for the
-        # edge_site row that activation seeds.
         reasons.extend(
             f"unimported_rows:{result.name}"
             for result in tables
@@ -93,7 +81,6 @@ def rollback_check(
     else:
         if ledger[0][4] != source_sha256:
             reasons.append("ledger:snapshot_mismatch")
-        # The seed is history only where the snapshot had no edge_site row to restore.
         reasons.extend(
             f"target_history:{result.name}"
             for result in tables
@@ -106,8 +93,6 @@ def rollback_check(
             reasons.append("sqlite:receipt_snapshot_mismatch")
         reasons.extend(fence_reasons)
     else:
-        # unfence refuses a receipt with no source (unfence.py:41-44), so there is nothing
-        # to restore and PostgreSQL stays authoritative.
         sqlite = {
             "generation": fence.generation,
             "source_present": False,

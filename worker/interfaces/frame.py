@@ -16,8 +16,6 @@ class FrameMaterializer(Protocol):
 
 @runtime_checkable
 class HostFrameView(Protocol):
-    """Explicit zero-copy host-only access; non-host input must fail."""
-
     name: str
 
     def view(self, lease: FrameLease) -> Frame: ...

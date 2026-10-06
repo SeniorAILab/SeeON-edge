@@ -1,5 +1,3 @@
-"""Native receipt/file/transaction contracts; no HTTP or power-loss qualification."""
-
 from __future__ import annotations
 
 import hashlib
@@ -297,8 +295,6 @@ def test_get_does_not_acknowledge_unpublished_or_missing_identity(sandbox, tmp_p
     with pytest.raises(ArtifactReceiptPersistenceError, match="identity is unreadable"):
         store.get("clip-1")
     assert _history(sandbox) == before
-    # Malformed digests and nonpositive non-null sizes are rejected by schema;
-    # do not disable constraints just to fabricate otherwise unrepresentable rows.
 
 
 @pytest.mark.parametrize("failure", [ValueError("callback failed"), BaseException("cancelled")])
@@ -343,7 +339,6 @@ def test_real_deferred_commit_rejection_never_returns_a_receipt(
 def test_post_owned_return_failure_is_not_replayed_or_translated(
     sandbox, tmp_path, clip, monkeypatch, error
 ):
-    # Synthetic error after a real commit, not a wire-loss/power-loss claim.
     original = sandbox.database.transact
     calls = []
 

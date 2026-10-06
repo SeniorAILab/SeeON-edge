@@ -1,5 +1,3 @@
-"""Flow lifecycle supervision consumes accepted metadata liveness."""
-
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -8,8 +6,6 @@ from worker.runtime.flow.lifecycle_supervisor import FlowLifecycleSupervisor
 
 
 class _Metadata:
-    """Only the pump reads the slot; the supervisor must not."""
-
     def __init__(self) -> None:
         self.frames: dict[str, SimpleNamespace] = {}
 
@@ -122,11 +118,6 @@ def test_camera_that_keeps_publishing_is_not_rotated() -> None:
 
 
 def test_shutdown_stops_the_flow_before_clearing_its_fixed_roster() -> None:
-    """A running Flow's sources are fixed, so order matters on the way down.
-
-    Removing sources first raises SourceRosterFixed and aborts the shutdown,
-    which a live run surfaced as a runtime error on every stop.
-    """
     from worker.interfaces.media_plane import SourceRosterFixed
 
     order: list[str] = []

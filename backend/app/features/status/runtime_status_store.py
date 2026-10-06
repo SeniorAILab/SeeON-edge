@@ -1,11 +1,3 @@
-"""API-owned worker runtime-status snapshots.
-
-The worker publishes telemetry through the relay HTTP boundary. This store owns
-only the API-local, latest snapshot for each facility; it never reads worker
-runtime state directly. Latency and status are latest-only memory. Restart
-forgets every observation. Missing is explicit, never a fabricated zero.
-"""
-
 from __future__ import annotations
 
 import threading
@@ -62,8 +54,6 @@ class RuntimeStatusSnapshot:
 
 @dataclass(slots=True)
 class RuntimeStatusStore:
-    """Keep one ordered runtime-status snapshot per facility."""
-
     stale_after_sec: float = DEFAULT_RUNTIME_STATUS_STALE_AFTER_SEC
     clock: Clock = field(default=_system_clock)
     _snapshots: dict[str, RuntimeStatusSnapshot] = field(default_factory=dict)
@@ -78,11 +68,6 @@ class RuntimeStatusStore:
         *,
         received_at: float | None = None,
     ) -> RuntimeStatusRecordResult:
-        """Record a payload after auth and facility validation.
-
-        A missing generation always starts a new generation. Within a generation
-        sequence numbers may repeat for retry delivery, but may not go backwards.
-        """
         facility_id = str(payload["facility_id"])
         seq = require_int(payload["seq"], field="seq")
         cameras_raw = payload["cameras"]
@@ -143,7 +128,6 @@ class RuntimeStatusStore:
             return RuntimeStatusRecordResult(True, generation)
 
     def snapshot(self, *, now: float | None = None) -> JsonObject:
-        """Return API-stamped, facility-keyed telemetry with derived staleness."""
         with self._lock:
             current = self.clock() if now is None else now
             prune_health(self._detection_health, _active_health_keys(self._snapshots))
@@ -199,7 +183,6 @@ def _active_health_keys(
 
 
 def get_runtime_status_store(app: object) -> RuntimeStatusStore:
-    """Return the app-owned runtime store, creating it for no-lifespan tests."""
     state = getattr(app, "state", None)
     if state is None:
         raise TypeError("app has no state")
@@ -211,7 +194,6 @@ def get_runtime_status_store(app: object) -> RuntimeStatusStore:
 
 
 def _assign_state_attr(state: object, name: str, value: object) -> None:
-    """Write a dynamic app.state attribute without untyped attribute access."""
     inner = getattr(state, "_state", None)
     if isinstance(inner, dict):
         inner[name] = value

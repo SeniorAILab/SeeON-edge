@@ -1,5 +1,3 @@
-"""Ingest helpers: provenance and set-based record ingest for one batch."""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -165,20 +163,10 @@ def _stored_units(connection: psycopg.Connection, unit_ids: set[str]) -> set[str
 
 
 class _BatchWriter:
-    """Buffered unit, segment and record writes for one ingest batch.
-
-    Units must exist before the records that reference them, so ``flush``
-    writes new units, then unit aggregates, then segment increments, then
-    records. Anything that reads or writes these tables outside this writer
-    during the batch must ``flush`` first.
-    """
-
     def __init__(self, connection: psycopg.Connection, known_units: set[str]) -> None:
         self._connection = connection
         self._known_units = known_units
-        # unit_id -> (camera, boot, generation, epoch) of a unit not yet inserted
         self._new_units: dict[str, tuple[str, str, int, int]] = {}
-        # unit_id -> [first_ns, last_ns, record_count, payload_bytes] not yet written
         self._unit_totals: dict[str, list[int]] = {}
         self._records: list[tuple[object, ...]] = []
 
@@ -276,15 +264,6 @@ def ingest_records(
     batch_id: str,
     now_ns: int,
 ) -> IngestResult:
-    """Store one batch's records with set-based reads and pipelined writes.
-
-    Dispositions match a per-record insert in batch order: an oversize record
-    is rejected before any lookup, a stored or earlier-in-batch record_id is a
-    duplicate when its stored content is identical and a conflict otherwise,
-    and an ACK whose unit is gone is re-homed to its late-ACK unit. The
-    buffered rows are flushed before every inline coverage write so it sees
-    the same unit state a per-record insert would have left.
-    """
     stored = _stored_keys(connection, [record.record_id for record in records])
     unit_ids = {record.causal_unit_id for record in records}
     unit_ids.update(

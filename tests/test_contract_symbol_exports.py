@@ -1,12 +1,3 @@
-"""Contract-symbol export tests.
-
-Architectural import boundaries are enforced declaratively by import-linter
-(``uv run --group lint lint-imports``; see ``[tool.importlinter]`` in
-pyproject.toml), which replaced the old hand-rolled AST import-ladder walker.
-What import-linter cannot express — that the shared ``contracts`` package keeps
-exporting the exact symbols the runtime depends on — stays here as pytest.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path

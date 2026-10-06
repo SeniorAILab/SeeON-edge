@@ -1,5 +1,3 @@
-"""The PostgreSQL clip catalogue across the API lifecycle: startup, restart and reads."""
-
 from __future__ import annotations
 
 import hashlib
@@ -33,7 +31,6 @@ pytest_plugins = ("tests_support.postgres_sandbox",)
 _NOW = "2026-08-13T00:00:00Z"
 _THUMBNAIL = b"\xff\xd8thumbnail\xff\xd9"
 _ROW_VERSIONS_SQL = "SELECT clip_id, local_state, revision, xmin::text FROM clips ORDER BY clip_id"
-# Row count plus every row version: any INSERT, UPDATE or DELETE changes it.
 _TABLE_VERSIONS_SQL = {
     "clips": "SELECT count(*), coalesce(string_agg(xmin::text, ',' ORDER BY clip_id), '') "
     "FROM clips",
@@ -80,7 +77,6 @@ def _listed(client: TestClient) -> tuple[int, list[str]]:
 
 
 def _redirect_edge_database(sentinel: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Point every loaded backend and worker binding of the SQLite path at the sentinel."""
     for name, module in tuple(sys.modules.items()):
         if name.split(".")[0] not in {"backend", "worker"}:
             continue
@@ -105,8 +101,6 @@ def make_app(
     postgres_product_sandbox: ProductSandbox,
     postgres_audit_runtime: PostgresAuditRuntime,
 ) -> Callable[[Path], FastAPI]:
-    """An app without the lifespan; tests reconcile explicitly."""
-
     def make(root: Path) -> FastAPI:
         monkeypatch.setenv("CLIP_STORE_DIR", str(root))
         app = postgres_api_app(postgres_product_sandbox, postgres_audit_runtime)
@@ -122,12 +116,6 @@ def lifespan_app(
     postgres_product_sandbox: ProductSandbox,
     postgres_audit_runtime: PostgresAuditRuntime,
 ) -> Callable[[Path], FastAPI]:
-    """The serving app with its real lifespan on the sandbox schema.
-
-    The interval is the inclusive maximum, so after the startup reconcile the
-    indexer loop does not run again within a test. The store root is injected
-    as app state: the serving lifespan refuses the retired ``CLIP_STORE_DIR``.
-    """
     monkeypatch.setenv(API_CLIP_CATALOG_INTERVAL_SEC_ENV, "300")
 
     def make(root: Path) -> FastAPI:
@@ -178,8 +166,6 @@ def test_listing_reads_the_postgres_catalog_and_never_touches_edge_sqlite(
 
     with TestClient(lifespan_app(root)) as client:
         _login(client)
-        # Disk and catalogue now disagree both ways: clip-00001 is on disk but
-        # not catalogued, clip-00003 is on disk and not yet indexed.
         _ = admin.execute("DELETE FROM clips WHERE clip_id = %s", ("clip-00001",))
         unindexed = _write_clip(root, 3)
         catalogued = {row[0] for row in admin.execute("SELECT clip_id FROM clips").fetchall()}

@@ -44,9 +44,6 @@ def test_backend_image_bakes_schema_19_release_identity() -> None:
 
 
 def test_backend_image_bakes_the_execution_record_provenance_revision() -> None:
-    """ML_API_EXECUTION_RECORDS_ENABLED=1 refuses to boot without
-    ML_API_BUILD_REVISION; the image must supply it from SOURCE_REVISION like
-    the worker image does, or the feature is un-enableable by any operator."""
     dockerfile = Path("Dockerfile.backend").read_text(encoding="utf-8")
     assert 'ML_API_BUILD_REVISION="${SOURCE_REVISION}"' in dockerfile
     worker = Path("Dockerfile.edge").read_text(encoding="utf-8")

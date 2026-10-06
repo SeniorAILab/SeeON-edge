@@ -1,5 +1,3 @@
-"""Keyset HTTP projection for immutable audit history."""
-
 from __future__ import annotations
 
 from dataclasses import asdict

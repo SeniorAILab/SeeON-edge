@@ -1,5 +1,3 @@
-"""Fence, one-time authority transfer and the rollback predicate on a real PG18 target."""
-
 from __future__ import annotations
 
 import fcntl
@@ -64,13 +62,11 @@ _ROOT_BUDGET = PoolBudget(
 
 
 class _ProcessDeath(BaseException):
-    """The migration process dies at the COMMIT boundary."""
+    ...
 
 
 @dataclass(frozen=True)
 class _Legacy:
-    """The stopped old database, its snapshot and where its fence receipt goes."""
-
     source: Path
     snapshot: Path
     receipt: Path
@@ -97,7 +93,6 @@ def imported(migration_target: MigrationTarget, snapshot: Path) -> MigrationTarg
 
 
 def _fault_at_transfer_commit(patch: pytest.MonkeyPatch, schema: str, fault: _Fault) -> None:
-    """Break the first COMMIT that would publish generation 2."""
     original = psycopg.Connection.commit
     armed = [True]
     query = sql.SQL("SELECT generation FROM {}").format(
@@ -140,7 +135,6 @@ def _died_before_commit(connection: psycopg.Connection, commit: Callable[[], Non
 def _fail_return_after_transfer_commit(
     patch: pytest.MonkeyPatch, target: MigrationTarget, *, resolve_unavailable: bool = False
 ) -> PostgresUnavailable:
-    """Fail return validation only after the real generation-2 COMMIT."""
     original = target.database._validate_return
     error = PostgresUnavailable("injected post-commit return failure")
 
@@ -169,7 +163,6 @@ def _transfer(target: MigrationTarget, **options: object) -> AuthorityToken:
 
 
 def _fresh_source(root: Path) -> Path:
-    """The operator-named legacy database path; its directory exists and the file does not."""
     directory = root / "fresh-state"
     directory.mkdir(exist_ok=True)
     return directory / "edge.sqlite3"
@@ -180,10 +173,6 @@ def _fresh_install(target: MigrationTarget, root: Path) -> AuthorityToken:
 
 
 def _fence(target: MigrationTarget, legacy: _Legacy) -> None:
-    """Stamp the old database at the current generation, as the operator does after export.
-
-    An absent old database is fenced without a snapshot, as on a fresh install.
-    """
     generation, _ = authority_file_token(target.authority_path)
     snapshot = legacy.snapshot if legacy.source.exists() else None
     fence_sqlite(legacy.source, snapshot=snapshot, generation=generation, receipt=legacy.receipt)
@@ -306,15 +295,12 @@ def test_lost_commit_receipt_without_commit_keeps_the_old_authority(
 def test_post_commit_return_failure_publishes_when_resolve_read_succeeds(
     imported: MigrationTarget, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Given a real transfer whose COMMIT succeeds but return validation fails.
     target = imported
     with monkeypatch.context() as patch:
         _fail_return_after_transfer_commit(patch, target)
 
-        # When the transfer resolves the failure against the database.
         successor = _transfer(target)
 
-    # Then the committed authority is published with no pending token left.
     assert successor.generation == 2
     assert _file_token(target.authority_path) == successor
     assert authority_row(target.admin, target.schema) == (2, successor.writer_token, True, True)
@@ -324,7 +310,6 @@ def test_post_commit_return_failure_publishes_when_resolve_read_succeeds(
 def test_post_commit_return_failure_keeps_pending_when_resolve_read_is_unavailable(
     imported: MigrationTarget, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Given a committed transfer followed by return failure and an unavailable resolve read.
     target = imported
     pending = pending_authority_path(target.authority_path)
     authority_bytes = target.authority_path.read_bytes()
@@ -333,11 +318,9 @@ def test_post_commit_return_failure_keeps_pending_when_resolve_read_is_unavailab
             patch, target, resolve_unavailable=True
         )
 
-        # When the transfer cannot resolve its committed outcome.
         with pytest.raises(PostgresUnavailable) as failure:
             _transfer(target)
 
-    # Then it preserves the original error and the only copy of the committed token.
     assert failure.value is original_error
     assert pending.exists()
     staged = _file_token(pending)
@@ -345,7 +328,6 @@ def test_post_commit_return_failure_keeps_pending_when_resolve_read_is_unavailab
     assert authority_row(target.admin, target.schema) == (2, staged.writer_token, True, True)
     assert target.authority_path.read_bytes() == authority_bytes
 
-    # A fresh database owner resumes from that same durable pending token.
     with runtime_database(target.dsn, target.schema) as restarted:
         resumed = transfer(restarted, target.authority_path, schema=target.schema)
 
@@ -557,9 +539,7 @@ def test_live_diagnostics_and_product_writes_each_deny(
         for table, count in table_counts(target.admin, diagnostics).items()
         if count and table != "schema_migrations"
     )
-    # Diagnostics are never imported, so each written table is history SQLite never saw.
     history = [f"diagnostics_history:{table}" for table in written]
-    # The same live write aimed at the product schema adds product history on top.
     with runtime_role_database(target.dsn, target.schema, target.runtime_role) as product:
         ingest_live_record(product, "live-1")
     after_product_write = verdict()
@@ -574,7 +554,6 @@ def test_live_diagnostics_and_product_writes_each_deny(
 
 
 def _root_environ(target: MigrationTarget, root: Path) -> dict[str, str]:
-    """What the API process reads at startup: DSN file, authority file and schema."""
     dsn_path = root / "api-postgres.dsn"
     dsn_path.write_text(target.dsn, encoding="utf-8")
     dsn_path.chmod(0o600)
@@ -595,7 +574,6 @@ def _seed_site(target: MigrationTarget) -> None:
 
 
 def _seed_delivery(target: MigrationTarget) -> None:
-    # Every delivery table chains to an incident, so the incident is recorded too.
     target.admin.execute(
         sql.SQL(
             "INSERT INTO {} (incident_id, edge_event_id, facility_id, camera_id, event_type, "
@@ -659,7 +637,6 @@ def test_fresh_install_refuses_when_legacy_source_exists(
     assert authority_row(target.admin, target.schema) == (generation, token, False, False)
     assert target.authority_path.read_bytes() == authority_bytes
     assert not pending_authority_path(target.authority_path).exists()
-    # The counterfactual: the same call once the legacy artifact is gone.
     planted.unlink()
     assert _transfer(target, fresh_install_source=source).generation == 2
 
@@ -702,7 +679,6 @@ def test_fresh_install_refuses_after_import(imported: MigrationTarget, tmp_path:
     assert authority_row(target.admin, target.schema) == (generation, token, False, False)
     assert target.authority_path.read_bytes() == authority_bytes
     assert not pending_authority_path(target.authority_path).exists()
-    # The counterfactual: the plain transfer accepts the same imported state.
     assert _transfer(target).generation == 2
 
 
@@ -799,7 +775,6 @@ def test_rollback_check_denies_after_fresh_install(
         return decision["result"], decision["reasons"]
 
     _fresh_install(target, tmp_path)
-    # A fresh install refuses a path that already holds a file, so the fence follows it.
     _fence(target, fresh)
     activated = verdict()
     freeze(target.database, target.authority_path)

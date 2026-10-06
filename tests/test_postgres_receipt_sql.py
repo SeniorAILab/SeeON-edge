@@ -1,5 +1,3 @@
-"""Real borrowed-SQL contracts, not receipt-file or HTTP/lifespan qualification."""
-
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -213,7 +211,6 @@ def test_long_id_digest_and_multiple_incident_completion(sandbox, projection):
 
     def write(connection):
         commit_clip(connection, projection)
-        # This caller uses a stable incident order, including a repeated fact.
         for incident_id, event_id in (
             ("incident:event-1", "event-1"),
             ("incident:max", "e" * 128),
@@ -234,7 +231,6 @@ def test_long_id_digest_and_multiple_incident_completion(sandbox, projection):
 
 
 def test_existing_receipt_identity_is_not_rewritten(sandbox, projection):
-    # A matching fact is immutable regardless of how its stored ID was assigned.
     artifact_id = "existing-artifact"
     _with_authority(sandbox, lambda connection: commit_clip(connection, projection))
     _seed_artifact(sandbox, projection, "incident:event-1", artifact_id)
@@ -396,7 +392,6 @@ def test_competing_clip_and_primary_writers_serialize_before_comparison(
     else:
         candidate = projection
     if second_kind == "identity":
-        # Force the identity race, not a claim about finding a SHA-256 collision.
         monkeypatch.setattr(
             "backend.app.features.evidence.postgres_receipt_sql.primary_artifact_id",
             lambda clip_id, event_id: "controlled-collision",

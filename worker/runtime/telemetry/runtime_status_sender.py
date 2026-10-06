@@ -1,5 +1,3 @@
-"""Background delivery for the frozen runtime-status relay payload."""
-
 from __future__ import annotations
 
 import logging
@@ -30,22 +28,16 @@ RUNTIME_STATUS_PATH = "/api/v1/relay/runtime-status"
 
 @dataclass(frozen=True, slots=True)
 class RuntimeStatusSenderConfig:
-    """Bounded cadence, retry, and shutdown settings."""
-
     publish_interval_sec: float = 5.0
     initial_backoff_sec: float = 1.0
     max_backoff_sec: float = 30.0
 
 
 class RuntimeStatusTransport(Protocol):
-    """Typed runtime-status relay boundary."""
-
     def send(self, payload: RelayRuntimeStatusPayload) -> int | None: ...
 
 
 class RuntimeHttpRequest(Protocol):
-    """Bounded HTTP request callable shared with evidence delivery."""
-
     def __call__(
         self,
         url: str,
@@ -58,8 +50,6 @@ class RuntimeHttpRequest(Protocol):
 
 @final
 class RelayRuntimeStatusTransport:
-    """Send one closed status payload through the shared bounded HTTP transport."""
-
     def __init__(
         self,
         relay_url: str,
@@ -107,8 +97,6 @@ class RelayRuntimeStatusTransport:
 
 @final
 class RuntimeStatusSender:
-    """Publish telemetry away from ingest and frame-processing threads."""
-
     def __init__(
         self,
         diagnostics: WorkerDiagnostics,
@@ -123,13 +111,6 @@ class RuntimeStatusSender:
         self._diagnostics = diagnostics
         self._facility_id = facility_id
         self._transport = transport
-        # Invoked on every publish (the initial synchronous one in `start()`
-        # and every subsequent tick in `_run()`) just before building the
-        # payload, so a live-stats provider (e.g. the clip recorder's
-        # `ClipRecorderStats`, #165) can push its latest snapshot into
-        # `diagnostics` right before it is read -- `WorkerDiagnostics` itself
-        # must not depend on `ClipRecorder` (layering), so the composition
-        # root (`WorkerRuntime`) supplies this instead.
         self._before_publish = before_publish
         self._delivery_queue = delivery_queue
         self._publish_interval_sec = max(0.0, resolved_config.publish_interval_sec)
@@ -159,7 +140,6 @@ class RuntimeStatusSender:
         self._thread.start()
 
     def publish(self) -> bool:
-        """Replace the pending slot with the newest diagnostics without blocking."""
         snapshots = self._snapshots_for_publish()
         try:
             self._snapshots.put_nowait(snapshots)
@@ -179,7 +159,6 @@ class RuntimeStatusSender:
         return self.publish()
 
     def publish_once(self) -> bool:
-        """Synchronously make one bounded delivery attempt without retrying."""
         return self._post(self._snapshots_for_publish())
 
     def stop(self, *, timeout: float = 5.0) -> None:
@@ -221,29 +200,6 @@ class RuntimeStatusSender:
                 )
 
     def _log_local_snapshot(self) -> None:
-        """Emit `WorkerDiagnostics.log_snapshot()` on this sender's own tick.
-
-        Issue #207: `WorkerDiagnostics.log_snapshot()` existed but had no
-        production caller anywhere, so the bed-region cache state it now
-        carries (and the pre-existing stage-timing/bus/encode fields, which
-        had the same problem) never actually reached a worker log line. This
-        thread already runs an independent, non-per-frame background tick
-        for the exact stated reason ("publish telemetry away from ingest and
-        frame-processing threads"), so it is reused here rather than adding a
-        second timer thread.
-
-        Deliberately decoupled from `_post`'s relay-delivery outcome: a log
-        line is not a relay call and must not inherit its retry/backoff
-        rhythm or be skipped because the relay is unreachable. The one
-        accepted trade-off is that a relay outage's growing backoff also
-        slows this local logging tick (bounded by `_max_backoff_sec`,
-        default 30s) -- still periodic, never per-frame, so it does not
-        reproduce the failure mode #207 warns against; call it explicitly
-        if that coupling ever needs to be broken.
-
-        Wrapped so a `log_snapshot()` defect can never take down relay
-        delivery, which is this sender's primary job.
-        """
         try:
             self._diagnostics.log_snapshot()
         except Exception:

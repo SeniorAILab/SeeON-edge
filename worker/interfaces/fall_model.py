@@ -1,5 +1,3 @@
-"""Fall-model ports shared by domain classifiers and concrete adapters."""
-
 from __future__ import annotations
 
 import math
@@ -11,13 +9,6 @@ from worker.types import FallModelInput
 
 @dataclass(frozen=True, slots=True)
 class BinaryFallScoreEvidence:
-    """Observed binary score and calibration used to produce one result.
-
-    ``class_origins`` follows the probability field order below: background is
-    the complement of the calibrated score, fall_transition is the
-    temperature-scaled sigmoid, and fallen is a synthetic constant zero.
-    """
-
     raw_logit: float
     applied_temperature: float
     class_origins: tuple[
@@ -32,13 +23,6 @@ class BinaryFallScoreEvidence:
 
 @dataclass(frozen=True, slots=True)
 class FallProbabilities:
-    """Policy probabilities with optional evidence from a binary source.
-
-    ``fall_transition`` is already calibrated. ``model_evidence=None`` means
-    that no source score was observed; it does not imply a native three-class
-    result, a unit temperature, or a reconstructed logit.
-    """
-
     background: float
     fall_transition: float
     fallen: float
@@ -52,8 +36,6 @@ class FallProbabilities:
 
 @runtime_checkable
 class FallModelProtocol(Protocol):
-    """Models score one ``(30, 56)`` pose+bbox56 window on the CPU."""
-
     def predict(self, features: FallModelInput) -> FallProbabilities: ...
 
 

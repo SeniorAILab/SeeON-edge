@@ -1,5 +1,3 @@
-"""Backend-owned original-run diagnostics persistence."""
-
 from backend.app.features.diagnostics.coverage import (
     AvailabilityRange,
     QueryableRange,

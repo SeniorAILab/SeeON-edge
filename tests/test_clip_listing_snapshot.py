@@ -1,5 +1,3 @@
-"""Derived listing snapshots are not a serving surface."""
-
 from __future__ import annotations
 
 import importlib

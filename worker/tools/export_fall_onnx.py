@@ -27,7 +27,6 @@ class _ProxyGru(nn.Module):
 
 
 def export_fall_onnx(bundle_dir: Path, *, force: bool = False) -> str:
-    """Export ``model.onnx`` and return its pinned SHA-256 digest."""
     root = bundle_dir.expanduser().resolve()
     manifest = read_json(root / "bundle-manifest.json")
     verify_bundle(root, manifest)

@@ -45,10 +45,6 @@ def _write_playback_bundle(clip_dir, *, pts_identical: bool) -> tuple[object, st
     return rendition, digest
 
 
-# Dashboard auth always resolves to a session store (bootstrapped from the
-# API_DASHBOARD_* pair the suite sets to admin/admin), so a bare worker
-# relay/bearer token is never sufficient on its own -- these tests log in and
-# rely on the TestClient's cookie jar to carry the session across calls.
 DASHBOARD_LOGIN = {"username": "admin", "password": "admin"}
 
 
@@ -110,8 +106,6 @@ def make_app(
     postgres_product_sandbox: ProductSandbox,
     postgres_audit_runtime: PostgresAuditRuntime,
 ) -> Callable[[], FastAPI]:
-    """Each call is a new app on the one sandbox, with receipts for the clips written so far."""
-
     def make() -> FastAPI:
         app = postgres_api_app(postgres_product_sandbox, postgres_audit_runtime)
         add_accepted_media_receipts(app)
@@ -160,12 +154,10 @@ def test_list_clips_returns_only_finalized_latest_first_and_filters_camera(
 
 
 def test_clip_keyset_pages_equal_timestamps_without_skip_or_duplicate(clip_env, make_app) -> None:
-    # Given: three verified manifests with the same start timestamp.
     clip_store = clip_env / "clip-store"
     for clip_id in ("clip-a", "clip-b", "clip-c"):
         _write_manifest(clip_store, clip_id, started_at="2026-07-06T00:00:00Z")
 
-    # When: a dashboard traverses one-row keyset pages and probes a malformed cursor.
     app = make_app()
     index_clips(app)
 
@@ -186,7 +178,6 @@ def test_clip_keyset_pages_equal_timestamps_without_skip_or_duplicate(clip_env, 
                 break
         malformed = client.get("/api/v1/clips", params={"limit": 1, "cursor": "%%%"})
 
-    # Then: (started_at, clip_id) is unique and malformed cursors fail closed.
     assert seen == ["clip-c", "clip-b", "clip-a"]
     assert malformed.status_code == 400
 
@@ -194,7 +185,6 @@ def test_clip_keyset_pages_equal_timestamps_without_skip_or_duplicate(clip_env, 
 def test_manifest_rebuild_isolates_one_invalid_tuple(
     clip_env, make_app, postgres_product_sandbox: ProductSandbox
 ) -> None:
-    # Given: one valid manifest followed by a duration outside the catalogue's clip bound.
     clip_store = clip_env / "clip-store"
     _write_manifest(clip_store, "clip-a", started_at="2026-07-06T00:00:00Z")
     _write_manifest(clip_store, "clip-b", started_at="2026-07-06T00:00:01Z")
@@ -203,14 +193,12 @@ def test_manifest_rebuild_isolates_one_invalid_tuple(
     invalid["duration_s"] = 121.0
     invalid_path.write_text(json.dumps(invalid), encoding="utf-8")
 
-    # When: the catalogue indexes both manifests and the dashboard lists clips.
     app = make_app()
     outcomes = index_clips(app)
     with TestClient(app) as client:
         _login(client)
         response = client.get("/api/v1/clips", params={"limit": 10})
 
-    # Then: the invalid tuple is isolated and never commits; the valid clip still lists.
     assert sum(outcome.isolated for outcome in outcomes) == 1
     assert response.status_code == 200
     assert [clip["clip_id"] for clip in response.json()["clips"]] == ["clip-a"]
@@ -223,7 +211,6 @@ def test_manifest_rebuild_isolates_one_invalid_tuple(
 def test_compact_rebuild_removes_stale_manifest_from_page_total_and_facets(
     clip_env, make_app
 ) -> None:
-    # Given: one manifest has been reconciled into the catalogue.
     clip_store = clip_env / "clip-store"
     _write_manifest(clip_store, "stale")
     app = make_app()
@@ -234,12 +221,10 @@ def test_compact_rebuild_removes_stale_manifest_from_page_total_and_facets(
         assert first.status_code == 200
         assert first.json()["pagination"]["total"] == 1
 
-        # When: filesystem truth removes the complete manifest/media directory.
         shutil.rmtree(clip_store / "clips" / "stale")
         index_clips(app)
         rebuilt = client.get("/api/v1/clips", params={"limit": 10})
 
-    # Then: page, total, and facets come from the same reconciled visible set.
     assert rebuilt.status_code == 200
     assert rebuilt.json()["clips"] == []
     assert rebuilt.json()["pagination"] == {
@@ -255,7 +240,6 @@ def test_compact_rebuild_removes_stale_manifest_from_page_total_and_facets(
 def test_stale_referenced_clip_is_retained_unavailable_but_hidden(
     clip_env, make_app, postgres_product_sandbox: ProductSandbox
 ) -> None:
-    # Given: an indexed clip is retained by PRIMARY_CLIP history.
     clip_store = clip_env / "clip-store"
     _write_manifest(clip_store, "history")
     admin = postgres_product_sandbox.admin
@@ -291,13 +275,11 @@ def test_stale_referenced_clip_is_retained_unavailable_but_hidden(
         )
     shutil.rmtree(clip_store / "clips" / "history")
 
-    # When: the catalogue re-indexes the missing filesystem fact and the dashboard lists.
     index_clips(app)
     with TestClient(app) as client:
         _login(client)
         rebuilt = client.get("/api/v1/clips", params={"limit": 10})
 
-    # Then: history remains referentially intact but is absent from every listing projection.
     assert rebuilt.status_code == 200
     assert rebuilt.json()["pagination"]["total"] == 0
     assert rebuilt.json()["event_type_counts"] == {}
@@ -316,7 +298,6 @@ def test_stale_referenced_clip_is_retained_unavailable_but_hidden(
 def test_compact_rebuild_rejects_changed_identity_without_mutating_row(
     clip_env, make_app, postgres_product_sandbox: ProductSandbox
 ) -> None:
-    # Given: one immutable manifest/media identity has been indexed.
     clip_store = clip_env / "clip-store"
     _write_manifest(clip_store, "stable")
     admin = postgres_product_sandbox.admin
@@ -327,14 +308,12 @@ def test_compact_rebuild_rejects_changed_identity_without_mutating_row(
     index_clips(app)
     before = admin.execute(identity_sql, ("stable",)).fetchone()
 
-    # When: bytes change under the same immutable clip identity and the catalogue re-indexes.
     (clip_store / "clips" / "stable" / "clip.mp4").write_bytes(b"changed-media")
     index_clips(app)
     with TestClient(app) as client:
         _login(client)
         conflict = client.get("/api/v1/clips", params={"limit": 10})
 
-    # Then: the conflict is recorded as corruption and the prior identity is unchanged.
     assert conflict.status_code == 200
     assert admin.execute(identity_sql, ("stable",)).fetchone() == before
     state = admin.execute(
@@ -524,7 +503,6 @@ def test_video_media_parameter_binds_range_request_to_served_bytes(
 
 
 def test_list_clips_and_audit_view_are_recorded_in_the_audit_log(clip_env, make_app) -> None:
-    """List and audit-history access each append one closed-catalog event."""
     _write_manifest(clip_env / "clip-store", "clip-1")
 
     app = make_app()
@@ -547,7 +525,6 @@ def test_list_clips_and_audit_view_are_recorded_in_the_audit_log(clip_env, make_
 def test_list_clips_returns_200_without_api_label_store_env_set(
     clip_env, make_app, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Clip listing no longer creates legacy JSONL when label storage is unset."""
     monkeypatch.delenv("API_LABEL_STORE", raising=False)
     _write_manifest(clip_env / "clip-store", "clip-1")
 
@@ -602,9 +579,6 @@ def test_legacy_label_route_is_absent(clip_env, make_app) -> None:
 
 
 def test_clip_routes_require_a_dashboard_session(clip_env, make_app) -> None:
-    """A bare worker relay token or forged bearer token is never a substitute
-    for a real dashboard session -- the legacy bypass is unreachable now that
-    dashboard auth always resolves to a session store."""
     _write_manifest(clip_env / "clip-store", "clip-1")
 
     with TestClient(make_app()) as client:
@@ -716,16 +690,13 @@ def test_list_clips_finds_manifests_under_the_root_and_subdirectory_layouts(
     clip_env, make_app
 ) -> None:
     clip_store = clip_env / "clip-store"
-    # Root layout: root/clips/<id>/manifest.json.
     _write_manifest(clip_store, "clip-root", started_at="2026-07-06T00:00:00Z")
-    # First-level subdir layout: root/<sub>/clips/<id>/manifest.json.
     _write_manifest(
         clip_store / "backup-drive",
         "clip-first-level",
         started_at="2026-07-06T00:01:00Z",
         path="backup-drive/clips/clip-first-level",
     )
-    # Second-level subdir layout: root/<sub2>/<sub1>/clips/<id>/manifest.json.
     _write_manifest(
         clip_store / "external" / "drive-1",
         "clip-second-level",

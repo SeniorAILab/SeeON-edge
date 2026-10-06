@@ -14,8 +14,6 @@ TRACE_FLOAT_DECIMAL_PLACES: Final = 6
 
 
 class DecisionTraceReason(StrEnum):
-    """Finite reason vocabulary emitted by the compiled detection modules."""
-
     TRACE_UNAVAILABLE = "trace-unavailable"
     OUTSIDE_DETECTION_WINDOW = "outside-detection-window"
     SCORE_MISSING = "score-missing"
@@ -63,8 +61,6 @@ class DecisionTraceReason(StrEnum):
 
 
 class DecisionTraceState(StrEnum):
-    """Finite state vocabulary; values are persisted as stable qualified tokens."""
-
     UNKNOWN = "unknown"
     NOT_EVALUATED = "not-evaluated"
     NO_DECISION = "no-decision"
@@ -90,8 +86,6 @@ class DecisionTraceState(StrEnum):
 
 
 class DecisionTraceValueName(StrEnum):
-    """Finite names for numeric values persisted by compiled trace adapters."""
-
     OPERATING_THRESHOLD = "operating_threshold"
     WINDOW_FRAMES = "window_frames"
     FALL_PROBABILITY = "fall_probability"
@@ -129,8 +123,6 @@ class DecisionTraceValueName(StrEnum):
 
 
 class DecisionTraceMissingReason(StrEnum):
-    """Finite missing-value vocabulary; arbitrary free text is never persisted."""
-
     ADAPTER_NOT_PROVIDED = "adapter-not-provided"
     ADAPTER_RETURNED_NO_DATA = "adapter-returned-no-data"
     OUTSIDE_DETECTION_WINDOW = "outside-detection-window"
@@ -157,14 +149,6 @@ def canonical_trace_number(value: float) -> float: ...
 
 
 def canonical_trace_number(value: NumericTraceValue) -> NumericTraceValue:
-    """Return the canonical hardware-neutral representation of a trace scalar.
-
-    Integers remain exact integers. Floats must be finite and are rounded to six
-    decimal places, enough for the compiled confidence/geometry decisions while
-    removing backend-specific sub-micro-unit noise. Negative floating-point zero
-    is normalized to positive ``0.0``. Keeping int and float types distinct makes
-    their JSON/content-id semantics explicit and deterministic.
-    """
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise TypeError("decision trace values must be numeric scalars")
     if isinstance(value, int):
@@ -188,14 +172,11 @@ def _compiled_token(
     try:
         return enum_type(value)
     except ValueError:
-        # Do not echo rejected input: it may itself contain a credential or path.
         raise ValueError(f"decision trace {field_name} must use compiled vocabulary") from None
 
 
 @dataclass(frozen=True, slots=True)
 class DecisionTraceSnapshot:
-    """Privacy-safe, hardware-neutral state emitted by one camera-local decider."""
-
     reason: str
     previous_state: str
     current_state: str
@@ -232,8 +213,6 @@ class DecisionTraceSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class DecisionIdentity:
-    """Which compiled module and effective policy a decision is attributed to."""
-
     module_qualified_id: str
     effective_policy_id: str
 
@@ -243,21 +222,10 @@ AuthorityRole = Literal["authoritative", "shadow"]
 
 @dataclass(frozen=True, slots=True)
 class AttributedSnapshot:
-    """One trace snapshot with the decider it came from and its authority role.
-
-    ``identity`` is None when composition supplied no identity for that
-    decider; consumers must then record the snapshot without a module claim
-    and without a decision_trace_id, never borrow another decider's identity.
-    """
-
     snapshot: DecisionTraceSnapshot
     identity: DecisionIdentity | None
     authority: AuthorityRole
-    #: Index of the producing decider in the aggregator's ``deciders`` tuple.
     producer_index: int
-    #: True when the producing decider evaluated on the update that preceded
-    #: this read; False when it coasted and the snapshot is left over from an
-    #: earlier frame. Stale snapshots must never be recorded as this frame's.
     fresh: bool
 
 
@@ -267,15 +235,6 @@ def decision_trace_id(
     module_qualified_id: str,
     effective_policy_id: str,
 ) -> str:
-    """The one identity of a decision, shared by every surface that names it.
-
-    A relayed alert's ``audit.decision_trace_id`` and the ``policy.decision``
-    execution record must carry the same value so an engineer can hop from an
-    incident to the original-run record. Both are computed here and nowhere
-    else. The id is content-derived from the snapshot plus the module/policy
-    identity that produced it; it deliberately excludes frame pixels and any
-    per-process state so it is stable across replay of the same decision.
-    """
     body = {
         "module": module_qualified_id,
         "effective_policy_id": effective_policy_id,

@@ -1,11 +1,3 @@
-"""Committed model manifest: pinned sources, artifact list, bundled sidecars.
-
-The manifest is data, not policy: every artifact names the source it comes
-from, its path under the models root, its byte size, and its SHA-256. Changing
-a weight means changing this file in the same commit, which is what makes a
-fetch reproducible.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -26,7 +18,7 @@ _RELATIVE_PATH_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9]
 
 
 class ManifestError(ValueError):
-    """The committed manifest is malformed; nothing is fetched."""
+    ...
 
 
 @dataclass(frozen=True)
@@ -71,12 +63,6 @@ class Manifest:
 
 @dataclass(frozen=True)
 class Bundle:
-    """A content-addressed payload collection plus external receipt descriptors.
-
-    Loader-specific required member names are a runtime admission concern; this
-    generic provisioning schema preserves every declared payload artifact.
-    """
-
     sha256: str
     members: tuple[Artifact, ...]
     payload: Mapping[str, object]
@@ -123,7 +109,6 @@ class Bundle:
 
 
 def bundle_from_published_manifest(raw: bytes, source: Source) -> Bundle:
-    """Parse the canonical bundle descriptor published beside its payload."""
     try:
         document = json.loads(raw)
     except (TypeError, ValueError) as exc:
@@ -219,7 +204,6 @@ def _parse_artifact(index: int, raw: object, sources: Mapping[str, Source]) -> A
 
 
 def canonical_json(value: object) -> str:
-    """Return the sole serialization accepted for content-addressed payloads."""
     try:
         return json.dumps(
             value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False

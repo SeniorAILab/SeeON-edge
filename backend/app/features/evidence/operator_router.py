@@ -1,5 +1,3 @@
-"""Authenticated, privacy-bounded central evidence operator API."""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime

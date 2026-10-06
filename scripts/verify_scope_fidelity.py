@@ -1,12 +1,4 @@
 #!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.12"
-# dependencies = []
-# ///
-# --- How to run ---
-# uv run python scripts/verify_scope_fidelity.py --fixture
-# uv run python scripts/verify_scope_fidelity.py --repo
-# uv run python scripts/verify_scope_fidelity.py --plan <plan> --evidence <evidence>
 from __future__ import annotations
 
 import ast
@@ -22,10 +14,6 @@ IDENTITY_PATTERN: Final = (
     re.compile(r"\bAPI_FACILITY_ID\b|\bEDGE_FACILITY_TOKEN\b"),
     "environment facility identity",
 )
-# The camera roster is owned by the Edge camera_registry DB (dashboard-entered)
-# and pulled by ml-worker from ml-api. It must never be provisionable through
-# the environment, because an env var reaches the runtime via compose, and
-# compose is in Git. `--config` remains a CLI-only developer/e2e path.
 ROSTER_PATTERN: Final = (
     re.compile(r"\bEDGE_CAMERA_CONFIG(?:_FILE)?\b|\bAPI_CAMERA_INVENTORY\b"),
     "environment camera roster",
@@ -454,11 +442,6 @@ def main() -> int:
         run_fixture()
         return 0
     root = Path(__file__).resolve().parents[1]
-    # `--repo` runs the residue scan on its own. The --plan/--evidence mode
-    # below also scans, but requires a plan file plus 17 evidence files, so it
-    # cannot run in CI -- which is why the scan never actually guarded the
-    # tree and env residue (EDGE_FACILITY_TOKEN in compose.edge.yaml) survived
-    # despite already matching IDENTITY_PATTERN.
     if repo:
         scan_repo(root)
         print("SCOPE_FIDELITY_REPO_OK")

@@ -34,7 +34,6 @@ def backfill(
     dry_run: bool = False,
     thumbnails: bool = False,
 ) -> dict[str, int | bool]:
-    """Backfill missing renditions and return a machine-readable summary."""
     if thumbnails:
         return _backfill_thumbnails(clip_store, dry_run=dry_run)
     summary: dict[str, int | bool] = {

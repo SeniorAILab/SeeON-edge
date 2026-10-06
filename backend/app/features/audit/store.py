@@ -1,5 +1,3 @@
-"""Audit event and record types shared by the PostgreSQL audit owners."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass

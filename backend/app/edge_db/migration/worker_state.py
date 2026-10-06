@@ -1,5 +1,3 @@
-"""Old-worker liveness probe and delivery-queue digest for the cutover window."""
-
 from __future__ import annotations
 
 import errno
@@ -15,7 +13,6 @@ from typing import Final
 
 from backend.app.edge_db.migration.errors import MigrationError
 
-# The old worker holds this lease exclusively for its whole lifetime.
 WORKER_LEASE_NAME: Final = ".gpu.lease"
 QUEUE_DIRECTORY_NAME: Final = "delivery-queue"
 DEAD_LETTER_DIRECTORY_NAME: Final = "delivery-queue-dead-letter"
@@ -41,14 +38,12 @@ class QueueDigest:
 
 @contextmanager
 def worker_stopped(state_directory: Path) -> Iterator[None]:
-    """Hold the worker lease shared and the queue lock, proving no sender runs."""
     if state_directory.is_symlink() or not state_directory.is_dir():
         raise MigrationError("worker state directory does not exist")
     with ExitStack() as stack:
         lease = state_directory / WORKER_LEASE_NAME
         if not _try_lock(stack, lease, fcntl.LOCK_SH, "the old worker's runtime lease"):
             raise MigrationError("the old worker holds its runtime lease; stop it first")
-        # A worker makes its queue only after it boots, so no queue means nothing was sent.
         queue = _queue_directory(state_directory, QUEUE_DIRECTORY_NAME)
         if queue is not None and not _try_lock(
             stack, queue / QUEUE_LOCK_NAME, fcntl.LOCK_EX, "the delivery queue lock"
@@ -58,7 +53,6 @@ def worker_stopped(state_directory: Path) -> Iterator[None]:
 
 
 def queue_digest(state_directory: Path) -> QueueDigest:
-    """Digest every retained queue file by relative name and content, never by payload."""
     with worker_stopped(state_directory):
         entries: list[tuple[str, str]] = []
         for name in (QUEUE_DIRECTORY_NAME, DEAD_LETTER_DIRECTORY_NAME):
@@ -83,7 +77,6 @@ def queue_digest(state_directory: Path) -> QueueDigest:
 
 
 def _queue_directory(state_directory: Path, name: str) -> Path | None:
-    """A queue directory the old worker made, or None when it never made one."""
     path = state_directory / name
     try:
         mode = os.lstat(path).st_mode
@@ -120,7 +113,6 @@ def _file_sha256(path: Path) -> str:
 
 
 def _try_lock(stack: ExitStack, path: Path, operation: int, name: str) -> bool:
-    """Lock a file the old worker left without creating it; a missing one proves nothing."""
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:

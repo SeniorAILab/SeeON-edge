@@ -81,12 +81,11 @@ class FramePacket:
 
     @property
     def frame(self) -> Frame:
-        """Compatibility host borrow guarded by this packet's lease handle."""
         return self.borrow_host_frame()
 
     def borrow_host_frame(self) -> Frame:
         frame = self.lease.host_frame
-        if frame is not self._frame:  # pragma: no cover - constructor invariant
+        if frame is not self._frame:  # pragma: no cover
             raise RuntimeError("frame packet lease storage changed unexpectedly")
         return frame
 

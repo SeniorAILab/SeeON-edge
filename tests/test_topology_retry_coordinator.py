@@ -382,8 +382,6 @@ def test_background_preview_and_acceptance_rollback_together_after_network(sandb
     coordinator = TopologyRetryCoordinator(registry, _state(sandbox), lambda: client)
     with pytest.raises(TopologySyncStateConflictError):
         coordinator.trigger(force=True, now_epoch=100.0)
-    # The pre-network pending enqueue is durable; the later preview plus
-    # acceptance transaction is not. No fabricated rollback of upstream I/O.
     assert _state(sandbox).load().pending == client.sent[0]
     assert coordinator.preview() is None
 

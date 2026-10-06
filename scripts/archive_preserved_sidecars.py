@@ -46,7 +46,7 @@ _CHUNK: Final = 1 << 20
 
 
 class ArchivalError(RuntimeError):
-    """The archival transaction refused to proceed. No source was mutated."""
+    ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +66,6 @@ class ArchivedFile:
 
 
 def digest_and_size(path: Path) -> tuple[str, int]:
-    """Hash *path* by streaming it, returning ``(hex_digest, size_bytes)``."""
     digest = hashlib.sha256()
     total = 0
     with path.open("rb") as handle:
@@ -77,7 +76,6 @@ def digest_and_size(path: Path) -> tuple[str, int]:
 
 
 def _fsync_directory(directory: Path) -> None:
-    """Flush *directory*'s own entries so a rename survives a crash."""
     fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(fd)
@@ -88,11 +86,6 @@ def _fsync_directory(directory: Path) -> None:
 def _reject_aliased_target(
     source_stat: os.stat_result, target_stat: os.stat_result, destination: Path
 ) -> None:
-    """Refuse a destination that resolves to the source's own inode.
-
-    A symlink or hardlink back into the worktree digests identically to its
-    source, so hashing alone cannot detect it.
-    """
     if (target_stat.st_dev, target_stat.st_ino) == (
         source_stat.st_dev,
         source_stat.st_ino,
@@ -101,12 +94,6 @@ def _reject_aliased_target(
 
 
 def _publish_no_clobber(temporary: Path, final: Path) -> None:
-    """Atomically publish *temporary* as *final* without clobbering.
-
-    ``os.rename`` silently replaces an existing target, so it cannot be used.
-    ``os.link`` fails with ``FileExistsError`` when the target exists, which is
-    exactly the no-clobber publication primitive required here.
-    """
     try:
         os.link(temporary, final)
     except FileExistsError as error:
@@ -124,7 +111,6 @@ def _copy_exclusive(
     publish: Callable[[Path, Path], None] = _publish_no_clobber,
     fsync_dir: Callable[[Path], None] = _fsync_directory,
 ) -> ArchivedFile:
-    """Archive one file as a durable, independent, no-clobber copy."""
     if destination.exists() or destination.is_symlink():
         raise ArchivalError(f"refusing to clobber an existing archive entry: {destination}")
     directory = destination.parent
@@ -174,7 +160,6 @@ def archive_batch(
     publish: Callable[[Path, Path], None] = _publish_no_clobber,
     fsync_dir: Callable[[Path], None] = _fsync_directory,
 ) -> tuple[Path, tuple[ArchivedFile, ...]]:
-    """Archive every source, then durably publish a no-clobber manifest."""
     if not sources:
         raise ArchivalError("refusing to run an empty archival batch")
     archive_root.mkdir(parents=True, exist_ok=True)
@@ -223,7 +208,6 @@ def _publish_manifest(
     publish: Callable[[Path, Path], None],
     fsync_dir: Callable[[Path], None],
 ) -> None:
-    """Write the manifest through the same durability sequence as each file."""
     if manifest_path.exists() or manifest_path.is_symlink():
         raise ArchivalError(f"refusing to clobber an existing manifest: {manifest_path}")
     directory = manifest_path.parent
@@ -262,11 +246,6 @@ def load_manifest(manifest_path: Path) -> tuple[ArchivedFile, ...]:
 
 
 def verify_batch(manifest_path: Path) -> tuple[ArchivedFile, ...]:
-    """Re-verify every source and archived copy against the manifest.
-
-    Run immediately before destruction. Closes the window between archival and
-    destruction: a source that drifted or vanished must not be destroyed.
-    """
     entries = load_manifest(manifest_path)
     for entry in entries:
         if not entry.destination.is_file():
@@ -290,10 +269,6 @@ def destroy_sources(
     *,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> None:
-    """Restore tracked sources to HEAD and unlink untracked ones.
-
-    Working tree only. Never stages, commits, or pushes.
-    """
     if tracked:
         result = run(
             ["git", "restore", "--", *[str(path) for path in tracked]],
@@ -316,7 +291,6 @@ def execute(
     *,
     destroy: bool = True,
 ) -> Path:
-    """Run the whole transaction. Sources are mutated only at the very end."""
     sources = [*tracked, *untracked]
     manifest_path, _ = archive_batch(sources, archive_root)
     verify_batch(manifest_path)
@@ -363,7 +337,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     return 0
 
 
-if __name__ == "__main__":  # pragma: no cover - CLI entry point
+if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
 
 

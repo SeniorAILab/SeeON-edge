@@ -1,12 +1,3 @@
-"""Download, verify, and place every manifest artifact under a models root.
-
-Idempotent: a destination whose SHA-256 already matches is skipped. Anything
-else -- missing, wrong size, wrong hash, a stale ``.part`` from an interrupted
-run -- is re-downloaded from scratch into a fresh temp file and renamed into
-place only after the hash matches. A mismatch never leaves a file at the
-final path, so a later worker boot cannot load a half-written weight.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -50,7 +41,7 @@ Outcome = Literal["present", "fetched", "sidecar-present", "sidecar-written"]
 
 
 class VerificationError(RuntimeError):
-    """A downloaded body did not match the manifest's size or SHA-256."""
+    ...
 
 
 @dataclass(frozen=True)
@@ -200,7 +191,6 @@ def _write_bytes(path: Path, data: bytes) -> None:
 
 
 def _verify_bundle_tree(bundle: Bundle, directory: Path) -> None:
-    """Reject every shape other than the exact, immutable published tree."""
     info = directory.lstat()
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         raise VerificationError(f"bundle {bundle.sha256}: unsafe bundle root")
@@ -249,7 +239,6 @@ def fetch_bundle(
     retry: RetryPolicy,
     log: Callable[[str], None] = lambda _message: None,
 ) -> FetchReport:
-    """Fetch a bundle into a private sibling, then atomically publish its tree."""
     bundles_root = root / "bundles"
     destination = bundles_root / bundle.sha256
     if destination.exists() or destination.is_symlink():
@@ -288,7 +277,6 @@ def fetch_bundle(
 def _read_published_bundle_manifest(
     source: Source, byte_source: ByteSource, env: Mapping[str, str]
 ) -> Bundle:
-    """Read the canonical descriptor which names a published bundle's members."""
     body = bytearray()
     url = source.url_for(_PUBLISHED_BUNDLE_MANIFEST_PATH)
     headers = _headers_for(
@@ -338,7 +326,7 @@ def _fetch_selected_bundle(
         raise VerificationError(f"model selection at {selection_path} is invalid: {exc}") from exc
 
     publication = desired.selection.model_publication if desired.selection is not None else None
-    if publication is None:  # pragma: no cover -- selection parsing always supplies it
+    if publication is None:  # pragma: no cover
         raise VerificationError("model selection has no model publication")
     selected_source = Source(
         name=_SELECTED_PUBLICATION_SOURCE_NAME,
@@ -354,8 +342,6 @@ def _fetch_selected_bundle(
         )
     destination = root / "bundles" / bundle.sha256
     if destination.exists() or destination.is_symlink():
-        # An existing selected tree must fail with the exact boot-path reason,
-        # rather than the generic provisioning-tree error below.
         _require_loadable_selected_fall_bundle(root, desired)
     report = fetch_bundle(bundle, root, source, env=env, retry=retry, log=log)
     for result in report.results:
@@ -377,7 +363,6 @@ def fetch_all(
     selection_path: Path | None = None,
     public_only: bool = False,
 ) -> FetchReport:
-    """Fetch every artifact and sidecar; raise on the first failure."""
     report = FetchReport()
     root.mkdir(parents=True, exist_ok=True)
     for artifact in manifest.artifacts:
@@ -404,17 +389,6 @@ def fetch_all(
         for result in bundle_report.results:
             log(f"{result.outcome:16} {result.sha256}  bundles/{bundle.sha256}/{result.path}")
         report.results.extend(bundle_report.results)
-    # The Flow worker composes the ORT runner and refuses a fall bundle with no
-    # model.onnx. The published manifest may legitimately omit it - the ONNX is
-    # a publication-time export the edge image cannot produce, since Torch is
-    # excluded under P1b-AC7 - so judge the PROVISIONED bundle, not the manifest:
-    # an already-exported bundle on disk is fine, a fresh site without one is
-    # refused here with the reason, instead of at worker boot.
-    # And judge it the way the runner does: the file must exist AND the bundle
-    # manifest must list it. A redeploy re-fetches the published manifest over
-    # the exported one, leaving model.onnx on disk but unlisted - which the
-    # runner refuses - so a file-exists check alone reported success on a
-    # bundle the worker could not load.
     artifact_paths = {artifact.path for artifact in manifest.artifacts}
     if not public_only and _FALL_PT_PATH in artifact_paths:
         _require_loadable_fall_bundle(root)
@@ -432,12 +406,6 @@ def fetch_all(
 
 
 def _require_loadable_fall_bundle(root: Path) -> None:
-    """Load the bundle the way boot loads it, and refuse what boot would refuse.
-
-    The shared packaged-bundle loader owns the runner and publication-identity
-    checks, so whatever boot requires of the bundle provisioning requires too.
-    A full load and warm-up costs about 20 ms and pulls in no Torch.
-    """
     from worker.adapters.model import ort_pose_bbox56
     from worker.adapters.model.errors import ModelLoadError
 
@@ -458,7 +426,6 @@ def _require_loadable_fall_bundle(root: Path) -> None:
 
 
 def _require_loadable_selected_fall_bundle(root: Path, desired: object) -> None:
-    """Exercise the selection boot path after the immutable tree is published."""
     from worker.adapters.model.errors import ModelLoadError
     from worker.adapters.model.ort_pose_bbox56 import OrtPoseBbox56Runner
     from worker.runtime.provenance.model_bundle import (
@@ -467,11 +434,11 @@ def _require_loadable_selected_fall_bundle(root: Path, desired: object) -> None:
         admit_model_bundle,
     )
 
-    if not isinstance(desired, DesiredModelBundle):  # pragma: no cover -- local invariant
+    if not isinstance(desired, DesiredModelBundle):  # pragma: no cover
         raise VerificationError("selected bundle desired state is invalid")
     try:
         proof = admit_model_bundle(root, desired)
-        if desired.selection is None:  # pragma: no cover -- local invariant
+        if desired.selection is None:  # pragma: no cover
             raise VerificationError("selected bundle has no selection")
         OrtPoseBbox56Runner.from_admitted_bundle(
             root / "bundles" / desired.bundle_sha256, proof, desired.selection

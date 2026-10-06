@@ -22,16 +22,13 @@ pytest_plugins = ("tests_support.postgres_sandbox",)
 def test_restart_verification_marks_corrupted_schema18_audit_unready(
     postgres_product_sandbox: ProductSandbox,
 ) -> None:
-    # Given: a PostgreSQL authority whose immutable trigger contract was corrupted.
     sandbox = postgres_product_sandbox
     sandbox.admin.execute("DROP TRIGGER audit_events_immutable_delete ON audit_events")
     app = FastAPI()
     app.state.postgres_root = PostgresRoot(sandbox.database, sandbox.authority)
 
-    # When: the audit startup owner verifies the restarted authority.
     healthy = configure_audit_readiness(app, clock=lambda: 0.0)
 
-    # Then: corruption is explicit degraded truth, never an empty healthy history.
     try:
         assert healthy is False
         status = app.state.audit_runtime.snapshot()
@@ -53,23 +50,18 @@ def test_restart_verification_marks_corrupted_schema18_audit_unready(
 def test_detail_parser_rejects_recursive_privacy_aliases(
     detail: dict[str, JsonValue],
 ) -> None:
-    # Given/When/Then: privacy-bearing mixed-case keys or values never enter audit JSON
     with pytest.raises(AuditDetailError):
         parse_detail_json(AuditAction.CLIP_LIST, json.dumps({"version": 1, "nested": detail}))
 
 
 def test_detail_parser_rejects_more_than_sixteen_kibibytes() -> None:
-    # Given/When/Then: canonical UTF-8 detail is bounded before SQLite
     with pytest.raises(AuditDetailError):
         recovery_detail("x" * 17000, "2026-08-24T00:01:00.000Z")
 
 
 def test_detail_parser_canonicalizes_safe_registered_detail() -> None:
-    # Given: a registered reconciliation detail shape
-    # When: keys arrive in a non-canonical order
     detail = recovery_detail("SQLITE_FULL", "2026-08-24T00:01:00.000Z")
 
-    # Then: the machine-consumed JSON is deterministic
     assert detail.json == (
         '{"ended_at":"2026-08-24T00:01:00.000Z","failure_code":"SQLITE_FULL","version":1}'
     )

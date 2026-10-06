@@ -15,7 +15,6 @@ from worker.adapters.model.errors import ModelLoadError
 def export_bed_seg_onnx(
     model_path: Path | None = None, *, force: bool = False, imgsz: int = 1280
 ) -> str:
-    """Export the requested-size ONNX model and return its SHA-256 digest."""
     source = (bed_seg_weight_path() if model_path is None else model_path).expanduser().resolve()
     if not source.is_file():
         raise ModelLoadError(f"bed segmentation weights do not exist: {source}")

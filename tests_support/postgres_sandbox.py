@@ -1,5 +1,3 @@
-"""Real product PostgreSQL fixture on an explicit isolated DSN; never an ambient database."""
-
 from __future__ import annotations
 
 import os
@@ -32,12 +30,6 @@ class ProductSandbox:
 
 @pytest.fixture
 def postgres_product_sandbox() -> Iterator[ProductSandbox]:
-    """Own one quoted namespace and bounded pool per test, with real product DDL.
-
-    Import this fixture from tests_support.postgres_sandbox or register that
-    module in pytest_plugins. A missing or invalid DSN fails before any connection.
-    The admin connection is independent of the pool for visibility/fault checks.
-    """
     dsn = os.environ.get("SEEON_TEST_POSTGRES_DSN")
     if dsn is None:
         pytest.fail(
@@ -51,7 +43,6 @@ def postgres_product_sandbox() -> Iterator[ProductSandbox]:
     except (psycopg.Error, OSError, ValueError, TypeError):
         admin = None
     if admin is None:
-        # Outside the except block: do not chain a libpq error containing the DSN.
         pytest.fail("isolated PostgreSQL test database is unreachable", pytrace=False)
 
     schema = "seeon_product_test_" + uuid4().hex
@@ -61,7 +52,6 @@ def postgres_product_sandbox() -> Iterator[ProductSandbox]:
         admin.execute("SET lock_timeout TO 3000")
         admin.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
         try:
-            # Product triggers capture this path with SET search_path FROM CURRENT.
             admin.execute(
                 sql.SQL("SET search_path TO {}, pg_catalog, pg_temp").format(sql.Identifier(schema))
             )
@@ -122,8 +112,6 @@ def postgres_audit_runtime(postgres_product_sandbox: ProductSandbox) -> Postgres
 
 @dataclass(frozen=True, slots=True)
 class ObservedAuditMutation(AuditMutation):
-    """Observe/fault a real borrowed callback without replacing audit publication."""
-
     before_append: Callable[[psycopg.Connection], None]
 
     def apply(self, owner, write, **kwargs):

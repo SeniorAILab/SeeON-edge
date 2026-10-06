@@ -1,10 +1,3 @@
-"""Opt-in real PostgreSQL component evidence, not readiness/deployment qualification.
-
-The existing sandbox owns the namespace/pool and requires an explicit test DSN.
-Lowered-limit tests exercise refusal branches, not million-row cost/capacity.
-Fault hooks wrap real owner transactions; none substitutes a fake database.
-"""
-
 from __future__ import annotations
 
 import json
@@ -91,7 +84,6 @@ def _trigger_sql(name: str) -> str:
 
 
 def _replace_table(connection: psycopg.Connection) -> None:
-    # Test-only replacement from the trusted product DDL, including real guards.
     source = _product_sql()
     table = re.search(r"^CREATE TABLE audit_events \(.*?\n\);", source, re.MULTILINE | re.DOTALL)
     assert table is not None
@@ -210,7 +202,6 @@ def test_quoted_mixed_case_namespace_uses_exact_canonical_captured_path(
         assert (checkpoint.row_count, checkpoint.audit_id) == (2, 7)
         assert checkpoint.guard_fingerprint == empty.guard_fingerprint
         assert store.verify() == store.verify(checkpoint) == checkpoint
-        # The other healthy product namespace is not an acceptable substitute.
         sandbox.admin.execute(
             sql.SQL("ALTER FUNCTION {}() SET search_path TO {}, pg_catalog, pg_temp").format(
                 sql.Identifier(schema, "seeon_audit_insert"), sql.Identifier(sandbox.schema)
@@ -442,8 +433,6 @@ def test_oversized_row_fields_are_rejected_before_transfer_to_shared_validator(
                 sql.SQL("ALTER TABLE audit_events DROP CONSTRAINT {}").format(sql.Identifier(name))
             )
         sandbox.admin.execute("ALTER TABLE audit_events DISABLE TRIGGER USER")
-        # One byte over the transfer ceiling still fits the actor secondary
-        # index; all original indexes, including unique protections, stay put.
         length = sandbox.admin.execute(
             sql.SQL("UPDATE audit_events SET {}=%s RETURNING pg_catalog.octet_length({})").format(
                 sql.Identifier(column), sql.Identifier(column)
@@ -610,8 +599,6 @@ def test_product_text_equality_operator_cannot_bless_a_tampered_guard(
     assert guard in replacement
     admin.execute(replacement.replace(guard, "RETURN OLD;"))
     body = trusted.split("$$", 2)[1]
-    # Prove actual source equality is hijacked, while history and every other
-    # function property stay unchanged. Only the verifier's path is isolated.
     assert admin.execute(
         "SELECT p.prosrc = %s, p.prosrc OPERATOR(pg_catalog.=) %s "
         "FROM pg_catalog.pg_proc p WHERE p.oid = %s",
@@ -788,8 +775,6 @@ def test_qualified_table_is_not_shadowed_by_temp_history(
     sandbox = postgres_product_sandbox
     record = audit_store.append(_event())
     sandbox.admin.execute("CREATE TEMP TABLE audit_events (audit_id bigint)")
-    # Deliberately hostile session lookup; the private native reads must still
-    # qualify the explicit schema. Product verify() never accepts this connection.
     with sandbox.admin.transaction():
         sandbox.admin.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         sandbox.admin.execute("SET LOCAL search_path TO pg_temp, pg_catalog")
@@ -826,7 +811,7 @@ def test_prior_anchor_cannot_bless_a_valid_rehash_of_the_same_length(
                 (row["actor_id"], row["previous_hash"], previous, row["audit_id"]),
             )
         sandbox.admin.execute("ALTER TABLE audit_events ENABLE TRIGGER USER")
-    cold = audit_store.verify()  # Explicit cold-start limitation, not continuity.
+    cold = audit_store.verify()
     assert cold.row_count == checkpoint.row_count and cold.record_hash != checkpoint.record_hash
     assert cold.identity == checkpoint.identity
     _refuses(audit_store, caplog, checkpoint)
@@ -853,7 +838,6 @@ def test_missing_changed_or_shortened_anchor_is_not_discarded(
         else:
             sandbox.admin.execute("DELETE FROM audit_events")
         sandbox.admin.execute("ALTER TABLE audit_events ENABLE TRIGGER USER")
-    # All are valid-looking chains from genesis; the prior external seam matters.
     assert audit_store.verify().identity == checkpoint.identity
     _refuses(audit_store, caplog, checkpoint)
 
@@ -1041,7 +1025,7 @@ def test_function_change_after_snapshot_is_next_observation_not_a_relation_lock_
                     .replace("CREATE FUNCTION", "CREATE OR REPLACE FUNCTION", 1)
                     .replace("pg_advisory_xact_lock(TG_RELID::bigint)", "1")
                 )
-                assert not reader.done()  # Function DDL committed despite ACCESS SHARE.
+                assert not reader.done()
             finally:
                 release.set()
             assert reader.result(timeout=2) == checkpoint
@@ -1112,7 +1096,7 @@ def test_owner_failure_never_publishes_or_replays_checkpoint(
 
     def lose_receipt(connection):
         if connection.info.backend_pid in calls:
-            commit(connection)  # Real COMMIT, then inject only loss of its receipt.
+            commit(connection)
             raise psycopg.OperationalError(_SENTINEL)
         commit(connection)
 
@@ -1276,12 +1260,8 @@ def test_checkpoint_release_follows_actual_commit_and_pool_exit(
             and connection.info.transaction_status is TransactionStatus.INTRANS
         )
         commit(connection)
-        # The pool context also calls commit() on the already-idle connection;
-        # only the owner's actual transaction COMMIT is evidence here.
         if active:
             assert connection.info.transaction_status is TransactionStatus.IDLE
-            # The transaction-local verifier path expires at COMMIT, before
-            # the pool reset could conceal an accidental session-level change.
             assert connection.execute("SHOW search_path").fetchone() == paths[0]
             events.append("commit")
             assert not published
@@ -1332,8 +1312,6 @@ def test_catalog_result_budget_refuses_excess_indexes(
     caplog,
 ) -> None:
     admin = postgres_product_sandbox.admin
-    # Six canonical indexes plus twenty-seven extras cross the finite metadata
-    # budget without removing any of the actual required unique protections.
     for number in range(27):
         admin.execute(
             sql.SQL("CREATE INDEX {} ON audit_events(recorded_at)").format(

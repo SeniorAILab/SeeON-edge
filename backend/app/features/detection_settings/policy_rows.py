@@ -1,5 +1,3 @@
-"""Policy row decoding, scope lookup, and public activation projection."""
-
 from __future__ import annotations
 
 import hashlib
@@ -50,8 +48,6 @@ class DetectionPolicyNotInitialized(PostgresError):
 
 
 class InvalidPolicyRecord(PolicyActivationRefused):
-    """A malformed snapshot row, retained only for a fenced compare-and-mark."""
-
     def __init__(self, row: Mapping[str, Any], reason: str) -> None:
         self.row = row
         super().__init__(int(row["policy_id"]), reason)
@@ -120,8 +116,6 @@ def policy_record(
     try:
         record = decode_policy_record(raw)
     except (PolicyDocumentError, TypeError, ValueError) as error:
-        # Snapshot projections are READ ONLY. The owner marks this exact row
-        # failed in a separate fenced transaction, never from the read cursor.
         raise InvalidPolicyRecord(raw, str(error)) from error
     if record.status == "failed":
         raise PolicyActivationRefused(
@@ -230,7 +224,6 @@ def database_camera_id(connection: psycopg.Connection, camera_id: str | None) ->
     if camera_id is None:
         return None
     with connection.cursor(row_factory=dict_row) as cursor:
-        # Worker/Hub IDs win over local IDs when the namespaces overlap.
         row = cursor.execute(
             "SELECT camera_id FROM cameras WHERE camera_id=%s OR backend_camera_id=%s "
             "ORDER BY CASE WHEN backend_camera_id=%s THEN 0 ELSE 1 END, "

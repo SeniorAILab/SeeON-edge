@@ -1,5 +1,3 @@
-"""Hermetic end-to-end: pump -> lanes -> exporter -> Backend query."""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -142,12 +140,6 @@ class _NoClipPublisher:
 def test_alert_joins_record_with_five_kinds_provenance_and_availability(
     tmp_path, postgres_product_sandbox, postgres_audit_runtime, postgres_lifespan_diagnostics_schema
 ) -> None:
-    """Five kinds plus decision -> delivery -> acceptance.
-
-    decision->delivery is by frame identity (camera, boot, epoch, frame_seq)
-    plus edge_event_id (delivery.causal_unit_id). decision_trace_id joins the
-    triggered policy.decision to the alert audit, not to delivery/acceptance.
-    """
     lanes = ExecutionRecordLanes(lane_capacity=64)
     emitted: list[object] = []
     queue_dir = tmp_path / "delivery-queue"
@@ -230,8 +222,6 @@ def test_alert_joins_record_with_five_kinds_provenance_and_availability(
             (delivery,) = deliveries
             assert delivery["frame_seq"] == decision["frame_seq"]
             assert delivery["frame_seq"] is not None
-            # Query is camera-scoped; worker_boot_id / stream_epoch are stored
-            # but not projected on ExecutionRecordView.
             edge_event_id = str(event.identity)  # type: ignore[attr-defined]
             assert delivery["causal_unit_id"] == edge_event_id
 
@@ -305,11 +295,6 @@ def test_lane_overflow_is_reported_as_missing_not_recorded(
 ) -> None:
     lanes = ExecutionRecordLanes(lane_capacity=2)
     pump = _pump(lanes, identity=_identity(), emitted=[], fall_transition=0.9)
-    # Mixed producers on purpose: sdk.frame carries PTS-derived ns while
-    # policy.decision / model.score carry process-monotonic ns, so dropped
-    # items arrive with non-monotonic observed_at_ns. The lane must still
-    # synthesize a valid per-producer gap (min/max ns) rather than kill the
-    # exporter thread on a contract error.
     _drive_frames(pump, 6, publish=True, consume=True)
     exporter: ExecutionRecordExporter | None = None
     with serve_backend(

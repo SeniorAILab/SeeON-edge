@@ -1,5 +1,3 @@
-"""Validated schema-v2 evidence manifest models."""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -89,8 +87,6 @@ class ClipExtension(BaseModel):
 
 
 class _ManifestProvenance(BaseModel):
-    # Final on-disk manifests may carry forward-compatible keys from older
-    # writers; repair and publication both read them with ignore semantics.
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="ignore")
 
     event_ref: str | None = None

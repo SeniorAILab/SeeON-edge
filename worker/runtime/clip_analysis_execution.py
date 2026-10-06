@@ -1,5 +1,3 @@
-"""Child execution and completion stages for stored clip analysis."""
-
 from __future__ import annotations
 
 import logging
@@ -47,7 +45,7 @@ def execute_job(
         )
     except ModelLoadError as exc:
         return ClipAnalysisStatus("failed", clip_analysis_process.reason(exc))
-    except Exception as exc:  # noqa: BLE001 - supervisor must remain available
+    except Exception as exc:  # noqa: BLE001
         return ClipAnalysisStatus("failed", clip_analysis_process.reason(exc))
     return status
 

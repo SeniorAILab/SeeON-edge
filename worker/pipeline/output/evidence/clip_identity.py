@@ -58,7 +58,6 @@ class ClipIdAllocator:
         raise ClipIdCollisionError(camera_id, self._max_attempts)
 
     def reserve_existing(self, camera_id: str, clip_id: str) -> ClipReservation:
-        """Reserve the identity assigned by an external recorder exactly once."""
         if not is_clip_id(clip_id):
             raise ValueError("clip id is invalid")
         self._staging_root.mkdir(parents=True, exist_ok=True)
@@ -68,11 +67,6 @@ class ClipIdAllocator:
         return reservation
 
     def final_dir(self, clip_id: str) -> Path:
-        """The final on-disk directory a clip id reserves, whether or not it exists yet.
-
-        Lets a caller that just caught ``ClipIdCollisionError`` from
-        ``reserve_existing`` look for an already-published manifest there.
-        """
         return self._clips_dir / clip_id
 
     def _reserve(self, camera_id: str, clip_id: ClipId) -> ClipReservation | None:

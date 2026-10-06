@@ -1,5 +1,3 @@
-"""Server-validated dashboard sessions, separate from worker relay authority."""
-
 from __future__ import annotations
 
 import os
@@ -28,9 +26,6 @@ API_DASHBOARD_USERNAME_ENV = "API_DASHBOARD_USERNAME"
 API_DASHBOARD_PASSWORD_ENV = "API_DASHBOARD_PASSWORD"
 DASHBOARD_SESSION_COOKIE = "ml_dashboard_session"
 
-# Known insecure pair. Never used as a runtime authority fallback. Preflight
-# rejects this pair in deployment env files; tests may still set it explicitly
-# via API_DASHBOARD_* env fixtures for disposable bootstrap ergonomics.
 DEFAULT_DASHBOARD_USERNAME = "admin"
 DEFAULT_DASHBOARD_PASSWORD = "admin"
 KNOWN_DEFAULT_DASHBOARD_USERNAME = DEFAULT_DASHBOARD_USERNAME
@@ -76,14 +71,6 @@ def _resolve_credentials(request: Request) -> DashboardCredentials:
 
 
 def dashboard_sessions(request: Request) -> DashboardSessionStore:
-    """Return the app-wide dashboard session store, resolving credentials once.
-
-    Resolution order (highest wins): a persisted credentials row, then a
-    fully-set deployment bootstrap pair (``API_DASHBOARD_USERNAME``/``_PASSWORD``
-    or matching ``app.state`` attributes). There is no built-in password
-    default — missing or corrupt authority fails closed with HTTP 503.
-    """
-
     existing = getattr(request.app.state, "dashboard_sessions", None)
     if isinstance(existing, DashboardSessionStore):
         return existing
@@ -104,7 +91,6 @@ def rotate_dashboard_credentials(
     new_password: str,
     persist: Callable[[PostgresDashboardCredentialsStore, str, str], PersistedDashboardCredentials],
 ) -> str:
-    """Adapt the request and serialize complete credential rotations."""
     sessions = dashboard_sessions(request)
     store = dashboard_credentials_store(request)
 
@@ -129,8 +115,6 @@ def rotate_dashboard_credentials(
 
 
 def authorize_dashboard(request: Request) -> str:
-    """Authorize only a server-validated dashboard session."""
-
     sessions = dashboard_sessions(request)
     actor = sessions.actor(request.cookies.get(DASHBOARD_SESSION_COOKIE))
     if actor is None:

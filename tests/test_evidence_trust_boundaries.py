@@ -1,5 +1,3 @@
-"""Adversarial tests for finalized evidence trust boundaries."""
-
 from __future__ import annotations
 
 import contextlib
@@ -69,7 +67,6 @@ def test_media_probe_uses_same_open_inode_when_path_is_swapped(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Given: an attacker can replace the pathname while ffprobe is starting.
     media = tmp_path / "clip.mp4"
     replacement = tmp_path / "replacement.mp4"
     original_bytes = _fake_faststart_mp4(b"original-inode")
@@ -101,10 +98,8 @@ def test_media_probe_uses_same_open_inode_when_path_is_swapped(
         "worker.pipeline.output.evidence.evidence_media.subprocess.run", _swap_during_probe
     )
 
-    # When: immutable facts are collected across hash and codec validation.
     facts = inspect_finalized_media(media)
 
-    # Then: all facts came from the original open inode, not the swapped path.
     assert observed_probe_bytes == [original_bytes]
     assert facts.sha256 == hashlib.sha256(original_bytes).hexdigest()
     assert facts.size_bytes == len(original_bytes)
@@ -112,7 +107,6 @@ def test_media_probe_uses_same_open_inode_when_path_is_swapped(
 
 
 def test_parse_manifest_rejects_external_symlink(tmp_path: Path) -> None:
-    # Given: a valid-looking manifest is outside the trusted clip directory.
     external = tmp_path / "external.json"
     external.write_text(
         json.dumps(_manifest_payload("UNAVAILABLE", [EVENT_ONE])),
@@ -121,20 +115,17 @@ def test_parse_manifest_rejects_external_symlink(tmp_path: Path) -> None:
     manifest = tmp_path / "manifest.json"
     manifest.symlink_to(external)
 
-    # When/Then: parsing does not follow the symlink.
     with pytest.raises(ClipEvidenceError) as raised:
         parse_manifest(manifest)
     assert raised.value.reason_code is EvidenceReasonCode.CORRUPT
 
 
 def test_parse_manifest_rejects_oversized_valid_json(tmp_path: Path) -> None:
-    # Given: an otherwise valid manifest exceeds the bounded trust input.
     payload = _manifest_payload("UNAVAILABLE", [EVENT_ONE])
     payload["padding"] = "x" * MAX_MANIFEST_BYTES
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps(payload), encoding="utf-8")
 
-    # When/Then: the parser rejects it before unbounded JSON processing.
     with pytest.raises(ClipEvidenceError) as raised:
         parse_manifest(manifest)
     assert raised.value.reason_code is EvidenceReasonCode.CORRUPT
@@ -181,29 +172,15 @@ def test_conflicting_event_admission_preserves_the_original_durable_fact(tmp_pat
 
 @contextlib.contextmanager
 def _passthrough_scope():
-    """A context manager that does not suppress — it only re-raises."""
     yield
 
 
 def test_evidence_error_survives_contextlib_reraise_with_message_intact() -> None:
-    """Regression guard for frozen+slots on an Exception subclass (CPython 3.13).
-
-    ``dataclass(slots=True)`` cannot add ``__slots__`` to an existing class, so it
-    builds a replacement class object. The ``__setattr__`` that ``frozen=True``
-    generates closes over the *old* class and calls ``super(cls, self)``, while
-    ``self`` is an instance of the *new* class. ``contextlib`` trips this on
-    re-raise because it assigns ``exc.__traceback__``, and the operator then sees
-    ``TypeError: super(type, obj)`` instead of the real failure reason.
-
-    Dropping ``slots=True`` (keeping ``frozen=True``) is the fix. This test fails
-    loudly if ``slots=True`` is reintroduced on the evidence exceptions.
-    """
     error = ClipEvidenceError(EvidenceReasonCode.FINALIZE_FAILED, "ffprobe unavailable")
 
     with pytest.raises(ClipEvidenceError) as captured, _passthrough_scope():
         raise error
 
-    # The original exception object propagates, not a TypeError from __setattr__.
     assert captured.value is error
     assert type(captured.value) is ClipEvidenceError
     assert captured.value.reason_code is EvidenceReasonCode.FINALIZE_FAILED
@@ -212,16 +189,6 @@ def test_evidence_error_survives_contextlib_reraise_with_message_intact() -> Non
 
 
 def test_a_clip_whose_timeline_starts_late_is_not_called_corrupt() -> None:
-    """Container duration is measured from zero; a clip's length is not.
-
-    These are the exact numbers ffprobe returned for a real clip on this
-    deployment: the camera's uptime origin puts the first sample 8236.957s into
-    the timeline, so ``format.duration`` reads 8270.974s while the footage runs
-    34.016s. Measured against the 120-second ceiling, that marked every clip
-    the system produced CORRUPT, which suppressed the manifest, which kept
-    every playable clip out of the catalogue -- the operator saw nothing while
-    good footage sat on disk.
-    """
     payload = {
         "streams": [{"codec_type": "video", "codec_name": "hevc", "duration": "34.016000"}],
         "format": {"duration": "8270.974000", "start_time": "8236.957000"},
@@ -231,7 +198,6 @@ def test_a_clip_whose_timeline_starts_late_is_not_called_corrupt() -> None:
 
 
 def test_the_length_survives_a_container_that_reports_no_stream_duration() -> None:
-    """Some containers omit stream duration; the origin must still be removed."""
     payload = {
         "streams": [{"codec_type": "video", "codec_name": "hevc"}],
         "format": {"duration": "8270.974000", "start_time": "8236.957000"},
@@ -241,7 +207,6 @@ def test_the_length_survives_a_container_that_reports_no_stream_duration() -> No
 
 
 def test_a_zero_origin_container_keeps_its_own_duration() -> None:
-    """The ordinary case must not be distorted by the origin correction."""
     payload = {
         "streams": [{"codec_type": "video", "codec_name": "h264"}],
         "format": {"duration": "34.000000", "start_time": "0.000000"},

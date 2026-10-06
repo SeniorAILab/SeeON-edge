@@ -1,5 +1,3 @@
-"""Current-plus-previous policy mutation SQL."""
-
 from __future__ import annotations
 
 import hashlib

@@ -108,7 +108,6 @@ def _trigger_packet() -> FramePacket:
 def test_event_sink_stages_then_binds_the_admitted_business_event() -> None:
     from worker.pipeline.output.event_sink import EvidenceEventSink
 
-    # Given: a durable stager and a recorder that reserves one clip.
     stager = _RecordingStager()
     recorder = _RecordingRecorder(clip_id="clip-123")
     sink = EvidenceEventSink(
@@ -117,10 +116,8 @@ def test_event_sink_stages_then_binds_the_admitted_business_event() -> None:
         now=lambda: datetime(2026, 7, 31, 12, 0, tzinfo=UTC),
     )
 
-    # When: the decision pipeline emits an admitted immutable event.
     sink.emit_for_frame(_event(), _trigger_packet())
 
-    # Then: its canonical relay payload is durable before its clip relation completes.
     assert stager.staged == [
         {
             "edge_event_id": "event-123",
@@ -291,7 +288,6 @@ def test_event_sink_rejects_invalid_runtime_manifest_before_any_side_effect() ->
 def test_event_sink_completes_without_clip_when_recording_is_unavailable() -> None:
     from worker.pipeline.output.event_sink import EvidenceEventSink
 
-    # Given: a recorder that cannot reserve a new clip.
     stager = _RecordingStager()
     sink = EvidenceEventSink(
         stager=stager,
@@ -299,10 +295,8 @@ def test_event_sink_completes_without_clip_when_recording_is_unavailable() -> No
         now=lambda: datetime(2026, 7, 31, 12, 0, tzinfo=UTC),
     )
 
-    # When: the event is emitted.
     sink.emit_for_frame(_event(), _trigger_packet())
 
-    # Then: durable delivery remains ready rather than being dropped.
     assert stager.completions == [("event-123", None)]
 
 
@@ -329,7 +323,6 @@ def test_event_sink_surfaces_an_explicit_snapshot_capture_failure_to_operators()
 
 
 def test_worker_relay_surface_delegates_http_to_the_shared_bounded_transport() -> None:
-    # Given: the worker surfaces that emit facts and status to the backend.
     repo_root = Path(__file__).resolve().parents[1]
     relay_sources = (
         "worker/runtime/worker.py",
@@ -339,7 +332,5 @@ def test_worker_relay_surface_delegates_http_to_the_shared_bounded_transport() -
     for relative in relay_sources:
         source = (repo_root / relative).read_text(encoding="utf-8")
 
-        # When: that surface sends a request.
-        # Then: it delegates to the one shared bounded transport, never opens HTTP itself.
         assert "bounded_request" in source, relative
         assert "urllib.request.urlopen" not in source, relative

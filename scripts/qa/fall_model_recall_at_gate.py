@@ -40,13 +40,6 @@ def _read_frame_rows(path: Path) -> tuple[str, tuple[ReplayRow, ...]]:
 
 
 def _duration_hours(rows: tuple[ReplayRow, ...]) -> float:
-    """Sum each stream epoch's own span rather than max-min across all rows.
-
-    A reconnect starts a new epoch; the dead time between the old epoch's
-    last row and the new epoch's first is not camera-exposed time, so a
-    single trace-wide max-min would inflate the false-positive-per-camera-hour
-    denominator by counting it anyway.
-    """
     pts_by_epoch: dict[int, list[int]] = {}
     for row in rows:
         pts_by_epoch.setdefault(row.epoch, []).append(row.pts_ns)
@@ -78,12 +71,6 @@ def _peak_score(run: ReplayRun, t0_ns: int, center_sec: float, window_sec: float
 
 
 def _window_fraction(run: ReplayRun) -> tuple[int, int]:
-    """Count live-track frames the classifier scored vs. still warming up on.
-
-    Only these two reasons are "the classifier was asked to score this live
-    track" -- every other missing reason (stride-not-due, resample-gap,
-    track-no-longer-live, ...) is not a warm-up/full-window distinction.
-    """
     scored = 0
     warmup = 0
     for frame in run.frames:
@@ -127,8 +114,6 @@ def score_traces(
 
     runner = runner_factory(bundle)
     policy = _build_policy()
-    # The same resolution worker.domains.registry._fall() applies live: a
-    # promotion-eligible receipt threshold wins, otherwise the policy default.
     effective = _effective_transition_threshold(runner, policy)
 
     owner_fall_hits: list[dict[str, Any]] = []

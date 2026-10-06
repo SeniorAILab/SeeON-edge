@@ -1,5 +1,3 @@
-"""Query result types and camera-range reads."""
-
 from __future__ import annotations
 
 import base64

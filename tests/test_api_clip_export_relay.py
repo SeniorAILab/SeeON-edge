@@ -85,21 +85,12 @@ def _client(
     sandbox = pg_root.sandbox
     app = postgres_api_app(sandbox, pg_root.audit_runtime)
     app.state.edge_relay_token = TOKEN
-    # Camera binding is registry-only now (no camera_inventory fallback --
-    # see _camera_binding_from_registry in relay/router.py), so the fixture
-    # must register "camera-1" in a CameraRegistryStore for _camera_binding
-    # to resolve it instead of 403ing every export.
     app.state.camera_registry.create(
         camera_id="camera-1",
         label="Camera 1",
         rtsp_url="rtsp://camera/1",
         space_id="facility-1",
         status="online",
-        # Hub-mapped, which is what every test in this module assumes: they are
-        # about media resolution, descriptor verification, and receipt typing, not
-        # about identity mapping. Clip export addresses the Hub, so an unmapped
-        # camera is refused up front (issue #308) -- that path is pinned separately
-        # by test_export_refused_when_camera_has_no_hub_mapping below.
         backend_camera_id=backend_camera_id,
     )
     app.state.backend_evidence_client = backend
@@ -216,11 +207,9 @@ def _set_attribute(target: object, name: str, value: object) -> None:
 def test_capability_requires_auth_local_enablement_and_backend_proof(
     tmp_path: Path, pg_root: _PgRoot
 ) -> None:
-    # Given: local support is enabled and a backend probe proves both capabilities.
     backend = FakeBackendEvidenceClient()
     client = _client(tmp_path, pg_root, backend, enabled=True)
 
-    # When: unauthenticated and authenticated callers probe the relay.
     denied = client.get("/api/v1/relay/capabilities", params={"camera_id": "camera-1"})
     accepted = client.get(
         "/api/v1/relay/capabilities",
@@ -228,25 +217,21 @@ def test_capability_requires_auth_local_enablement_and_backend_proof(
         headers={"X-Edge-Relay-Token": TOKEN},
     )
 
-    # Then: only the authenticated backend-proven result is advertised.
     assert denied.status_code == 401
     assert accepted.status_code == 200
     assert accepted.json() == {"event_idempotency": 1, "clip_export": 1}
 
 
 def test_capability_stays_zero_when_feature_is_disabled(tmp_path: Path, pg_root: _PgRoot) -> None:
-    # Given: the compatibility image ships with export disabled.
     backend = FakeBackendEvidenceClient()
     client = _client(tmp_path, pg_root, backend, enabled=False)
 
-    # When: the worker probes the local relay.
     response = client.get(
         "/api/v1/relay/capabilities",
         params={"camera_id": "camera-1"},
         headers={"X-Edge-Relay-Token": TOKEN},
     )
 
-    # Then: environment support alone never advertises backend readiness.
     assert response.status_code == 200
     assert response.json() == {"event_idempotency": 1, "clip_export": 0}
 
@@ -279,12 +264,10 @@ def test_ready_relay_resolves_owned_media_by_clip_id_and_returns_typed_receipt(
     tmp_path: Path,
     pg_root: _PgRoot,
 ) -> None:
-    # Given: strict shared-store bytes exist under the route clip ID.
     _write_ready_media(tmp_path)
     backend = FakeBackendEvidenceClient()
     client = _client(tmp_path, pg_root, backend, enabled=True)
 
-    # Mutation proof: a receipt that does not match the opened bytes remains a conflict.
     bad_payload = _ready_payload() | {"sha256": "0" * 64}
     bad_receipt = client.put(
         "/api/v1/relay/clips/clip-1",
@@ -294,14 +277,12 @@ def test_ready_relay_resolves_owned_media_by_clip_id_and_returns_typed_receipt(
     assert bad_receipt.status_code == 409
     assert backend.ready_calls == 0
 
-    # When: the worker relays matching metadata without supplying a path.
     response = client.put(
         "/api/v1/relay/clips/clip-1",
         json=_ready_payload(),
         headers={"X-Edge-Relay-Token": TOKEN},
     )
 
-    # Then: ml-api alone opens the owned file and returns the backend receipt.
     assert response.status_code == 200
     assert response.json() == {
         "clip_id": "clip-1",
@@ -330,9 +311,6 @@ def test_ready_relay_resolves_owned_media_by_clip_id_and_returns_typed_receipt(
         ready_request.finalized_at,
     ) == (
         "clip-1",
-        # Hub-issued id, not the edge-local registry id. The outbound clip request
-        # addresses the Hub, and an id the Hub never issued is rejected with
-        # FACILITY_BINDING_MISMATCH (issue #308).
         "cmsnvr-camera-1",
         (EVENT_ID,),
         2,
@@ -355,8 +333,6 @@ def test_evidence_receipt_route_commits_canonical_action_and_detail(
     _write_ready_media(tmp_path)
     client = _client(tmp_path, pg_root, FakeBackendEvidenceClient(), enabled=True)
     admin = pg_root.sandbox.admin
-    # The PG seed accepts the incident through EventOutbox, which audits it as
-    # relay.alert; only rows committed by the receipt route are under test.
     (seeded_through,) = admin.execute(
         "SELECT coalesce(max(audit_id), 0) FROM audit_events"
     ).fetchone()
@@ -379,21 +355,18 @@ def test_evidence_receipt_route_commits_canonical_action_and_detail(
 def test_unavailable_relay_passes_complete_immutable_state_request(
     tmp_path: Path, pg_root: _PgRoot
 ) -> None:
-    # Given: capture failed before media publication, so no READY-only metadata exists.
     backend = FakeBackendEvidenceClient(
         clip_result=ClipReceipt("clip-1", "UNAVAILABLE", 3, None, None)
     )
     _write_unavailable_manifest(tmp_path)
     client = _client(tmp_path, pg_root, backend, enabled=True)
 
-    # When: the worker reports the terminal unavailable state.
     response = client.put(
         "/api/v1/relay/clips/clip-1",
         json=_unavailable_payload(),
         headers={"X-Edge-Relay-Token": TOKEN},
     )
 
-    # Then: the backend receives exactly the required unavailable fields as a frozen request.
     assert response.status_code == 200
     assert response.json() == {
         "clip_id": "clip-1",
@@ -460,7 +433,6 @@ def test_ready_relay_uploads_verified_descriptor_when_path_is_swapped(
     tmp_path: Path,
     pg_root: _PgRoot,
 ) -> None:
-    # Given: an attacker swaps the pathname only after ml-api verifies and opens it.
     media = _write_ready_media(tmp_path)
     backend = FakeBackendEvidenceClient()
 
@@ -471,14 +443,12 @@ def test_ready_relay_uploads_verified_descriptor_when_path_is_swapped(
     backend.before_read = swap_path
     client = _client(tmp_path, pg_root, backend, enabled=True)
 
-    # When: backend upload begins after the pathname swap.
     response = client.put(
         "/api/v1/relay/clips/clip-1",
         json=_ready_payload(),
         headers={"X-Edge-Relay-Token": TOKEN},
     )
 
-    # Then: upload uses the already verified inode and closes that descriptor.
     assert response.status_code == 200
     assert backend.uploaded_bytes == b"mp4x"
     assert media.read_bytes() == b"evil"
@@ -506,48 +476,24 @@ def test_ready_relay_rejects_missing_media_without_backend_call(
     tmp_path: Path,
     pg_root: _PgRoot,
 ) -> None:
-    # Given: no owned media exists for this clip id, and the payload claims a
-    # mismatched facility. That mismatch is not what drives the 404 here,
-    # though -- an Edge is single-facility by construction (one Edge install
-    # serves one facility), so `facility_id` on the wire is informational,
-    # not an admission key: `_camera_binding` (relay/router.py) resolves
-    # ownership from the local camera registry alone and never compares it
-    # to `facility_id`, and clip storage on disk isn't partitioned by
-    # facility either -- `_verified_media` below builds the path from
-    # `clip_id` alone (`root/clips/<clip_id>/clip.mp4`). So the only real
-    # rejection reason left is what's actually true -- no media was ever
-    # written for this clip id -- and 404 (not found), not 403 (forbidden),
-    # is the honest status for that.
     backend = FakeBackendEvidenceClient()
     client = _client(tmp_path, pg_root, backend, enabled=True)
     payload = _ready_payload()
     payload["facility_id"] = "facility-other"
 
-    # When: the worker relays metadata for a clip whose media was never written.
     response = client.put(
         "/api/v1/relay/clips/clip-1",
         json=payload,
         headers={"X-Edge-Relay-Token": TOKEN},
     )
 
-    # Then: the route fails before backend egress and leaks no local path.
     assert response.status_code == 404
     assert "clip-store" not in response.text
     assert backend.ready_calls == 0
 
 
 def test_export_refused_when_camera_has_no_hub_mapping(tmp_path: Path, pg_root: _PgRoot) -> None:
-    """A clip export for an unmapped camera is refused before any backend call.
-
-    Clip export exists to reach the Hub, so unlike the alert and heartbeat relays
-    there is no local-accept path to fall back to. Sending the edge-local id would
-    be rejected by the Hub with FACILITY_BINDING_MISMATCH, which reaches the edge
-    as an opaque 502 and reads like an authentication failure (issue #308). The
-    edge names the real reason instead, and never contacts the backend.
-    """
     backend = FakeBackendEvidenceClient()
-    # Same app the other tests use, but with the camera's Hub mapping removed, so
-    # only the mapping state differs from the passing cases above.
     client = _client(tmp_path, pg_root, backend, enabled=True, backend_camera_id=None)
 
     response = client.put(
@@ -558,6 +504,5 @@ def test_export_refused_when_camera_has_no_hub_mapping(tmp_path: Path, pg_root: 
 
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "CAMERA_MAPPING_MISSING"
-    # The decisive property: the backend was never addressed at all.
     assert backend.ready_calls == 0
     assert backend.unavailable_request is None

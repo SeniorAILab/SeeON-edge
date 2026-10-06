@@ -1,5 +1,3 @@
-"""Owner-only JSON reports and receipts the cutover steps leave behind."""
-
 from __future__ import annotations
 
 import json
@@ -11,7 +9,6 @@ from backend.app.edge_db.migration.authority_file import discard, fsync_director
 
 
 def write_report(path: Path, report: dict[str, object]) -> None:
-    """Atomically replace an owner-only JSON report."""
     body = json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n"
     temp = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
     try:

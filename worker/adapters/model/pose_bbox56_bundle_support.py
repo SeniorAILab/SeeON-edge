@@ -1,5 +1,3 @@
-"""Verified bundle-member helpers shared by pose+bbox56 runners."""
-
 from __future__ import annotations
 
 import hashlib
@@ -10,7 +8,6 @@ from worker.adapters.model.errors import ModelLoadError
 
 
 def member_digest(manifest: object, relative_path: str) -> str:
-    """Return one verified member's digest from a valid bundle manifest."""
     if not isinstance(manifest, dict):
         raise ModelLoadError("invalid bundle-manifest.json")
     files = manifest.get("files")
@@ -32,7 +29,6 @@ def read_json(path: Path) -> object:
 
 
 def verify_bundle(root: Path, manifest: object) -> None:
-    """Verify every listed member before a runner deserializes model data."""
     if not isinstance(manifest, dict) or not isinstance(manifest.get("files"), list):
         raise ModelLoadError("invalid bundle-manifest.json")
     for item in manifest["files"]:

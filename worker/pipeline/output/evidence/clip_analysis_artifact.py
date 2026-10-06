@@ -1,5 +1,3 @@
-"""Durable, immutable identity-bound clip re-analysis artifacts."""
-
 from __future__ import annotations
 
 import json
@@ -23,7 +21,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class ClipAnalysisArtifactError(ValueError):
-    """An analysis artifact is malformed or violates immutable publication."""
+    ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,7 +81,6 @@ def has_current_artifact(
     analysis_profile_sha256: str,
     decoder_identity: str,
 ) -> bool:
-    """Return whether a verified artifact exists for the child-independent identity."""
     for target in clip_dir.glob("clip.analysis.*.json"):
         sidecar = _sidecar_path(target)
         payload = _verified_payload(target, sidecar)
@@ -147,7 +144,6 @@ def _atomic_write(path: Path, payload: bytes) -> None:
         file.flush()
         os.fsync(file.fileno())
     try:
-        # Readable like manifest.json: the backend reads the store as another user.
         temporary.chmod(0o644)
         replace(temporary, path)
     finally:

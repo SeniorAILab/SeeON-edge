@@ -1,5 +1,3 @@
-"""Operator commands for the one-time SQLite to PostgreSQL cutover."""
-
 from __future__ import annotations
 
 import argparse
@@ -34,7 +32,6 @@ from backend.app.edge_db.postgres import PoolBudget, PostgresDatabase, PostgresE
 DEFAULT_SCHEMA: Final = "seeon_edge"
 DEFAULT_RUNTIME_ROLE: Final = "seeon_edge_runtime"
 _PREFIX: Final = "EDGE_PG_MIGRATION"
-# One command at a time; the second slot covers a read beside an open scope.
 _POOL_CONNECTIONS: Final = 2
 _POOL_WAITING: Final = 1
 _CONNECT_TIMEOUT_SEC: Final = 10.0
@@ -211,7 +208,6 @@ def _run(args: argparse.Namespace, label: str) -> int:
             statement_timeout_ms=args.statement_timeout_ms,
             lock_timeout_ms=args.lock_timeout_ms,
         )
-        # Its own transaction after provision commits: the role it names now exists.
         password_set = runtime_password is not None and set_runtime_password(
             conninfo,
             schema=args.schema,
@@ -303,8 +299,6 @@ def _fresh_install_source(args: argparse.Namespace) -> Path | None:
 
 
 def _require_no_canonical_source() -> None:
-    # A --source elsewhere must not skip legacy data left where the product kept it;
-    # transfer() checks the path it is given, so this covers the canonical one.
     canonical = EDGE_DATABASE_PATH
     for path in (canonical, Path(f"{canonical}-wal"), Path(f"{canonical}-journal")):
         if path.exists() or path.is_symlink():
@@ -333,10 +327,6 @@ def _with_database(
 
 
 def _read_dsn(path: Path, label: str) -> str:
-    """Read the DSN from an owner-only regular file; it never appears in argv.
-
-    Errors name the file by its path and never quote what it holds.
-    """
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError as error:
@@ -358,7 +348,6 @@ def _read_dsn(path: Path, label: str) -> str:
 
 
 def _runtime_password(path: Path | None, runtime_role: str) -> str | None:
-    """Take the password from the DSN the runtime itself will use, so the two cannot drift."""
     if path is None:
         return None
     label = "runtime DSN file"
@@ -369,14 +358,12 @@ def _runtime_password(path: Path | None, runtime_role: str) -> str | None:
     if fields.get("user") != runtime_role:
         raise MigrationError(f"{label} {path} user must be the runtime role")
     password = fields.get("password") or ""
-    # set_runtime_password refuses these too, but only after provision has committed.
     if not (password and password.isascii() and password.isprintable()):
         raise MigrationError(f"{label} {path} must carry a printable ASCII password")
     return password
 
 
 def _describe(error: BaseException) -> str:
-    # Server messages and details can quote row values; name the class and state only.
     if isinstance(error, psycopg.Error):
         return f"{type(error).__name__} (sqlstate {error.sqlstate or 'none'})"
     return str(error) or type(error).__name__

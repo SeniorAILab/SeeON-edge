@@ -1,17 +1,3 @@
-"""``worker.runtime.config.pull_models.BackendWorkerConfigPayload`` must degrade
-per-entry on a malformed field, matching the two sibling parse boundaries that
-already do (``contracts/worker_config.py``'s ``_pulled_detection_windows`` and
-``backend/app/lifespan.py``'s ``_pulled_night_window``) -- see issue #28.
-
-Before this fix, only an explicit ``null`` detection-window entry was
-tolerated (fixed in #24); a wrong-typed window value, a window missing
-start/end/tz, or a malformed camera entry each raised a pydantic
-``ValidationError`` that rejected the *entire* payload. Whole-payload
-rejection is still correct for top-level shape violations (e.g. a missing
-version or a missing ``cameras`` key); this module only covers per-entry
-degradation within an otherwise well-shaped payload.
-"""
-
 from __future__ import annotations
 
 import pytest
@@ -30,8 +16,6 @@ def _camera_payload(
 
 
 def test_null_domain_window_drops_only_that_domain() -> None:
-    """Regression guard for #24: an explicit ``null`` window is ALWAYS for
-    that domain, not an error, and must not affect the rest of the payload."""
     payload = BackendWorkerConfigPayload.model_validate(
         {
             "config_version": 5,
@@ -83,7 +67,6 @@ def test_window_missing_required_fields_drops_only_that_domain_and_logs(
             "config_version": 5,
             "cameras": [_camera_payload()],
             "detection_windows": {
-                # Missing "end" and "tz".
                 "bed_exit": {"start": "21:00"},
                 "fall": {"start": "22:00", "end": "05:00", "tz": "UTC"},
             },
@@ -126,7 +109,6 @@ def test_camera_without_facility_or_space_is_accepted_as_local() -> None:
             "config_version": 5,
             "cameras": [
                 _camera_payload(camera_id="camera-1"),
-                # camera_id + rtsp is enough; facility defaults to "local".
                 {"camera_id": "camera-2", "rtsp_url": "rtsp://camera-2/stream"},
             ],
         }
@@ -139,9 +121,6 @@ def test_camera_without_facility_or_space_is_accepted_as_local() -> None:
 
 
 def test_missing_cameras_key_still_rejects_whole_payload() -> None:
-    """Whole-payload rejection remains for top-level shape violations -- the
-    per-entry degradation above only applies within an otherwise well-shaped
-    payload, not to a payload missing a required top-level key."""
     with pytest.raises(ValidationError):
         BackendWorkerConfigPayload.model_validate({"config_version": 5})
 

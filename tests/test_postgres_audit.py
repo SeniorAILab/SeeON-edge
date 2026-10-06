@@ -1,9 +1,3 @@
-"""Real PostgreSQL audit append/lifecycle components, not API or verifier qualification.
-
-The shared sandbox requires explicit SEEON_TEST_POSTGRES_DSN and owns its isolated
-namespace and pool. A missing DSN fails; it never skips.
-"""
-
 from __future__ import annotations
 
 import json

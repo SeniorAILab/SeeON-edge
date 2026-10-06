@@ -1,5 +1,3 @@
-"""Column-scoped enrollment SQL on a borrowed PostgreSQL connection."""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -24,7 +22,6 @@ SAVE_FIELDS: Final = (
 )
 COLUMNS: Final = (*SAVE_FIELDS, "enrollment_created_at", "enrollment_updated_at", "updated_at")
 REQUIRED_ENROLLMENT_FIELDS: Final = SAVE_FIELDS
-# Character counts and signed BIGINT range from postgres_product.sql, not bytes.
 TEXT_FIELD_LIMITS: Final = {
     "facility_code": 64,
     "client_installation_ref": 128,
@@ -36,8 +33,6 @@ MAX_ENROLLMENT_GENERATION: Final = 2**63 - 1
 
 
 class ConnectionSettingsNotInitialized(PostgresError):
-    """Serving requires the singleton installed by bootstrap or migration."""
-
     def __init__(self) -> None:
         super().__init__("connection settings bootstrap row is missing")
 
@@ -68,9 +63,7 @@ _RESET_TOPOLOGY_SQL: Final = (
 
 
 def read_settings(connection: psycopg.Connection, *, for_update: bool = False) -> ConnectionData:
-    """Read the bootstrapped singleton, optionally locking through the caller's commit."""
     query = _SELECT_SQL + (" FOR UPDATE" if for_update else "")
-    # Audit and authority consumers require tuple rows on this same connection.
     with connection.cursor(row_factory=dict_row) as cursor:
         row = cursor.execute(query).fetchone()
     if row is None:
@@ -81,7 +74,6 @@ def read_settings(connection: psycopg.Connection, *, for_update: bool = False) -
 def write_settings(
     connection: psycopg.Connection, data: ConnectionData, *, reset_topology: bool
 ) -> None:
-    """Write a validated candidate under the caller's singleton row lock."""
     with connection.cursor() as cursor:
         cursor.execute(_WRITE_SQL, tuple(data[column] for column in COLUMNS))
         if cursor.rowcount != 1:

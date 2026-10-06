@@ -1,5 +1,3 @@
-"""Strict bed-segmentation conversion for the on-demand overlay route."""
-
 from __future__ import annotations
 
 from typing import Final
@@ -138,8 +136,6 @@ def test_nvidia_recognizer_uses_strict_shared_response_conversion() -> None:
 
 
 def test_bed_zone_recognizer_accepts_a_run_method_runner_not_just_callable() -> None:
-    """A runner exposing ``.run`` instead of ``__call__`` must still work."""
-
     class _RunOnlyRunner:
         def run(self, _image: Image) -> RunnerResult:
             return bed_result([(2, 2, 4, 4, 0.5, [[2, 2], [4, 2], [4, 4], [2, 4]])])
@@ -202,10 +198,6 @@ def test_bed_zone_recognizer_raises_not_found_when_no_beds_detected() -> None:
 
 def test_bed_zone_recognizer_raises_not_found_on_unexpected_result_kind() -> None:
     def runner(_image: Image) -> RunnerResult:
-        # A misconfigured serving client could hand back some other task's
-        # result kind here; this must still fail closed via the same
-        # structured error, not crash the HTTP thread with an AttributeError
-        # from treating it as a `BedRunnerResult`.
         return PoseRunnerResult(kind="pose", poses=(), boxes=())
 
     with pytest.raises(BedZoneNotFoundError):

@@ -1,9 +1,3 @@
-"""Clip storage selection on the API-owned PostgreSQL pool.
-
-Only persistence lives here, not filesystem validation or recording policy.
-Bootstrap owns the site singleton; lifespan owns the borrowed pool.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -21,8 +15,6 @@ class ClipStorageLocationNotInitialized(PostgresError):
 
 
 class ClipStorageLocationStore:
-    """Borrow transactions only; pool lifecycle belongs to the API."""
-
     def __init__(self, database: PostgresDatabase, authority: AuthorityToken) -> None:
         self.database = database
         self.authority = authority
@@ -58,7 +50,6 @@ class ClipStorageLocationStore:
                 after_write(connection)
             return selected_path
 
-        # Never reread after COMMIT or publish a candidate after an unknown outcome.
         return self.database.transact(persist)
 
 

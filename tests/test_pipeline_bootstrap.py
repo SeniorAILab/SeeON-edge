@@ -1,44 +1,3 @@
-"""6-stage 2-tier bootstrap gate injection (ADR-0002, acceptance 4), worker edition.
-
-worker's successor to the legacy flat `runtime.pipeline_bootstrap` module is
-`worker.runtime.bootstrap`: six *named* global stages (gpu_lease -> profile_device
--> decode_capability -> model_backend_init -> real_warmup -> camera_activation)
-instead of edge's caller-assembled two-stage list, plus a `FatalAcceleratorError`
-override that outranks a stage's own exit code (worker/runtime/bootstrap.py:1-36).
-
-Disposition correction (evidence-based; differs from the initial GpuUnavailableError
--> {GpuLeaseUnavailableError, FatalAcceleratorError} hypothesis): edge's
-`GpuUnavailableError` (edge/runners/device.py:26, raised by `require_gpu_device`)
-was edge's *boot-time, CUDA-unavailable, fail-fast, no-CPU-fallback* signal. Its
-real worker successor is `ProfileVerifyError`, raised by
-`verify_device_or_raise` (worker/runtime/profile/boot.py:50-61) when a profile's
-device verifier reports `ok=False` -- already covered unit-level by
-tests/test_profile_boot.py (test_cuda_profile_verify_false,
-test_verifier_exception_becomes_profile_verify_error, test_cuda_profile_verify_true,
-test_cpu_profile_ok). `GpuLeaseUnavailableError` (worker/runtime/lease.py:43) and
-`FatalAcceleratorError` (worker/adapters/model/errors.py:17) are *not* alternate
-spellings of that same boot-time check -- they cover two failure modes edge's
-pipeline_bootstrap.py never had at all: pre-CUDA-touch advisory-lease contention
-between repo processes, and mid-inference CUDA runtime faults. Both are exercised
-here only for their bootstrap-stage *wiring* (gpu_lease_stage's REFUSE_TO_START
-mapping; run_camera_stage's re-raise-don't-degrade special case), since that
-wiring is worker-only code with no edge analog and, per the residue check below,
-no other existing test hits it directly.
-
-Residue check performed against tests/test_worker_runtime_safety.py (which drives
-the full named_stages() sequence end-to-end) and tests/test_worker_gpu_lease.py
-(which drives GpuLease.acquire() directly, not via the bootstrap Stage wrapper):
-neither exercises `gpu_lease_stage`'s own failure path, `profile_device_stage`'s
-own failure path, or `run_camera_stage` at all -- ML_WORKER_PROFILE=cpu keeps
-their profile/device stage trivially passing (test_cpu_profile_ok-equivalent), so
-edge's `test_gpu_verify_stage_honors_explicit_cpu_optin` is superseded by that
-existing cpu-profile coverage rather than re-ported: worker has no "explicit
-device overrides a fail-fast check" parameter at all (ML_WORKER_PROFILE is a
-required enum, not an optional override), so the *mechanism* being tested no
-longer exists, only the *outcome* (choosing cpu never fails fast) does, and that
-outcome is already asserted.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -118,7 +77,7 @@ def test_profile_device_stage_fails_fast_and_publishes_no_profile_on_failure() -
         boot.run_stages((stage,))
     assert exc.value.exit_code == boot.REFUSE_TO_START_EXIT_CODE
     assert "ADR-0002: unsupported ML_WORKER_PROFILE 'nvidia'; set flow" in str(exc.value)
-    assert context.profile is None  # never published on a failed verify
+    assert context.profile is None
 
 
 def test_per_camera_ordinary_failure_degrades_only_that_camera() -> None:

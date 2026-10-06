@@ -1,5 +1,3 @@
-"""Local detection overrides against the real PostgreSQL product sandbox."""
-
 from __future__ import annotations
 
 import json
@@ -63,7 +61,6 @@ def _audit(connection: psycopg.Connection) -> None:
 def _effective(
     store: DetectionSettingsStore, pulled: PulledWorkerConfig | None = None
 ) -> dict[str, object]:
-    # Exercise the existing pure response projection, not API composition.
     app = FastAPI()
     app.state.detection_settings_store = store
     response: dict[str, object] = {"config_version": 0 if pulled is None else pulled.config_version}
@@ -106,8 +103,6 @@ def test_partial_replacements_round_trip_persist_and_keep_canonical_public_shape
     assert store.get_all() == {"fall": _ALWAYS, "bed_exit": _NIGHT}
     reopened.replace_all({"bed_exit": _OFF, "fall": _DAY})
     assert store.get_all() == {"fall": _DAY, "bed_exit": _OFF}
-    # These overrides have content-derived effective versions, not registry or
-    # numeric-policy activation generations.
     assert sandbox.admin.execute(
         "SELECT registry_version,runtime_settings_version,topology_dirty_registry_version "
         "FROM edge_site"
@@ -400,7 +395,6 @@ def test_frozen_authority_is_checked_before_bootstrap_validation_and_empty_mutat
     store = DetectionSettingsStore(sandbox.database, sandbox.authority)
     store.replace_all({"fall": _ALWAYS, "bed_exit": _NIGHT})
     freeze_authority(sandbox.database, sandbox.authority)
-    # Reads remain permitted under a frozen writer authority.
     assert store.get_all() == {"fall": _ALWAYS, "bed_exit": _NIGHT}
     before = _rows(sandbox)
     hooks = []

@@ -1,11 +1,3 @@
-"""Fence the old SQLite file by its bytes, and put those bytes back only on an ALLOW.
-
-Every oracle here reads the file itself: the 100-byte header (user_version is the
-big-endian word at offset 60) and SHA-256 digests. What an old runtime would see is
-read by the standard library from copies of the main file and its WAL, so no
-SQLite connection touches the fenced file after the fence closes its own.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -53,11 +45,8 @@ SENTINEL = 1_000_002
 SCHEMA_19 = 19
 REPO = Path(__file__).resolve().parents[1]
 MAGIC = b"SQLite format 3\x00"
-# A WAL commit that writes page 1 also rewrites the change counter and its
-# version-valid-for copy; the stamp itself is the user_version word.
 ALLOWED_HEADER_CHANGES = frozenset({*range(24, 28), *range(60, 64), *range(92, 96)})
 
-# Holds a read transaction open until its stdin closes.
 _READER = """
 import sqlite3, sys
 connection = sqlite3.connect(sys.argv[1], isolation_level=None)
@@ -68,7 +57,6 @@ sys.stdin.read()
 connection.close()
 """
 
-# Tries to commit without waiting; exits 3 when SQLite refuses the write lock.
 _WRITER = """
 import sqlite3, sys
 connection = sqlite3.connect(sys.argv[1], isolation_level=None, timeout=0)
@@ -82,8 +70,6 @@ finally:
     connection.close()
 """
 
-# Runs the fence and dies at the live stamp: before it, or after its COMMIT and
-# before the checkpoint folds it into the main file.
 _CRASH = """
 import os, sys
 from pathlib import Path
@@ -174,7 +160,6 @@ def _temps(*directories: Path) -> list[str]:
 
 
 def _seen_user_version(scratch: Path, source: Path) -> int:
-    """What an old runtime opening the file now would read: the main file plus its WAL."""
     scratch.mkdir()
     copy = scratch / source.name
     shutil.copyfile(source, copy)
@@ -186,7 +171,6 @@ def _seen_user_version(scratch: Path, source: Path) -> int:
 
 
 def _allow_payload(fence: FenceReceipt, section: dict[str, object]) -> dict[str, object]:
-    """An ALLOW shaped like rollback-check's report for the fenced section it inspected."""
     return {
         "format": REPORT_FORMAT,
         "result": ALLOW,
@@ -240,7 +224,6 @@ def _remove(source: Path) -> None:
 
 
 def _replace_with_symlink(source: Path) -> None:
-    """The same bytes behind a link, so only the file type can refuse it."""
     target = source.with_name("elsewhere.sqlite3")
     source.rename(target)
     source.symlink_to(target)
@@ -302,7 +285,6 @@ def test_fence_refuses_a_source_written_after_its_snapshot(tmp_path: Path) -> No
 
 
 def test_fence_refuses_while_another_connection_is_open(tmp_path: Path) -> None:
-    """A connection that skipped the deployment lock still keeps the fence out."""
     layout = _layout(tmp_path)
     before = _sha(layout.source)
     reader = subprocess.Popen(
@@ -330,13 +312,6 @@ def test_fence_refuses_while_another_connection_is_open(tmp_path: Path) -> None:
 def test_fence_holds_the_file_from_its_check_to_its_stamp(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Nothing commits between the snapshot check and the stamp.
-
-    The fence's connection takes the write lock with locking_mode EXCLUSIVE, which
-    it keeps across transactions until close, and it reads the live bytes through
-    a descriptor it holds, so no close drops that lock early. A writer arriving
-    after the receipt digest was computed is refused, and the stamp lands.
-    """
     layout = _layout(tmp_path)
     stamped = sqlite_fence._stamped_sha256
     attempts: list[int] = []
@@ -440,7 +415,6 @@ def test_unfence_restores_the_pre_fence_bytes(tmp_path: Path) -> None:
     assert _sha(layout.snapshot) == fence.snapshot_sha256
     assert _temps(layout.source.parent, layout.receipt.parent) == []
     assert _seen_user_version(tmp_path / "seen", layout.source) == SCHEMA_19
-    # A rerun after the replace landed finds the preserved bytes already live.
     assert unfence_sqlite(layout.source, receipt=layout.receipt, rollback_report=report) == restored
     assert layout.source.read_bytes() == before
 
@@ -733,17 +707,6 @@ def test_fence_refuses_what_it_cannot_prove(
 def test_a_crash_at_the_stamp_leaves_one_authority_until_the_fence_reruns(
     tmp_path: Path, moment: str
 ) -> None:
-    """The receipt is durable before the stamp, so a crash leaves one of two files.
-
-    Before the stamp, the main file is untouched and SQLite stays the only
-    authority. After the stamp's COMMIT and before its checkpoint, an old runtime
-    would replay the WAL and refuse the sentinel. Either way PostgreSQL has not
-    committed generation 2, and unfence refuses the unsettled file. Recovery is
-    to rerun the fence, which settles on the receipt, and then either continue
-    forward with the generation 2 transfer (PostgreSQL becomes the only authority)
-    or abort with rollback-check ALLOW and unfence-sqlite (SQLite is the only
-    authority and PostgreSQL stays frozen at generation 1).
-    """
     layout = _layout(tmp_path)
     before = _sha(layout.source)
 
@@ -793,7 +756,6 @@ def test_a_crash_at_the_stamp_leaves_one_authority_until_the_fence_reruns(
 
 
 def test_a_fence_rerun_removes_the_index_a_read_only_probe_left(tmp_path: Path) -> None:
-    """A read-only open cannot delete its -shm on close, so the rerun settles it."""
     layout = _layout(tmp_path)
     fence = _fence(layout)
     probe_uri = layout.source.resolve().as_uri() + "?mode=ro"
@@ -875,7 +837,6 @@ def test_cli_unfence_sqlite_fails_without_an_allow(
 
 
 def test_export_refuses_a_source_locked_by_its_own_writer(tmp_path: Path) -> None:
-    """The backup would retry a busy source forever; the copy refuses it instead."""
     layout = _layout(tmp_path)
     copy = tmp_path / "copy.sqlite3"
     create_private_file(copy)

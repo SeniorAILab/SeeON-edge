@@ -1,5 +1,3 @@
-"""Flow profile composition and cold-start admission."""
-
 from worker.runtime.flow.cold_start import (
     EngineIdentityError,
     FlowColdStart,

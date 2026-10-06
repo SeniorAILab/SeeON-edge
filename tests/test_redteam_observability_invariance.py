@@ -1,5 +1,3 @@
-"""Decision-path invariance with execution-record sink on versus off."""
-
 from __future__ import annotations
 
 from dataclasses import replace

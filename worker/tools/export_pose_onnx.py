@@ -23,12 +23,6 @@ def _export(weights: Path) -> Path:
 
 
 def _canonicalize(payload: bytes) -> bytes:
-    """Drop the two export outputs that vary between identical runs.
-
-    ultralytics stamps ``date`` into ``metadata_props`` and the inferred
-    ``value_info`` annotations differ from run to run; neither affects the
-    graph, and dropping them makes the digest reproducible per source weight.
-    """
     import onnx
 
     model = onnx.load_from_string(payload)
@@ -60,7 +54,6 @@ def _self_check(path: Path) -> None:
 def export_pose_onnx(
     model_path: Path | None = None, *, force: bool = False, exporter: Exporter | None = None
 ) -> str:
-    """Export the nano pose model, self-check it at B=2, and return its digest."""
     source = (pose_weight_path("n") if model_path is None else model_path).expanduser().resolve()
     if not source.is_file():
         raise ModelLoadError(f"pose weights do not exist: {source}")

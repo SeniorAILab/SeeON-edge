@@ -173,14 +173,11 @@ def test_event_filter_uses_effective_category_and_keeps_camera_scoped_facets(
 
 
 def test_paged_list_rebuilds_without_a_listing_generation(app: FastAPI) -> None:
-    # Given: an application with no legacy listing-generation index.
     with TestClient(app) as client:
         _login(client)
 
-        # When: a bounded listing is requested.
         response = client.get("/api/v1/clips", params={"limit": 48})
 
-    # Then: schema-18 clips is rebuilt directly and returns an empty keyset page.
     assert response.status_code == 200
     assert response.json()["pagination"] == {
         "limit": 48,

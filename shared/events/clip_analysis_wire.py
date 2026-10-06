@@ -1,9 +1,3 @@
-"""Strict wire types for re-analysis of one immutable clip.
-
-This module is a value contract only: it does not open clips, run inference,
-or turn a result with no frame evidence into a successful-looking result.
-"""
-
 from __future__ import annotations
 
 import json
@@ -26,7 +20,7 @@ FrameStatus: TypeAlias = Literal["available", "no_evidence", "ambiguous_timestam
 
 
 class ClipAnalysisWireError(ValueError):
-    """The clip-analysis payload is not a complete, safe wire value."""
+    ...
 
 
 def _int(value: object, field: str) -> int:
@@ -98,8 +92,6 @@ class ClipAnalysisTimeBase:
 
 @dataclass(frozen=True, slots=True)
 class ClipAnalysisBox:
-    """A person box in source-image pixel coordinates."""
-
     x1: float
     y1: float
     x2: float
@@ -138,8 +130,6 @@ class ClipAnalysisFrame:
 
 @dataclass(frozen=True, slots=True)
 class ClipAnalysisBedGeometry:
-    """One clip-local bed polygon and its supplying frame PTS."""
-
     points: tuple[tuple[float, float], ...]
     provenance_pts: int
 
@@ -359,14 +349,12 @@ def _decode_mapping(payload: Mapping[str, object]) -> ClipAnalysisResult:
 
 
 def encode_clip_analysis(result: ClipAnalysisResult) -> bytes:
-    """Serialize a validated result, enforcing the byte-level output cap."""
     if not isinstance(result, ClipAnalysisResult):
         raise ClipAnalysisWireError("result must be a ClipAnalysisResult")
     return result.canonical_json().encode()
 
 
 def decode_clip_analysis(payload: object) -> ClipAnalysisResult:
-    """Decode JSON bytes/text or a JSON-shaped mapping with strict fields."""
     if isinstance(payload, bytes):
         if len(payload) > MAX_CLIP_ANALYSIS_OUTPUT_BYTES:
             raise ClipAnalysisWireError("clip-analysis input exceeds 32 MiB")

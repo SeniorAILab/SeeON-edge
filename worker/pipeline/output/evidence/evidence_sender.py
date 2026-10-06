@@ -1,5 +1,3 @@
-"""Delivery-queue sender for evidence envelopes."""
-
 from __future__ import annotations
 
 import base64
@@ -36,17 +34,12 @@ from worker.pipeline.output.evidence.evidence_outbox_types import (
 
 _LOGGER = logging.getLogger(__name__)
 
-#: Delivery attempts before an entry is retained for an operator instead of
-#: being retried forever. Retrying forever halts every entry behind it.
 _MAX_ENTRY_ATTEMPTS: Final = 10
 
-#: Recorded on a dead-lettered entry that exhausted its attempts rather
-#: than being explicitly refused by the backend.
 _EXHAUSTED_STATUS: Final = 599
 _SHED_DETAIL_WARNING_INTERVAL_SECONDS = 60.0
 
 
-#: How long to wait before re-sending an entry that only an operator can unblock.
 _OPERATOR_BLOCKED_RETRY_SECONDS: Final = 300.0
 
 
@@ -96,8 +89,6 @@ class _QueuedClipClaim:
 
 
 class EvidenceSender:
-    """Send one immutable queue entry and acknowledge only that entry."""
-
     def __init__(
         self,
         queue_directory: Path,
@@ -123,30 +114,12 @@ class EvidenceSender:
         self._flow_sealed_sidecar_directory = flow_sealed_sidecar_directory
         self._execution_records = execution_records
         self._clip_export_disabled_logged = False
-        #: Entries whose failure only an operator can clear (a camera with no
-        #: backend mapping). They are never dropped, but retrying them at the
-        #: sender's tick rate produced 264,661 attempts and an ERROR per second
-        #: against the same 409 for three days. Wait between attempts instead.
         self._blocked_until: dict[str, float] = {}
         self._last_shed_detail_warning_at = float("-inf")
         self._attempts: dict[str, int] = {}
         self._deferred: set[str] = set()
 
     def _retain(self, queue: DeliveryQueue, entry_id: str, status_code: int) -> bool:
-        """Retain a refused entry, treating an I/O failure as a refusal.
-
-        `dead_letter` writes to the filesystem, so it can raise for exactly the
-        reason the entry could not be delivered in the first place -- a full or
-        failing disk. Unguarded, that exception escaped this branch entirely and
-        the outer sender loop caught it silently without deferring, so the same
-        head was reselected on every iteration and every newer resident event
-        behind it was blocked indefinitely.
-
-        A guard that depends on the resource it is guarding against is not a
-        guard. Returning False here routes the failure into the same path as a
-        full retention area: the entry stays live, gets deferred, and the truth
-        is logged.
-        """
         try:
             return queue.dead_letter(entry_id, status_code)
         except Exception:
@@ -158,30 +131,12 @@ class EvidenceSender:
             return False
 
     def _select(self, entries: tuple[dict[str, object], ...]) -> dict[str, object] | None:
-        """Pick the next entry to send, skipping ones that keep failing.
-
-        Selection used to be a fixed preference for the first EVENT, and
-        `entries()` returns a sorted, deterministic order. So an entry failing
-        with a retryable status was re-selected on every single call and every
-        other entry behind it -- including newer fall evidence -- never got sent
-        at all. One bad entry silently halted the whole delivery queue.
-
-        Entries that have exhausted their attempt budget are passed over so the
-        rest of the queue drains; they are dead-lettered separately rather than
-        being retried forever or deleted.
-        """
         live = tuple(
             item
             for item in entries
             if self._attempts.get(str(item["entry_id"]), 0) < _MAX_ENTRY_ATTEMPTS
         )
         candidates = live or entries
-        # Rotate past entries that failed on a recent pass. A transient failure
-        # never exhausts the attempt budget -- correctly, because a relay outage
-        # is what the durable queue exists to survive -- so the budget alone
-        # cannot keep a failing head from blocking everything behind it. When
-        # every candidate has been deferred the cycle restarts, so a queue whose
-        # entries all fail still retries them all.
         now = self._clock()
         due = tuple(
             item
@@ -189,9 +144,6 @@ class EvidenceSender:
             if self._blocked_until.get(str(item["entry_id"]), 0.0) <= now
         )
         if not due:
-            # Every candidate is waiting on an operator action. Say nothing is
-            # due rather than spinning on the same refusal; the next tick after
-            # the wait expires picks them up again.
             return None
         undeferred = tuple(item for item in due if str(item["entry_id"]) not in self._deferred)
         if not undeferred:
@@ -247,8 +199,6 @@ class EvidenceSender:
         self._clip_export_disabled_logged = False
         attempts = self._attempts.get(entry_id, 0)
         if attempts >= _MAX_ENTRY_ATTEMPTS:
-            # Exhausted. Retain it for an operator instead of retrying forever
-            # or deleting it, so the queue behind it can drain.
             if self._retain(queue, entry_id, _EXHAUSTED_STATUS):
                 self._attempts.pop(entry_id, None)
                 self._deferred.discard(entry_id)
@@ -269,10 +219,6 @@ class EvidenceSender:
                     dead_letter_dir=queue.dead_letter_directory.name,
                 )
                 return SenderStep.RETRY_SCHEDULED
-            # Retention is full. The entry stays in the live queue, so it MUST be
-            # deferred: without that it is reselected on every call forever, the
-            # queue never drains, and new alerts are eventually refused
-            # admission. Reporting it retained here would also be a lie.
             self._deferred.add(entry_id)
             _LOGGER.error(
                 "evidence entry %s exhausted %d delivery attempts and the retention "
@@ -295,10 +241,6 @@ class EvidenceSender:
         try:
             result = self._send(entry)
         except Exception:
-            # The outer loop catches this too, but silently and without moving
-            # on, so a corrupt or unserialisable entry was reselected on every
-            # iteration and nothing behind it was ever delivered. Defer it and
-            # say so; the entry stays durable and is retried on the next cycle.
             self._deferred.add(entry_id)
             self._attempts[entry_id] = attempts + 1
             _LOGGER.exception(
@@ -322,9 +264,6 @@ class EvidenceSender:
                 entry["kind"] == "CLIP"
                 and result.code == DeliveryFailureCode.CAMERA_MAPPING_MISSING
             ):
-                # The camera may be mapped later, so this entry is kept and never
-                # dead-lettered -- but only an operator can clear it, so wait
-                # instead of re-sending it on every tick.
                 self._deferred.add(entry_id)
                 self._blocked_until[entry_id] = self._clock() + _OPERATOR_BLOCKED_RETRY_SECONDS
                 return SenderStep.RETRY_SCHEDULED
@@ -334,9 +273,6 @@ class EvidenceSender:
                 and 400 <= result.status_code < 500
                 and (entry["kind"] == "CLIP" or result.status_code == 422)
             ):
-                # Refused, not delivered. Retain it for an operator rather than
-                # deleting it and reporting success; that deletion is how 41
-                # real bed-exit events were destroyed here.
                 if self._retain(queue, entry_id, result.status_code):
                     self._deferred.discard(entry_id)
                     _LOGGER.error(
@@ -356,9 +292,6 @@ class EvidenceSender:
                         dead_letter_dir=queue.dead_letter_directory.name,
                     )
                     return SenderStep.RETRY_SCHEDULED
-                # Retention full: the entry remains queued and must be deferred,
-                # or this refused entry is reselected forever and blocks every
-                # newer alert behind it until admission itself starts failing.
                 self._deferred.add(entry_id)
                 _LOGGER.error(
                     "backend refused evidence entry %s with HTTP %d and the retention "
@@ -380,11 +313,6 @@ class EvidenceSender:
                 return SenderStep.RETRY_SCHEDULED
             self._deferred.add(entry_id)
             if result.disposition is DeliveryDisposition.RETRY:
-                # Transient: the relay is unreachable, restarting, or answering
-                # 5xx. This is precisely the condition the durable queue exists
-                # to survive, so it must NOT consume the attempt budget. Counting
-                # it turned an outage into mass dead-lettering of perfectly good
-                # evidence -- the opposite of the guarantee.
                 self._emit_event_delivery(
                     entry,
                     outcome="retry-transient",
@@ -423,12 +351,6 @@ class EvidenceSender:
         try:
             queue.acknowledge(entry_id)
         except Exception:
-            # The backend has it; only our removal failed. Unguarded, a
-            # filesystem fault here re-selected the same entry on every
-            # iteration: the backend was flooded with duplicates of one event
-            # while every newer resident event behind it never left the queue.
-            # Defer so the rest drains; the entry is safely redelivered later
-            # and the backend deduplicates it.
             self._deferred.add(entry_id)
             _LOGGER.exception(
                 "evidence entry %s was delivered but could not be removed from "
@@ -461,7 +383,6 @@ class EvidenceSender:
         return _acknowledged_step(entry)
 
     def _remove_flow_sealed_sidecar(self, entry: dict[str, object]) -> None:
-        """Release Flow recovery state only after the relay receipt is durable."""
         if self._flow_sealed_sidecar_directory is None:
             return
         sidecar = self._flow_sealed_sidecar_directory / f"{entry['clip_id']}.json"
@@ -511,16 +432,6 @@ class EvidenceSender:
 
 
 def _payload(entry: dict[str, object]) -> str:
-    """Rebuild the event body with its decision envelope; media entries are tagged.
-
-    ``DurableEvidenceStager`` splits the staged event: it pops ``audit`` out of
-    the body into ``decision_trace`` so the decision basis is admitted atomically
-    with the event as its own bounded field. The wire contract the backend reads
-    is still a single alert carrying ``audit``, so the two halves must be rejoined
-    here. Sending ``values`` alone silently drops the decision basis -- the one
-    thing the never-drop obligation exists to protect -- and the relay projection
-    then records ``audit=None``.
-    """
     if entry["kind"] != "EVENT":
         return json.dumps(entry, separators=(",", ":"), sort_keys=True)
 

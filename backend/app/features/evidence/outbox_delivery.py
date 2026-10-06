@@ -1,5 +1,3 @@
-"""Bounded delivery claims and append-only outcomes; no network inside SQL transactions."""
-
 from __future__ import annotations
 
 import math
@@ -15,7 +13,7 @@ from backend.app.edge_db.postgres import PostgresDatabase
 
 
 class DeliveryResponseConflict(RuntimeError):
-    """An attempt already has a different immutable request completion."""
+    ...
 
 
 class DeliveryOutcome(StrEnum):
@@ -83,12 +81,6 @@ class OutboxDelivery:
         return self.database.transact(claim_one)
 
     def claim_event(self, edge_event_id: str) -> DeliveryClaim | None:
-        """Claim one accepted event for an immediate request-path delivery.
-
-        A PENDING row is claimable before its retry time because the worker's
-        own retry is the caller; a live lease belongs to another sender.
-        """
-
         def claim_one(connection: psycopg.Connection) -> DeliveryClaim | None:
             require_authority(connection, self.authority, sender=True)
             row = connection.execute(
@@ -133,8 +125,6 @@ class OutboxDelivery:
         return DeliveryClaim(attempt, event_id, count + 1, camera_id, envelope)
 
     def status(self, edge_event_id: str) -> DeliveryStatus | None:
-        """Read the committed delivery state and the latest attempt's result."""
-
         def read(connection: psycopg.Connection) -> DeliveryStatus | None:
             row = connection.execute(
                 "SELECT o.state,o.attempt_count,coalesce(o.lease_until>clock_timestamp(),false),"
@@ -169,18 +159,6 @@ class OutboxDelivery:
         http_status: int | None = None,
         backend_event_id: str | None = None,
     ) -> bool:
-        """Commit the response observation even when a stale lease returns False.
-
-        Each persisted attempt permits exactly one actual HTTP request. Its first
-        finish records only classified metadata, never response bodies or credentials.
-        Exact repeats are idempotent; different responses raise DeliveryResponseConflict.
-        A timeout/connection loss is UNKNOWN, not rejection or remote acceptance.
-        The same edge_event_id remains the central idempotency key on every retry.
-        Late responses cannot change the active claim or a terminal outbox state,
-        and never replace an immutable UNKNOWN/LEASE_EXPIRED result.
-        Fenced authority or an invalid event/attempt association refuses all writes.
-        No result escapes failed/unknown COMMIT, and no transaction is replayed.
-        """
         if not isinstance(outcome, DeliveryOutcome):
             raise TypeError("delivery outcome must be explicitly classified")
         if not isinstance(reason, str) or re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", reason) is None:

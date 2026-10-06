@@ -79,16 +79,6 @@ def resolve_profile(
     env: Mapping[str, str],
     registry: Mapping[str, ProfileSpec] = PROFILE_REGISTRY,
 ) -> ProfileSpec:
-    """Resolve ``ML_WORKER_PROFILE``, defaulting to :data:`DEFAULT_PROFILE_NAME`.
-
-    Issue #133: the worker must boot with zero env vars, so an unset/blank
-    ``ML_WORKER_PROFILE`` no longer refuses to boot -- it falls back to
-    ``DEFAULT_PROFILE_NAME`` ("cpu"), the only profile whose device
-    verification always succeeds with no injected capability probe. An
-    *explicit* but unrecognized value is still fail-closed: a typo like
-    ``ML_WORKER_PROFILE=gpu`` must not be silently reinterpreted as the
-    default.
-    """
     return select_profile(env, registry).spec
 
 
@@ -146,21 +136,6 @@ def resolve_encode_or_fallback(
     *,
     now: Callable[[], float] = time.time,
 ) -> EncodeSelection:
-    """Resolve the profile's clip encoder, demoting nvenc to libx264 on a failed preflight.
-
-    Unlike `preflight_decode_or_raise`, a failed probe here never aborts boot:
-    per #53's accepted design, NVENC and libx264 both emit the same H.264
-    content, so trading GPU for CPU encode cost never changes what a clip
-    records (unlike a fall-detector model swap, which #43 forbids from ever
-    falling back silently). The demotion still has to be loud -- a WARNING is
-    logged here, and the returned `EncodeSelection` is meant for local
-    diagnostics exposure (`worker/runtime/telemetry/runtime_diagnostics.py`),
-    not the byte-for-byte-frozen backend relay payload
-    (`worker/runtime/telemetry/wire.py`).
-
-    Profiles that already request `libx264` (`mps`, `cpu`) never probe --
-    there is nothing to fall back from.
-    """
     requested = spec.encode
     if spec.encode_fallback is None:
         return EncodeSelection(
@@ -208,23 +183,6 @@ def resolve_decode_or_fallback(
     *,
     now: Callable[[], float] = time.time,
 ) -> DecodeSelection:
-    """Resolve iGPU VAAPI decode, demoting to opencv (CPU/software) decode on a failed preflight.
-
-    Unlike `preflight_decode_or_raise` -- still used unchanged by nvdec/opencv,
-    whose ADR-0002 fail-fast semantics this does not touch -- a failed VAAPI
-    probe here never aborts boot. VAAPI and the ffmpeg/OpenCV software path
-    both decode the same RTSP stream into identical RGB FramePackets, so
-    trading iGPU offload for CPU decode cost never changes what a camera
-    records or what downstream inference sees. Issues #191/#194 established
-    that a *silent* no-frames failure is the actual footgun here, not a
-    loudly-logged software-decode fallback -- so unlike an adapter probing
-    its way to a different backend (disallowed per worker/adapters/AGENTS.md),
-    this decision is made once, at the boot/profile composition root, exactly
-    like `resolve_encode_or_fallback` (#53).
-
-    Profiles that don't request vaapi (cuda, mps, cpu) never call this --
-    they keep the existing fail-fast `preflight_decode_or_raise` path.
-    """
     requested = spec.decode
     if spec.decode_fallback is None:
         return DecodeSelection(
@@ -301,18 +259,6 @@ def resolve_boot_context(
     encode_probe: EncodeProbe | None = None,
     capability_converters: tuple[ConverterCapabilities, ...] = (),
 ) -> BootContext:
-    """Resolve the full boot gate: profile, device, decode, legacy-conflict.
-
-    Issue #79 (track 2): the device check, the decode preflight, and the
-    legacy-env conflict check are three independent gates over the same
-    resolved ``spec`` -- none depends on another's outcome. Previously each
-    raised immediately on its own failure, so an operator with e.g. both a
-    bad device *and* an incompatible legacy decode override only ever saw
-    the device failure, fixed it, reran, and only then discovered the
-    decode conflict. All three now always run and every failure is
-    collected into one raised ``ProfileVerifyError`` naming every failed
-    gate instead of just the first.
-    """
     selection = select_profile(env)
     spec = selection.spec
     if capability_converters:
@@ -326,9 +272,6 @@ def resolve_boot_context(
     except ProfileVerifyError as error:
         failures.append(str(error))
 
-    # vaapi is the one decode policy with an explicit, loud fallback (see
-    # `resolve_decode_or_fallback`) instead of the fail-fast preflight every
-    # other policy still uses -- nvdec/opencv keep raising on a failed probe.
     decode_selection: DecodeSelection | None = None
     if spec.decode == "vaapi":
         decode_selection = resolve_decode_or_fallback(spec, decode_probe)

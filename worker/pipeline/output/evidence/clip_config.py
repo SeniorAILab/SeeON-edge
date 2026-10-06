@@ -1,5 +1,3 @@
-"""Stable environment names and retention policy for derivative evidence."""
-
 from __future__ import annotations
 
 import os
@@ -20,7 +18,6 @@ DEFAULT_DISK_HIGH_WATERMARK: Final = 0.80
 
 
 def configured_store_dir(store_dir: Path | None = None) -> Path:
-    """Resolve an injected portable root or the baked production root."""
     return Path(DEFAULT_CLIP_STORE_DIR) if store_dir is None else store_dir
 
 

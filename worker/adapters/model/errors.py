@@ -15,14 +15,6 @@ class ModelInputError(ValueError):
 
 @final
 class FatalAcceleratorError(RuntimeError):
-    """A GPU/CUDA error that requires retiring the context and exiting the process.
-
-    Raised inside a CUDA adapter call when the GPU runtime, launch, sync,
-    device-lost or unspecified failure occurs.  The process must write exactly
-    one first-fault record and exit with code 4.  The context MUST NOT be
-    reused or recreated in-process.
-    """
-
     __slots__ = ("camera_id", "task")
 
     def __init__(

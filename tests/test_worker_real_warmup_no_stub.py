@@ -1,20 +1,3 @@
-"""Acceptance criterion 1: real_warmup passes with no stub injection.
-
-The real-stack e2e (``tests/test_e2e_night_bed_exit_relay.py``) deliberately
-injects ``ScriptedServingClient`` so it can drive deterministic detections, and
-that client's ``warmup()`` is a no-op. That makes the e2e authoritative for
-decode, relay, and liveness -- but *not* for warmup.
-
-This module closes that gap without faking it. It provisions models through the
-production path -- ``InProcessServingClient`` over ``default_registry()`` -- and
-runs each adapter's real ``warmup()``, which performs one genuine forward on a
-synthetic frame of the configured shape. Nothing here is mocked: no injected
-``model=``, no patched loader, no fake registry.
-
-The tests skip only when a required weight file is genuinely absent, so a
-machine without artifacts reports "skipped", never a false pass.
-"""
-
 from __future__ import annotations
 
 import os
@@ -33,7 +16,6 @@ from worker.runtime.config import WorkerConfig
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# Task -> the weight file its production default points at.
 _TASK_ARTIFACTS: dict[str, Path] = {
     "pose": REPO_ROOT / "models" / "pose" / "yolo26n-pose.pt",
     "person": REPO_ROOT / "models" / "person" / "yolo26n.pt",
@@ -69,15 +51,6 @@ print("{_REAL_WARMUP_COMPLETED}:" + TASK, flush=True)
 def test_real_warmup_runs_a_genuine_forward_through_the_production_serving_path(
     task: str,
 ) -> None:
-    """Provision through the real serving client and run the real warmup.
-
-    A stubbed warmup cannot fail this: a fresh interpreter loads the actual
-    artifact through ``default_registry()`` and executes a real CPU forward.
-    Process completion plus the sentinel is the deterministic completion
-    signal. The 60-second bound gives the measured 13-25 second cold pose
-    warmup finite headroom without making this local-artifact test part of the
-    default hardware-free CI suite.
-    """
     _ = _require(task)
 
     completed = subprocess.run(
@@ -102,11 +75,6 @@ def _example_fall_config() -> dict[str, object]:
 
 
 def test_example_config_fall_contract_matches_the_packaged_bundle() -> None:
-    """The example config documents the packaged pose+bbox56 bundle contract:
-    56-wide 30x5 windows, schema 2, the pose+bbox56 preprocessing identity, and
-    the owner-fixed 0.5 transition threshold. It must validate as a
-    ``FallModelConfig`` and, when the bundle is provisioned locally, boot the
-    real CPU runner through the production loader."""
     fall_cfg = _example_fall_config()
     assert fall_cfg["type"] == "pose-bbox56-proxy-v0"
     assert fall_cfg["input_shape"] == [30, 56]
@@ -125,10 +93,6 @@ def test_example_config_fall_contract_matches_the_packaged_bundle() -> None:
 def test_example_config_fall_contract_boots_against_a_synthesized_bundle(
     tmp_path: Path,
 ) -> None:
-    """CI-runnable companion: ``models/`` is gitignored, so synthesize a
-    verifiable bundle in-process, point the example config's fall block at it,
-    validate the full ``WorkerConfig``, and boot the real runner with a real
-    warmup forward -- no mocks, no patched loader."""
     fall_cfg = _example_fall_config()
     fall_cfg["artifact_dir"] = str(write_pose_bbox56_bundle(tmp_path / "pose-bbox56-gru"))
     config = WorkerConfig.model_validate(
@@ -150,13 +114,6 @@ def test_example_config_fall_contract_boots_against_a_synthesized_bundle(
 def test_fall_classifier_is_constructed_and_warmed_on_the_cpu_before_cameras(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """P1a-AC6b: fall construction and warmup are CPU-pinned on every profile.
-
-    The perception runners follow the boot device; the fall bundle is CPU-only,
-    so a boot that reports a GPU device must still construct and warm the fall
-    classifier with ``cpu`` -- and that warmup must happen before any camera
-    activates (ADR-0002).
-    """
     import worker.runtime.worker as worker_module
     from worker.domains import DETECTION_MODULE_REGISTRY
     from worker.runtime.flow.media_plane import FlowMediaPlane
@@ -174,8 +131,6 @@ def test_fall_classifier_is_constructed_and_warmed_on_the_cpu_before_cameras(
         )
 
     class _Runner:
-        """Carries the registry's pinned identities so the artifact gate passes."""
-
         device = "cpu"
 
         def __init__(self, task: str) -> None:
@@ -200,8 +155,6 @@ def test_fall_classifier_is_constructed_and_warmed_on_the_cpu_before_cameras(
     fall_runner = _Runner("fall")
 
     def _create_fall_model(self: Any) -> object:
-        # The real seam records the loaded bundle so the policy graph can name
-        # its identity; the fake must honour that contract too.
         self._loaded_fall_bundle = SimpleNamespace(
             runner=fall_runner,
             published_weights_digest="fall-digest",

@@ -1,5 +1,3 @@
-"""Event-type facets shared by compact clip listing and receipt projection."""
-
 from __future__ import annotations
 
 from typing import TypeAlias

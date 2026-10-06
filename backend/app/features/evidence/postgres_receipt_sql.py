@@ -1,11 +1,3 @@
-"""Native clip/primary projection inside a caller-owned, authority-checked transaction.
-
-These helpers do not verify files, acquire a pool lease, publish audit work or
-acknowledge a receipt. The receipt owner must serialize clip work before taking
-incident locks, and lock multiple incidents in stable order before projecting
-artifacts. All locks last through the caller's actual transaction outcome.
-"""
-
 from __future__ import annotations
 
 import psycopg
@@ -19,8 +11,6 @@ from backend.app.features.evidence.receipt_store import (
 
 
 def lock_clip(connection: psycopg.Connection, clip_id: str) -> None:
-    # A missing row cannot be locked. Namespace a clip-key advisory lock by this
-    # schema's table OID; hash collisions only add serialization, never identity.
     connection.execute(
         "SELECT pg_advisory_xact_lock('clips'::regclass::oid::integer, hashtext(%s))",
         (clip_id,),
@@ -125,8 +115,6 @@ def commit_primary_artifact(
             ),
         )
     except psycopg.errors.UniqueViolation:
-        # Another incident can claim this identity after the read above.
-        # Let the outer owner roll back; do not retry or create a savepoint.
         raise ArtifactReceiptConflictError("primary clip artifact identity conflicts") from None
     _complete_incident(connection, incident_id, timestamp)
 

@@ -1,10 +1,3 @@
-"""Connection settings on the API-owned PostgreSQL pool.
-
-Enrollment identity and credentials are DB-only. API_BACKEND_BASE_URL is
-the sole deployment authority for Hub URLs, never a persisted site setting.
-Bootstrap owns the edge_site singleton; serving neither creates nor restores it.
-"""
-
 from __future__ import annotations
 
 import os
@@ -73,8 +66,6 @@ def _normalize_api_base(base: str | None) -> str | None:
     trimmed = base.strip().rstrip("/")
     if not trimmed:
         return None
-    # Reject cleartext public Hub bases before deriving events/config paths so a
-    # mis-baked compose default cannot seed bearer-bearing outbound URLs.
     try:
         allowed = hub_url_transport_allowed(trimmed)
     except ValueError:
@@ -85,8 +76,6 @@ def _normalize_api_base(base: str | None) -> str | None:
 
 
 class ConnectionSettingsStore:
-    """Borrow transactions only; pool lifecycle belongs to the API."""
-
     def __init__(self, database: PostgresDatabase, authority: AuthorityToken) -> None:
         self.database = database
         self.authority = authority
@@ -123,8 +112,6 @@ class ConnectionSettingsStore:
                 after_write(connection)
             return _settings_from_data(data)
 
-        # The database releases this candidate only after known successful COMMIT.
-        # No reread, local publication, or retry on an unknown commit outcome.
         return self.database.transact(persist)
 
     def masked(self) -> MaskedConnectionSettings:

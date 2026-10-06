@@ -1,5 +1,3 @@
-"""Native audit sessions and recovery fences within authority-owned transactions."""
-
 from __future__ import annotations
 
 from uuid import uuid4
@@ -28,11 +26,6 @@ from backend.app.features.audit.verification import AuditVerificationError
 def start_session(
     store: PostgresAuditStore, connection: psycopg.Connection | None = None
 ) -> AuditSession:
-    """Fence the latest unclosed start, then open a random opaque process session.
-
-    With a caller-owned transaction, the returned session is tentative until
-    the caller commits; otherwise it is released only after a known COMMIT.
-    """
     session = AuditSession(uuid4().hex)
 
     def start(owned: psycopg.Connection) -> AuditSession:
@@ -61,8 +54,6 @@ def start_session(
 
 
 def close_session(store: PostgresAuditStore, session: AuditSession) -> None:
-    """Durably close this session once, serialized before the existence check."""
-
     def close(connection: psycopg.Connection) -> None:
         require_authority(connection, store.authority)
         _lock_audit_chain(connection)
@@ -85,12 +76,6 @@ def append_with_recovery(
     failure_code: str,
     connection: psycopg.Connection | None = None,
 ) -> AuditRecord:
-    """Append one session fence and the protected event atomically, in that order.
-
-    The trusted caller supplies a stable, non-sensitive failure code. A record
-    returned on a caller-owned transaction is tentative until the caller commits.
-    """
-
     def append(owned: psycopg.Connection) -> AuditRecord:
         require_authority(owned, store.authority)
         _lock_audit_chain(owned)

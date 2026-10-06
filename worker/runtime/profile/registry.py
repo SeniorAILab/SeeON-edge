@@ -20,10 +20,6 @@ DevicePolicy: TypeAlias = Literal["cuda", "mps", "cpu"]
 DecodePolicy: TypeAlias = Literal["nvdec", "opencv", "vaapi"]
 EncodePolicy: TypeAlias = Literal["h264_nvenc", "libx264"]
 MpsProbeSource: TypeAlias = Callable[[], bool]
-# `nvidia`'s own concrete-stage capability check -- distinct from
-# `CudaProbeSource` (plain `torch.cuda` usability): this source answers
-# whether NVDEC, NVML identity, CUDA stream/event, and DLPack are present
-# and must never be satisfied by a host that only passes the plain CUDA check.
 DeviceResidentProbeSource: TypeAlias = Callable[[], "VerifyResult"]
 
 ML_WORKER_PROFILE_ENV: Final = "ML_WORKER_PROFILE"
@@ -59,8 +55,6 @@ _MPS_RGB = FrameCapability(MemoryKind.MPS_DEVICE, PixelFormat.RGB24)
 
 @dataclass(frozen=True, slots=True)
 class ProfileSpec:
-    """One canonical infrastructure profile plus its accepted legacy names."""
-
     name: str
     accepted_names: tuple[str, ...]
     device: DevicePolicy
@@ -185,7 +179,7 @@ def _memory_path_for(
     tuple[ProfileConverter, ...],
     tuple[RuntimeProfileEdge, ...],
 ]:
-    del decode, encode  # Device vs host path is selected by spec.name, not these.
+    del decode, encode
     if spec.name == "flow":
         device_stages: tuple[tuple[ProfileStage, PixelFormat], ...] = (
             ("decode", PixelFormat.NV12),
@@ -292,7 +286,7 @@ def default_verifiers(
     mps_source: MpsProbeSource | None = None,
     device_resident_source: DeviceResidentProbeSource | None = None,
 ) -> Mapping[str, DeviceVerifier]:
-    del cuda_source  # Plain CUDA no longer gates a public profile.
+    del cuda_source
 
     def mps() -> VerifyResult:
         return _verify_mps(mps_source)
@@ -301,20 +295,11 @@ def default_verifiers(
         return _verify_device_resident(device_resident_source)
 
     def flow() -> VerifyResult:
-        """Fail closed on the flow profile's own boot inputs.
-
-        The flow media plane has no native manifest, so the shared
-        device-resident verifier would pass vacuously when none is configured.
-        Its equivalent proof is the engine identity file written by
-        ``edge-engine-build``: every recorded artifact must exist and match
-        before any camera can be admitted (ADR-0002 - engines are verified,
-        never built at boot).
-        """
         from worker.runtime.flow.cold_start import verify_flow_boot_inputs
 
         try:
             verify_flow_boot_inputs(os.environ)
-        except Exception as error:  # noqa: BLE001 - reported as a boot verdict
+        except Exception as error:  # noqa: BLE001
             return VerifyResult(False, "flow", "flow_engine_identity", str(error))
         result = device_resident()
         return VerifyResult(result.ok, "flow", result.stage, result.reason)

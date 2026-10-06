@@ -1,16 +1,3 @@
-"""Per-frame bed-relative pose scalars, computed in perception.
-
-Numpy is allowed here. The result is a ``BedPoseFeatures`` of plain Python
-scalars so ``worker.domains`` never has to import this module or numpy.
-
-Coordinate frames: polygons from persisted ``bed_zone_regions`` live in
-``bed_zone_image_width`` x ``bed_zone_image_height`` space, while keypoints
-arrive in ``frame_width`` x ``frame_height``. Those sizes are not guaranteed
-to match. This producer always scales every polygon into frame space before
-any inside/distance measurement. Live-segmentation polygons (no source size)
-are already in frame space and are left unscaled.
-"""
-
 from __future__ import annotations
 
 import math
@@ -55,7 +42,6 @@ def compute_frame_bed_pose_features(
     polygon_image_width: int | None = None,
     polygon_image_height: int | None = None,
 ) -> FrameBedPoseFeatures:
-    """Compute :class:`BedPoseFeatures` for every tracked pose on this frame."""
     poses = observation.poses
     if not poses:
         return EMPTY_FRAME_BED_POSE_FEATURES
@@ -89,7 +75,6 @@ def compute_bed_pose_features(
     polygon_image_width: int | None = None,
     polygon_image_height: int | None = None,
 ) -> BedPoseFeatures:
-    """Compute one track's bed-relation scalars from COCO-17 keypoints."""
     valid, points = _valid_keypoints(pose)
     observability = float(int(valid.sum())) / float(_KEYPOINT_COUNT)
     torso_angle = _torso_angle(valid, points)
@@ -145,12 +130,6 @@ def _valid_keypoints(pose: Pose) -> tuple[NDArray[np.bool_], NDArray[np.float64]
 
 
 def _torso_angle(valid: NDArray[np.bool_], points: NDArray[np.float64]) -> float:
-    """Angle of hip→shoulder from image-horizontal, radians in ``[0, π/2]``.
-
-    Lying along the image x-axis is ~0; sitting/standing (torso along y) is
-    ~π/2. Matches the todo-7 bands (in-bed ≤ 0.61, sitting-up > 0.61,
-    edge-sitting > 0.87). Missing shoulders or hips yield 0.0.
-    """
     shoulder = _midpoint(valid, points, (_LEFT_SHOULDER, _RIGHT_SHOULDER))
     hip = _midpoint(valid, points, (_LEFT_HIP, _RIGHT_HIP))
     if shoulder is None or hip is None:
@@ -343,7 +322,6 @@ def _group_fraction(
 
 
 def _points_inside(points: NDArray[np.float64], polygon: NDArray[np.float64]) -> NDArray[np.bool_]:
-    """Even-odd inclusion for ``points`` shape ``(N, 2)``."""
     x_coordinates = points[:, 0]
     y_coordinates = points[:, 1]
     x0 = polygon[:, 0]

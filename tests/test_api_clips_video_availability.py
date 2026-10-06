@@ -1,5 +1,3 @@
-"""Diagnostic (path-less) clip manifest handling and media-type mapping."""
-
 from __future__ import annotations
 
 import json
@@ -24,8 +22,6 @@ def make_app(
     postgres_product_sandbox: ProductSandbox,
     postgres_audit_runtime: PostgresAuditRuntime,
 ) -> Callable[[], FastAPI]:
-    """An indexed app on the sandbox, with receipts for the clips written so far."""
-
     def make() -> FastAPI:
         app = postgres_api_app(postgres_product_sandbox, postgres_audit_runtime)
         add_accepted_media_receipts(app)
@@ -33,13 +29,6 @@ def make_app(
         return app
 
     return make
-
-
-# Dashboard auth now always resolves to a session store (persisted file > env
-# > the built-in admin/admin default, see backend/app/shared/dashboard_auth.py),
-# so a bare worker relay/bearer token is never sufficient on its own -- these
-# tests log in as the zero-config default and rely on the TestClient's cookie
-# jar to carry the session across subsequent calls.
 
 
 def _login(client: TestClient) -> None:
@@ -70,7 +59,6 @@ def _write_playable_manifest(clip_store, clip_id: str) -> None:
 
 
 def _write_diagnostic_manifest(clip_store, clip_id: str, *, video_error: str) -> None:
-    # A video-failed clip: no media file, path omitted, video_available false.
     clip_dir = clip_store / "clips" / clip_id
     clip_dir.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -123,11 +111,6 @@ def test_path_less_manifest_is_listed_with_video_unavailable(
 def test_reason_code_is_surfaced_as_the_clips_failure_reason(
     clip_env, make_app: Callable[[], FastAPI]
 ) -> None:
-    """#165: the worker writes the failure reason as `reason_code`
-    (worker/pipeline/output/evidence/manifest_models.py:93), never as
-    `video_error` -- so `GET /clips` must read `reason_code`, not the key
-    the worker never populates.
-    """
     clip_store = clip_env / "clip-store"
     clip_dir = clip_store / "clips" / "clip-no-frames"
     clip_dir.mkdir(parents=True, exist_ok=True)

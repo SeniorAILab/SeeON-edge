@@ -1,26 +1,3 @@
-"""Rate-limited, classified logging for relay HTTP failures (issue #184).
-
-Every worker -> relay call site (heartbeat, runtime-status, evidence
-alerts/clips/capabilities) used to log an identical bare line on every failed
-attempt -- no status code, no endpoint, no way to tell "DNS/connection
-refused" apart from "our config is wrong" (4xx) or "the edge API failed to
-fulfill it" (5xx), and no way to tell when it started working again. On an
-unhealthy relay this produced several identical lines per second that
-drowned out every other worker log line (#184).
-
-``RelayFailureLog`` is the shared reporter each call site owns one instance
-of (one per logical channel: heartbeat is per camera, runtime-status is
-process-wide, evidence delivery is one per operation kind). It logs full
-detail on the first failure of a kind and on every failure-class change,
-folds repeats into a periodic summary line, and logs recovery exactly once.
-
-Never logs the full response body or request headers -- only the status
-code (or transport exception class already reduced to ``DeliveryFailure`` by
-``shared.events.evidence_http_transport``), a static per-status hint, and the
-caller-supplied endpoint path. Secrets (relay tokens, auth headers) never
-reach this module.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -36,11 +13,8 @@ DEFAULT_SUMMARY_INTERVAL_SEC: Final = 60.0
 
 
 class RelayFailureClass(StrEnum):
-    """How an operator should read a relay failure."""
-
-    TRANSPORT = "transport"  # DNS / connect / timeout -- no HTTP response at all
-    CLIENT_ERROR = "client_error"  # 4xx -- our config is wrong; retrying will not fix it
-    # 5xx (or an unreadable 2xx body) -- the edge API or its downstream failed.
+    TRANSPORT = "transport"
+    CLIENT_ERROR = "client_error"
     SERVER_ERROR = "server_error"
 
 
@@ -53,10 +27,6 @@ _DEFAULT_TRANSPORT_HINT: Final = "cannot reach relay host; will keep retrying"
 
 
 def _server_error_hint(status: int | None) -> str:
-    # Neutral and status-specific on purpose: a fast 5xx here can originate
-    # from the edge API's own local contention (e.g. a PostgreSQL lock timeout)
-    # just as easily as from something genuinely "upstream" -- naming a side
-    # we have not confirmed misleads whoever reads this log (#579).
     if status is None:
         return "edge API rejected the request; will keep retrying"
     return f"edge API returned {status}; will keep retrying"
@@ -64,20 +34,12 @@ def _server_error_hint(status: int | None) -> str:
 
 @dataclass(frozen=True, slots=True)
 class RelayFailureOutcome:
-    """One classified relay failure, safe to log as-is."""
-
     failure_class: RelayFailureClass
-    reason: str  # "403" / "URLError: <urlopen error ...>" -- never response-body content
+    reason: str
     hint: str
 
 
 def classify_relay_failure(failure: DeliveryFailure) -> RelayFailureOutcome:
-    """Classify a ``DeliveryFailure`` for diagnostic logging.
-
-    Only reads ``status_code``/``transport_error``/``code`` -- fields already
-    sanitized by ``classify_http_failure``/``bounded_request`` -- never the
-    raw response body.
-    """
     if failure.transport_error is not None:
         return RelayFailureOutcome(
             RelayFailureClass.TRANSPORT, failure.transport_error, _DEFAULT_TRANSPORT_HINT
@@ -109,14 +71,6 @@ class _ActiveFailure:
 
 @final
 class RelayFailureLog:
-    """Dedupe/rate-limit relay failure logging for one logical channel.
-
-    ``channel`` is a short human label ("heartbeat", "runtime-status",
-    "relay event delivery", ...); ``method`` is the fixed HTTP verb for the
-    channel. ``path`` is passed per call (it can vary, e.g. per clip id) so
-    every logged line still names its endpoint (issue #184 deliverable 1).
-    """
-
     def __init__(
         self,
         logger: logging.Logger,

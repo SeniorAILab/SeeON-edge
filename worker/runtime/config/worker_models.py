@@ -35,15 +35,6 @@ class WorkerRuntimeConfig(BaseModel):
 class FallModelConfig(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
-    # Issue #65: the fall-model family is config/metadata-driven, not code-pinned.
-    # A brand-new AI model family (a different architecture, not a same-family
-    # weights version-up) is added by implementing FallModelProtocol and
-    # registering a factory in
-    # ``worker.adapters.model.fall_family_registry.DEFAULT_FALL_MODEL_FAMILY_REGISTRY``
-    # under the same string used here -- no edits to this Literal, and no edits
-    # to ``WorkerRuntime._create_fall_model``. An unregistered ``type`` value
-    # refuses to boot (fail-closed, ADR-0002); this field only rejects empty
-    # strings, the registry decides which values are actually valid.
     type: str = Field(min_length=1)
     framework: Literal["pytorch", "onnxruntime"]
     mode: Literal["sequence"]
@@ -83,8 +74,6 @@ class FallModelConfig(BaseModel):
 
 
 class SelectedFallBundleConfig(BaseModel):
-    """An admitted selection that replaces the packaged fall model."""
-
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
     models_root: Path
@@ -101,11 +90,6 @@ class WorkerModelsConfig(BaseModel):
 
     fall: FallModelConfig | None = None
     selected: SelectedFallBundleConfig | None = None
-    # Issue #44: which extraction module's boxes are authoritative for the
-    # person bounding box consumed downstream. Explicit and defaulted (never
-    # an implicit dict-insertion-order winner) -- "pose" only schedules and
-    # provisions the pose model; "person" additionally schedules/provisions
-    # the person model and its boxes take over in the merge stage.
     box_source: Literal["pose", "person"] = "pose"
 
     @model_validator(mode="after")
@@ -130,37 +114,10 @@ class DevMjpegConfig(BaseModel):
 
 
 class ClipRecordingConfig(BaseModel):
-    """Whether this worker records evidence clips at all.
-
-    Default on. Clip recording is always-on by default: when disabled the
-    worker still detects, stages, and relays events -- it simply does not
-    build a ``ClipRecorder`` or any per-camera clip feeder, so no video is
-    captured or retained. If the recorder fails to start, the worker keeps
-    running (delivery still works); that failure degrades visibly through
-    runtime diagnostics (``set_clip_recorder_status``) instead of silently
-    disabling clips.
-
-    This is independent of the persisted live clip-export policy: this flag
-    controls whether a recorder exists, while the runtime setting controls
-    whether already-durable clips may be claimed for relay. Event delivery is
-    composed in either state.
-    """
-
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
     enabled: bool = True
-    # Legacy field retained for older local YAML/tests. Live clip export is
-    # owned by WorkerConfig.clip_export_* + LiveClipExportPolicy; event delivery
-    # is always composed when relay credentials are valid.
     delivery_enabled: bool = True
-    # Backend-selected clip storage location, relative to the fixed
-    # ``CLIP_STORE_DIR`` volume (see ``worker.runtime.worker
-    # ._resolved_clip_store_dir``); ``None`` keeps clips at the store root.
-    # Populated from the pulled ``clip_store_subdir`` (see
-    # ``pull_models.BackendWorkerConfigPayload``), which already validates it
-    # (relative, no ``..`` traversal) before it reaches this field -- this
-    # validator re-checks anyway since this value ultimately drives filesystem
-    # path construction.
     store_subdir: str | None = Field(default=None, min_length=1)
 
     @field_validator("store_subdir")
@@ -182,8 +139,6 @@ class WorkerConfig(BaseModel):
     version: int = 1
     relay: RelayConfig
     runtime: WorkerRuntimeConfig = Field(default_factory=WorkerRuntimeConfig)
-    # Config loading settles this local overlay after parsing the optional
-    # YAML hatch. A composed runtime always receives a WorkerModelsConfig.
     models: WorkerModelsConfig | None = None
     domains: DomainsConfig = Field(default_factory=DomainsConfig)
     detection_policies: PolicyBundle = Field(default_factory=default_policy_bundle)
@@ -191,15 +146,6 @@ class WorkerConfig(BaseModel):
     clip: ClipRecordingConfig = Field(default_factory=ClipRecordingConfig)
     clip_export_enabled: bool = False
     clip_export_version: int = Field(default=0, ge=0)
-    # Issue #150: an empty roster is a valid boot state, not a config error --
-    # a fresh install has zero cameras until an operator registers one, and
-    # the worker must still pass its boot gates (profile/device, decode
-    # preflight, model load) and stay up so the RTSP probe/MJPEG server is
-    # reachable *before* the first camera exists. This is deliberately
-    # distinct from "no config at all" (an unreadable/malformed YAML, or a
-    # relay pull with neither a fresh payload nor a last-known-good cache),
-    # which still refuses to boot exactly as issue #43 intended -- that gate
-    # lives upstream of this model, in `load_worker_config`/`config_pull.py`.
     cameras: tuple[CameraRuntimeConfig, ...] = ()
 
     @model_validator(mode="before")
@@ -243,21 +189,6 @@ class WorkerConfig(BaseModel):
 
     @property
     def enabled_domains(self) -> tuple[str, ...]:
-        """Active domain names: the registry's own defaults, overlaid by
-        whatever per-domain overrides ``self.domains`` carries (see
-        ``DomainsConfig.resolved_overrides``).
-
-        Always resolves to a concrete tuple -- ``DOMAIN_REGISTRY`` is
-        iterated directly (never ``self.domains``) so the set of *known*
-        domains can never come from config, and "no config at all" still
-        yields every registry entry whose own default is enabled rather than
-        an empty or undefined set. This is the boot floor: a worker with an
-        unreachable relay and zero domain config still resolves fall and
-        bed_exit active, because the registry -- not config presence -- is
-        what "active" is measured against now. There is no longer a
-        fail-open sentinel to fall back to; config that names no override
-        for a domain simply defers to the registry, unconditionally.
-        """
         if self.domains.versions is not None:
             return tuple(self.domains.versions)
         overrides = self.domains.resolved_overrides()

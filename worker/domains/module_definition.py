@@ -1,5 +1,3 @@
-"""Hardware-neutral contracts for compiled detection-module composition."""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
@@ -29,11 +27,9 @@ class DetectionModuleActivationError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class RuntimeResolvedIdentityField:
-    """Marker for a shared model identity field supplied by its verified bundle."""
+    ...
 
 
-# Field-specific aliases retain readable binding annotations while making all
-# runtime-resolved identity fields one explicit, non-string marker type.
 RuntimeResolvedArtifactDigest = RuntimeResolvedIdentityField
 RuntimeResolvedPreprocessingIdentity = RuntimeResolvedIdentityField
 
@@ -54,8 +50,6 @@ class PolicySchemaIdentity:
 
 @dataclass(frozen=True, slots=True)
 class SharedComponentIdentity:
-    """Process-sharing identity; changing any field creates another runner."""
-
     component_id: str
     artifact_digest: str
     runtime: str
@@ -124,12 +118,7 @@ class ScheduleRule:
     skip_when_flag: str | None = None
 
     def resolve(self, camera_frame_stride: int, temporal_profile: TemporalProfile) -> int | None:
-        # temporal_profile is required: compile-time validation and live
-        # activation must name the same owner. A missing argument used to
-        # fall through to CURRENT_TEMPORAL_PROFILE, so a 15fps activation
-        # still validated CURRENT's 30-frame bed interval.
         if self.interval_source == "on-demand":
-            # Provisioned for an explicit operator request, never per frame.
             return None
         if self.interval_source == "camera-frame-stride":
             return camera_frame_stride

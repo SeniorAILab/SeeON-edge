@@ -45,9 +45,6 @@ def test_ml_worker_yaml_loads_supported_non_mutable_contract(tmp_path: Path) -> 
     assert config.dev_mjpeg.enabled is True
     assert config.dev_mjpeg.port == 8091
     assert config.cameras == ()
-    # The YAML hatch declares no fall model; the runtime's local overlay settles
-    # one, and a composed runtime refuses if it never does. A parsed YAML with
-    # no models block therefore has none - not an empty placeholder.
     assert config.models is None
     assert config.domains.resolved_overrides() == {}
     assert config.clip.enabled is True

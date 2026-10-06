@@ -48,7 +48,6 @@ def resolve_worker_build_revision(
     packaged_image_revision_path: Path | None = None,
     git_runner: _GitCommandRunner | None = None,
 ) -> str | None:
-    """Resolve a packaged image identity or HEAD from a provably clean checkout."""
     marker_path = (
         _PACKAGED_IMAGE_REVISION_PATH
         if packaged_image_revision_path is None
@@ -64,8 +63,6 @@ def resolve_worker_build_revision(
             return None
         return explicit
 
-    # An environment value alone does not prove that the running bytes came from
-    # an immutable image. Local source execution derives identity only from Git.
     if explicit is not None:
         return None
 
@@ -102,22 +99,16 @@ def collect_runtime_environment_facts(
     boot: BootContext,
     build_revision: str | None,
 ) -> RuntimeEnvironmentFacts:
-    """Read an allow-listed software/driver identity; never enumerate environment values."""
     profile = boot.runtime_profile.canonical_profile
     accelerator_runtime: str | None = None
     driver_version: str | None = None
     device_name: str | None = None
     if profile == "flow":
-        # P1b-AC7: the flow worker never imports Torch. Its model runtime is
-        # ONNX Runtime on CPU and its accelerator facts come from NVML, which
-        # is what DeepStream's own preflight reads.
         import onnxruntime
 
         status = probe_nvml_gpu_status()
         driver_version = status.driver_version
         device_name = status.device_name or None
-        # The CUDA runtime the media plane links is the pinned DeepStream
-        # image's; the driver reports the highest CUDA it supports.
         accelerator_runtime = None if driver_version is None else f"CUDA driver {driver_version}"
         model_runtime = "onnxruntime"
         model_runtime_version = str(onnxruntime.__version__)
@@ -136,9 +127,6 @@ def collect_runtime_environment_facts(
         model_runtime = "torch"
         model_runtime_version = str(torch.__version__)
     return RuntimeEnvironmentFacts(
-        # WorkerRuntime's constructor receives an already-resolved identity from
-        # the composition root. Keeping that constructor seam explicit lets tests
-        # supply deterministic provenance without impersonating a packaged image.
         worker_build_revision=(
             build_revision
             if build_revision is not None and _is_valid_source_revision(build_revision)

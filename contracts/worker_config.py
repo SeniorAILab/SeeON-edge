@@ -1,13 +1,3 @@
-"""Worker runtime-config pull contract (ml-api camera registry SSOT -> worker).
-
-Dependency-light shared shape for the config the worker pulls from ml-api.
-The worker roster is authoritative at ``/api/v1/cameras/worker-config`` and is
-derived from the ml-api camera registry; ``/api/v1/relay/config`` is only a
-backward-compatible alias. Backend-pulled ML settings such as night window and
-config version are optional metadata on that same response, so the worker does
-not consume a second config authority.
-"""
-
 from __future__ import annotations
 
 import sys
@@ -17,7 +7,6 @@ from datetime import datetime
 from types import MappingProxyType
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-# Worker-facing paths (full suffixes mounted under the /api/v1 app prefix).
 WORKER_CONFIG_PATH = "/api/v1/cameras/worker-config"
 WORKER_RESTART_PATH = "/api/v1/relay/restart"
 
@@ -87,9 +76,6 @@ class PulledWorkerConfig:
     night_window: PulledNightWindow | None
     cameras: tuple[PulledCameraConfig, ...]
     registry_version: int = 0
-    # Per-domain detection windows, keyed by domain name (e.g. "bed_exit",
-    # "fall"). ``night_window`` above is a deprecated alias kept in sync with
-    # ``detection_windows.get("bed_exit")`` for old callers/workers.
     detection_windows: Mapping[str, PulledNightWindow] = field(
         default_factory=lambda: MappingProxyType({})
     )
@@ -134,8 +120,6 @@ def _pulled_detection_windows(
             if not isinstance(domain, str):
                 continue
             if window is None:
-                # Explicit null entry: dropped, domain absent from the map
-                # means ALWAYS/24-7 for that domain. Not an error, so no log.
                 continue
             if not isinstance(window, dict):
                 _log_invalid_window(domain, window, "must be an object or null")
@@ -153,9 +137,6 @@ def _pulled_detection_windows(
 
 
 def _validated_night_window(domain: str, window: dict[str, object]) -> PulledNightWindow | None:
-    """Parse and validate a raw window dict, failing open (dropping the
-    entry, i.e. resolving to ALWAYS/24-7 for that domain) rather than
-    raising, so one malformed domain never brings down the whole pull."""
     try:
         parsed = PulledNightWindow.from_dict(window)
     except (ValueError, TypeError) as exc:
@@ -169,18 +150,6 @@ def _validated_night_window(domain: str, window: dict[str, object]) -> PulledNig
 
 
 def detection_window_validation_error(start: str, end: str, tz: str) -> str | None:
-    """Return a reason the ``(start, end, tz)`` triple is invalid or
-    degenerate, or ``None`` if it is a well-formed, non-empty window.
-
-    Shared by every boundary that parses a detection window out of raw,
-    externally-supplied data (this module's own dict parsing, the backend's
-    ``lifespan.py`` pull, and the worker's ``pull_models.py`` ml-api pull) so
-    they all fail open onto ALWAYS/24-7 detection under the same rules
-    instead of ever silently disabling a domain. ``start == end`` is
-    included because ``DetectionWindow.contains`` treats an equal
-    start/end pair as an empty window that matches nothing -- the opposite
-    of fail-open -- and a UI time picker can produce it trivially.
-    """
     try:
         start_time = datetime.strptime(start, "%H:%M").time()
     except ValueError:
@@ -224,7 +193,6 @@ def _optional_str(data: dict[str, object], key: str) -> str | None:
 
 def _require_int(data: dict[str, object], key: str) -> int:
     value = data.get(key)
-    # bool is an int subclass; reject it explicitly.
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"{key} must be an integer")
     return value
