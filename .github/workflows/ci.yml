@@ -73,6 +73,8 @@ jobs:
       # Tightened per strangler stage.
       - run: uv run --group lint lint-imports
 
+      - run: uv run --group lint python scripts/check_no_comments.py
+
       # Facility identity (facility id / facility token) and the camera roster
       # must never be provisionable through the environment: an env var reaches
       # the runtime via compose, and compose is tracked in Git. `--fixture`

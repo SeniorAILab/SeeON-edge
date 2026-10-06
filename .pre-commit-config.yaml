@@ -16,3 +16,9 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      - id: no-comments
+        name: no comments or docstrings
+        entry: uv run --group lint python scripts/check_no_comments.py
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
