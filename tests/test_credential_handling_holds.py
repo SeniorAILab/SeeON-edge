@@ -10,7 +10,6 @@ from backend.app.features.connection.enrollment import (
     EnrollmentVerificationFailure,
     verify_enrollment,
 )
-from backend.app.features.connection.hub_url import API_BACKEND_ALLOW_INSECURE_HTTP_ENV
 from backend.app.features.relay.auth import authorize_relay
 from backend.app.main import create_app, no_lifespan
 from worker.types.trace import DecisionTraceSnapshot
@@ -55,7 +54,6 @@ def test_relay_authority_is_the_app_state_token_never_the_environment(
 def test_enrollment_uses_the_default_tls_verification_and_sends_the_bearer_only_over_https(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv(API_BACKEND_ALLOW_INSECURE_HTTP_ENV, raising=False)
     calls: list[tuple[urllib.request.Request, dict[str, object]]] = []
 
     def refuse(request: urllib.request.Request, **kwargs: object) -> object:
