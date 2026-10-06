@@ -223,7 +223,7 @@ def test_track_id_churn_during_continuous_occupancy_preserves_arm_progress() -> 
     monitor = _monitor(camera_id="camera-churn", hold_frames=1)
     assert monitor.update(_input(IN_BED, (BED,), 0)) == ()
     assert monitor.update(_input(IN_BED, (BED,), 1, bed_pose_features=_lying_pose())) == ()
-    assert monitor._assignments[PERSON_ID].armed is True  # noqa: SLF001
+    assert monitor._assignments[PERSON_ID].armed is True
 
     # When: PERSON_ID's track vanishes and a brand-new ID appears this same
     # frame, still lying in the identical bed -- a pure identity swap, no
@@ -250,8 +250,8 @@ def test_track_id_churn_during_continuous_occupancy_preserves_arm_progress() -> 
     # Then: the churn itself never fires, and the successor inherits the
     # armed latch instead of starting a fresh dwell cycle from zero.
     assert churned == ()
-    assert PERSON_ID not in monitor._assignments  # noqa: SLF001
-    assert monitor._assignments[SUCCESSOR_ID].armed is True  # noqa: SLF001
+    assert PERSON_ID not in monitor._assignments
+    assert monitor._assignments[SUCCESSOR_ID].armed is True
 
     # When: the successor is then observed outside for a single dwell period.
     exited = monitor.update(
@@ -323,9 +323,9 @@ def test_track_id_churn_during_outside_dwell_carries_progress_and_fires_once() -
     assert len(events) == 1
     assert events[0].person_id == successor_id
     assert events[0].bed_id == 0
-    assert PERSON_ID not in monitor._assignments  # noqa: SLF001
-    assert monitor._assignments[successor_id].armed is False  # noqa: SLF001
-    assert monitor._assignments[successor_id].outside_dwell_sec == 0.0  # noqa: SLF001
+    assert PERSON_ID not in monitor._assignments
+    assert monitor._assignments[successor_id].armed is False
+    assert monitor._assignments[successor_id].outside_dwell_sec == 0.0
 
 
 def test_new_track_contained_in_a_different_bed_does_not_inherit_outside_dwell() -> None:
@@ -361,9 +361,9 @@ def test_new_track_contained_in_a_different_bed_does_not_inherit_outside_dwell()
     )
 
     assert events == ()
-    assert PERSON_ID not in monitor._assignments  # noqa: SLF001
-    assert monitor._assignments[other_id].armed is False  # noqa: SLF001
-    assert monitor._assignments[other_id].outside_dwell_sec == 0.0  # noqa: SLF001
+    assert PERSON_ID not in monitor._assignments
+    assert monitor._assignments[other_id].armed is False
+    assert monitor._assignments[other_id].outside_dwell_sec == 0.0
 
 
 def test_unrelated_new_track_far_away_does_not_inherit_outside_dwell() -> None:
@@ -409,9 +409,9 @@ def test_unrelated_new_track_far_away_does_not_inherit_outside_dwell() -> None:
 
     # Then: no event, and the caregiver starts with no inherited state.
     assert events == ()
-    assert PERSON_ID not in monitor._assignments  # noqa: SLF001
-    assert monitor._assignments[caregiver_id].armed is False  # noqa: SLF001
-    assert monitor._assignments[caregiver_id].outside_dwell_sec == 0.0  # noqa: SLF001
+    assert PERSON_ID not in monitor._assignments
+    assert monitor._assignments[caregiver_id].armed is False
+    assert monitor._assignments[caregiver_id].outside_dwell_sec == 0.0
 
 
 def test_outside_handoff_blocked_when_the_vacated_bed_is_reoccupied() -> None:
@@ -458,7 +458,7 @@ def test_outside_handoff_blocked_when_the_vacated_bed_is_reoccupied() -> None:
 
     # Then: no event, and neither new track inherits armed/outside state.
     assert events == ()
-    assert PERSON_ID not in monitor._assignments  # noqa: SLF001
-    assert monitor._assignments[reentry_id].armed is False  # noqa: SLF001
-    assert monitor._assignments[door_id].armed is False  # noqa: SLF001
-    assert monitor._assignments[door_id].outside_dwell_sec == 0.0  # noqa: SLF001
+    assert PERSON_ID not in monitor._assignments
+    assert monitor._assignments[reentry_id].armed is False
+    assert monitor._assignments[door_id].armed is False
+    assert monitor._assignments[door_id].outside_dwell_sec == 0.0

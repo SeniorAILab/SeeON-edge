@@ -227,13 +227,13 @@ def test_g6_4_exhausted_retention_full_keeps_entry_queued_and_deferred(
     monkeypatch.setattr(module, "MAX_DEAD_LETTERED_ENTRIES", 0)
     sink = _CollectingSink()
     sender = _sender_with_sink(tmp_path, Transport(), sink)
-    sender._attempts["event-event-a"] = sender_module._MAX_ENTRY_ATTEMPTS  # noqa: SLF001
+    sender._attempts["event-event-a"] = sender_module._MAX_ENTRY_ATTEMPTS
     assert sender.run_once() is SenderStep.RETRY_SCHEDULED
     record = _only_delivery(sink)
     assert record.outcome == "exhausted-retention-full"  # type: ignore[attr-defined]
     assert record.payload["retained"] is False  # type: ignore[attr-defined]
     assert _entry_ids(tmp_path) == ["event-event-a"]
-    assert "event-event-a" in sender._deferred  # noqa: SLF001
+    assert "event-event-a" in sender._deferred
 
 
 def test_g6_5_mismatched_receipt_is_retry_counted_without_acceptance(tmp_path: Path) -> None:

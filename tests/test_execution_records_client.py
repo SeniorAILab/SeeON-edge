@@ -54,7 +54,7 @@ class _Handler(BaseHTTPRequestHandler):
     status = 200
     requests: list[tuple[str, dict[str, str | None], bytes]] = []
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
         self.requests.append((self.path, dict(self.headers.items()), body))
@@ -74,7 +74,7 @@ class _Handler(BaseHTTPRequestHandler):
         if self.status < 400:
             self.wfile.write(encoded)
 
-    def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+    def log_message(self, format: str, *args: object) -> None:
         return
 
 

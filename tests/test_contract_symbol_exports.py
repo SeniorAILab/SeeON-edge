@@ -38,7 +38,7 @@ EXPECTED_WORKER_CONFIG_CONTRACT_SYMBOLS = {
 
 def _exported_symbols(module_relpath: str) -> set[str]:
     namespace: dict[str, object] = {}
-    exec((ML_ROOT / module_relpath).read_text(encoding="utf-8"), namespace)  # noqa: S102
+    exec((ML_ROOT / module_relpath).read_text(encoding="utf-8"), namespace)
     return set(namespace["__all__"])
 
 

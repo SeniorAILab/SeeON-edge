@@ -71,7 +71,7 @@ class _DLManagedTensor(ctypes.Structure):
     ]
 
 
-def tensor_rows(tensor) -> np.ndarray:  # noqa: ANN001 - vendor type
+def tensor_rows(tensor) -> np.ndarray:
     """Copy the output tensor to host with cudart. No Torch, no second context.
 
     cudart uses the process's primary CUDA context, the same one DeepStream's
@@ -115,7 +115,7 @@ def iou(a: tuple[float, float, float, float], b: tuple[float, float, float, floa
 class _Track:
     __slots__ = ("first_frame", "frames_present", "gaps", "last_box", "last_frame", "last_t")
 
-    def __init__(self, frame: int, box: tuple, t: float) -> None:  # noqa: ANN001
+    def __init__(self, frame: int, box: tuple, t: float) -> None:
         self.first_frame = frame
         self.last_frame = frame
         self.frames_present = 1
@@ -148,7 +148,7 @@ class ProductionShapedProbe(BatchMetadataOperator):
         self.last_pts: dict[int, int] = {}
         self.done = threading.Event()
 
-    def handle_metadata(self, batch_meta) -> None:  # noqa: ANN001 - vendor type
+    def handle_metadata(self, batch_meta) -> None:
         started = time.perf_counter_ns()
         now = time.monotonic()
         if self.deadline is None:

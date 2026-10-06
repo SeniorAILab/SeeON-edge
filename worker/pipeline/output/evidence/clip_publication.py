@@ -401,7 +401,7 @@ def _adopt_media(source_path: Path, destination: Path) -> None:
     """
     remuxer = shutil.which("ffmpeg")
     if remuxer is not None:
-        result = subprocess.run(  # noqa: S603 - fixed argv, operator-owned binary
+        result = subprocess.run(
             [
                 remuxer,
                 "-nostdin",

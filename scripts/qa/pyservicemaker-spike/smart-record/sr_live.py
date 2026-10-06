@@ -24,7 +24,7 @@ events: list[dict] = []
 done = threading.Event()
 
 
-def on_done(*args) -> None:  # noqa: ANN002 - vendor callback shape
+def on_done(*args) -> None:
     events.append({"t": time.monotonic(), "event": "sr-done", "args": [str(a) for a in args]})
     done.set()
 

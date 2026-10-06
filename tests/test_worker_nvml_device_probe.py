@@ -22,29 +22,29 @@ class _FakePynvml:
         self._device_name = device_name
         self.shutdown_called = False
 
-    def nvmlInit(self) -> None:  # noqa: N802 - mirrors the real pynvml API name
+    def nvmlInit(self) -> None:
         if self._init_error is not None:
             raise self._init_error
 
-    def nvmlShutdown(self) -> None:  # noqa: N802 - mirrors the real pynvml API name
+    def nvmlShutdown(self) -> None:
         self.shutdown_called = True
 
-    def nvmlDeviceGetCount(self) -> int:  # noqa: N802 - mirrors the real pynvml API name
+    def nvmlDeviceGetCount(self) -> int:
         if isinstance(self._device_count, Exception):
             raise self._device_count
         return self._device_count
 
-    def nvmlDeviceGetHandleByIndex(self, index: int) -> object:  # noqa: N802
+    def nvmlDeviceGetHandleByIndex(self, index: int) -> object:
         del index
         return object()
 
-    def nvmlDeviceGetName(self, handle: object) -> str:  # noqa: N802
+    def nvmlDeviceGetName(self, handle: object) -> str:
         del handle
         if isinstance(self._device_name, Exception):
             raise self._device_name
         return self._device_name
 
-    def nvmlSystemGetDriverVersion(self) -> str:  # noqa: N802
+    def nvmlSystemGetDriverVersion(self) -> str:
         if isinstance(self._driver_version, Exception):
             raise self._driver_version
         return self._driver_version

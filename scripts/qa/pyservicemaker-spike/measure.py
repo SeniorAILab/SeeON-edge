@@ -28,7 +28,7 @@ class Counter(BatchMetadataOperator):
         self.last_ns: int | None = None
         self.cuda_apps_out = cuda_apps_out
 
-    def handle_metadata(self, batch_meta) -> None:  # noqa: ANN001 - vendor type
+    def handle_metadata(self, batch_meta) -> None:
         started = time.perf_counter_ns()
         if self.first_ns is None:
             self.first_ns = started

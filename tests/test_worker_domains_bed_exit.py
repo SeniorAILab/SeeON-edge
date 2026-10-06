@@ -607,7 +607,7 @@ def test_onset_outside_night_window_is_an_explicit_non_event() -> None:
     computes the onset but emits nothing. The row must say
     outside-detection-window with triggered=False."""
     monitor = _monitor(grace_frames=2)
-    monitor._clock = _clock_at(hour=12)  # noqa: SLF001 - outside 21:00-05:00
+    monitor._clock = _clock_at(hour=12)
     onset = _drive_to_onset(monitor)
     assert onset == ()
     rows = [r for r in _authoritative_rows(monitor) if r.track_id == PERSON_ID]
