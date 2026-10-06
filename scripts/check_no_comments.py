@@ -113,6 +113,9 @@ DIRECTIVE = re.compile(
     r"|fmt:[ \t]*(?:off|on|skip)"
     r")(?=\s|$)"
 )
+SPACED_RULE_CODES = re.compile(
+    rf"(noqa:[ \t]*{_RULE_CODE})((?:[ \t]+{_RULE_CODE})+)(?![\w-])"
+)
 CODING_LINE = re.compile(
     r"# -\*- coding: [-\w.]+ -\*-|# coding: [-\w.]+|# coding=[-\w.]+"
     r"|# vim: set fileencoding=[-\w.]+ :"
@@ -165,8 +168,15 @@ def comment_kind(text: str, row: int, line: str) -> str:
     return "directive" if not rest.strip() else "directive_with_prose"
 
 
+def comma_separated(text: str) -> str:
+    return SPACED_RULE_CODES.sub(
+        lambda match: match.group(1) + "".join(f", {code}" for code in match.group(2).split()),
+        text,
+    )
+
+
 def bare_directives(text: str) -> str:
-    return "  ".join(match.group(0) for match in directive_matches(text))
+    return "  ".join(match.group(0) for match in directive_matches(comma_separated(text)))
 
 
 def shorten(text: str, limit: int = 60) -> str:
