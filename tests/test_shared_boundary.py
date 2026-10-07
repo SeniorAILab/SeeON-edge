@@ -43,27 +43,48 @@ def raising(error: BaseException) -> Callable[[], int]:
     return call
 
 
-PROPAGATING = [
-    FatalProbeError("accelerator lost"),
+CONTROL_FLOW = [
     KeyboardInterrupt(),
     SystemExit(7),
     asyncio.CancelledError(),
     GeneratorExit(),
 ]
+PROPAGATING = [FatalProbeError("accelerator lost"), *CONTROL_FLOW]
+
+
+def fatal_group() -> ExceptionGroup[Exception]:
+    return ExceptionGroup("tasks", [OSError("noise"), FatalProbeError("accelerator lost")])
+
+
+def assert_every_helper_propagates(error: BaseException, expected: type[BaseException]) -> None:
+    with pytest.raises(expected), isolate(Boundary.EXPORT_ITEM, stage="item"):
+        raise error
+    with pytest.raises(expected):
+        degrade(raising(error), stage="optional", default=0)
+    with pytest.raises(expected):
+        attempt_delivery(raising(error), stage="send")
+    with pytest.raises(expected):
+        probe(raising(error))
+    with pytest.raises(expected), translate(TypedError, "typed"):
+        raise error
 
 
 @pytest.mark.parametrize("error", PROPAGATING, ids=lambda error: type(error).__name__)
 def test_every_containing_helper_lets_fatal_and_control_flow_through(error: BaseException) -> None:
-    with pytest.raises(type(error)), isolate(Boundary.EXPORT_ITEM, stage="item"):
-        raise error
-    with pytest.raises(type(error)):
-        degrade(raising(error), stage="optional", default=0)
-    with pytest.raises(type(error)):
-        attempt_delivery(raising(error), stage="send")
-    with pytest.raises(type(error)):
-        probe(raising(error))
-    with pytest.raises(type(error)), translate(TypedError, "typed"):
-        raise error
+    assert_every_helper_propagates(error, type(error))
+
+
+def test_an_exception_group_holding_a_fatal_propagates_from_every_helper() -> None:
+    assert_every_helper_propagates(fatal_group(), ExceptionGroup)
+    with pytest.raises(ExceptionGroup):
+        root_sink(raising(fatal_group()), on_error_exit_code=3)
+
+
+def test_an_exception_group_without_a_fatal_is_contained() -> None:
+    group = ExceptionGroup("tasks", [OSError("a"), ValueError("b")])
+    with isolate(Boundary.EXPORT_ITEM, stage="item") as outcome:
+        raise group
+    assert outcome.error_class == "ExceptionGroup"
 
 
 @pytest.mark.parametrize(
@@ -74,6 +95,11 @@ def test_every_containing_helper_lets_fatal_and_control_flow_through(error: Base
 def test_root_sink_lets_fatal_and_interrupts_through(error: BaseException) -> None:
     with pytest.raises(type(error)):
         root_sink(raising(error), on_error_exit_code=3)
+
+
+def test_root_sink_treats_a_bare_system_exit_as_clean() -> None:
+    assert root_sink(raising(SystemExit()), on_error_exit_code=3) == 0
+    assert root_sink(raising(SystemExit(None)), on_error_exit_code=3) == 0
 
 
 def test_register_fatal_is_idempotent() -> None:
@@ -134,8 +160,17 @@ def test_degrade_message_is_logged_verbatim_with_exc_info(caplog: pytest.LogCapt
         )
     assert result is None
     [record] = caplog.records
-    assert record.getMessage() == "runtime status sender failed to start"
+    assert record.args is not None
+    assert record.args[0] == "runtime status sender failed to start"
+    assert record.getMessage() == "runtime status sender failed to start stage=status_sender"
     assert record.exc_info is not None
+
+
+def test_degrade_message_is_never_used_as_a_format_string(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="shared.boundary"):
+        degrade(raising(OSError("x")), stage="s", default=None, message="100% %s %d", camera_id="c")
+    [record] = caplog.records
+    assert record.getMessage() == "100% %s %d stage=s camera_id=c"
 
 
 def test_degrade_without_message_logs_the_structured_line(caplog: pytest.LogCaptureFixture) -> None:
@@ -164,6 +199,20 @@ def test_attempt_delivery_passes_results_through_and_honours_code() -> None:
     failure = attempt_delivery(raising(OSError("x")), stage="send", code="TRANSPORT_EXCEPTION")
     assert isinstance(failure, DeliveryFailure)
     assert failure.code == "TRANSPORT_EXCEPTION"
+
+
+def test_attempt_delivery_classify_makes_permanent_reachable() -> None:
+    def classify(error: BaseException) -> DeliveryDisposition:
+        if isinstance(error, ValueError):
+            return DeliveryDisposition.PERMANENT
+        return DeliveryDisposition.RETRY
+
+    permanent = attempt_delivery(raising(ValueError("bad body")), stage="send", classify=classify)
+    retry = attempt_delivery(raising(OSError("down")), stage="send", classify=classify)
+    assert isinstance(permanent, DeliveryFailure)
+    assert permanent.disposition is DeliveryDisposition.PERMANENT
+    assert isinstance(retry, DeliveryFailure)
+    assert retry.disposition is DeliveryDisposition.RETRY
 
 
 def test_probe_returns_reason_on_failure() -> None:
@@ -218,6 +267,25 @@ def test_cleanup_interrupt_wins_over_an_ordinary_primary() -> None:
     ):
         raise primary
     assert raised.value.__cause__ is primary
+
+
+def test_cleanup_fatal_from_cleanup_propagates_over_an_ordinary_primary() -> None:
+    primary = ValueError("primary")
+    fatal = FatalProbeError("cleanup hit the accelerator")
+    with pytest.raises(FatalProbeError) as raised, cleanup_on_failure(raising(fatal)):
+        raise primary
+    assert raised.value is fatal
+    assert raised.value.__cause__ is primary
+
+
+def test_cleanup_fatal_primary_survives_any_cleanup_failure() -> None:
+    fatal = FatalProbeError("primary fatal")
+    with (
+        pytest.raises(FatalProbeError) as raised,
+        cleanup_on_failure(raising(KeyboardInterrupt()), raising(OSError("close"))),
+    ):
+        raise fatal
+    assert raised.value is fatal
 
 
 def test_translate_wraps_with_cause_and_keeps_typed_errors() -> None:

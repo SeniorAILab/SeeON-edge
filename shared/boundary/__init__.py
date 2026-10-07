@@ -42,7 +42,11 @@ def fatal_types() -> tuple[type[BaseException], ...]:
 
 
 def _must_propagate(error: BaseException) -> bool:
-    return isinstance(error, fatal_types())
+    if not isinstance(error, Exception):
+        return True
+    if isinstance(error, fatal_types()):
+        return True
+    return isinstance(error, BaseExceptionGroup) and error.subgroup(fatal_types()) is not None
 
 
 def _describe(error: BaseException) -> str:
@@ -53,7 +57,7 @@ def _fields(log_fields: dict[str, str]) -> str:
     return "".join(f" {key}={value}" for key, value in sorted(log_fields.items()))
 
 
-def _log_contained(boundary: Boundary, stage: str, error: Exception, **log_fields: str) -> None:
+def _log_contained(boundary: Boundary, stage: str, error: BaseException, **log_fields: str) -> None:
     LOGGER.warning(
         "contained failure boundary=%s stage=%s exception_class=%s%s",
         boundary.value,
@@ -75,7 +79,7 @@ def isolate(boundary: Boundary, *, stage: str, **log_fields: str) -> Iterator[Ou
     outcome = Outcome()
     try:
         yield outcome
-    except Exception as error:
+    except BaseException as error:
         if _must_propagate(error):
             raise
         outcome.failed = True
@@ -93,26 +97,35 @@ def degrade(
 ) -> T:
     try:
         return fn()
-    except Exception as error:
+    except BaseException as error:
         if _must_propagate(error):
             raise
         if message is None:
             _log_contained(Boundary.OPTIONAL_FEATURE, stage, error, **log_fields)
         else:
-            LOGGER.warning(message, exc_info=error)
+            LOGGER.warning("%s stage=%s%s", message, stage, _fields(log_fields), exc_info=error)
         return default
 
 
+def _always_retry(error: BaseException) -> DeliveryDisposition:
+    return DeliveryDisposition.RETRY
+
+
 def attempt_delivery(
-    fn: Callable[[], T], *, stage: str, code: str = "UNEXPECTED", **log_fields: str
+    fn: Callable[[], T],
+    *,
+    stage: str,
+    code: str = "UNEXPECTED",
+    classify: Callable[[BaseException], DeliveryDisposition] = _always_retry,
+    **log_fields: str,
 ) -> T | DeliveryFailure:
     try:
         return fn()
-    except Exception as error:
+    except BaseException as error:
         if _must_propagate(error):
             raise
         _log_contained(Boundary.SENDER_TICK, stage, error, **log_fields)
-        return DeliveryFailure(DeliveryDisposition.RETRY, code, transport_error=_describe(error))
+        return DeliveryFailure(classify(error), code, transport_error=_describe(error))
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,16 +136,16 @@ class ProbeFailure:
 def probe(fn: Callable[[], T]) -> T | ProbeFailure:
     try:
         return fn()
-    except Exception as error:
+    except BaseException as error:
         if _must_propagate(error):
             raise
         return ProbeFailure(reason=_describe(error))
 
 
 def _primary_failure(primary: BaseException, cleanup: BaseException) -> BaseException:
-    if not isinstance(primary, Exception):
+    if _must_propagate(primary):
         return primary
-    return cleanup if not isinstance(cleanup, Exception) else primary
+    return cleanup if _must_propagate(cleanup) else primary
 
 
 @contextmanager
@@ -160,7 +173,7 @@ def cleanup_on_failure(*cleanups: Callable[[], None]) -> Iterator[None]:
 def translate(to: type[E], message: str) -> Iterator[None]:
     try:
         yield
-    except Exception as error:
+    except BaseException as error:
         if _must_propagate(error) or isinstance(error, to):
             raise
         raise to(message) from error
@@ -170,8 +183,10 @@ def root_sink(fn: Callable[[], int], *, on_error_exit_code: int, stage: str = "r
     try:
         return fn()
     except SystemExit as exit_request:
+        if exit_request.code is None:
+            return 0
         return exit_request.code if isinstance(exit_request.code, int) else on_error_exit_code
-    except Exception as error:
+    except BaseException as error:
         if _must_propagate(error):
             raise
         LOGGER.exception(
