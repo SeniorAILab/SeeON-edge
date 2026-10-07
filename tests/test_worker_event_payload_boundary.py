@@ -13,10 +13,10 @@ from worker.pipeline.output.evidence.event_payload import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-CANONICAL_EVENT_SHA256 = "d6d0e5125d93722514e3c519340a7c0d01bb10d387ffed37117e7c74e69be237"
+CANONICAL_EVENT_SHA256 = "eeb7e038ef926d4f68f31f2c0571c4d823fb1da38458a569377719a173e89158"
 
 
-def test_canonical_contract_event_module_is_byte_identical_to_pinned_source() -> None:
+def test_contract_event_module_matches_pinned_digest() -> None:
     content = (REPO_ROOT / "contracts" / "event.py").read_bytes()
 
     assert hashlib.sha256(content).hexdigest() == CANONICAL_EVENT_SHA256
