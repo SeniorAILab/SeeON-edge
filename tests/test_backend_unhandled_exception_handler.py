@@ -51,8 +51,8 @@ def test_an_unhandled_exception_returns_a_bare_500_without_internals(
     assert record.getMessage() == (
         "unhandled request failure method=GET path=/__boom exception_class=RuntimeError"
     )
-    assert record.exc_info is not None
-    assert record.exc_info[1].args == (SECRET,)
+    assert not record.exc_info
+    assert SECRET not in record.getMessage()
 
 
 def test_every_unhandled_exception_gets_the_same_body() -> None:
@@ -96,7 +96,7 @@ def serve_and_get(app: FastAPI, path: str) -> int:
         thread.join(timeout=10)
 
 
-def test_under_uvicorn_the_traceback_is_logged_by_the_handler_and_again_by_uvicorn(
+def test_under_uvicorn_only_uvicorn_logs_the_traceback_and_our_line_names_the_request(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     client = client_raising(RuntimeError(SECRET))
@@ -104,8 +104,11 @@ def test_under_uvicorn_the_traceback_is_logged_by_the_handler_and_again_by_uvico
         status_code = serve_and_get(client.app, "/__boom")
     assert status_code == 500
     tracebacks = [record for record in caplog.records if record.exc_info]
-    assert [record.name for record in tracebacks] == ["backend.app.main", "uvicorn.error"]
-    assert tracebacks[0].getMessage() == (
+    assert [record.name for record in tracebacks] == ["uvicorn.error"]
+    assert tracebacks[0].getMessage() == "Exception in ASGI application\n"
+    [ours] = [record for record in caplog.records if record.name == "backend.app.main"]
+    assert ours.getMessage() == (
         "unhandled request failure method=GET path=/__boom exception_class=RuntimeError"
     )
-    assert tracebacks[1].getMessage() == "Exception in ASGI application\n"
+    assert not ours.exc_info
+    assert SECRET not in ours.getMessage()
