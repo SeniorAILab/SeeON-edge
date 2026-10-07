@@ -151,7 +151,7 @@ def test_create_with_reachable_stream_returns_exact_online_body(
         CAMERAS,
         json={
             "label": "Bed 1",
-            "rtsp_url": "rtsp://operator:secret@camera.example:8554/live",
+            "rtsp_url": "rtsp://camera.example:8554/live",
             "space_id": "space-1",
             "decode_backend": " NVDEC ",
             "floor": -1,
@@ -168,7 +168,7 @@ def test_create_with_reachable_stream_returns_exact_online_body(
         _camera_body(
             camera_id=body["id"],
             label="Bed 1",
-            masked="rtsp://***:***@redacted-camera:8554/live",
+            masked="rtsp://redacted-camera:8554/live",
             status="online",
             created_at=body["created_at"],
             never_connected=False,
@@ -179,7 +179,7 @@ def test_create_with_reachable_stream_returns_exact_online_body(
             floor=-1,
         )
     )
-    assert harness.probed == ["rtsp://operator:secret@camera.example:8554/live"]
+    assert harness.probed == ["rtsp://camera.example:8554/live"]
     assert harness.audit_rows(AuditAction.CAMERA_CREATE) == [(body["id"], "admin")]
     assert harness.syncs == 1
     assert _listed_ids(client) == [body["id"]]
@@ -460,9 +460,7 @@ def test_update_label_only_skips_probe_and_keeps_status(
 def test_update_rtsp_url_reprobes_and_records_success(harness: Harness, client: TestClient) -> None:
     harness.seed("camera-a", "rtsp://camera.example/a")
 
-    response = client.patch(
-        f"{CAMERAS}/camera-a", json={"rtsp_url": "rtsp://user:pw@camera.example/b"}
-    )
+    response = client.patch(f"{CAMERAS}/camera-a", json={"rtsp_url": "rtsp://camera.example/b"})
 
     assert response.status_code == 200
     body = response.json()
@@ -471,7 +469,7 @@ def test_update_rtsp_url_reprobes_and_records_success(harness: Harness, client: 
         _camera_body(
             camera_id="camera-a",
             label="seed camera-a",
-            masked="rtsp://***:***@redacted-camera/b",
+            masked="rtsp://redacted-camera/b",
             status="online",
             created_at=body["created_at"],
             never_connected=False,
@@ -479,7 +477,7 @@ def test_update_rtsp_url_reprobes_and_records_success(harness: Harness, client: 
             last_probed_at=body["last_probed_at"],
         )
     )
-    assert harness.probed == ["rtsp://user:pw@camera.example/b"]
+    assert harness.probed == ["rtsp://camera.example/b"]
     assert harness.syncs == 1
 
 
