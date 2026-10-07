@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import datetime
 from typing import Final
 from zoneinfo import ZoneInfo
+
+import pytest
 
 from contracts.observation import (
     BedRegionCacheState,
@@ -167,3 +170,77 @@ def test_assignment_and_exit_are_both_reflected_cumulatively() -> None:
     assert after_exit.max_containment_observed == 1.0
     assert after_exit.assignments_made == 1
     assert after_exit.grace_positive_transitions == 1
+
+
+class _FailingScoringRecorder:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def record_bed_exit_scoring(
+        self,
+        camera_id: str,
+        max_containment_observed: float,
+        grace_positive_transitions: int,
+        assignments_made: int,
+    ) -> None:
+        self.calls += 1
+        raise RuntimeError("scoring telemetry sink is down")
+
+
+def _exit_sequence() -> tuple[DecisionInput, ...]:
+    return (
+        _input(
+            person_boxes=(IN_BED_A,),
+            bed_boxes=(BED_A,),
+            track_ids=(PERSON_ID,),
+            frame_index=0,
+        ),
+        _input(
+            person_boxes=(IN_BED_A,),
+            bed_boxes=(BED_A,),
+            track_ids=(PERSON_ID,),
+            frame_index=1,
+            bed_pose_features=_lying_pose(),
+        ),
+        _input(
+            person_boxes=(OUTSIDE_BEDS,),
+            bed_boxes=(BED_A,),
+            track_ids=(PERSON_ID,),
+            frame_index=2,
+        ),
+        _input(
+            person_boxes=(OUTSIDE_BEDS,),
+            bed_boxes=(BED_A,),
+            track_ids=(PERSON_ID,),
+            frame_index=3,
+        ),
+    )
+
+
+def test_a_failing_scoring_recorder_never_blocks_the_bed_exit_event(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    recorder = _FailingScoringRecorder()
+    failing = _monitor(grace_frames=2, scoring_recorder=recorder)
+    baseline = _monitor(grace_frames=2)
+
+    with caplog.at_level(logging.WARNING):
+        emitted = [failing.update(frame) for frame in _exit_sequence()]
+    expected = [baseline.update(frame) for frame in _exit_sequence()]
+
+    assert recorder.calls == len(_exit_sequence())
+    assert [
+        [(event.event_type, event.person_id, event.bed_id, event.time_sec) for event in events]
+        for events in emitted
+    ] == [
+        [(event.event_type, event.person_id, event.bed_id, event.time_sec) for event in events]
+        for events in expected
+    ]
+    assert [event.event_type for events in emitted for event in events] == ["bed-exit"]
+    warnings = [
+        record
+        for record in caplog.records
+        if f"scoring recorder failed for camera {CAMERA_ID}" in record.getMessage()
+    ]
+    assert len(warnings) == len(_exit_sequence())
+    assert all(record.exc_info is not None for record in warnings)
