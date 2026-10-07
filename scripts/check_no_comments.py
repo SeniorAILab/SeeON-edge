@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 TEMPORARY_EXCLUDED_PATHS = (Path("backend/app/features/cameras"),)
-VENDORED_PATHS = (Path("contracts/event.py"),)
 PYTHON_SUFFIXES = frozenset({".py", ".pyi"})
 DOCSTRING_OWNERS = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
 SIDE_EFFECT_NODES = (ast.Call, ast.Await, ast.Yield, ast.YieldFrom, ast.NamedExpr)
@@ -302,7 +301,7 @@ def is_under(path: Path, root: Path) -> bool:
 
 
 def is_excluded(path: Path) -> bool:
-    return any(is_under(path, root) for root in (*TEMPORARY_EXCLUDED_PATHS, *VENDORED_PATHS))
+    return any(is_under(path, root) for root in TEMPORARY_EXCLUDED_PATHS)
 
 
 def select_paths(
