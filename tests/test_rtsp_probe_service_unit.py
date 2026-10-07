@@ -77,7 +77,7 @@ def test_non_dict_payload_is_decode_error(monkeypatch: pytest.MonkeyPatch) -> No
         def __enter__(self) -> _Resp:
             return self
 
-        def __exit__(self, *_) -> None:  # noqa: ANN002, ANN003
+        def __exit__(self, *_) -> None:
             return None
 
         def read(self) -> bytes:
@@ -101,7 +101,7 @@ def test_worker_payload_maps_to_result(monkeypatch: pytest.MonkeyPatch) -> None:
         def __enter__(self) -> _Resp:
             return self
 
-        def __exit__(self, *_) -> None:  # noqa: ANN002, ANN003
+        def __exit__(self, *_) -> None:
             return None
 
         def read(self) -> bytes:
