@@ -18,7 +18,7 @@ from starlette.background import BackgroundTask
 from backend.app.core.config import get_settings
 from backend.app.features.cameras.store import CameraRegistryStore
 from backend.app.shared.dashboard_auth import authorize_dashboard
-from backend.app.shared.head_response import HEAD_METHODS, drop_body_for_head
+from backend.app.shared.head_response import drop_body_for_head
 
 router = APIRouter(tags=["streams"])
 
@@ -127,7 +127,8 @@ async def camera_stream(
 # that response is an unbounded multipart/x-mixed-replace stream with no
 # Content-Length to report, and answering a HEAD would mean opening an
 # upstream MJPEG connection that never ends.
-@router.api_route("/streams/{camera_id}/snapshot", methods=HEAD_METHODS)
+@router.get("/streams/{camera_id}/snapshot")
+@router.head("/streams/{camera_id}/snapshot")
 def camera_snapshot(
     camera_id: str,
     request: Request,

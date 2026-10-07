@@ -30,7 +30,7 @@ from backend.app.features.evidence.receipt_store import (
     verify_artifact,
 )
 from backend.app.shared.dashboard_auth import authorize_dashboard
-from backend.app.shared.head_response import HEAD_METHODS, drop_body_for_head
+from backend.app.shared.head_response import drop_body_for_head
 
 router = APIRouter(tags=["clips"])
 
@@ -131,7 +131,8 @@ def clip_artifacts(
     )
 
 
-@router.api_route("/clips/{clip_id}/video", methods=HEAD_METHODS)
+@router.get("/clips/{clip_id}/video")
+@router.head("/clips/{clip_id}/video")
 def clip_video(
     clip_id: str,
     request: Request,
@@ -194,7 +195,8 @@ def clip_video(
     return response
 
 
-@router.api_route("/clips/{clip_id}/thumbnail", methods=HEAD_METHODS)
+@router.get("/clips/{clip_id}/thumbnail")
+@router.head("/clips/{clip_id}/thumbnail")
 def clip_thumbnail(
     clip_id: str,
     request: Request,
