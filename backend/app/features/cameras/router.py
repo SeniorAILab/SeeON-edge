@@ -7,7 +7,8 @@ import hmac
 import json
 import logging
 import uuid
-from typing import Annotated, Literal
+from collections.abc import Callable
+from typing import Annotated, Literal, TypeVar
 
 from fastapi import (
     APIRouter,
@@ -33,6 +34,22 @@ from backend.app.features.audit.store import AuditEvent
 from backend.app.features.audit.store import utc_now as audit_now
 from backend.app.features.cameras.bed_zone_router import BedZonePayload, BedZoneRegionPayload
 from backend.app.features.cameras.bed_zone_store import BedZone, BedZoneStore
+from backend.app.features.cameras.camera_crud_service import (
+    AfterWrite,
+    CameraCreateInputs,
+    CameraCrudPorts,
+    CameraNotFoundError,
+    CameraPatchInputs,
+)
+from backend.app.features.cameras.camera_crud_service import (
+    create_camera as _service_create_camera,
+)
+from backend.app.features.cameras.camera_crud_service import (
+    delete_camera as _service_delete_camera,
+)
+from backend.app.features.cameras.camera_crud_service import (
+    update_camera as _service_update_camera,
+)
 from backend.app.features.cameras.dependencies import (
     camera_sync_view,
     sync_camera_roster,
@@ -51,7 +68,6 @@ from backend.app.features.cameras.store import (
     ProbeResult,
     is_valid_floor,
     public_camera,
-    status_from_probe,
     utc_now_iso,
 )
 from backend.app.features.cameras.topology import (
@@ -84,6 +100,7 @@ RELAY_TOKEN_HEADER = "X-Edge-Relay-Token"
 PROBE_PATH = "/probe"
 
 router = APIRouter(prefix="/cameras", tags=["cameras"])
+_Written = TypeVar("_Written")
 
 
 class CameraSyncStatus(BaseModel):
@@ -495,9 +512,6 @@ def create_camera(
     background_tasks: BackgroundTasks,
 ) -> dict[str, object]:
     actor = _authorize(request)
-    rtsp_url = _validated_rtsp_url(payload.rtsp_url)
-    decode_backend = _normalize_decode_backend(payload.decode_backend)
-    floor = _normalize_floor(payload.floor)
     # 등록은 저장이다. probe는 상태 표시(online/offline, never_connected)에만
     # 쓰고 등록을 막지 않는다.
     #
@@ -509,37 +523,25 @@ def create_camera(
     # `error_class="decode"`로 뭉개져서, 실제 원인(예: RTSP 401)이 "디코드
     # 실패"로 잘못 표시됐다. 죽은 카메라는 offline/never_connected로 목록에
     # 그대로 보이고, 연결 여부는 worker의 첫 heartbeat이 확정한다.
-    probe = _probe_rtsp_url(request, rtsp_url)
-    provisional_id = str(uuid.uuid4())
-    now = utc_now_iso()
-    store = _store(request.app)
     try:
-        record = _camera_mutation(request, actor, AuditAction.CAMERA_CREATE, provisional_id).apply(
-            store,
-            lambda append: store.create(
-                camera_id=provisional_id,
+        result = _service_create_camera(
+            CameraCreateInputs(
                 label=payload.label,
-                rtsp_url=rtsp_url,
+                rtsp_url=payload.rtsp_url,
                 space_id=payload.space_id,
-                status=status_from_probe(probe),
-                backend_camera_id=None,
-                mapping_pending=False,
-                decode_backend=decode_backend,
-                floor=floor,
-                last_probed_at=now,
-                last_ok_at=now if probe.ok else None,
-                never_connected=not probe.ok,
+                decode_backend=payload.decode_backend,
+                floor=payload.floor,
                 edge_ref=payload.edge_ref,
                 room_edge_ref=payload.room_edge_ref,
-                after_write=append,
             ),
+            _crud_ports(request, actor),
         )
     except DuplicateCameraError as exc:
         raise _duplicate_camera_error(exc) from exc
     except TopologyConflictError as error:
         raise _topology_conflict(error) from error
     background_tasks.add_task(_trigger_roster_sync, request.app)
-    return public_camera(record)
+    return public_camera(result.camera)
 
 
 @router.post(
@@ -599,52 +601,32 @@ def update_camera(
     background_tasks: BackgroundTasks,
 ) -> dict[str, object]:
     actor = _authorize(request)
-    store = _store(request.app)
-    current = store.get(camera_id)
-    if current is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="camera not found")
-    if not payload.model_fields_set:
-        return public_camera(current)
-    updates: dict[str, object] = {}
-    if "label" in payload.model_fields_set and payload.label is not None:
-        updates["label"] = payload.label
-    if "rtsp_url" in payload.model_fields_set and payload.rtsp_url is not None:
-        rtsp_url = _validated_rtsp_url(payload.rtsp_url)
-        probe = _probe_rtsp_url(request, rtsp_url)
-        updates["rtsp_url"] = rtsp_url
-        updates["status"] = status_from_probe(probe)
-        now = utc_now_iso()
-        updates["last_probed_at"] = now
-        if probe.ok:
-            updates["last_ok_at"] = now
-            updates["never_connected"] = False
-    if "space_id" in payload.model_fields_set:
-        updates["space_id"] = payload.space_id
-    if "decode_backend" in payload.model_fields_set:
-        updates["decode_backend"] = _normalize_decode_backend(payload.decode_backend)
-    if "floor" in payload.model_fields_set:
-        updates["floor"] = _normalize_floor(payload.floor)
-    if "edge_ref" in payload.model_fields_set:
-        updates["edge_ref"] = payload.edge_ref
-    if "room_edge_ref" in payload.model_fields_set:
-        updates["room_edge_ref"] = payload.room_edge_ref
-
     try:
-        updated = _camera_mutation(request, actor, AuditAction.CAMERA_UPDATE, camera_id).apply(
-            store,
-            lambda append: store.update(
-                camera_id, CameraUpdate.model_validate(updates), after_write=append
+        result = _service_update_camera(
+            CameraPatchInputs(
+                camera_id=camera_id,
+                fields_set=frozenset(payload.model_fields_set),
+                label=payload.label,
+                rtsp_url=payload.rtsp_url,
+                space_id=payload.space_id,
+                decode_backend=payload.decode_backend,
+                floor=payload.floor,
+                edge_ref=payload.edge_ref,
+                room_edge_ref=payload.room_edge_ref,
             ),
-            expects_audit=lambda result: result is not None,
+            _crud_ports(request, actor),
         )
+    except CameraNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="camera not found"
+        ) from exc
     except DuplicateCameraError as exc:
         raise _duplicate_camera_error(exc) from exc
     except TopologyConflictError as error:
         raise _topology_conflict(error) from error
-    if updated is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="camera not found")
-    background_tasks.add_task(_trigger_roster_sync, request.app)
-    return public_camera(updated)
+    if result.changed:
+        background_tasks.add_task(_trigger_roster_sync, request.app)
+    return public_camera(result.camera)
 
 
 def _trigger_roster_sync(app: FastAPI) -> None:
@@ -725,16 +707,12 @@ def delete_camera(
     background_tasks: BackgroundTasks,
 ) -> Response:
     actor = _authorize(request)
-    store = _store(request.app)
-    existing = store.get(camera_id)
-    if existing is None or not _camera_mutation(
-        request, actor, AuditAction.CAMERA_DELETE, camera_id
-    ).apply(
-        store,
-        lambda append: store.delete(camera_id, after_write=append),
-        expects_audit=bool,
-    ):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="camera not found")
+    try:
+        _service_delete_camera(camera_id, _crud_ports(request, actor))
+    except CameraNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="camera not found"
+        ) from exc
     background_tasks.add_task(_trigger_roster_sync, request.app)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -1300,6 +1278,29 @@ def _camera_mutation(
         detail=empty_detail(action),
     )
     return mutation_audit(request, lambda: event)
+
+
+def _crud_ports(request: Request, actor: str) -> CameraCrudPorts:
+    def audited_write(
+        action: AuditAction,
+        target_id: str,
+        write: Callable[[AfterWrite], _Written],
+        expects_audit: Callable[[_Written], bool],
+    ) -> _Written:
+        return _camera_mutation(request, actor, action, target_id).apply(
+            _store(request.app), write, expects_audit=expects_audit
+        )
+
+    return CameraCrudPorts(
+        store=lambda: _store(request.app),
+        audited_write=audited_write,
+        validate_rtsp_url=_validated_rtsp_url,
+        normalize_decode_backend=_normalize_decode_backend,
+        normalize_floor=_normalize_floor,
+        probe=lambda rtsp_url: _probe_rtsp_url(request, rtsp_url),
+        new_camera_id=lambda: str(uuid.uuid4()),
+        now=utc_now_iso,
+    )
 
 
 def _authorize(request: Request) -> str:
