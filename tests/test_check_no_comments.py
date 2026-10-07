@@ -12,7 +12,6 @@ from scripts.check_no_comments import (
     SIDE_EFFECT_FIX,
     TEMPORARY_EXCLUDED_PATHS,
     UNPARSEABLE,
-    VENDORED_PATHS,
     check_file,
     check_source,
     select_paths,
@@ -22,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECKER = REPO_ROOT / "scripts" / "check_no_comments.py"
 SAMPLE = Path("sample.py")
 EXCLUDED_ROUTER = TEMPORARY_EXCLUDED_PATHS[0] / "router.py"
-VENDORED_FILE = VENDORED_PATHS[0]
+CONTRACT_EVENT = Path("contracts/event.py")
 
 
 def codes(source: str) -> list[tuple[int, str]]:
@@ -347,7 +346,7 @@ def test_unparseable_source_is_reported() -> None:
 
 
 def test_select_paths_without_roots_takes_tracked_python_minus_temporary_exclusions() -> None:
-    tracked = [Path("a.py"), Path("b/c.pyi"), Path("README.md"), EXCLUDED_ROUTER, VENDORED_FILE]
+    tracked = [Path("a.py"), Path("b/c.pyi"), Path("README.md"), EXCLUDED_ROUTER]
     assert select_paths(tracked, []) == ([Path("a.py"), Path("b/c.pyi")], [])
 
 
@@ -365,15 +364,11 @@ def test_select_paths_applies_the_temporary_exclusion_to_explicit_roots() -> Non
     assert select_paths([EXCLUDED_ROUTER], [EXCLUDED_ROUTER]) == ([], [])
 
 
-def test_vendored_file_is_excluded_even_when_named_explicitly() -> None:
-    sibling = VENDORED_FILE.with_name("sibling.py")
-    tracked = [VENDORED_FILE, sibling]
-    assert select_paths(tracked, [VENDORED_FILE]) == ([], [])
-    assert select_paths(tracked, [VENDORED_FILE.parent]) == ([sibling], [])
-
-
-def test_vendored_paths_are_kept_apart_from_the_temporary_exclusions() -> None:
-    assert not set(VENDORED_PATHS) & set(TEMPORARY_EXCLUDED_PATHS)
+def test_contract_event_module_is_checked_like_any_other_file() -> None:
+    sibling = CONTRACT_EVENT.with_name("sibling.py")
+    tracked = [CONTRACT_EVENT, sibling]
+    assert select_paths(tracked, [CONTRACT_EVENT]) == ([CONTRACT_EVENT], [])
+    assert check_file(REPO_ROOT / CONTRACT_EVENT) == []
 
 
 def test_checker_and_its_tests_have_no_comments_or_docstrings() -> None:
@@ -411,7 +406,6 @@ def test_cli_keeps_exclusions_anchored_to_the_repo_root_from_a_subdirectory(
             "backend/app/clean.py": "x = 1\n",
             "backend/app/dirty.py": "y = 2  # why\n",
             EXCLUDED_ROUTER.as_posix(): "z = 3  # excluded until the camera PR lands\n",
-            VENDORED_FILE.as_posix(): '"""Vendored."""\n',
         },
     )
     subdirectory = repo / "backend"

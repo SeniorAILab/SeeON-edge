@@ -1,7 +1,7 @@
 # Handoff: Senior AI Lab Edge Console (관제 콘솔 리디자인)
 
 ## Overview
-`SeniorAILab/eldercare-fall-ml-v2`의 `front/` SPA를 대체하는 엣지 관제 콘솔 리디자인.
+기존 `front/` SPA를 대체하는 엣지 관제 콘솔 리디자인.
 요양원 1곳에 설치되는 단일 시설 엣지 장비의 콘솔로, 사용자는 **CCTV 설치 기사와 운영팀**(고객 아님).
 핵심 결정: 다중 시설 개념 제거, 백엔드 리본 제거, CUDA 전용 진단 제거(실행 디바이스에 맞는 항목만),
 영상은 object-cover로 꽉 채움, 페이지는 관제 / 이벤트 / 설정 3개 + 로그인.
@@ -121,4 +121,4 @@ CSS 변수로 구현할 것 (기존 `front/src/styles/tokens-base.css`를 이 �
 ## Files
 - `Eldercare Prototype.dc.html` — 인터랙티브 프로토타입 (전 화면 + 전 모달 + 상태 로직, 이 문서의 기준)
 - `Eldercare Dashboard.dc.html` — 현재 UI 재현(1a–1f) 및 리디자인 검토 문서 (배경 참고)
-- 대상 코드베이스: `SeniorAILab/eldercare-fall-ml-v2` `front/src` (React + Vite + TS)
+- 대상 코드베이스: `front/src` (React + Vite + TS)
