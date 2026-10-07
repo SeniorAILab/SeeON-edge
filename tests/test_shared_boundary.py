@@ -313,3 +313,8 @@ def test_root_sink_maps_errors_and_exit_codes(caplog: pytest.LogCaptureFixture) 
         "process root failed boundary=root stage=cli exception_class=RuntimeError"
     )
     assert record.exc_info is not None
+
+
+def test_root_sink_none_exit_code_lets_a_caller_keep_its_own_bare_exit_code() -> None:
+    assert root_sink(raising(SystemExit()), on_error_exit_code=3, none_exit_code=1) == 1
+    assert root_sink(raising(SystemExit(0)), on_error_exit_code=3, none_exit_code=1) == 0
