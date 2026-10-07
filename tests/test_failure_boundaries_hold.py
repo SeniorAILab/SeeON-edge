@@ -1,7 +1,10 @@
 import json
+import logging
 import threading
 from collections.abc import Callable
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Self
 
 import pytest
 
@@ -237,3 +240,157 @@ def test_native_heartbeat_does_not_report_a_camera_whose_pump_never_advanced(
 
     assert not loop_thread.is_alive()
     assert reporter.marked == []
+
+
+class StatusSender:
+    def __init__(self, error: BaseException | None = None) -> None:
+        self.error = error
+        self.started = 0
+
+    def __call__(self, *args: object, **kwargs: object) -> Self:
+        return self
+
+    def start(self) -> None:
+        self.started += 1
+        if self.error is not None:
+            raise self.error
+
+
+class ClipStoreLockProbe:
+    def __init__(self) -> None:
+        self.events: list[str] = []
+
+    def acquire(self, store: Path) -> Self:
+        self.events.append("locked")
+        return self
+
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(self, *args: object) -> None:
+        self.events.append("unlocked")
+
+
+def relay_config(*camera_ids: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        cameras=tuple(
+            SimpleNamespace(camera_id=camera_id, facility_id="facility-a")
+            for camera_id in camera_ids
+        ),
+        relay=SimpleNamespace(
+            url="http://relay.test",
+            token=SimpleNamespace(get_secret_value=lambda: "relay-token"),
+        ),
+        version="config-v1",
+    )
+
+
+def status_runtime(tmp_path: Path) -> WorkerRuntime:
+    runtime = object.__new__(WorkerRuntime)
+    runtime.config = relay_config("camera-a")
+    runtime.diagnostics = object()
+    runtime._state_dir = tmp_path / "state"
+    runtime._runtime_status_sender = None
+    return runtime
+
+
+def test_runtime_status_sender_start_failure_leaves_the_worker_running_without_a_sender(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sender = StatusSender(ConnectionError("relay down"))
+    monkeypatch.setattr(worker_runtime, "RuntimeStatusSender", sender)
+    runtime = status_runtime(tmp_path)
+
+    with caplog.at_level(logging.WARNING):
+        runtime._start_runtime_status_sender()
+
+    assert sender.started == 1
+    assert runtime._runtime_status_sender is None
+    [record] = [r for r in caplog.records if "runtime status sender" in r.getMessage()]
+    assert record.getMessage() == "runtime status sender failed to start"
+    assert record.exc_info is not None
+
+
+def test_runtime_status_sender_that_starts_is_kept_for_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    sender = StatusSender()
+    monkeypatch.setattr(worker_runtime, "RuntimeStatusSender", sender)
+    runtime = status_runtime(tmp_path)
+
+    runtime._start_runtime_status_sender()
+
+    assert sender.started == 1
+    assert runtime._runtime_status_sender is sender
+
+
+def test_evidence_delivery_init_failure_under_the_lock_is_a_typed_fatal_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    lock = ClipStoreLockProbe()
+    export = SimpleNamespace(initialize_under_lock=raising(OSError("queue directory unwritable")))
+    monkeypatch.setattr(worker_runtime.EvidenceExportRuntime, "from_config", answering(export))
+    monkeypatch.setattr(worker_runtime.ClipStoreLock, "acquire", lock.acquire)
+    runtime = object.__new__(WorkerRuntime)
+    runtime.config = relay_config("camera-a")
+    runtime._execution_record_lanes = None
+    runtime._state_dir = tmp_path / "state"
+    runtime._clip_export_policy = SimpleNamespace(enabled=True)
+    runtime._resolved_clip_store_dir = lambda: tmp_path / "clips"
+    runtime._evidence_export_runtime = None
+
+    with pytest.raises(EvidenceDeliveryError, match="under the clip-store lock") as raised:
+        runtime._compose_evidence_export()
+
+    assert isinstance(raised.value.__cause__, OSError)
+    assert lock.events == ["locked", "unlocked"]
+    assert runtime._evidence_export_runtime is None
+    with pytest.raises(EvidenceDeliveryError, match="not composed"):
+        runtime._start_export_sender()
+
+
+def provenance_runtime(tmp_path: Path, admission: object) -> WorkerRuntime:
+    runtime = object.__new__(WorkerRuntime)
+    runtime.config = relay_config()
+    runtime._shared_graph = SimpleNamespace(identities=())
+    runtime._module_registry = object()
+    runtime._module_versions = {}
+    runtime._restart_generation = 0
+    runtime._build_revision = "build-1"
+    runtime._environment_facts_factory = raising(OSError("environment probe failed"))
+    runtime._state_dir = tmp_path / "state"
+    runtime._boot_instance_id = "boot-1"
+    runtime._runtime_manifest = SimpleNamespace(canonical_json="stale")
+    runtime._selected_bundle_admission = admission
+    return runtime
+
+
+def test_runtime_provenance_failure_drops_the_manifest_and_lets_activation_continue(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    runtime = provenance_runtime(tmp_path, admission=None)
+
+    with caplog.at_level(logging.WARNING):
+        runtime._apply_runtime_manifest(SimpleNamespace(), {})
+
+    assert runtime._runtime_manifest is None
+    assert not (tmp_path / "state" / "runtime-manifest").exists()
+    [record] = [r for r in caplog.records if "runtime provenance" in r.getMessage()]
+    assert record.getMessage() == "runtime provenance could not be applied; continuing without it"
+    assert record.exc_info is not None
+
+
+def test_runtime_provenance_failure_is_fatal_once_a_selected_bundle_was_admitted(
+    tmp_path: Path,
+) -> None:
+    runtime = provenance_runtime(tmp_path, admission=object())
+
+    with pytest.raises(OSError, match="environment probe failed"):
+        runtime._apply_runtime_manifest(SimpleNamespace(), {})
+
+    assert runtime._runtime_manifest is None
