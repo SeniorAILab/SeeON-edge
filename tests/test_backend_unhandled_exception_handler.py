@@ -17,6 +17,13 @@ from backend.app.main import create_app
 SECRET = "postgresql://admin:hunter2@db/edge"
 
 
+@pytest.fixture(autouse=True)
+def live_loggers(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("uvicorn", "uvicorn.error", "backend.app.main"):
+        monkeypatch.setattr(logging.getLogger(name), "disabled", False)
+        monkeypatch.setattr(logging.getLogger(name), "propagate", True)
+
+
 def client_raising(error: Exception) -> TestClient:
     app = create_app(lifespan=None)
     router = APIRouter()
