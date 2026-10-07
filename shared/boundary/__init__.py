@@ -2,7 +2,7 @@ import asyncio
 import logging
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final, TypeVar
 
@@ -142,6 +142,7 @@ def attempt_delivery(
 @dataclass(frozen=True, slots=True)
 class ProbeFailure:
     reason: str
+    error: BaseException | None = field(default=None, compare=False, repr=False)
 
 
 def probe(fn: Callable[[], T]) -> T | ProbeFailure:
@@ -150,7 +151,7 @@ def probe(fn: Callable[[], T]) -> T | ProbeFailure:
     except BaseException as error:
         if _must_propagate(error):
             raise
-        return ProbeFailure(reason=_describe(error))
+        return ProbeFailure(reason=_describe(error), error=error)
 
 
 def _primary_failure(primary: BaseException, cleanup: BaseException) -> BaseException:

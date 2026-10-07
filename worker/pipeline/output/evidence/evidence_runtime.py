@@ -136,6 +136,8 @@ class EvidenceExportRuntime:
         if last is not None and now - last < SENDER_FAILURE_LOG_INTERVAL_SECONDS:
             return
         self._last_failure_log_at = now
+        if self._consecutive_failures == 1 and failure.error is not None:
+            LOGGER.debug("evidence sender tick first failure traceback", exc_info=failure.error)
         LOGGER.warning(
             "evidence sender tick failing exception_class=%s failures=%d",
             failure.reason.partition(":")[0],

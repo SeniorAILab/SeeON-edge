@@ -98,3 +98,26 @@ def test_a_long_outage_repeats_at_most_once_per_interval_with_the_count(
     assert len(failing) == 3
     counts = [r.getMessage().rsplit("failures=", 1)[1].split()[0] for r in failing]
     assert counts == ["1", str(int(interval) + 1), str(int(interval * 2) + 1)]
+
+
+def test_debug_logs_the_traceback_once_on_the_first_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.DEBUG, logger=evidence_runtime.__name__):
+        run(10)
+    with_traceback = [r for r in caplog.records if r.exc_info]
+    assert len(with_traceback) == 1
+    assert with_traceback[0].levelno == logging.DEBUG
+    assert with_traceback[0].exc_info[1].args == ("relay down",)
+
+
+def test_info_level_carries_no_traceback_or_message_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.INFO, logger=evidence_runtime.__name__):
+        run(10)
+    assert caplog.records
+    assert all(r.levelno >= logging.INFO for r in caplog.records)
+    assert not [r for r in caplog.records if r.exc_info]
+    assert "relay down" not in caplog.text
+    assert "Traceback" not in caplog.text
