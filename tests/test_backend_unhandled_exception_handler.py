@@ -33,17 +33,16 @@ def test_an_unhandled_exception_returns_a_bare_500_without_internals(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     client = client_raising(RuntimeError(SECRET))
-    with caplog.at_level(logging.WARNING, logger="shared.boundary"):
+    with caplog.at_level(logging.ERROR, logger="backend.app.main"):
         response = client.get("/__boom")
     assert response.status_code == 500
     assert response.json() == {"detail": "internal server error"}
     assert SECRET not in response.text
     assert "RuntimeError" not in response.text
     assert "Traceback" not in response.text
-    [record] = [r for r in caplog.records if r.name == "shared.boundary"]
+    [record] = [r for r in caplog.records if r.name == "backend.app.main"]
     assert record.getMessage() == (
-        "contained failure boundary=root stage=http_request exception_class=RuntimeError "
-        "method=GET path=/__boom"
+        "unhandled request failure method=GET path=/__boom exception_class=RuntimeError"
     )
     assert record.exc_info is not None
     assert record.exc_info[1].args == (SECRET,)
@@ -90,7 +89,7 @@ def serve_and_get(app: FastAPI, path: str) -> int:
         thread.join(timeout=10)
 
 
-def test_under_uvicorn_an_unhandled_exception_logs_exactly_one_traceback(
+def test_under_uvicorn_the_traceback_is_logged_by_the_handler_and_again_by_uvicorn(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     client = client_raising(RuntimeError(SECRET))
@@ -98,8 +97,8 @@ def test_under_uvicorn_an_unhandled_exception_logs_exactly_one_traceback(
         status_code = serve_and_get(client.app, "/__boom")
     assert status_code == 500
     tracebacks = [record for record in caplog.records if record.exc_info]
-    assert [record.name for record in tracebacks] == ["shared.boundary"]
+    assert [record.name for record in tracebacks] == ["backend.app.main", "uvicorn.error"]
     assert tracebacks[0].getMessage() == (
-        "contained failure boundary=root stage=http_request exception_class=RuntimeError "
-        "method=GET path=/__boom"
+        "unhandled request failure method=GET path=/__boom exception_class=RuntimeError"
     )
+    assert tracebacks[1].getMessage() == "Exception in ASGI application\n"
