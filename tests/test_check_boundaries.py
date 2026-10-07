@@ -47,7 +47,7 @@ def copied_exporter_source() -> str:
 RECORDED_BASELINE = {
     "BLANKET_NOQA": 0,
     "BLE_NOQA": 39,
-    "BROAD_EXCEPT": 110,
+    "BROAD_EXCEPT": 109,
     "FILE_NOQA": 0,
     "SUPPRESS_BROAD": 4,
 }

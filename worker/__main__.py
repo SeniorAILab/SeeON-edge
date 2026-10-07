@@ -10,6 +10,7 @@ from types import FrameType
 
 from pydantic import ValidationError
 
+from shared.boundary import root_sink
 from shared.events.evidence_export_contract import DeliveryDisposition, DeliveryFailure
 from shared.events.evidence_http_transport import (
     bounded_request,
@@ -345,22 +346,28 @@ def main(argv: list[str] | None = None) -> int:
         build_revision=resolve_worker_build_revision(os.environ.get("ML_WORKER_BUILD_REVISION")),
     )
 
+    return _run_runtime(runtime)
+
+
+def _run_runtime(runtime: WorkerRuntime) -> int:
     def _handle_signal(signum: int, frame: FrameType | None) -> None:
         del frame
         LOGGER.info("received signal %s; shutting down", signum)
         runtime.stop()
 
+    def _run() -> int:
+        runtime.run()
+        return CLEAN_SHUTDOWN_EXIT_CODE
+
     previous_sigint = signal.signal(signal.SIGINT, _handle_signal)
     previous_sigterm = signal.signal(signal.SIGTERM, _handle_signal)
     try:
-        runtime.run()
-    except SystemExit as exc:
-        return exc.code if isinstance(exc.code, int) else GENERIC_RUNTIME_ERROR_EXIT_CODE
-    except Exception:
-        LOGGER.exception("worker runtime error")
-        return GENERIC_RUNTIME_ERROR_EXIT_CODE
-    else:
-        return CLEAN_SHUTDOWN_EXIT_CODE
+        return root_sink(
+            _run,
+            on_error_exit_code=GENERIC_RUNTIME_ERROR_EXIT_CODE,
+            none_exit_code=GENERIC_RUNTIME_ERROR_EXIT_CODE,
+            stage="worker_runtime",
+        )
     finally:
         signal.signal(signal.SIGINT, previous_sigint)
         signal.signal(signal.SIGTERM, previous_sigterm)

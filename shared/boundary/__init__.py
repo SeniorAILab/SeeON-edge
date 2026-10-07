@@ -282,12 +282,18 @@ def translate(to: type[E], message: str) -> Iterator[None]:
         raise to(message) from error
 
 
-def root_sink(fn: Callable[[], int], *, on_error_exit_code: int, stage: str = "root") -> int:
+def root_sink(
+    fn: Callable[[], int],
+    *,
+    on_error_exit_code: int,
+    stage: str = "root",
+    none_exit_code: int = 0,
+) -> int:
     try:
         return fn()
     except SystemExit as exit_request:
         if exit_request.code is None:
-            return 0
+            return none_exit_code
         return exit_request.code if isinstance(exit_request.code, int) else on_error_exit_code
     except BaseException as error:
         if _must_propagate(error):
