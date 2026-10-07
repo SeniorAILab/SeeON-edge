@@ -968,6 +968,12 @@ _LINT_STEPS = [
         )
     },
     {
+        "run": (
+            "uv run --group lint mypy --follow-imports=silent "
+            "backend/app/features/cameras/camera_crud_service.py"
+        )
+    },
+    {
         "name": ("Scope fidelity (no env-provisioned identity or camera roster)"),
         "run": (
             "uv run python scripts/verify_scope_fidelity.py --fixture\n"
