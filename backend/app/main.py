@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import AsyncGenerator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
 
 import psycopg
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request, status
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from backend.app.core.config import get_settings
@@ -41,7 +43,22 @@ from backend.app.routes import health as health_routes
 from backend.app.routes.models import router as models_router
 from backend.app.shared.dashboard_credentials import DashboardCredentialsStoreError
 
+LOGGER = logging.getLogger(__name__)
+INTERNAL_ERROR_BODY = {"detail": "internal server error"}
+
 LifespanFactory = Callable[[FastAPI], AbstractAsyncContextManager[None]]
+
+
+def unhandled_exception_handler(request: Request, error: Exception) -> Response:
+    LOGGER.error(
+        "unhandled request failure method=%s path=%s exception_class=%s",
+        request.method,
+        request.url.path,
+        type(error).__name__,
+    )
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content=INTERNAL_ERROR_BODY
+    )
 
 
 def create_app(*, lifespan: LifespanFactory | None = serving_lifespan) -> FastAPI:
@@ -57,6 +74,7 @@ def create_app(*, lifespan: LifespanFactory | None = serving_lifespan) -> FastAP
     app.add_exception_handler(PostgresError, audit_unavailable_handler)
     app.add_exception_handler(psycopg.Error, audit_unavailable_handler)
     app.add_exception_handler(DashboardCredentialsStoreError, audit_unavailable_handler)
+    app.add_exception_handler(Exception, unhandled_exception_handler)
     app.state.edge_relay_token = os.environ.get("API_EDGE_RELAY_TOKEN")
     app.include_router(health_routes.probe_router)
 
