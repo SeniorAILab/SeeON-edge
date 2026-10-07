@@ -237,10 +237,9 @@ def test_a_failing_scoring_recorder_never_blocks_the_bed_exit_event(
         for events in expected
     ]
     assert [event.event_type for events in emitted for event in events] == ["bed-exit"]
-    warnings = [
-        record
-        for record in caplog.records
-        if f"scoring recorder failed for camera {CAMERA_ID}" in record.getMessage()
+    contained = [
+        record for record in caplog.records if "stage=bed_exit_scoring " in record.getMessage()
     ]
-    assert len(warnings) == len(_exit_sequence())
-    assert all(record.exc_info is not None for record in warnings)
+    assert len(contained) == 1
+    assert f"camera_id={CAMERA_ID}" in contained[0].getMessage()
+    assert not [record for record in caplog.records if record.exc_info]

@@ -25,6 +25,7 @@ from backend.app.features.clips.descriptor_files import open_contained_regular_f
 from backend.app.features.clips.listing import effective_event_type
 from backend.app.features.clips.manifest import read_manifest_file
 from backend.app.features.clips.store import ClipStore, LocatedClip, ScannedManifest
+from shared.boundary import Boundary, LogThrottle, isolate
 
 logger = logging.getLogger(__name__)
 
@@ -587,6 +588,7 @@ async def run_clip_catalog_indexer(
     interval: float,
     remaining: int,
 ) -> None:
+    reconcile_throttle = LogThrottle()
     while not stop.is_set():
         if remaining == 0:
             try:
@@ -595,15 +597,18 @@ async def run_clip_catalog_indexer(
                 pass
         if stop.is_set():
             break
-        try:
+        with isolate(
+            Boundary.OPTIONAL_FEATURE,
+            stage="clip_catalog_reconcile",
+            throttle=reconcile_throttle,
+            level=logging.ERROR,
+        ) as attempt:
             outcome = await asyncio.get_running_loop().run_in_executor(
                 executor, indexer.reconcile, store
             )
-        except Exception:
-            logger.exception("clip catalog reconcile failed")
-            remaining = 0
-        else:
             remaining = outcome.remaining
+        if attempt.failed:
+            remaining = 0
 
 
 __all__ = [

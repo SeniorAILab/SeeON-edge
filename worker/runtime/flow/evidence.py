@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+from shared.boundary import Boundary, isolate
 from shared.events.delivery_queue import AdmissionResult
 from worker.interfaces.execution_records import ExecutionRecordSink
 from worker.pipeline.diagnostics.emit_delivery import event_delivery_record
@@ -114,14 +115,14 @@ class FlowEvidenceBinding:
                 self.sealed_recovery_missing_media_total += 1
                 LOGGER.error("%s", error)
                 continue
-            try:
+            with isolate(
+                Boundary.EXPORT_ITEM,
+                stage="sealed_clip_replay",
+                level=logging.ERROR,
+                clip_id=str(recovery.sealed.clip_id),
+                camera_id=self.camera_id,
+            ):
                 self._publish_recovery(recovery)
-            except Exception:
-                LOGGER.exception(
-                    "sealed Flow clip replay failed clip_id=%s camera_id=%s",
-                    recovery.sealed.clip_id,
-                    self.camera_id,
-                )
 
     def _publish_recovery(self, recovery: FlowSealedRecovery) -> None:
         for contributor in recovery.sealed.contributors:

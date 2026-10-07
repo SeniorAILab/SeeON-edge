@@ -329,7 +329,7 @@ def test_clip_publisher_rejects_null_thumbnail_generator(tmp_path: Path) -> None
 
 
 def test_ready_notification_is_constant_time_and_never_fails_publication(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     reservation = ClipIdAllocator(
         tmp_path, id_factory=lambda _camera: "ready-notification"
@@ -354,6 +354,10 @@ def test_ready_notification_is_constant_time_and_never_fails_publication(
 
     assert published.manifest_path.is_file()
     assert len(notifications) == 1
+    assert (
+        "stage=clip_analysis_ready exception_class=RuntimeError clip_id=ready-notification"
+        in caplog.text
+    )
 
 
 def test_thumbnail_failure_does_not_prevent_ready_clip_publication(
@@ -384,7 +388,8 @@ def test_thumbnail_failure_does_not_prevent_ready_clip_publication(
     assert published.video_path == reservation.final_dir / "clip.mp4"
     assert not (reservation.final_dir / "thumbnail.jpg").exists()
     assert (
-        "stage=thumbnail clip_id=thumbnail-failure-clip exception_class=RuntimeError" in caplog.text
+        "stage=thumbnail exception_class=RuntimeError clip_id=thumbnail-failure-clip"
+        in caplog.text
     )
 
 

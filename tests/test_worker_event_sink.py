@@ -258,9 +258,11 @@ def test_event_sink_renders_publication_identity_and_preserves_reconciliation(
         sink.emit_for_frame(replace(_event(), snapshot_jpeg=b"jpeg"), _trigger_packet())
 
     message = caplog.records[-1].getMessage()
+    assert "stage=snapshot_publish " in message
     assert "camera_id=camera-1" in message
     assert "edge_event_id=event-123" in message
-    assert caplog.records[-1].exc_info is not None
+    assert "publish failed" not in caplog.text
+    assert caplog.records[-1].exc_info is None
     assert committed == []
     assert store.stats.staged == 1
     assert store.stats.published == 0
@@ -297,11 +299,43 @@ def test_snapshot_staging_failure_still_stages_completes_and_records_the_event(
     assert stager.dispositions == [("event-123", "event-123", "UNAVAILABLE", "stage_failed")]
     assert recorder.calls == [("camera-1", event, True, detected_at)]
     assert stager.completions == [("event-123", "clip-123")]
-    [record] = [r for r in caplog.records if "snapshot staging failed" in r.getMessage()]
+    [record] = [r for r in caplog.records if "stage=snapshot_stage " in r.getMessage()]
     assert "camera_id=camera-1" in record.getMessage()
     assert "edge_event_id=event-123" in record.getMessage()
-    assert record.exc_info is not None
+    assert "snapshot disk unavailable" not in caplog.text
+    assert record.exc_info is None
     assert store.stats.staged == 0
+
+
+def test_snapshot_disposition_failure_is_contained_and_the_event_still_completes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store = SnapshotStore(tmp_path)
+
+    def fail_stage(self: SnapshotStore, *args: object, **kwargs: object) -> StoredSnapshot:
+        del self, args, kwargs
+        raise OSError("snapshot disk unavailable")
+
+    def fail_disposition(*args: object) -> None:
+        raise OSError("disposition journal token=hunter2")
+
+    monkeypatch.setattr(SnapshotStore, "stage", fail_stage)
+    monkeypatch.setattr(_RecordingStager, "record_snapshot_disposition", fail_disposition)
+    stager = _RecordingStager()
+    recorder = _RecordingRecorder(clip_id="clip-123")
+    sink = EvidenceEventSink(stager=stager, recorder=recorder, snapshot_store=store)
+
+    with caplog.at_level(logging.INFO):
+        sink.emit_for_frame(replace(_event(), snapshot_jpeg=b"jpeg"), _trigger_packet())
+
+    assert stager.completions == [("event-123", "clip-123")]
+    [record] = [r for r in caplog.records if "stage=snapshot_disposition " in r.getMessage()]
+    assert record.levelno == logging.ERROR
+    assert "edge_event_id=event-123" in record.getMessage()
+    assert "hunter2" not in caplog.text
+    assert not [r for r in caplog.records if r.exc_info]
 
 
 def test_event_sink_rejects_invalid_runtime_manifest_before_any_side_effect() -> None:

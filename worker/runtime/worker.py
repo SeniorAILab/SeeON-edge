@@ -18,6 +18,7 @@ from typing import Any, Final, Protocol, final, runtime_checkable
 import worker.runtime.telemetry.runtime_status_sender as runtime_status_sender_module
 from contracts.observation import BoundingBox
 from contracts.runner import RunnerProtocol
+from shared.boundary import Boundary, LogThrottle, isolate
 from shared.detection_policies import LATEST_POLICY_VERSIONS
 from shared.events.delivery_queue import DeliveryQueue
 from shared.events.evidence_export_contract import DeliveryDisposition, DeliveryFailure
@@ -525,6 +526,7 @@ class NativeHeartbeatLoop:
         }
         self._tick_sec = tick_sec
         self._seen: dict[str, int] = {pump.camera_id: pump.processed_count for pump in self._pumps}
+        self._heartbeat_throttles = {pump.camera_id: LogThrottle() for pump in self._pumps}
         self._stop = threading.Event()
 
     def run(self) -> None:
@@ -536,14 +538,13 @@ class NativeHeartbeatLoop:
                 self._seen[camera_id] = processed
                 if not advanced:
                     continue
-                try:
+                with isolate(
+                    Boundary.SENDER_TICK,
+                    stage="native_heartbeat",
+                    throttle=self._heartbeat_throttles[camera_id],
+                    camera_id=camera_id,
+                ):
                     self._reporters[camera_id].mark_ready(camera_id)
-                except FatalAcceleratorError:
-                    raise
-                except Exception:
-                    LOGGER.warning(
-                        "native heartbeat failed: camera_id=%s", camera_id, exc_info=True
-                    )
 
     def stop(self) -> None:
         self._stop.set()
@@ -1196,15 +1197,15 @@ class WorkerRuntime:
     def _replay_sealed_clips(bindings: Sequence[FlowEvidenceBinding]) -> int:
         failures = 0
         for binding in bindings:
-            try:
+            with isolate(
+                Boundary.EXPORT_ITEM,
+                stage="sealed_clip_replay_binding",
+                level=logging.ERROR,
+                camera_id=binding.camera_id,
+            ) as replay:
                 binding.replay_sealed()
-            except Exception:
+            if replay.failed:
                 failures += 1
-                LOGGER.exception(
-                    "replaying a sealed clip failed for camera_id=%s; the media and its "
-                    "sidecar are retained and cameras continue to activate",
-                    binding.camera_id,
-                )
         return failures
 
     def _await_flow_first_frame(
@@ -1253,20 +1254,17 @@ class WorkerRuntime:
         supervisor = self._clip_analysis_supervisor
         if supervisor is None:
             return
-        try:
+        with isolate(
+            Boundary.OPTIONAL_FEATURE,
+            stage="clip_analysis_notify",
+            clip_id=str(publication.clip_id),
+        ):
             supervisor.notify(
                 publication.clip_id,
                 publication.video_path,
                 publication.sha256,
                 size_bytes=publication.size_bytes,
                 duration_ms=publication.duration_ms,
-            )
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.warning(
-                "clip analysis ready hook failed stage=clip_analysis_ready clip_id=%s "
-                "exception_class=%s",
-                publication.clip_id,
-                type(exc).__name__,
             )
 
     def _build_flow_camera(

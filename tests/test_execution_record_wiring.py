@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -828,3 +829,30 @@ def test_every_producer_stamps_wall_clock_so_the_query_is_answerable_by_epoch_ti
         assert record is not None
         assert record.time_quality == "wall"
         assert before <= record.observed_at_ns <= after
+
+
+def test_snapshot_capture_failure_stages_the_event_without_it_and_logs_no_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from worker.domains.registry import FALL_MODULE_QUALIFIED_ID
+
+    identity = DecisionIdentity(
+        module_qualified_id=FALL_MODULE_QUALIFIED_ID,
+        effective_policy_id="a" * 64,
+    )
+    emitted: list[object] = []
+    pump = _pump(
+        ExecutionRecordLanes(lane_capacity=32),
+        identity=identity,
+        emitted=emitted,
+        fall_transition=0.9,
+    )
+    with caplog.at_level(logging.INFO):
+        for seq in range(3):
+            pump._process(_metadata(child=pump._child, seq=seq, pts=100 + seq * 66_666_667))
+    assert emitted
+    contained = [r for r in caplog.records if "stage=snapshot_capture " in r.getMessage()]
+    assert contained
+    assert all("camera_id=cam-1" in r.getMessage() for r in contained)
+    assert "snapshot unused" not in caplog.text
+    assert not [r for r in caplog.records if r.exc_info]

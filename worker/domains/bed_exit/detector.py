@@ -7,6 +7,7 @@ from time import monotonic
 from typing import Protocol
 
 from contracts.observation import BedRegionCacheState, BoundingBox
+from shared.boundary import Boundary, LogThrottle, isolate
 from worker.domains.bed_exit.geometry import best_bed_id, containment_ratio
 from worker.domains.bed_exit.latch import BedExitLatch
 from worker.domains.bed_exit.night_window import NightWindow
@@ -89,6 +90,7 @@ class BedExitMonitor:
     ) -> None:
         self._config: BedExitConfig = config
         self._clock: Callable[[], datetime] = clock
+        self._scoring_throttle = LogThrottle()
         self._night_window: NightWindow | None = config.night_window
         self._assignments: dict[int, _Assignment] = {}
         self._latch = BedExitLatch(
@@ -195,18 +197,17 @@ class BedExitMonitor:
 
         frame = self._update_frame(input_value)
         if self._scoring_recorder is not None:
-            try:
+            with isolate(
+                Boundary.OPTIONAL_FEATURE,
+                stage="bed_exit_scoring",
+                throttle=self._scoring_throttle,
+                camera_id=self._config.camera_id,
+            ):
                 self._scoring_recorder.record_bed_exit_scoring(
                     self._config.camera_id,
                     self._max_containment_observed,
                     self._grace_positive_transitions,
                     self._assignments_made,
-                )
-            except Exception:
-                _LOGGER.warning(
-                    "bed-exit scoring recorder failed for camera %s; detection continues",
-                    self._config.camera_id,
-                    exc_info=True,
                 )
         event_time = 0.0 if input_value.time_sec is None else input_value.time_sec
         in_window = self._night_window is None or self._night_window.contains(self._clock())

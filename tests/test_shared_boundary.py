@@ -7,6 +7,7 @@ import pytest
 from shared import boundary
 from shared.boundary import (
     Boundary,
+    LogThrottle,
     ProbeFailure,
     attempt_delivery,
     cleanup_on_failure,
@@ -123,8 +124,7 @@ def test_isolate_contains_and_logs_stage_class_and_fields(caplog: pytest.LogCapt
         "contained failure boundary=export_item stage=export_batch "
         "exception_class=ValueError camera_id=cam-1"
     )
-    assert record.exc_info is not None
-    assert isinstance(record.exc_info[1], ValueError)
+    assert record.exc_info is None
 
 
 def test_isolate_success_reports_no_failure(caplog: pytest.LogCaptureFixture) -> None:
@@ -154,7 +154,9 @@ def test_degrade_returns_value_or_default() -> None:
     assert degrade(raising(OSError("x")), stage="optional", default=0) == 0
 
 
-def test_degrade_message_is_logged_verbatim_with_exc_info(caplog: pytest.LogCaptureFixture) -> None:
+def test_degrade_message_is_logged_verbatim_without_exc_info(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     with caplog.at_level(logging.WARNING, logger="shared.boundary"):
         result = degrade(
             raising(ConnectionError("relay down")),
@@ -167,7 +169,7 @@ def test_degrade_message_is_logged_verbatim_with_exc_info(caplog: pytest.LogCapt
     assert record.args is not None
     assert record.args[0] == "runtime status sender failed to start"
     assert record.getMessage() == "runtime status sender failed to start stage=status_sender"
-    assert record.exc_info is not None
+    assert record.exc_info is None
 
 
 def test_degrade_message_is_never_used_as_a_format_string(caplog: pytest.LogCaptureFixture) -> None:
@@ -195,7 +197,7 @@ def test_attempt_delivery_maps_failure_to_retry(caplog: pytest.LogCaptureFixture
     )
     [record] = caplog.records
     assert "stage=heartbeat exception_class=TimeoutError" in record.getMessage()
-    assert record.exc_info is not None
+    assert record.exc_info is None
 
 
 def test_attempt_delivery_passes_results_through_and_honours_code() -> None:
@@ -344,3 +346,75 @@ def test_postgres_error_is_a_registered_translation_target() -> None:
     for target in (PostgresError, PostgresStartupError):
         with pytest.raises(target), translate(target, "db"):
             raise OSError("cause")
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def fail_in(throttle: LogThrottle | None, error: Exception, **fields: str) -> None:
+    with isolate(Boundary.EXPORT_ITEM, stage="tick", throttle=throttle, **fields):
+        raise error
+
+
+def succeed_in(throttle: LogThrottle) -> None:
+    with isolate(Boundary.EXPORT_ITEM, stage="tick", throttle=throttle):
+        pass
+
+
+def test_contained_warning_carries_no_message_text_and_the_traceback_is_debug_only(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.DEBUG, logger="shared.boundary"):
+        fail_in(None, ValueError("secret-token-123"))
+    warning, debug = sorted(caplog.records, key=lambda r: -r.levelno)
+    assert warning.levelno == logging.WARNING
+    assert warning.exc_info is None
+    assert "secret-token-123" not in warning.getMessage()
+    assert debug.levelno == logging.DEBUG
+    assert debug.exc_info is not None
+    assert debug.exc_info[1].args == ("secret-token-123",)
+
+
+def test_isolate_level_keeps_a_site_severity(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="shared.boundary"):
+        with isolate(Boundary.EXPORT_ITEM, stage="journal", level=logging.ERROR):
+            raise OSError("x")
+    [record] = caplog.records
+    assert record.levelno == logging.ERROR
+
+
+def test_throttle_logs_first_failure_then_once_per_interval_then_recovery(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    clock = FakeClock()
+    throttle = LogThrottle(interval_seconds=300.0, clock=clock)
+    with caplog.at_level(logging.DEBUG, logger="shared.boundary"):
+        for _ in range(605):
+            fail_in(throttle, OSError("relay down"), camera_id="cam-1")
+            clock.now += 1.0
+        succeed_in(throttle)
+        succeed_in(throttle)
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert [r.getMessage() for r in warnings] == [
+        "contained failure boundary=export_item stage=tick exception_class=OSError "
+        f"camera_id=cam-1 failures={n}"
+        for n in (1, 301, 601)
+    ]
+    assert len([r for r in caplog.records if r.exc_info]) == 1
+    infos = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+    assert infos == ["contained failure recovered boundary=export_item stage=tick failures=605"]
+    assert "relay down" not in "".join(r.getMessage() for r in caplog.records)
+
+
+def test_degrade_accepts_a_throttle(caplog: pytest.LogCaptureFixture) -> None:
+    throttle = LogThrottle(clock=FakeClock())
+    with caplog.at_level(logging.WARNING, logger="shared.boundary"):
+        for _ in range(10):
+            assert degrade(raising(OSError("x")), stage="s", default=0, throttle=throttle) == 0
+    assert len(caplog.records) == 1
+    assert throttle.failures == 10
