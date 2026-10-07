@@ -3,8 +3,6 @@ from __future__ import annotations
 from starlette.requests import Request
 from starlette.responses import Response
 
-HEAD_METHODS = ("GET", "HEAD")
-
 
 def is_head(request: Request) -> bool:
     return request.method.upper() == "HEAD"
@@ -16,4 +14,4 @@ def drop_body_for_head(request: Request, response: Response) -> Response:
     return response
 
 
-__all__ = ["HEAD_METHODS", "drop_body_for_head", "is_head"]
+__all__ = ["drop_body_for_head", "is_head"]
