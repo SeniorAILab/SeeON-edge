@@ -180,6 +180,7 @@ ignore = ["TRY003"]
 "tests/**" = ["SLF001", "RUF009", "RUF012", "RUF043", "PERF401", "SIM102", "SIM105", "SIM113", "SIM117"]
 "tests_support/**" = ["RUF012", "PERF401", "SIM102"]
 "scripts/**" = ["SLF001", "PERF401"]
+"shared/boundary/**" = ["BLE001"]
 "backend/**" = ["SIM102", "SIM105", "SIM117"]
 "backend/app/features/cameras/router.py" = ["RUF100"]
 # Literals here are split on purpose so the repository privacy scan does not match
