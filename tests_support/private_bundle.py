@@ -1,16 +1,3 @@
-"""Private fall bundle gate: marked and selected, never conditionally skipped.
-
-The packaged fall bundle (models/fall/pose-bbox56-gru) lives in a private Hugging
-Face repository and CI downloads no model weights. Tests that read it carry the
-``private_bundle`` marker; CI's test job deselects it with ``-m``, and any run that
-selects one without the bundle fails at setup, naming the missing file. Provision
-models/ with scripts/fetch-models.sh or deselect with ``-m "not private_bundle"``.
-
-The marker is added at collection so ``-m`` sees it. The module list below names
-only worker tests that Rust pass 4 deletes or ports; a surviving test that needs
-the bundle declares ``pytestmark = pytest.mark.private_bundle`` itself.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path

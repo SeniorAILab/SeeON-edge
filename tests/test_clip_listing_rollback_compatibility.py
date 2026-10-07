@@ -1,5 +1,3 @@
-"""Schema-17 listing generations are not a serving compatibility surface."""
-
 from __future__ import annotations
 
 import importlib

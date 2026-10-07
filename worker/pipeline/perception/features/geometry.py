@@ -4,7 +4,6 @@ from contracts.observation import BoundingBox
 
 
 def iou(a: BoundingBox, b: BoundingBox) -> float:
-    """Return intersection-over-union for two axis-aligned boxes."""
     inter_x1 = max(a.x1, b.x1)
     inter_y1 = max(a.y1, b.y1)
     inter_x2 = min(a.x2, b.x2)
@@ -29,7 +28,6 @@ def greedy_match(
     boxes: tuple[BoundingBox, ...],
     min_iou: float,
 ) -> tuple[tuple[int, int], ...]:
-    """Match existing boxes to incoming boxes by descending IoU."""
     pairs: list[tuple[float, int, int]] = []
     for track_index, existing_box in enumerate(existing_boxes):
         for box_index, box in enumerate(boxes):

@@ -1,5 +1,3 @@
-"""Bounded in-memory execution-record lanes: overflow is counted as WireGap."""
-
 from __future__ import annotations
 
 from shared.events.execution_records import WireGap, WireRecord
@@ -77,14 +75,8 @@ def test_export_failure_is_reported_on_the_next_batch() -> None:
 
 
 def test_overflow_gap_time_range_is_min_max_not_arrival_order() -> None:
-    """Dropped items' observed_at_ns may arrive out of order (PTS-derived and
-    process-monotonic producers, reordered publishes). The gap is a range, so
-    its bounds must be min/max; first/last produced from_ns > to_ns, which the
-    wire contract rejects and which killed the exporter thread instead of
-    reporting the loss."""
     lanes = ExecutionRecordLanes(lane_capacity=1)
     assert lanes.try_emit(_record(observed=5_000)) is True
-    # three drops, non-monotonic timestamps
     assert lanes.try_emit(_record(observed=9_000)) is False
     assert lanes.try_emit(_record(observed=3_000)) is False
     assert lanes.try_emit(_record(observed=7_000)) is False
@@ -98,8 +90,6 @@ def test_overflow_gap_time_range_is_min_max_not_arrival_order() -> None:
 
 
 def test_invalid_sequenced_record_is_reported_as_record_invalid_gap() -> None:
-    """A contract failure after the sequence was consumed must leave a hole."""
-
     def _invalid() -> WireRecord:
         template = _record()
         broken = object.__new__(WireRecord)
@@ -124,20 +114,12 @@ def test_invalid_sequenced_record_is_reported_as_record_invalid_gap() -> None:
 
 
 def test_pending_loss_is_offered_for_export_without_any_valid_record() -> None:
-    """A lane holding ONLY loss is still offered and drained records-empty.
-
-    Overflow and record-invalid gaps ride with the drain that empties their
-    lane, so the records-empty case is the export-failed path: a batch that
-    failed to export leaves loss behind with no queued record. That loss must
-    reach the Backend even if no further valid record ever arrives.
-    """
     lanes = ExecutionRecordLanes(lane_capacity=4)
     assert lanes.try_emit(_record(seq=0)) is True
     drained = lanes.drain_for("cam-1", "boot-1", limit=8)
     assert drained is not None and len(drained.records) == 1 and drained.gaps == ()
     lanes.note_export_failure(drained)
 
-    # Nothing queued, yet the boot has work: the export-failed loss.
     assert lanes.queued() == 0
     assert ("cam-1", "boot-1") in lanes.cameras_with_work()
     only_loss = lanes.drain_for("cam-1", "boot-1", limit=8)
@@ -153,9 +135,8 @@ def test_pending_loss_is_scoped_to_the_boot_that_suffered_it() -> None:
     boot_a = _record(seq=0)
     boot_b = _record(seq=0, boot="boot-2")
     assert lanes.try_emit(boot_a) is True
-    assert lanes.try_emit(_record(seq=1)) is False  # boot-1 overflow
+    assert lanes.try_emit(_record(seq=1)) is False
     assert lanes.try_emit(boot_b) is True
-    # Draining boot-2 must not swallow boot-1's loss.
     other = lanes.drain_for("cam-1", "boot-2", limit=8)
     assert other is not None and len(other.records) == 1 and other.gaps == ()
     mine = lanes.drain_for("cam-1", "boot-1", limit=8)
@@ -169,7 +150,6 @@ def test_restored_records_keep_original_lanes_identities_and_capacity() -> None:
     for producer in ("sdk", "policy"):
         for seq in range(3):
             assert lanes.try_emit(_record(producer=producer, seq=seq))
-    # One full lane plus a prefix of another; the rest of policy stays queued.
     drained = lanes.drain_for("cam-1", "boot-1", limit=4)
     assert drained is not None and len(drained.records) == 4
     for seq in range(3, 6):
@@ -202,7 +182,6 @@ def test_restored_records_keep_original_lanes_identities_and_capacity() -> None:
         WireGap("policy", 3, 4, 1_000, 1_000, 2, LANE_OVERFLOW_CAUSE, 0, 1),
     )
     assert lanes.cameras_with_work() == ()
-    # Restoration neither consumed sequences nor emitted new producer records.
     assert lanes.try_emit(_record(seq=7))
     assert lanes.try_emit(_record(producer="policy", seq=5))
     later = lanes.drain_for("cam-1", "boot-1", limit=8)
@@ -252,7 +231,6 @@ def test_restoration_overflow_gaps_do_not_bridge_scope_changes_or_sequence_holes
         assert lanes.try_emit(_record(seq=seq))
     drained = lanes.drain_for("cam-1", "boot-1", limit=2)
     assert drained is not None
-    # New arrivals span scopes and their observed times need not be monotonic.
     assert lanes.try_emit(_record(seq=2, generation=7, epoch=9, observed=9_000))
     assert lanes.try_emit(_record(seq=3, generation=7, epoch=10, observed=5_000))
     assert not lanes.try_emit(_record(seq=4, generation=7, epoch=9, observed=3_000))
@@ -268,11 +246,6 @@ def test_restoration_overflow_gaps_do_not_bridge_scope_changes_or_sequence_holes
     )
     assert sum(gap.record_count for gap in restored.gaps) == 4
     assert lanes.cameras_with_work() == ()
-
-
-# Issue 598 repro. Select with: pytest -k test_598_
-# Fails on the pre-fix lanes and passes once an unsendable drained record is an
-# explicit record-invalid gap.
 
 
 def test_598_unsendable_records_keep_neighbor_sequences_and_gap_counts() -> None:

@@ -14,8 +14,6 @@ class FreshnessSnapshot:
 
 
 class ObservationFreshness:
-    """Wall-clock freshness for a latch's last actual observation."""
-
     def __init__(
         self,
         *,

@@ -21,8 +21,6 @@ def make_app(
     postgres_product_sandbox: ProductSandbox,
     postgres_audit_runtime: PostgresAuditRuntime,
 ) -> Callable[[], FastAPI]:
-    """An app on the sandbox, with receipts for the clips written so far."""
-
     def make() -> FastAPI:
         app = postgres_api_app(postgres_product_sandbox, postgres_audit_runtime)
         add_accepted_media_receipts(app)

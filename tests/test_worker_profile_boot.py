@@ -37,11 +37,6 @@ def test_retired_profile_refuses_to_start_with_adr_0002_diagnostic() -> None:
 def test_flow_device_residency_is_established_from_nvml_and_refuses_without_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The retired nvidia profile proved residency by opening an NVDEC device.
-
-    Under flow the SDK owns decode, so the parent's evidence is NVML naming a
-    driver and a device. Losing that is a refusal to start, not a warning.
-    """
     from worker.runtime import worker as worker_module
 
     monkeypatch.setattr(

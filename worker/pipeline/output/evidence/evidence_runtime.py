@@ -1,5 +1,3 @@
-"""Production lifecycle for queue-backed evidence delivery."""
-
 from __future__ import annotations
 
 import threading
@@ -127,7 +125,7 @@ class EvidenceExportRuntime:
         while not self._stop_event.is_set():
             try:
                 step = self.sender.run_once()
-            except Exception:  # noqa: BLE001 - entries stay durable for retry
+            except Exception:  # noqa: BLE001
                 step = SenderStep.RETRY_SCHEDULED
             if step not in {SenderStep.EVENT_ACKED, SenderStep.CLIP_ACKED}:
                 self._wake_sender.wait(1.0)

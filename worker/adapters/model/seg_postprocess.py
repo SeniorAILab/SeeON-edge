@@ -1,5 +1,3 @@
-"""Numpy decoding for the fixed-shape YOLO26 end-to-end segmentation head."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -29,7 +27,6 @@ class Letterbox:
 def letterbox_rgb(
     image: NDArray[np.uint8], model_size: int
 ) -> tuple[NDArray[np.float32], Letterbox]:
-    """Return YOLO's square RGB tensor and its reversible letterbox metadata."""
     if image.dtype != np.uint8 or image.ndim != 3 or image.shape[2] != 3:
         raise ValueError("bed image must be an HxWx3 uint8 RGB array")
     height, width = image.shape[:2]
@@ -72,7 +69,6 @@ def decode_end_to_end_segmentation(
     max_points: int,
     bed_class_id: int = COCO_BED_CLASS_ID,
 ) -> tuple[BedInstance, ...]:
-    """Decode end-to-end (already NMS-resolved) YOLO26 segmentation outputs."""
     if not 0.0 <= confidence <= 1.0:
         raise ValueError("confidence must be in [0, 1]")
     if max_points <= 0:
@@ -110,7 +106,6 @@ def decode_end_to_end_segmentation(
 
 
 def largest_external_contour(mask: NDArray[np.bool_]) -> BedPolygon:
-    """Trace the largest clockwise boundary loop from a binary pixel mask."""
     values = np.asarray(mask, dtype=bool)
     if values.ndim != 2 or not values.any():
         return ()
@@ -151,7 +146,6 @@ def largest_external_contour(mask: NDArray[np.bool_]) -> BedPolygon:
 
 
 def simplify_polygon(points: BedPolygon, max_points: int) -> BedPolygon:
-    """Simplify a closed contour with Douglas-Peucker, respecting point capacity."""
     if max_points <= 0:
         raise ValueError("max_points must be positive")
     if len(points) <= max_points:

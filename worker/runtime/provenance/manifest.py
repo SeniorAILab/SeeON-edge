@@ -58,7 +58,6 @@ def build_applied_camera_state(
     bed_zone_image_width: int | None,
     bed_zone_image_height: int | None,
 ) -> AppliedCameraState:
-    """Freeze the effective camera-local state consumed by the runtime plan."""
     if not bed_zone_regions:
         bed_zone = AppliedBedZone(
             authority="none",
@@ -113,7 +112,6 @@ def build_applied_runtime_manifest(
     environment: RuntimeEnvironmentFacts,
     edge_database_schema_version: int,
 ) -> AppliedRuntimeManifest:
-    """Freeze only independently resolved state after profile, model, and policy gates."""
     if config_version < 0 or restart_generation < 0:
         raise AppliedRuntimeManifestError("config and restart generations must be non-negative")
     if edge_database_schema_version < 1 or not detector_version:
@@ -168,9 +166,6 @@ def _verified_component_identities(
             raise AppliedRuntimeManifestError(
                 f"unresolved applied identity for component {identity.component_id!r}"
             )
-        # Under the media-plane-owned profiles the temporal policy and the
-        # bed segmenter run on the CPU beside a CUDA media plane by design;
-        # every other component must match the boot device.
         cpu_policy = (
             boot.profile.name in {"nvidia", "flow"}
             and identity.device == "cpu"
@@ -402,7 +397,6 @@ def _without_closing_vertex(
 def _canonical_polygon(
     polygon: tuple[tuple[int, int], ...],
 ) -> tuple[tuple[int, int], ...]:
-    """Normalize only cyclic start/winding; edge-changing permutations remain distinct."""
     rotations = tuple(polygon[index:] + polygon[:index] for index in range(len(polygon)))
     reversed_polygon = tuple(reversed(polygon))
     reversed_rotations = tuple(

@@ -1,5 +1,3 @@
-"""Pure validation for immutable desired and derived applied model identities."""
-
 from __future__ import annotations
 
 import hashlib
@@ -10,10 +8,6 @@ from dataclasses import dataclass
 from typing import Final
 
 SCHEMA_VERSION: Final = 2
-# The pose+bbox56 preprocessing identity: 17 COCO keypoints as (x, y, confidence)
-# plus the pose-head bbox as (x1, y1, x2, y2, valid) in float32 -- 56 values per
-# row. Both the training publisher and the edge adapters name this exact string,
-# so it is contract vocabulary rather than a per-package constant.
 POSE_BBOX56_PREPROCESSING_IDENTITY: Final = "coco17-xyc-plus-pose-head-xyxy-valid-f32-v1"
 _SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 _REVISION_RE: Final = re.compile(r"^[0-9a-f]{40}$")
@@ -24,7 +18,7 @@ _TIMESTAMP_RE: Final = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+
 
 
 class ContractError(ValueError):
-    """A promotion identity is absent, mutable, or internally inconsistent."""
+    ...
 
 
 @dataclass(frozen=True)
@@ -121,7 +115,6 @@ class AppliedModelSelection:
 
 
 def canonical_json_bytes(value: object) -> bytes:
-    """Return the one JSON encoding used when hashing a contract document."""
     try:
         encoded = json.dumps(
             value, allow_nan=False, ensure_ascii=True, separators=(",", ":"), sort_keys=True
@@ -264,13 +257,11 @@ def _desired_fields(raw: Mapping[str, object], where: str) -> dict[str, object]:
 
 
 def parse_model_selection(raw: object) -> ModelSelection:
-    """Validate the sole desired authority; no receipt can replace this document."""
     fields = _desired_fields(_object(raw, "model-selection"), "model-selection")
     return ModelSelection(**fields)  # type: ignore[arg-type]
 
 
 def parse_applied_model_selection(raw: object) -> AppliedModelSelection:
-    """Validate a derived applied proof without treating it as activation input."""
     value = _object(raw, "applied-model-selection")
     expected = _SELECTION_KEYS | frozenset(
         {"desired_selection_digest", "boot_id", "restart_id", "verified_at", "status", "reasons"}

@@ -1,17 +1,3 @@
-"""End-to-end merge-precedence tests for GET /api/v1/cameras/worker-config
-(see ``worker_config_snapshot``/``_apply_local_detection_overrides``/
-``_apply_clip_storage_override`` in backend/app/features/cameras/router.py).
-
-Exercises the full precedence chain: a locally-saved detection setting
-(``PUT /api/v1/detection-settings``) always overrides whatever the backend
-externally pulled for that domain, and a locally-selected clip storage
-location (``PUT /api/v1/clips/storage/location``) is threaded onto the
-response as ``clip_store_subdir`` only once a non-root location has been
-explicitly chosen. ``response_model_exclude_none=True`` means every new
-optional field here is entirely absent from the JSON body -- not present as
-null -- whenever no local override exists, so byte-for-byte backward
-compatibility with a worker that has never seen these fields is preserved."""
-
 from __future__ import annotations
 
 import pytest
@@ -72,8 +58,6 @@ def test_with_no_local_overrides_the_response_reflects_the_externally_pulled_sta
         "bed_exit": {"start": "22:00", "end": "06:00", "tz": "Asia/Seoul"},
         "fall": {"start": "08:00", "end": "20:00", "tz": "Asia/Seoul"},
     }
-    # response_model_exclude_none=True: never-configured optional fields are
-    # entirely absent, not present as null.
     assert "domains" not in body
     assert "clip_store_subdir" not in body
 
@@ -103,16 +87,12 @@ def test_local_window_setting_overrides_the_pulled_window_and_reuses_its_tz(app:
 
     assert response.status_code == 200
     body = response.json()
-    # The saved window wins over the pulled one, but its tz is reused from
-    # the live pulled window for the same domain (no facility-tz setting
-    # exists elsewhere in this codebase).
     assert body["detection_windows"]["fall"] == {
         "start": "09:00",
         "end": "18:00",
         "tz": "Asia/Seoul",
     }
     assert body["domains"] == {"fall": {"enabled": True}, "bed_exit": {"enabled": True}}
-    # bed_exit is on/always -> no window entry for it at all.
     assert "bed_exit" not in body["detection_windows"]
     assert "night_window" not in body
 
@@ -182,15 +162,10 @@ def test_clip_store_subdir_is_absent_until_a_non_root_location_is_selected(app: 
 
         _login(client)
         put_response = client.put("/api/v1/clips/storage/location", json={"path": ""})
-        # An empty (root) selection stays absent from the worker-config body.
         assert put_response.status_code in (200, 404)
 
 
 def test_clip_store_subdir_appears_once_a_selection_is_persisted_directly(app: FastAPI) -> None:
-    """Persists a selection directly via the store (bypassing the browse/PUT
-    filesystem-existence check, which is exercised separately in
-    test_api_clip_storage.py) to isolate this test to the worker-config merge
-    itself."""
     app.state.clip_storage_location_store.put("external-drive")
 
     with TestClient(app) as client:
@@ -201,10 +176,6 @@ def test_clip_store_subdir_appears_once_a_selection_is_persisted_directly(app: F
 
 
 def test_no_local_overrides_leaves_config_version_unchanged_from_pulled(app: FastAPI) -> None:
-    """Issue #190 regression, case 1: with nothing saved via
-    ``PUT /api/v1/detection-settings``, ``_apply_local_detection_overrides``
-    early-returns and the response's ``config_version`` must stay exactly
-    what was externally pulled -- no behavior change for this case."""
     app.state.pulled_config = PulledWorkerConfig(
         config_version=7,
         restart_epoch=2,
@@ -212,11 +183,6 @@ def test_no_local_overrides_leaves_config_version_unchanged_from_pulled(app: Fas
         cameras=(),
         detection_windows={},
     )
-    # ``_live_pulled_config`` (cameras/router.py) reads the live version off
-    # ``app.state.config_version``/``app.state.restart_epoch`` directly (kept
-    # in sync with ``pulled_config`` by ``lifespan._apply_backend_config`` in
-    # production), not off ``pulled_config`` itself -- set both explicitly so
-    # this test exercises the same value the real merge sees.
     app.state.config_version = 7
     app.state.restart_epoch = 2
 
@@ -228,10 +194,6 @@ def test_no_local_overrides_leaves_config_version_unchanged_from_pulled(app: Fas
 
 
 def test_local_overrides_present_move_config_version_away_from_pulled(app: FastAPI) -> None:
-    """Issue #190 regression, case 2: once an operator has saved detection
-    settings, ``config_version`` must differ from the raw pulled value --
-    otherwise the worker's restart poll (which compares only
-    ``(restart_epoch, config_version)``) never observes the edit."""
     app.state.pulled_config = PulledWorkerConfig(
         config_version=7,
         restart_epoch=2,
@@ -239,11 +201,6 @@ def test_local_overrides_present_move_config_version_away_from_pulled(app: FastA
         cameras=(),
         detection_windows={},
     )
-    # ``_live_pulled_config`` (cameras/router.py) reads the live version off
-    # ``app.state.config_version``/``app.state.restart_epoch`` directly (kept
-    # in sync with ``pulled_config`` by ``lifespan._apply_backend_config`` in
-    # production), not off ``pulled_config`` itself -- set both explicitly so
-    # this test exercises the same value the real merge sees.
     app.state.config_version = 7
     app.state.restart_epoch = 2
 
@@ -265,11 +222,6 @@ def test_local_overrides_present_move_config_version_away_from_pulled(app: FastA
 
 
 def test_same_overrides_saved_twice_yield_an_identical_config_version(app: FastAPI) -> None:
-    """Issue #190 regression, case 3 (restart-storm guard): the derived
-    version must be a pure function of the effective override content, not a
-    timestamp or a counter -- saving the exact same settings again (and
-    polling repeatedly in between) must not move ``config_version``, or the
-    worker would restart on every ~60s poll forever."""
     app.state.pulled_config = PulledWorkerConfig(
         config_version=7,
         restart_epoch=2,
@@ -277,11 +229,6 @@ def test_same_overrides_saved_twice_yield_an_identical_config_version(app: FastA
         cameras=(),
         detection_windows={},
     )
-    # ``_live_pulled_config`` (cameras/router.py) reads the live version off
-    # ``app.state.config_version``/``app.state.restart_epoch`` directly (kept
-    # in sync with ``pulled_config`` by ``lifespan._apply_backend_config`` in
-    # production), not off ``pulled_config`` itself -- set both explicitly so
-    # this test exercises the same value the real merge sees.
     app.state.config_version = 7
     app.state.restart_epoch = 2
     payload = {
@@ -296,7 +243,6 @@ def test_same_overrides_saved_twice_yield_an_identical_config_version(app: FastA
         client.put("/api/v1/detection-settings", json=payload)
         first = client.get("/api/v1/cameras/worker-config", headers=AUTH).json()
         second = client.get("/api/v1/cameras/worker-config", headers=AUTH).json()
-        # Re-saving byte-identical content must also leave it unchanged.
         client.put("/api/v1/detection-settings", json=payload)
         third = client.get("/api/v1/cameras/worker-config", headers=AUTH).json()
 
@@ -304,9 +250,6 @@ def test_same_overrides_saved_twice_yield_an_identical_config_version(app: FastA
 
 
 def test_different_override_content_yields_a_different_config_version(app: FastAPI) -> None:
-    """Issue #190 regression, case 4: changing the effective override content
-    (here, flipping ``fall`` off) must move ``config_version`` to a new value
-    so the worker's restart poll picks up the change."""
     app.state.pulled_config = PulledWorkerConfig(
         config_version=7,
         restart_epoch=2,
@@ -314,11 +257,6 @@ def test_different_override_content_yields_a_different_config_version(app: FastA
         cameras=(),
         detection_windows={},
     )
-    # ``_live_pulled_config`` (cameras/router.py) reads the live version off
-    # ``app.state.config_version``/``app.state.restart_epoch`` directly (kept
-    # in sync with ``pulled_config`` by ``lifespan._apply_backend_config`` in
-    # production), not off ``pulled_config`` itself -- set both explicitly so
-    # this test exercises the same value the real merge sees.
     app.state.config_version = 7
     app.state.restart_epoch = 2
 

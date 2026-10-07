@@ -1,5 +1,3 @@
-"""Server-side dashboard login, logout, and credential-rotation routes."""
-
 from __future__ import annotations
 
 import threading
@@ -28,7 +26,6 @@ from backend.app.shared.dashboard_auth import (
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-# Sliding-window login throttle: bound credential-guessing without sleep delays.
 _LOGIN_WINDOW_SECONDS = 60.0
 _LOGIN_MAX_FAILURES_PER_KEY = 10
 _LOGIN_MAX_TRACKED_KEYS = 4096
@@ -50,8 +47,6 @@ class DashboardCredentialsUpdateRequest(BaseModel):
 
 @dataclass
 class _LoginThrottle:
-    """Process-local failed-login window keyed by client + username."""
-
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _failures: dict[str, deque[float]] = field(default_factory=dict)
 
@@ -78,7 +73,6 @@ class _LoginThrottle:
             bucket = self._failures.get(key)
             if bucket is None:
                 if len(self._failures) >= _LOGIN_MAX_TRACKED_KEYS:
-                    # Drop the oldest key by first failure timestamp.
                     oldest_key = min(
                         self._failures,
                         key=lambda item: self._failures[item][0] if self._failures[item] else stamp,

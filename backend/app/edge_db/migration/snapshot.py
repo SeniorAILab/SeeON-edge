@@ -1,5 +1,3 @@
-"""Consistent read-only snapshot of the fenced schema-19 SQLite database."""
-
 from __future__ import annotations
 
 import fcntl
@@ -19,7 +17,6 @@ from backend.app.edge_db.migration.errors import MigrationError
 from backend.app.edge_db.migration.mapping import verify_source_tables
 from backend.app.edge_db.migration.sqlite_functions import register_edge_db_functions
 
-# The old runtime holds this lock shared while any connection is open.
 DEPLOYMENT_LOCK_NAME: Final = "deployment.lock"
 _CHUNK: Final = 1 << 20
 
@@ -32,14 +29,12 @@ class Snapshot:
 
 
 def export_snapshot(source: Path, destination: Path) -> Snapshot:
-    """Copy the source through the backup API; the source is opened read-only."""
     if destination.exists() or destination.is_symlink():
         raise MigrationError("snapshot destination already exists")
     if not destination.parent.is_dir():
         raise MigrationError("snapshot directory does not exist")
     temp = temporary_path(destination)
     try:
-        # Owner-only: it holds resident data.
         create_private_file(temp)
         with open_fenced_source(source) as origin:
             copy_database(origin, temp)
@@ -59,12 +54,10 @@ def export_snapshot(source: Path, destination: Path) -> Snapshot:
 
 
 def temporary_path(path: Path) -> Path:
-    """A unique hidden sibling, so a finished file is published by link or rename."""
     return path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
 
 
 def create_private_file(path: Path) -> None:
-    """Create an empty owner-only file; SQLite gives its -wal and -shm the same mode."""
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         os.fchmod(descriptor, 0o600)
@@ -73,7 +66,6 @@ def create_private_file(path: Path) -> None:
 
 
 def copy_database(origin: sqlite3.Connection, path: Path) -> None:
-    """Copy through the backup API into an empty file, left checkpointed in WAL mode."""
     with closing(sqlite3.connect(path)) as copy:
         origin.backup(copy, progress=_refuse_busy)
         copy.execute("PRAGMA journal_mode = WAL").fetchone()
@@ -81,7 +73,6 @@ def copy_database(origin: sqlite3.Connection, path: Path) -> None:
 
 
 def sidecar_paths(path: Path) -> tuple[Path, Path, Path]:
-    """The -wal, -shm and -journal files SQLite keeps beside a database."""
     wal, shm, journal = (path.with_name(f"{path.name}-{end}") for end in ("wal", "shm", "journal"))
     return wal, shm, journal
 
@@ -93,7 +84,6 @@ def discard_database(path: Path) -> None:
 
 @contextmanager
 def open_fenced_source(source: Path) -> Iterator[sqlite3.Connection]:
-    """Open the live source read-only while no runtime connection can exist."""
     if source.is_symlink() or not source.is_file():
         raise MigrationError("source database is not a regular file")
     with exclusive_deployment_lock(source.parent):
@@ -106,7 +96,6 @@ def open_fenced_source(source: Path) -> Iterator[sqlite3.Connection]:
 
 
 def open_snapshot(path: Path) -> sqlite3.Connection:
-    """Open a snapshot immutable and read-only, with the edge SQL functions."""
     if path.is_symlink() or not path.is_file():
         raise MigrationError("snapshot is not a regular file")
     connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)
@@ -149,7 +138,6 @@ def fsync_file(path: Path) -> None:
 
 @contextmanager
 def exclusive_deployment_lock(state_directory: Path) -> Iterator[None]:
-    """Exclude an old runtime that takes the lock; one that ignores it is not excluded."""
     descriptor = os.open(state_directory / DEPLOYMENT_LOCK_NAME, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         try:
@@ -165,7 +153,6 @@ def exclusive_deployment_lock(state_directory: Path) -> Iterator[None]:
 
 
 def _refuse_busy(status: int, remaining: int, total: int) -> None:
-    # CPython retries a busy or locked step forever; a held source must fail instead.
     if status not in (sqlite3.SQLITE_OK, sqlite3.SQLITE_DONE):
         raise MigrationError("source database is locked")
 

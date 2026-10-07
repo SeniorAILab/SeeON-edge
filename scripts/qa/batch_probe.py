@@ -1,9 +1,3 @@
-"""Diagnostic-only DeepStream batch probe; never imported by the worker.
-
-Runs an isolated multi-source Flow topology and records frame/pad observations.
-It is intended for disposable containers, not production serving.
-"""
-
 from __future__ import annotations
 
 import json
@@ -37,11 +31,6 @@ def _pad_permutation() -> list[int]:
 
 
 def _tensor_rows(layer: Any) -> list[list[float]] | None:
-    """Return pose rows using the shipped adapter when this container has it.
-
-    The diagnostic has no production import dependency.  Containers without the
-    adapter retain a serializable raw tensor marker instead of failing the probe.
-    """
     try:
         from worker.adapters.deepstream.tensor_rows import rows_from_tensor
     except ImportError:
@@ -71,9 +60,6 @@ class _Recorder(BatchMetadataOperator):
         self.batches = 0
 
     def handle_metadata(self, batch_meta: Any) -> None:
-        # The SDK iterator hands out one borrowed wrapper that it reuses per
-        # step; materializing the iterator aliases every entry to the last frame
-        # and dereferences freed metadata. Read each frame inside the loop.
         observations: list[dict[str, Any]] = []
         for frame_meta in batch_meta.frame_items:
             pose_rows = _frame_pose_rows(frame_meta)

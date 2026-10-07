@@ -1,5 +1,3 @@
-"""Put the pre-fence SQLite bytes back once a rollback check has allowed it."""
-
 from __future__ import annotations
 
 import json
@@ -31,12 +29,6 @@ RESTORED: Final = "RESTORED"
 
 
 def unfence_sqlite(source: Path, *, receipt: Path, rollback_report: Path) -> dict[str, object]:
-    """Replace the fenced file with the preserved copy, byte for byte.
-
-    SQLite never opens either file: the fenced bytes must still be exactly the
-    ones the receipt names, and the restored bytes exactly the ones it preserved.
-    Neither the snapshot nor the preserved copy is removed.
-    """
     fence = read_fence_receipt(receipt)
     if not fence.source_present:
         raise MigrationError(
@@ -100,7 +92,6 @@ def _require_allowed(report: dict[str, object], fence: FenceReceipt) -> None:
 
 
 def _restored(source: Path, fence: FenceReceipt) -> bool:
-    """A rerun after the replace landed: the preserved bytes are live and untouched."""
     wal, shm, journal = sidecar_paths(source)
     return (
         not source.is_symlink()
@@ -122,7 +113,6 @@ def _restore(preserved: Path, source: Path) -> None:
                 for block in descriptor_blocks(descriptor):
                     handle.write(block)
                 handle.flush()
-                # The runtime opens the restored file as it opened the fenced one.
                 if (fenced.st_uid, fenced.st_gid) != (os.getuid(), os.getgid()):
                     os.fchown(handle.fileno(), fenced.st_uid, fenced.st_gid)
                 os.fchmod(handle.fileno(), stat.S_IMODE(fenced.st_mode))

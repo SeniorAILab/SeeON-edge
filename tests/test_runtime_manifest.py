@@ -608,7 +608,6 @@ def test_local_manifest_record_preserves_opaque_camera_identity_bytes(
 
 
 def test_store_publishes_idempotent_manifest_envelopes_without_runtime_ddl(tmp_path: Path) -> None:
-    # Its own state directory: the autouse central SQLite fixture also lives under tmp_path.
     database = tmp_path / "edge-state" / "edge.sqlite3"
     database.parent.mkdir(mode=0o700)
     manifest = _manifest()

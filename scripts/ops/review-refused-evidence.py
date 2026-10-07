@@ -1,5 +1,23 @@
 #!/usr/bin/env python
-"""Inspect and requeue evidence the backend refused.
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPOSITORY_ROOT))
+
+from shared.events.delivery_queue import (  # noqa: E402
+    MAX_DEAD_LETTERED_BYTES,
+    MAX_DEAD_LETTERED_ENTRIES,
+    DeliveryQueue,
+)
+
+_DESCRIPTION = """Inspect and requeue evidence the backend refused.
 
 A 422 means the backend rejected a payload. The entry is retained rather than
 deleted, because deleting refused evidence and reporting it delivered is how 41
@@ -20,27 +38,9 @@ Exit codes:
   3  requeue could not complete because the live queue is at capacity
 """
 
-from __future__ import annotations
-
-import argparse
-import json
-import sys
-from collections import Counter
-from pathlib import Path
-
-_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPOSITORY_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPOSITORY_ROOT))
-
-from shared.events.delivery_queue import (  # noqa: E402
-    MAX_DEAD_LETTERED_BYTES,
-    MAX_DEAD_LETTERED_ENTRIES,
-    DeliveryQueue,
-)
-
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=_DESCRIPTION)
     parser.add_argument(
         "--state-dir",
         type=Path,
@@ -76,8 +76,6 @@ def main(argv: list[str] | None = None) -> int:
         sorted(path for path in retention.iterdir() if path.is_file()) if retention.is_dir() else []
     )
 
-    # The refusal status is the leading filename component, so the operator sees
-    # why each entry is held without opening any payload.
     reasons = Counter(path.name.split(".", 1)[0] for path in retained)
     total_bytes = sum(path.stat().st_size for path in retained)
 
@@ -100,8 +98,6 @@ def main(argv: list[str] | None = None) -> int:
 
     requeued = 0
     for path in retained:
-        # The queue owns its lock, bounds and atomic publication; re-admitting
-        # by writing the file back would bypass all three.
         if not queue.requeue_dead_lettered(path):
             print(
                 json.dumps(

@@ -1,5 +1,3 @@
-"""The audit mapping emitted by worker producers must satisfy the relay schema."""
-
 from __future__ import annotations
 
 import json
@@ -24,7 +22,6 @@ _POLICY_SHA256 = "c" * 64
 def _wire_payload_from_real_producers(
     tmp_path: Path, *, extra_event_audit: dict[str, object] | None = None
 ) -> tuple[dict[str, object], dict[str, object]]:
-    """Run the producer chain through the final relay wire payload."""
     snapshot = DecisionTraceSnapshot(
         reason="fall-onset",
         previous_state="clear",
@@ -110,7 +107,6 @@ def test_relay_audit_field_source_tracks_relay_model() -> None:
 def test_undeclared_key_from_domain_event_does_not_reach_relay(
     tmp_path: Path,
 ) -> None:
-    """A domain mutation must not make the relay permanently discard the alert."""
     wire_payload, entry = _wire_payload_from_real_producers(
         tmp_path, extra_event_audit={"undeclared_audit_key": "mutant"}
     )

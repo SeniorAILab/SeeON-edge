@@ -1,5 +1,3 @@
-"""Coherent unit prune and coverage coarsening."""
-
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -18,9 +16,6 @@ from backend.app.features.diagnostics.records import (
 
 
 def next_prunable_unit(connection: psycopg.Connection) -> str | None:
-    """Oldest terminal unit by last observation - the order execution_units_prune_order
-    indexes, so this is a single index seek rather than a sort of every
-    terminal unit on each ingest."""
     row = connection.execute(
         """
         SELECT causal_unit_id FROM execution_units
@@ -35,7 +30,6 @@ def next_prunable_unit(connection: psycopg.Connection) -> str | None:
 def prune_unit(
     connection: psycopg.Connection, unit_id: str, now_ns: int
 ) -> tuple[int, Lane | None]:
-    """Delete one whole unit; returns (payload bytes it held, its lane) or (0, None)."""
     unit = connection.execute(
         """
         SELECT camera_id, worker_boot_id, source_generation, stream_epoch,
@@ -157,12 +151,6 @@ def _extend_contiguous_deletion(
     record_count: int,
     recorded_at_ns: int,
 ) -> bool:
-    """Grow the adjacent exact deletion row when this range continues it.
-
-    A proven contiguous deletion prefix is still exact evidence (plan §7), so
-    merging keeps the control envelope bounded without widening any claim: the
-    merged row covers exactly the sequences that were deleted, no more.
-    """
     row = connection.execute(
         """
         SELECT coverage_id, from_ns, to_ns FROM execution_coverage
@@ -207,17 +195,6 @@ def _extend_contiguous_deletion(
 
 
 def drop_orphan_batches(connection: psycopg.Connection) -> None:
-    """Delete batch receipts none of whose records can still exist.
-
-    A receipt exists so a retried batch is answered idempotently. Every record
-    of a batch was observed no later than the batch was received
-    (``observed_at_ns <= committed_at_ns == received_at_ns``), so a receipt
-    received before the camera's oldest surviving observation has no records
-    left and only pins control bytes. Per camera so the
-    (camera_id, observed_at_ns) index answers the MIN in O(log n); slightly
-    conservative (keeps a receipt a little longer than strictly needed),
-    never wrong.
-    """
     cameras = connection.execute("SELECT DISTINCT camera_id FROM execution_batches").fetchall()
     for (camera_id,) in cameras:
         connection.execute(
@@ -241,13 +218,6 @@ def coarsen_coverage(
     now_ns: int,
     lanes: Iterable[Lane] | None = None,
 ) -> None:
-    """Fold each over-bound (camera, boot, generation, epoch) lane's oldest
-    coverage rows into one UNKNOWN_COARSENED row.
-
-    ``lanes`` restricts the check to lanes that just gained rows; a full
-    GROUP BY over every coverage row on every ingest was a third of each
-    request on the reference edge. ``None`` checks every lane (startup, tests).
-    """
     if lanes is None:
         groups = connection.execute(
             """

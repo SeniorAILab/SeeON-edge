@@ -1,5 +1,3 @@
-"""Cross-suite compatibility fixtures."""
-
 import ipaddress
 import os
 from collections.abc import Iterator
@@ -10,7 +8,6 @@ import pytest
 
 @pytest.fixture
 def packaged_fall_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A verifiable synthetic pose+bbox56 bundle standing in for the packaged default."""
     from tests_support.pose_bbox56_bundle_artifact import write_pose_bbox56_bundle
     from worker.runtime.config import local_env
 
@@ -23,13 +20,6 @@ def packaged_fall_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pat
 def explicit_dashboard_bootstrap_credentials(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[None]:
-    """Provide dashboard authority via explicit env fixtures, not runtime defaults.
-
-    Production refuses a missing bootstrap pair. The suite keeps disposable
-    login ergonomics by setting API_DASHBOARD_* explicitly for every test;
-    tests that assert the unconfigured/corrupt paths must delenv these.
-    """
-
     monkeypatch.setenv("API_DASHBOARD_USERNAME", "admin")
     monkeypatch.setenv("API_DASHBOARD_PASSWORD", "admin")
     yield
@@ -39,54 +29,18 @@ def explicit_dashboard_bootstrap_credentials(
 def allow_insecure_hub_http_for_local_fixtures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[None]:
-    """Opt local fixtures into cleartext Hub HTTP (never a production default).
-
-    Production requires HTTPS for non-loopback Hub origins. Suite fixtures that
-    still speak ``http://backend...`` must set this contract explicitly.
-    HTTPS-policy tests delenv it.
-    """
-
     monkeypatch.setenv("API_BACKEND_ALLOW_INSECURE_HTTP", "1")
     yield
 
 
 @pytest.fixture(autouse=True)
 def isolate_state_dir_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """``resolve_state_dir``(``backend/app/shared/state_dir.py``,
-    ``worker/runtime/state_dir.py``)가 참조하는 ``Path.home()``을 테스트별
-    tmp로 격리한다.
-
-    ``resolve_state_dir``은 의도적으로 "단일 규칙, override 없음"으로
-    설계돼 있어 (이슈 #153) 환경변수 주입 지점이 없다 -- 그래서
-    ``resolve_state_dir`` 자체는 건드리지 않고, 그 유일한 입력원인
-    ``Path.home()``을 픽스처에서 리다이렉트한다.
-
-    ``HOME`` 환경변수 자체를 바꾸는 대신 ``Path.home``만 monkeypatch하는
-    이유: ``HOME``을 바꾸면 uv 캐시, git config, 서브프로세스 등 pytest와
-    무관한 것들까지 영향받는다. ``Path.home()`` 클래스메서드만 리다이렉트
-    하면 ``resolve_state_dir``이 참조하는 경로만 격리되고, ``os.path.
-    expanduser`` 등 다른 경로 해석 경로는 그대로 실제 홈을 본다.
-
-    이게 없으면 state 디렉터리를 주입하지 않는 테스트가 개발자의 실제
-    ``~/.local/state/`` 아래 파일(clip 라벨, worker delivery queue, 설정
-    LKG)을 읽고 쓴다 (이슈 #153).
-    """
-
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     yield
 
 
 @pytest.fixture(autouse=True)
 def stub_rtsp_hostname_resolution(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Keep API/worker suite fixtures offline while still exercising DNS policy.
-
-    Production resolves via ``socket.getaddrinfo``. Tests that need a specific
-    answer set pass an explicit ``resolver=`` into ``resolve_rtsp_endpoint`` or
-    monkeypatch ``resolve_host_a_aaaa`` themselves. The real getaddrinfo driver
-    lives in ``tests/test_rtsp_url_policy.py`` and calls the implementation
-    without this stub.
-    """
-
     from shared import rtsp_url_policy
 
     def _stub(hostname: str) -> tuple[str, ...]:
@@ -98,7 +52,6 @@ def stub_rtsp_hostname_resolution(monkeypatch: pytest.MonkeyPatch) -> Iterator[N
         except ValueError:
             if host == "localhost" or host.endswith(".localhost"):
                 return ("127.0.0.1",)
-            # Well-known public unicast (Google DNS); not special-use/private.
             return ("8.8.8.8",)
 
     monkeypatch.setattr(rtsp_url_policy, "resolve_host_a_aaaa", _stub)
@@ -107,22 +60,6 @@ def stub_rtsp_hostname_resolution(monkeypatch: pytest.MonkeyPatch) -> Iterator[N
 
 @pytest.fixture(autouse=True)
 def _deterministic_file_modes() -> Iterator[None]:
-    """Pin the process umask so filesystem modes do not depend on the host.
-
-    The clip-consistency validators reject a clip store or clip directory that is
-    group- or world-writable (`validate_directory`, forbidden 0o022). Directories
-    created in fixtures with a bare `mkdir()` inherit the developer's umask, so
-    the same commit passed under `umask 0022` and failed 84 tests under
-    `umask 0002`. That is the "Local Hero" anti-pattern: the outcome was decided
-    by the machine, not the code.
-
-    Note that `mkdir(parents=True, mode=...)` does not help on its own -- the mode
-    applies only to the leaf, and the parents still take the umask.
-
-    Pinning it here keeps the suite hermetic. Tests that specifically exercise
-    insecure permissions still set their own modes explicitly with `chmod`, which
-    is unaffected by the umask.
-    """
     previous = os.umask(0o022)
     try:
         yield
@@ -130,7 +67,4 @@ def _deterministic_file_modes() -> Iterator[None]:
         os.umask(previous)
 
 
-# --- private fall bundle gate -------------------------------------------------
-# Bundle-reading tests are marked `private_bundle` at collection and fail at
-# setup when models/fall/pose-bbox56-gru is absent; CI deselects them with -m.
 pytest_plugins = ("tests_support.private_bundle",)

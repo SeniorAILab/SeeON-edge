@@ -1,5 +1,3 @@
-"""Exporter -> wire converter -> real store certainty across split commits."""
-
 from __future__ import annotations
 
 import json
@@ -85,7 +83,6 @@ class _StoreClient:
         self.fail_gap_once = False
 
     def post_batch(self, batch):
-        # Reparse the actual serialized body rather than sharing DTO objects.
         decoded = WireBatch.from_json(json.loads(batch.encode()))
         self.posted.append(decoded)
         if decoded.gaps and self.fail_gap_once:
@@ -106,7 +103,6 @@ class _StoreClient:
 @pytest.fixture
 def stack(postgres_diagnostics_sandbox: DiagnosticsSandbox):
     diag = postgres_diagnostics_sandbox
-    # This fixture must admit a cap-full record; it is NOT a deployment budget.
     store = ExecutionRecordStore(
         diag.database,
         RetentionBudget(
@@ -166,7 +162,6 @@ def test_split_loss_commits_before_later_terminal_watermark(stack, generation, e
 
 def test_legacy_unscoped_loss_is_unknown_even_after_coarsening(stack):
     diag, client, lanes, exporter = stack
-    # Legacy wire has no scope keys and must never borrow the next record's scope.
     for seq in (0, 1):
         gap = WireGap("policy", seq, seq, 10, 10, 1, "export-failed")
         assert "source_generation" not in gap.to_json()
@@ -208,7 +203,6 @@ def test_delayed_loss_downgrades_previously_complete_unit(stack):
     dropped = lanes.drain_for("synthetic", "opaque-boot", limit=8)
     assert dropped is not None
     lanes.note_export_failure(dropped)
-    # The watermark committed on a different request while loss was in flight.
     client.post_batch(_batch((_record(2, "future", 1000, 0, 0),)))
     assert client.old_states[-1] == (1, UnitCausalState.COMPLETE)
     exporter.flush_once()
@@ -270,7 +264,6 @@ def test_gap_only_capacity_refusal_recovers_same_id_exactly_once(stack, refusal_
             assert refused_rows[table] == []
         assert len(refused_rows["execution_batches"]) == 1
         assert len(refused_rows["execution_coverage"]) == refusal_budget.coverage_rows_per_epoch
-        # The refusal envelope cannot fit in this deliberately tiny budget.
         assert used_bytes(diag.admin) > refusal_budget.high_water
         coverage = diag.admin.execute(
             """
@@ -334,14 +327,12 @@ def test_gap_only_capacity_refusal_recovers_same_id_exactly_once(stack, refusal_
     committed_rows = _execution_snapshot(diag)
     assert len(committed_rows["execution_batches"]) == 1
     assert len(committed_rows["execution_provenance"]) == 1
-    # One refusal control row and one actual scoped gap row, in separate lanes.
     assert len(committed_rows["execution_coverage"]) == 2
     for row in refused_rows["execution_coverage"]:
         assert row in committed_rows["execution_coverage"]
     for table in ("execution_segments", "execution_units", "execution_records"):
         assert committed_rows[table] == []
 
-    # A new store must return the durable commit even under renewed pressure.
     client.store = ExecutionRecordStore(
         diag.database, refusal_budget, clock=lambda: committed_at_ns + 100
     )
@@ -382,7 +373,6 @@ def test_gap_only_retry_error_rolls_back_to_durable_refusal(stack, monkeypatch):
         patch.setattr(store_module, "enforce_budget", fail_after_enforcement)
         with pytest.raises(psycopg.DataError, match="injected failure"):
             client.post_batch(batch)
-    # The refusal, including its original timestamp, and all six tables survive.
     assert _execution_snapshot(diag) == before
     committed = client.post_batch(batch)
     assert committed == replace(
@@ -479,7 +469,6 @@ def test_contiguous_prune_extension_downgrades_terminal_in_same_transaction(stac
 
     def prune_and_check(connection: psycopg.Connection) -> None:
         prune_unit(connection, "pruned-1", 1200)
-        # No refresh or coarsening is allowed to repair certainty afterward.
         assert _unit_states(connection) == extended_states
         coverage = connection.execute(
             """

@@ -1,11 +1,3 @@
-"""Flow-profile activation order (P1b-AC4).
-
-A pyservicemaker Flow fixes its sources when it is built, so the worker
-registers the roster, starts the plane, and then requires one accepted
-metadata frame before any pump or readiness exists. Engines are verified,
-never built (ADR-0002); the first accepted frame is the real-batch warmup.
-"""
-
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -51,8 +43,6 @@ class _Plane:
 
 
 class _Reporter:
-    """Records which cameras were announced READY, in order."""
-
     def __init__(self, announced: list[str]) -> None:
         self._announced = announced
 
@@ -84,19 +74,12 @@ def test_flow_warm_models_warms_only_the_cpu_fall_model() -> None:
     plane = _Plane(bindings={}, accept_after=0)
     runtime = _runtime(plane)
     assert runtime._warm_models() == ("fall-classifier",)
-    # No bootstrap source, no subscription: the accepted-frame warmup belongs
-    # to activation, after the roster is registered and the Flow is running.
     assert plane.calls == ["warm:cpu"]
 
 
 def test_a_camera_is_announced_ready_only_after_its_own_accepted_frame(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Readiness must follow the frame, not the roster.
-
-    Announcing READY while the plane has not produced anything advertises a
-    camera that cannot alert.
-    """
     announced: list[str] = []
     monkeypatch.setattr(
         "worker.runtime.worker.HeartbeatReporter",
@@ -265,7 +248,7 @@ def test_build_flow_camera_composes_ffmpeg_thumbnail_generator(
     runtime._execution_record_lanes = None
     runtime.config = SimpleNamespace(
         version=1,
-        detection_policies=SimpleNamespace(defaults={}),  # no fall policy: no decision identity
+        detection_policies=SimpleNamespace(defaults={}),
     )
     runtime._state_dir = tmp_path / "state"
     runtime._flow_media_plane = _MediaPlane()
@@ -295,12 +278,6 @@ def test_build_flow_camera_composes_ffmpeg_thumbnail_generator(
 
 
 def test_shutdown_stops_the_flow_without_removing_its_sources() -> None:
-    """Removing sources on the way out core-dumped a 13-camera shutdown.
-
-    The plane and its slot are discarded immediately afterwards and a roster
-    change requires a restart, so the removal bought nothing while driving the
-    SDK's per-stream teardown.
-    """
     calls: list[str] = []
 
     class _ShutdownPlane:

@@ -1,5 +1,3 @@
-"""Declared optional-owner publication over real PostgreSQL, not HTTP admission."""
-
 import traceback
 from contextlib import contextmanager
 from dataclasses import replace

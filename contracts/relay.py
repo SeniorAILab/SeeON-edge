@@ -1,5 +1,3 @@
-"""Backend relay payload primitives shared across API and events clients."""
-
 from __future__ import annotations
 
 import json

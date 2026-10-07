@@ -36,14 +36,6 @@ class _HighFallModel(_FallModel):
 
 
 class _RecoveringFallModel(_FallModel):
-    """High, then clear, then high again.
-
-    A second episode may only open after a *scored* confirmed recovery -- track
-    loss is never recovery -- so a two-onset corpus needs a run of clear scores
-    between the onsets. The window count matches the policy's
-    ``recovery_consecutive`` (5) with headroom.
-    """
-
     def __init__(self, clear_from: int, clear_until: int) -> None:
         self._calls = 0
         self._clear_from = clear_from
@@ -151,7 +143,6 @@ def _write_trace(directory: Path, rows: tuple[ReplayRow, ...]) -> None:
 
 
 def _recovering_model() -> _RecoveringFallModel:
-    """Clear scores for the recovery run that separates the two onsets."""
     return _RecoveringFallModel(_ONSET_WINDOWS + 1, _ONSET_WINDOWS + _RECOVERY_ROWS // 5)
 
 
@@ -204,13 +195,8 @@ def _run_cli(
 
 
 _FRAME_NS = 66_666_667
-# A fall alert needs a 30-row pose+bbox56 window plus three predictions at
-# stride 5 (rows 30, 35, 40): 41 contiguous 15 fps rows per onset.
 _ONSET_ROWS = 41
-# Rows without the track after an onset: past the 45-frame track TTL the
-# state is evicted, so the next appearance is a fresh episode.
 _ABSENT_ROWS = 50
-# 30 s of 15 fps frames clears the IncidentManager's admission cooldown.
 _COOLDOWN_CLEAR_ROWS = 15 * 31
 
 
@@ -232,20 +218,11 @@ def _run(
     )
 
 
-# Predictions land every stride-5 row once the 30-row window is full, so a
-# 41-row onset run scores 3 windows. The recovery run below must score at least
-# `recovery_consecutive` (5) clear windows before the next onset may open.
 _RECOVERY_ROWS = 30
 _ONSET_WINDOWS = 3
 
 
 def _two_onsets(gap_rows: int = 0) -> tuple[ReplayRow, ...]:
-    """One onset, a scored recovery run, then a second onset on the same track.
-
-    The track stays live throughout: the episode authority only re-arms on a
-    confirmed recovery, and a track that merely disappears resolves without
-    ever alerting again.
-    """
     first = _run(0, _ONSET_ROWS, first_seq=1)
     recovery_start = first[-1].pts_ns + _FRAME_NS
     recovery = _run(recovery_start, _RECOVERY_ROWS, first_seq=len(first) + 1)
@@ -255,20 +232,16 @@ def _two_onsets(gap_rows: int = 0) -> tuple[ReplayRow, ...]:
 
 
 def _fall_rows() -> tuple[ReplayRow, ...]:
-    """Two recovery-separated onsets far enough apart that both are admitted."""
     return _two_onsets(gap_rows=_COOLDOWN_CLEAR_ROWS)
 
 
 def _cooldown_rows() -> tuple[ReplayRow, ...]:
-    """Two recovery-separated onsets inside the 30 s admission cooldown."""
     return _two_onsets()
 
 
 def test_metric_cli_exact_returns_zero_for_both_domains(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # One person: in the bed for 20 rows, then out of it while the fall window
-    # keeps filling -- both domains alert exactly once inside their windows.
     inside = _run(0, 20, first_seq=1)
     outside = _run(20 * _FRAME_NS, _ONSET_ROWS - 20, first_seq=21, bbox=(0.7, 0.7, 0.8, 0.8, 0.9))
     rows = (_row(0, "open"), *inside, *outside)
@@ -391,14 +364,6 @@ def test_metric_cli_refuses_unavailable_fall_model(
 
 
 def test_two_recovery_separated_onsets_are_both_admitted_without_cooldown_suppression() -> None:
-    """P1a-AC2: a genuine second episode is never suppressed.
-
-    The episode authority is the lifecycle owner, so two onsets separated by a
-    scored confirmed recovery are two distinct episodes even inside the 30 s
-    admission window. The cooldown is overload protection keyed on the emitted
-    identity, so every suppression it reports is a defect signal -- and here
-    there must be none.
-    """
     result = evaluate(
         _cooldown_rows(),
         (_cli_golden("fall", 0, 62_000_000_000),),
@@ -642,13 +607,6 @@ def test_id_churn_allowance_rejects_an_unrelated_new_id_after_candidate_expiry()
 
 
 def test_id_churn_allowance_fails_closed_when_the_identity_history_is_mixed() -> None:
-    """An expired unmatched predecessor makes a later pair ambiguous.
-
-    P1a-AC1 allows only episodes that fail *solely* because one person was split
-    into two ids beyond the re-association window. A camera whose history also
-    contains an unresolved disappearance has not been shown to satisfy that, so
-    the episode fails instead of consuming an allowance.
-    """
     rows = (
         replace(_row(0, "frame"), seq=1),
         replace(_row(1_000_000_000, "frame"), seq=2, tracks=()),

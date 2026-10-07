@@ -1,5 +1,3 @@
-"""Read-only manifest access for clip playback."""
-
 from __future__ import annotations
 
 import hashlib
@@ -37,9 +35,6 @@ API_LABEL_STORE_ENV = "API_LABEL_STORE"
 DEFAULT_CLIP_STORE_DIR = "/var/lib/clip-store"
 PLAYBACK_H264_MANIFEST_FILENAME = "clip.playback-h264.json"
 _PLAYBACK_RENDITION_NAME_RE = re.compile(r"clip\.playback-h264\.[0-9a-f]{16}\.mp4\Z")
-# Immutable, identity-named artifacts published by the worker
-# (worker/pipeline/output/evidence/clip_analysis_artifact.py); the newest
-# digest-verified one for the clip is served.
 CLIP_ANALYSIS_GLOB = "clip.analysis.*.json"
 _CLIP_ANALYSIS_NAME_RE = re.compile(r"^clip\.analysis\.[0-9a-f]{16}\.json$")
 _SHA256_SIDECAR_BYTES = 65
@@ -59,8 +54,6 @@ class LocatedClip:
 
 @dataclass(frozen=True, slots=True)
 class OpenedPlaybackIdentity:
-    """Opened served media with immutable-source and rendition timing identity."""
-
     opened: OpenedRegularFile
     served_kind: Literal["original", "rendition"]
     original_sha256: str | None
@@ -70,8 +63,6 @@ class OpenedPlaybackIdentity:
 
 @dataclass(frozen=True, slots=True)
 class PlaybackAttestation:
-    """A validated immutable rendition pointer."""
-
     rendition: str
     rendition_sha256: str
     pts_identical: bool
@@ -79,12 +70,6 @@ class PlaybackAttestation:
 
 @dataclass(frozen=True, slots=True)
 class ScannedManifest:
-    """One ``manifest.json`` found by a single walk of the store, unparsed.
-
-    Only ``stat`` facts are carried so a listing can decide, against the
-    catalogue, whether the file needs to be read at all.
-    """
-
     clip_id: str
     manifest_path: Path
     size_bytes: int
@@ -131,29 +116,9 @@ class ClipStore:
         return sorted(manifests, key=lambda manifest: manifest.started_at, reverse=True)
 
     def _manifest_paths(self) -> list[Path]:
-        """Manifests can live directly under the store root
-        (``root/clips/*/manifest.json`` -- the layout before any storage
-        location was ever selected) or nested one or two levels down under a
-        chosen ``clip_store_subdir`` (``root/<sub>/clips/*/manifest.json``,
-        ``root/<sub2>/<sub1>/clips/*/manifest.json`` -- ``store_subdir`` may
-        itself be a multi-segment relative path, see
-        ``ClipRecordingConfig.store_subdir``). Listing must keep finding
-        clips recorded under any past selection, not just the current one, so
-        all three layouts are always checked -- bounded to two subdir levels
-        rather than an unbounded recursive walk, since a clip store can
-        accumulate many unrelated directories over time.
-        """
         return discover_manifest_paths(self.root)
 
     def scan_manifests(self) -> list[ScannedManifest]:
-        """Walk every bounded ``clips`` root once and ``stat`` each manifest.
-
-        This is the whole filesystem cost of a listing request: one directory
-        listing per clips root plus one ``stat`` per clip, no manifest parsing.
-        A clip id present under more than one layout is read to decide which
-        copy is the finalized one; two finalized copies are the same
-        ``DuplicateClipIdError`` that ``locate_manifest`` raises.
-        """
         scanned, duplicates = self.scan_manifest_partition()
         if duplicates:
             raise duplicates[0]
@@ -162,11 +127,6 @@ class ClipStore:
     def scan_manifest_partition(
         self,
     ) -> tuple[list[ScannedManifest], tuple[DuplicateClipIdError, ...]]:
-        """``scan_manifests`` that reports duplicate ids instead of raising.
-
-        A background reconcile must keep cataloguing every other clip while
-        one id is ambiguous; the ambiguous id's detail routes still answer 409.
-        """
         by_id: dict[str, list[ScannedManifest]] = {}
         for clips_root in bounded_clip_roots(self.root):
             try:
@@ -249,7 +209,6 @@ class ClipStore:
         return open_contained_regular_file(self.root, path)
 
     def open_located_playback_identity(self, located: LocatedClip) -> OpenedPlaybackIdentity:
-        """Open served media and expose its immutable-source and timing identity."""
         original = self.open_located_video(located)
         original_sha256 = self.manifest_video_sha256(located)
         playback = self._open_verified_playback(original.path, original_sha256)
@@ -272,7 +231,6 @@ class ClipStore:
         )
 
     def playback_codec(self, located: LocatedClip) -> str:
-        """Return the codec an operator will receive from the video endpoint."""
         try:
             original_path = self.resolve_located_video_path(located)
         except (ValueError, FileNotFoundError):
@@ -287,7 +245,6 @@ class ClipStore:
         return "h264"
 
     def manifest_video_sha256(self, located: LocatedClip) -> str | None:
-        """Return the immutable original-media identity declared by the manifest."""
         try:
             payload = json.loads(
                 read_bounded_regular_file(self.root, located.manifest_path, 1024 * 1024)
@@ -302,7 +259,6 @@ class ClipStore:
         return digest
 
     def read_clip_analysis_candidates(self, located: LocatedClip) -> tuple[bytes, ...]:
-        """Read sidecar-verified analysis candidates newest-first."""
         clip_dir = located.manifest_path.parent
         candidates = [
             path
@@ -450,15 +406,6 @@ class ClipStore:
 
 
 def default_label_store_dir() -> Path:
-    """Default root for clip labels + the audit log, absent ``API_LABEL_STORE``.
-
-    Was a hardcoded ``/var/lib/ml-api-labels`` -- a container-root-only path
-    that a native (non-container) dev process cannot ``mkdir`` into (issue
-    #152: ``GET /clips`` 500s from the audit-log append's ``PermissionError``
-    before it ever reaches the read). Following ``resolve_state_dir``'s single
-    rule (``backend/app/shared/state_dir.py``) instead gives every runtime --
-    container or native -- a location its own user can already write.
-    """
     return resolve_state_dir("ml-api") / "labels"
 
 

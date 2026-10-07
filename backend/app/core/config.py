@@ -1,5 +1,3 @@
-"""ml-api settings."""
-
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -35,7 +33,6 @@ _RETIRED_BACKEND_ENV: Final = frozenset(
 
 
 def reject_retired_backend_environment(environ: Mapping[str, str]) -> None:
-    """Reject removed authorities using Settings' case-insensitive env rules."""
     present = sorted(original for original in environ if original.upper() in _RETIRED_BACKEND_ENV)
     if present:
         raise ValueError(
@@ -57,10 +54,6 @@ class Settings(BaseSettings):
     worker_probe_origin: str = "http://ml-worker:8090"
     worker_probe_timeout_s: float = 5.0
     connection_test_timeout_s: float = 5.0
-    # On-demand bed segmentation is a heavier, infrequent user action (not
-    # periodic polling): the worker route waits up to ~2s for a fresh frame
-    # (see BED_ZONE_FRAME_TIMEOUT_SECONDS) before it even runs inference, so
-    # this must stay comfortably above worker_stream_timeout_s.
     worker_bed_zone_timeout_s: float = 25.0
     execution_records_enabled: bool = False
     execution_records_budget_bytes: int | None = None
@@ -68,7 +61,6 @@ class Settings(BaseSettings):
     @field_validator("execution_records_budget_bytes", mode="before")
     @classmethod
     def empty_budget_is_unset(cls, value: object) -> object:
-        # Compose renders an unset budget as ML_API_EXECUTION_RECORDS_BUDGET_BYTES=''.
         return None if value == "" else value
 
     @model_validator(mode="after")

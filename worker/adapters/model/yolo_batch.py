@@ -1,5 +1,3 @@
-"""Ultralytics batch-forward adapter shared by batched model runners."""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -19,7 +17,6 @@ def predict_many(
     frames: Sequence[Image],
     options: YoloPredictOptions,
 ) -> tuple[YoloResult, ...]:
-    """Run one list-source forward and preserve positional result mapping."""
     try:
         results = model.predict(
             source=list(frames),

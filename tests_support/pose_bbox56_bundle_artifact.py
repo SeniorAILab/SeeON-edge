@@ -1,13 +1,3 @@
-"""Deterministic synthetic pose+bbox56 proxy bundle for tests.
-
-Mirrors the published ``bundle-manifest/proxy-v0`` layout that
-``worker.adapters.model.pose_bbox56_bundle`` verifies: every member is listed
-with its sha256 and size, ``arch.json`` describes the binary GRU proxy,
-and ``calibration.json`` carries the operational settings. The independent
-``evaluation-receipt.json`` is research metadata. Weights are seeded so two
-builds with the same arguments are byte-identical.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -48,7 +38,6 @@ def write_pose_bbox56_bundle(
     manifest_evaluation_receipt: bool = True,
     seed: int = 7,
 ) -> Path:
-    """Write a verifiable proxy bundle under ``root`` and return ``root``."""
     root.mkdir(parents=True, exist_ok=True)
     torch.manual_seed(seed)
     encoder = nn.GRU(56, hidden_size, num_layers, batch_first=True)

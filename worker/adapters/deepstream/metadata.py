@@ -1,5 +1,3 @@
-"""Conversion from Flow metadata to worker perception envelopes."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -53,10 +51,6 @@ def _iou(a: tuple[float, float, float, float], b: tuple[float, float, float, flo
 def _frame_box(
     row: NDArray[np.float32], frame_w: int, frame_h: int
 ) -> tuple[float, float, float, float]:
-    # nvinfer letterboxes with the padding at the right and bottom, not centred:
-    # there is no offset to remove, only the scale to undo. Subtracting a centred
-    # pad shifted every box by half the padding - 140 px for a 640x360 frame -
-    # so no detection ever overlapped its tracked object and nothing matched.
     scale = min(_NET_SIZE / frame_w, _NET_SIZE / frame_h)
     return (
         float(row[0] / scale),
@@ -74,7 +68,6 @@ def association_pass(
     frame_w: int,
     frame_h: int,
 ) -> AssociationPass:
-    """Associate thresholded output rows to NvDCF objects exactly once."""
     candidates = [
         (index, _frame_box(row, frame_w, frame_h))
         for index, row in enumerate(rows)
@@ -145,7 +138,6 @@ def convert_frame(
     publish_sequence: int,
     boot_id: str,
 ) -> MetadataFrame:
-    """Build one accepted P1a-compatible frame from a Flow frame item."""
     sdk_frame_number = _optional_sdk_int(frame_meta, "frame_number")
     source_id = _optional_sdk_int(frame_meta, "source_id")
     identity = PerceptionFrameIdentity(
@@ -169,7 +161,6 @@ def convert_frame(
         )
         for track in matched
     )
-    # Same right/bottom letterbox as the boxes: undo the scale, no offset.
     scale = min(_NET_SIZE / frame_w, _NET_SIZE / frame_h)
     poses = tuple(
         tuple(

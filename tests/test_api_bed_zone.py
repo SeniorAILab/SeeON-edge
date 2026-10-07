@@ -1,5 +1,3 @@
-"""Focused canonical multi-region bed-zone API coverage."""
-
 from __future__ import annotations
 
 import json

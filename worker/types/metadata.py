@@ -1,5 +1,3 @@
-"""Image-free metadata values emitted by worker media planes."""
-
 from __future__ import annotations
 
 import uuid
@@ -10,13 +8,6 @@ from worker.types.perception_frame import PerceptionFrameIdentity, PerceptionFra
 
 @dataclass(frozen=True, slots=True)
 class NativeObservationEvidence:
-    """Scalar facts observed while converting one SDK frame.
-
-    This envelope never retains SDK metadata, tensor values, arrays, or image
-    data. ``None`` identifiers mean the supplied SDK frame did not expose that
-    scalar.
-    """
-
     sdk_frame_number: int | None
     source_id: int | None
     inference_tensor_present: bool

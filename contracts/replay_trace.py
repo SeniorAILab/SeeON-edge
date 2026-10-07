@@ -1,5 +1,3 @@
-"""Versioned frame-level replay trace contract."""
-
 from __future__ import annotations
 
 import json
@@ -174,7 +172,6 @@ def decode_jsonl(text: str) -> tuple[ReplayTraceHeader, tuple[ReplayRow, ...]]:
 
 
 def encode_document(header: ReplayTraceHeader, rows: list[ReplayRow]) -> str:
-    """Encode a repository-safe replay fixture document."""
     return json.dumps(
         {"header": asdict(header), "rows": [asdict(row) for row in rows]},
         separators=(",", ":"),
@@ -182,7 +179,6 @@ def encode_document(header: ReplayTraceHeader, rows: list[ReplayRow]) -> str:
 
 
 def decode_document(text: str) -> tuple[ReplayTraceHeader, tuple[ReplayRow, ...]]:
-    """Decode a repository fixture document without changing capture JSONL."""
     try:
         payload = json.loads(text)
         if not isinstance(payload, dict):

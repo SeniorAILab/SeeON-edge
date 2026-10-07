@@ -1,5 +1,3 @@
-"""Real native mutation HTTP paths; explicit DI, not lifespan/login qualification."""
-
 import sqlite3
 from contextlib import contextmanager
 from types import SimpleNamespace

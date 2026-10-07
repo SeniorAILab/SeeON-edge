@@ -1,9 +1,3 @@
-"""Convert the frozen worker wire contract into Backend store types.
-
-WireProvenance has no backend_build_revision; the Backend stamps its own
-revision at ingest so provenance_id is the Backend's identity of the batch.
-"""
-
 from __future__ import annotations
 
 from backend.app.features.diagnostics.records import (

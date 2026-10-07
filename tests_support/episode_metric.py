@@ -1,5 +1,3 @@
-"""Exact golden-episode metrics from canonical frame-level replay traces."""
-
 from __future__ import annotations
 
 import argparse
@@ -48,7 +46,6 @@ def _default_fall_policy() -> EffectivePolicy:
 
 
 def _resolve_fall_model() -> FallModelProtocol:
-    """Use the worker's packaged-default config and registered CPU loader."""
     try:
         config = fall_model_config_from_environment()
         return DEFAULT_FALL_MODEL_FAMILY_REGISTRY.create(config.type, config, "cpu")
@@ -62,7 +59,6 @@ _ROTATION_SUFFIX = re.compile(r"^(?P<base>.+\.jsonl)(?:\.(?P<index>[1-9]\d*))?$"
 def _load_rows(
     directory: Path, *, allow_truncated_start: bool = False
 ) -> tuple[tuple[ReplayRow, ...], bool]:
-    """Read every trace rotation chain oldest-to-newest with continuity checks."""
     if not directory.is_dir():
         raise ValueError("traces must be a directory")
     rows: list[ReplayRow] = []
@@ -148,7 +144,6 @@ def evaluate(
     *,
     fall_model: FallModelProtocol | None = None,
 ) -> dict[str, object]:
-    """Run canonical replay then compare admitted alerts to labelled windows."""
     episodes = tuple(item for item in goldens if item.resolved == "real")
     if not episodes:
         raise ValueError("golden fixture contains no real episodes")
@@ -207,9 +202,6 @@ def evaluate(
     outside = [alert for index, alert in enumerate(alerts) if index not in matched]
     start_ns, end_ns = min(row.pts_ns for row in rows), max(row.pts_ns for row in rows)
     duration_hours = max((end_ns - start_ns) / 3_600_000_000_000, 1 / 3_600_000_000_000)
-    # The decider's resampler is the single cadence owner, so its own count is
-    # the only gap authority; counting invalid frames here double-counted the
-    # per-domain runs and needed a fudge factor to compensate.
     gap_rows = sum(run.resample_gap_rows_total for _, run in runs)
     exact = all(item["alerts"] == 1 for item in per_episode) and not outside
     id_churn_allowance = _id_churn_allowance(
@@ -264,15 +256,11 @@ def _id_churn_allowance(
     *,
     outside_alerts: list[dict[str, object]],
 ) -> list[dict[str, int | str]]:
-    """List failed episodes caused solely by beyond-window legacy id splits."""
     if outside_alerts:
         return []
     switches: list[dict[str, int | str]] = []
     live: dict[tuple[str, int], dict[int, tuple[int, int]]] = {}
     candidates: dict[tuple[str, int], dict[int, tuple[int, int]]] = {}
-    # Ids whose candidacy expired unmatched. They are no longer pairable, but
-    # they remain proof that this camera/epoch's identity history is mixed, so
-    # a later pair cannot be called unambiguous.
     expired: dict[tuple[str, int], set[int]] = defaultdict(set)
     frame_counts: dict[tuple[str, int], int] = defaultdict(int)
     reassociation_ns = 5_000_000_000
@@ -290,18 +278,11 @@ def _id_churn_allowance(
             for track_id, seen in recorded.items()
             if row.pts_ns - seen[1] <= reassociation_ns
         }
-        # A predecessor whose candidacy already expired is still evidence that
-        # this camera's identity history is mixed. Dropping it here would make
-        # the remaining pair look unambiguous and hand an allowance to an
-        # episode whose failure was never shown to be a single legacy split.
         expired[key] |= {track_id for track_id in recorded if track_id not in pending}
         stale = expired[key]
         disappeared = {
             track_id: seen for track_id, seen in previous_live.items() if track_id not in current
         }
-        # A directly preceding live id is evaluated even when sparse trace
-        # sampling crosses the window in one step. Older ids are only retained
-        # for the bounded re-association window above.
         predecessors = {**pending, **disappeared}
         new_ids = [
             track.track_id
@@ -326,12 +307,7 @@ def _id_churn_allowance(
                         "elapsed_ns": elapsed_ns,
                     }
                 )
-        # A new id consumes the entire contemporaneous candidacy. Retaining a
-        # candidate after an ambiguous arrival would let a later id turn an
-        # already ambiguous split into an allowance.
         if new_ids:
-            # A new id consumes the whole history: whatever it resolved or
-            # failed to resolve, later arrivals start from a clean record.
             expired[key] = set()
         candidates[key] = (
             {}

@@ -1,20 +1,3 @@
-"""Common per-domain detection-window gate (issue #24).
-
-``WorkerRuntime._build_decider`` wraps a domain's real ``Decider`` in
-``_WindowGatedDecider`` whenever that domain has a resolved detection window
--- except "bed_exit", which keeps gating internally (``BedExitMonitor``
-tracks per-frame containment/latch state regardless of the window and only
-gates final event *emission*; wrapping it here too would freeze that internal
-state while the window is closed). This file characterizes:
-
-- ``_WindowGatedDecider`` itself: skips ``update()`` (and the wrapped
-  decider's internal state) entirely outside its window, passes through
-  unchanged inside it.
-- "fall" (representative of any windowed, non-bed_exit domain): runs 24/7
-  when unconfigured, gated once ``domains.detection_windows["fall"]`` is set.
-- "bed_exit": never wrapped by this gate, regardless of a configured window.
-"""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime

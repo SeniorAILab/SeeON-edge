@@ -1,5 +1,3 @@
-"""Composition-owned Flow media plane and Smart Record bridge."""
-
 from __future__ import annotations
 
 import logging
@@ -55,8 +53,6 @@ class FlowMediaPlaneConfig:
 
 
 class FlowMediaPlane:
-    """Runtime-owned facade exposing the control subset used by policy pumps."""
-
     def __init__(
         self,
         config: FlowMediaPlaneConfig,
@@ -125,7 +121,6 @@ class FlowMediaPlane:
         if self._renderer is None or self._fall_states is None:
             raise RuntimeError("Flow live preview renderer and fall-state provider are required")
         generation = self._live_frames.selection_generation(camera_id)
-        # This callback runs on an HTTP thread, never on Flow's probe thread.
         try:
             jpeg = self.plane.snapshot(camera_id, draw_objects=False)
             metadata = self.metadata.peek(camera_id)
@@ -161,12 +156,8 @@ class FlowMediaPlane:
                 expected_generation=generation,
             )
         except SnapshotUnavailable:
-            # Expected before the first frame; the HTTP layer answers with its
-            # own typed unavailable response.
             return
         except (RuntimeError, OSError) as error:
-            # Anything else is a real fault of the preview path and must be
-            # visible, but a demand signal must not crash the HTTP server.
             LOGGER.warning("live-frame refresh failed for camera_id=%s: %s", camera_id, error)
 
     def add_source(self, camera_id: str, uri: str) -> SourceBinding:
@@ -185,9 +176,6 @@ class FlowMediaPlane:
         if self._live_frames is not None:
             self._live_frames.clear_camera(camera_id)
 
-    #: The clip the acceptance criteria name is 60 s: this cached lookback plus
-    #: the plane's forward window. It lives here, with the recorder, so a single
-    #: place owns the contract instead of a literal at the call site.
     DEFAULT_LOOKBACK_SEC: Final = 15
 
     def smart_recorder(
@@ -234,7 +222,6 @@ class FlowMediaPlane:
         return self.plane
 
     def sealed_recording(self, info: RecordingInfo) -> None:
-        """Test seam for delivering a Flow recording completion to its actor."""
         actor = self._actors.get(info.camera_id)
         if actor is None:
             raise ValueError(f"Flow smart recorder is absent for {info.camera_id}")

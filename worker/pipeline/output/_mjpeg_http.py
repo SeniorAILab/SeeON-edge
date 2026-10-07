@@ -70,34 +70,19 @@ HEARTBEAT_INTERVAL_SECONDS: Final = 1.0
 MAX_PROBE_BODY_BYTES: Final = 8192
 MAX_POSE_BODY_BYTES: Final = 256
 MAX_BED_ZONE_BODY_BYTES: Final = 256
-# Derived from the trace retention bound in shared/events/replay_wire.py so a
-# full retained timeline can actually be transferred. A bare constant here
-# refused exactly the long windows replay exists for.
 MAX_REPLAY_BODY_BYTES: Final = _REPLAY_BODY_LIMIT
-# Bounded wait for the first frame after a stream connects. Viewer gating
-# (#48) means encoding does not start until this connection's counter
-# increment makes `has_viewers` true, so the first frame is not already
-# cached the way it always was pre-gating; this must stay comfortably under
-# a client's read timeout while giving the pump a real chance to publish.
 STREAM_FIRST_FRAME_TIMEOUT_SECONDS: Final = 0.5
 LOGGER: Final = logging.getLogger(__name__)
 
 
 class BedZoneNotFoundError(RuntimeError):
-    """Recognition ran successfully but found no bed in the frame."""
+    ...
 
 
-# Given the best available (raw-ish) frame, run bed segmentation once and
-# return its qualifying segmented beds, or raise ``BedZoneNotFoundError``
-# when the model finds no bed. Injected from ``worker.runtime`` -- the
-# composition root -- so this output-layer module never imports
-# ``worker.adapters`` directly, mirroring the existing ``MjpegProbe`` seam.
 BedZoneRecognizer = Callable[[Image, float], BedZoneRecognizeResponse]
 BedZoneSnapshot = Callable[[str], bytes]
 
 
-# Raw probe result as the runtime's probe callable returns it (it may carry
-# the masked URL and a message); only ``ProbeResponse.sanitized`` reaches the wire.
 MjpegProbePayload: TypeAlias = dict[str, bool | str | int]
 
 
@@ -105,8 +90,6 @@ MjpegProbe = Callable[[str], MjpegProbePayload]
 
 
 class MjpegProbeError(RuntimeError):
-    """Carry a bounded probe failure category without URL details."""
-
     __slots__ = ("error_class",)
     error_class: ProbeErrorClass
 
@@ -205,10 +188,6 @@ def build_http_server(
                 return
             payload: ProbeResponse
             try:
-                # Re-validate destination (including DNS answers) so forged
-                # internal callers cannot skip API admission and open an
-                # arbitrary RTSP target (SSRF). Pinning happens inside the
-                # worker probe/open path; this gate only admits.
                 from shared.rtsp_url_policy import assert_rtsp_endpoint_allowed
 
                 try:
@@ -264,18 +243,9 @@ def build_http_server(
             return frame
 
         def _handle_stream(self, camera_id: str) -> None:
-            # Same constant-time relay-token gate as /probe,
-            # and clip delete (security finding #3). Auth runs before any
-            # viewer-counter side effect so a rejected caller never opens the
-            # encode gate.
             if not _authorized_probe(self.headers.get(RELAY_TOKEN_HEADER), probe_token):
                 self.send_error(HTTPStatus.FORBIDDEN)
                 return
-            # Viewer gating (#48): count this connection *before* waiting for
-            # a frame so `has_viewers` opens the encode gate in time for the
-            # pump to actually publish one -- and always uncount it, on every
-            # return path (normal completion or a broken/reset pipe), via
-            # `finally`.
             if camera_id == "" or not store.is_known(camera_id):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
@@ -313,10 +283,6 @@ def build_http_server(
                     now = time.monotonic()
                     heartbeat_due = now - last_send_at >= HEARTBEAT_INTERVAL_SECONDS
                     if frame is None:
-                        # A selection change can deliberately invalidate the cached
-                        # frame. Wait against ``None`` next time rather than
-                        # repeatedly satisfying ``current is not previous``
-                        # with the empty slot and spinning.
                         previous = None
                         continue
                     if frame is previous and not heartbeat_due:
@@ -335,10 +301,6 @@ def build_http_server(
             if not _authorized_probe(self.headers.get(RELAY_TOKEN_HEADER), probe_token):
                 self.send_error(HTTPStatus.FORBIDDEN)
                 return
-            # Viewer gating (#48) means the cache can go stale with no stream
-            # viewer connected; treat this request as a momentary viewer so
-            # the next `publish()` encodes one fresh frame, while still
-            # serving whatever is cached right now (bounded cost, no wait).
             if store.is_known(camera_id):
                 store.request_snapshot_refresh(camera_id)
             frame = self._resolve_frame(camera_id)
@@ -483,7 +445,6 @@ def build_http_server(
             return parse_bed_zone_recognize_request(payload)
 
         def _read_json_object(self, limit: int) -> dict[str, object] | None:
-            """Bounded JSON object body, or None when absent, oversized, or malformed."""
             raw_length = self.headers.get("Content-Length")
             if raw_length is None:
                 return None
@@ -554,13 +515,6 @@ def _authorized_probe(supplied: str | None, expected: str | None) -> bool:
 
 
 def _authorized_pose(supplied: str | None, expected: str | None) -> bool:
-    """Gate the pose-overlay GET/POST routes with the same relay token as
-    ``/probe`` (issue #71), but -- unlike ``_authorized_probe`` -- fail open
-    when no token is configured. A standalone ``ML_WORKER_DEV_MJPEG`` server
-    (no relay token wired at all) must keep working unauthenticated exactly
-    as it did before this endpoint had any auth, preserving dev ergonomics;
-    once a relay token *is* configured, it is enforced just like ``/probe``.
-    """
     if expected is None or expected.strip() == "":
         return True
     return _authorized_probe(supplied, expected)

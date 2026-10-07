@@ -1,5 +1,3 @@
-"""Schema 18 compact ten-table DDL plus the schema-19 create statements."""
-
 from __future__ import annotations
 
 from typing import Final
@@ -10,12 +8,6 @@ from backend.app.edge_db.execution_records_ddl import (
     EXECUTION_RECORD_TABLES,
 )
 
-# The persistent `schema_migrations` ledger table. Its CREATE text and the three
-# provenance columns below are byte-for-byte what every deployed schema-18
-# database carries (the columns were added with ALTER TABLE, so the stored
-# `sqlite_schema.sql` text differs from an inline CREATE). Keeping the same
-# statements means a freshly created schema-19 SQLite source and a deployed one
-# compile to the identical structural manifest.
 SCHEMA_MIGRATIONS_LEDGER_TABLE_SQL: Final = """
         CREATE TABLE schema_migrations (
             version INTEGER PRIMARY KEY CHECK (version > 0),
@@ -75,14 +67,12 @@ APPLICATION_API_TABLES: Final = frozenset(
     table for table in APPLICATION_TABLES if table != "schema_migrations"
 )
 
-# Every DDL statement that turns an empty database into schema 18, in order.
 SCHEMA_18_STATEMENTS: Final = (
     SCHEMA_MIGRATIONS_LEDGER_TABLE_SQL,
     *SCHEMA_MIGRATIONS_PROVENANCE_STATEMENTS,
     *COMPACT_SCHEMA_CREATE_STATEMENTS,
 )
 
-# Schema 19 is schema 18 plus the six execution-record tables and their indexes.
 SCHEMA_19_STATEMENTS: Final = (
     *SCHEMA_18_STATEMENTS,
     *EXECUTION_RECORD_CREATE_STATEMENTS,

@@ -1,5 +1,3 @@
-"""Image-free identity used to bind native decisions to source evidence."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -25,11 +25,6 @@ pytest_plugins = ("tests_support.postgres_sandbox",)
 
 AUTH = {"Authorization": "Bearer relay-token"}
 
-# The suite explicitly supplies disposable admin/admin bootstrap credentials
-# in tests/conftest.py. A worker relay/bearer/query token is never sufficient
-# on its own; these tests log in and rely on TestClient's cookie jar to carry
-# the server-issued dashboard session.
-
 
 def _login(client: TestClient) -> None:
     response = client.post(
@@ -111,11 +106,6 @@ def _install_mock_transport(
     monkeypatch: pytest.MonkeyPatch,
     handler: Callable[[httpx.Request], httpx.Response],
 ) -> None:
-    """camera_stream now proxies via httpx.AsyncClient (see streams_router.py)
-    instead of urllib, so these tests inject an httpx.MockTransport wherever
-    the router constructs its client -- ``httpx.AsyncClient(...)`` is looked
-    up on the module at call time, so patching the module attribute is
-    enough."""
     real_async_client = httpx.AsyncClient
 
     def _factory(*args: object, **kwargs: object) -> httpx.AsyncClient:
@@ -159,7 +149,6 @@ def test_stream_proxy_forwards_mjpeg_with_a_dashboard_session(
     assert response.status_code == 200
     assert response.content == body
     assert response.headers["content-type"].startswith("multipart/x-mixed-replace")
-    # Relay token is forwarded server-side only; never appears in the browser response.
     assert "relay-token" not in response.text
     assert "X-Edge-Relay-Token" not in response.headers
     assert calls == [
@@ -223,7 +212,6 @@ def test_stream_proxy_requires_a_dashboard_session(
     monkeypatch: pytest.MonkeyPatch,
     app: FastAPI,
 ) -> None:
-    """Worker relay credentials never substitute for a dashboard session."""
     calls: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -290,14 +278,6 @@ def test_stream_proxy_reports_connection_failure_as_unavailable(
 
 
 def test_stream_proxy_closes_upstream_response_and_client_on_cancellation() -> None:
-    """핵심 회귀(연결 누수 버그): 클라이언트가 스트림을 중간에 끊으면 이 태스크가
-    asyncio.CancelledError로 취소되고, ``_iter_upstream``의 finally가 지연 없이
-    실행돼 upstream 응답(``aclose``)과 커넥션 풀(``client.aclose``)을 닫아야
-    한다. 실제 프로덕션에서는 uvicorn이 클라이언트 disconnect 시 요청 처리
-    태스크를 취소하는데, 그 취소가 (스레드풀로 감싼 블로킹 read와 달리) 이
-    async 제너레이터의 현재 await 지점에 곧바로 전달되는 것이 이번 수정의
-    핵심이다."""
-
     class _StubUpstreamStream(httpx.AsyncByteStream):
         def __init__(self, chunks: list[bytes]) -> None:
             self._chunks = chunks
@@ -308,8 +288,6 @@ def test_stream_proxy_closes_upstream_response_and_client_on_cancellation() -> N
             for chunk in self._chunks:
                 yield chunk
                 self.yielded_first_chunk.set()
-                # 실제 MJPEG 스트림처럼 다음 프레임을 무기한 기다린다 --
-                # 취소는 바로 이 await 지점에 꽂혀야 한다.
                 await asyncio.sleep(3600)
 
         async def aclose(self) -> None:
@@ -350,16 +328,6 @@ def test_stream_proxy_closes_upstream_response_and_client_on_cancellation() -> N
 def test_stream_proxy_closes_upstream_via_background_when_never_iterated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """핵심 회귀(연결 누수 버그, 2차): 헤더 응답 직후 ~ Starlette가
-    ``body_iterator`` 순회를 시작하기 전 사이의 좁은 창에서 클라이언트가
-    끊기면(curl을 SIGTERM으로 죽이는 패턴에서 실측됨), 요청 처리 태스크가
-    한 번도 실행되지 못한 채 취소돼 ``_iter_upstream`` 제너레이터는 시작조차
-    되지 않는다 -- 시작한 적 없는 제너레이터는 닫아도 그 finally가 돌지
-    않으므로, 그 경로 하나에만 정리를 맡기면 upstream/client가 영영 새는
-    것이 실제로 재현됐다. camera_stream이 같은 closer를
-    ``StreamingResponse(background=...)``에도 걸어 두므로, body_iterator를
-    전혀 건드리지 않고 background만 실행해도 정리가 되는지 고정한다."""
-
     closed = {"stream": False}
     created_clients: list[httpx.AsyncClient] = []
     real_async_client = httpx.AsyncClient
@@ -381,13 +349,8 @@ def test_stream_proxy_closes_upstream_via_background_when_never_iterated(
         return created_client
 
     monkeypatch.setattr(httpx, "AsyncClient", _factory)
-    # camera_stream 자체의 배선(타임아웃 설정, closer/background 연결)을
-    # 실제로 거치도록 라우트 함수를 직접 호출한다 -- 여기선 대시보드 세션
-    # 검증이 관심사가 아니므로 _authorize만 이 모듈 안에서 no-op으로 바꾼다.
     monkeypatch.setattr(streams_router, "_authorize", lambda *args, **kwargs: None)
     monkeypatch.setattr(streams_router, "_worker_camera_id", lambda _request, camera_id: camera_id)
-    # This closer-only scenario passes a bare object as Request; stub relay
-    # headers so the media-auth forward path is not under test here.
     monkeypatch.setattr(streams_router, "_worker_relay_headers", lambda _request: {})
 
     async def scenario() -> None:
@@ -397,9 +360,6 @@ def test_stream_proxy_closes_upstream_via_background_when_never_iterated(
         )
 
         assert response.background is not None
-        # body_iterator는 절대 건드리지 않는다 -- SIGTERM 재현 패턴에서
-        # Starlette가 실제로 밟는, "제너레이터를 한 번도 순회하지 않은 채
-        # background만 실행"하는 경로 그대로다.
         await response.background()
 
     asyncio.run(scenario())
@@ -604,9 +564,6 @@ def test_stream_proxy_forwards_the_relay_token_to_the_worker(
     monkeypatch: pytest.MonkeyPatch,
     app: FastAPI,
 ) -> None:
-    """Security finding #3: worker /stream requires the relay token; the API
-    proxy must forward it server-side without exposing it to the browser.
-    """
     calls: list[StreamCall] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -648,11 +605,6 @@ def test_pose_get_forwards_the_relay_token_to_the_worker(
     monkeypatch: pytest.MonkeyPatch,
     app: FastAPI,
 ) -> None:
-    """Issue #71: the worker now gates GET /overlay/{camera_id}/pose on the
-    same relay token as /probe, so the proxy must forward it (mirroring
-    cameras/router.py's `/probe` connection-test call) or every dashboard
-    pose read would start 403ing against a worker with a token configured.
-    """
     calls: list[UrlopenCallWithHeaders] = []
 
     def fake_urlopen(request: urllib.request.Request, timeout: float) -> PoseJsonResponse:
@@ -686,7 +638,6 @@ def test_pose_set_forwards_the_relay_token_to_the_worker(
     monkeypatch: pytest.MonkeyPatch,
     app: FastAPI,
 ) -> None:
-    """Issue #71: same as the GET case above, but for POST /overlay/{camera_id}/pose."""
     calls: list[UrlopenCallWithHeaders] = []
 
     def fake_urlopen(request: urllib.request.Request, timeout: float) -> PoseJsonResponse:
@@ -804,7 +755,6 @@ def test_head_snapshot_answers_with_the_get_header_section_and_no_body(
     monkeypatch: pytest.MonkeyPatch,
     app: FastAPI,
 ) -> None:
-    """The snapshot proxy shared the clip routes' #452 HEAD gap."""
     body = b"\xff\xd8camera-jpeg\xff\xd9"
 
     class JpegResponse(FiniteStreamResponse):
@@ -833,7 +783,6 @@ def test_head_snapshot_answers_with_the_get_header_section_and_no_body(
 
 
 def test_head_is_not_offered_on_the_unbounded_mjpeg_stream(app: FastAPI) -> None:
-    """No Content-Length exists for a stream that never ends."""
     with TestClient(app) as client:
         _login(client)
         response = client.head("/api/v1/streams/cam_sp_201")

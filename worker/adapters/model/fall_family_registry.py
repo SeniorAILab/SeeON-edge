@@ -1,10 +1,3 @@
-"""Fall-model family registry for packaged model configuration.
-
-Adapters cannot import the runtime's validated ``FallModelConfig``, so
-factories accept the local structural ``FallModelConfigLike`` protocol.
-Unknown family types fail closed instead of selecting a fallback model.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -19,13 +12,6 @@ from worker.adapters.model.registry import FallModel
 
 
 class FallModelConfigLike(Protocol):
-    """Structural mirror of ``worker.runtime.config.worker_models.FallModelConfig``.
-
-    Every field a fall-model factory may need to read, named identically to
-    the real pydantic model. See the module docstring for why this Protocol
-    exists instead of an import.
-    """
-
     @property
     def type(self) -> str: ...
 
@@ -71,8 +57,6 @@ FallModelFactory: TypeAlias = Callable[[FallModelConfigLike, str], FallModel]
 
 @dataclass(slots=True)
 class UnknownFallModelTypeError(Exception):
-    """Raised when ``FallModelConfig.type`` names an unregistered family."""
-
     requested_type: str
     known_types: tuple[str, ...]
 
@@ -85,8 +69,6 @@ class UnknownFallModelTypeError(Exception):
 
 
 class FallModelFamilyRegistry:
-    """Map fall-model family names (``FallModelConfig.type``) to factories."""
-
     def __init__(self) -> None:
         self._factories: dict[str, FallModelFactory] = {}
 
@@ -109,9 +91,6 @@ class FallModelFamilyRegistry:
 
 
 def _create_pose_bbox56_bundle_model(artifact_dir: Path, device: str) -> FallModel:
-    # The Torch runner is the nvidia profile's; importing it here at module
-    # scope would drag torch into every worker process, and the flow profile
-    # asserts torch is never imported (P1b-AC7). Resolve it only when selected.
     from worker.adapters.model.pose_bbox56_bundle import PoseBbox56BundleRunner
 
     return PoseBbox56BundleRunner.from_artifact_dir(artifact_dir, device=device)
@@ -128,7 +107,6 @@ def _create_pose_bbox56_model(config: FallModelConfigLike, device: str) -> FallM
 
 
 def default_fall_model_family_registry() -> FallModelFamilyRegistry:
-    """Build the packaged-model family dispatch registry."""
     registry = FallModelFamilyRegistry()
     registry.register("pose-bbox56-proxy-v0", _create_pose_bbox56_model)
     return registry

@@ -1,11 +1,3 @@
-"""Unit tests for the issue #155 floor migration (free-text -> integer).
-
-Covers ``parse_legacy_floor`` (the pure parsing/coercion function, reused by
-both the read-time self-heal in ``public_camera`` and the one-time rewrite
-in ``CameraRegistryStore.migrate_legacy_string_floors``) and the store
-method itself.
-"""
-
 from __future__ import annotations
 
 import pytest
@@ -51,9 +43,9 @@ def test_parse_legacy_floor_recognizes_known_legacy_shapes(raw: str, expected: i
 @pytest.mark.parametrize(
     "raw",
     [
-        "지하 1층",  # unsupported shape (not B<n> or <n>층)
+        "지하 1층",
         "이층",
-        "B2",  # parses but outside the fixed B1..10층 catalog
+        "B2",
         "11층",
         "0층",
         "",
@@ -117,7 +109,6 @@ def test_migrate_legacy_string_floors_defaults_an_unparseable_value(
         status="online",
         floor=5,
     )
-    # A legacy free-text value the typed API can no longer write.
     sandbox.admin.execute(
         "UPDATE cameras SET floor_override=%s WHERE camera_id=%s", ("지하 1층", "camera-1")
     )

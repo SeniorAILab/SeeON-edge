@@ -56,12 +56,6 @@ class RuntimeProfileEdge:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeProfileDescriptor:
-    """Boot-frozen truth about the selected infrastructure path.
-
-    This is the typed Todo 7 descriptor only. Persistence, relay provenance,
-    and content hashing belong to Todo 10.
-    """
-
     requested_profile: str
     canonical_profile: str
     requested_decode_backend: str

@@ -1,27 +1,3 @@
-"""Environment-sourced local overrides for ``models.fall`` and ``clip.enabled``.
-
-Issues #66/#68: ``BackendWorkerConfigPayload.to_worker_config()``
-(``worker/runtime/config/pull_models.py``) never carried ``models``/``clip``
-through a relay pull, so the shipped pull-only production topology (no
-local YAML roster at all) could never
-configure a fall model or turn on clip recording -- both YAML-only fields
-always resolved to their pydantic defaults (``fall=None``,
-``enabled=False``).
-
-Docker packaging configures the worker via ``.env``/environment variables in
-production, so both fields get a real, production-reachable surface here,
-read the same way ``RELAY_URL``/``RELAY_TOKEN`` already are
-(``worker/runtime/config/config_pull.py``). The fall artifact is edge-local
-(mounted into the container), so its env vars live alongside the other
-edge-local switches (``ML_WORKER_DEV_MJPEG*``, ``ML_WORKER_PROFILE``) rather
-than being pulled from the backend, which only carries fleet-level config
-(relay/domains/cameras).
-
-Fail-closed per ADR-0002: a malformed value (a non-integer window/stride, a
-non-numeric operating_threshold, or an unrecognized boolean token) raises
-``WorkerConfigError`` loudly rather than silently defaulting.
-"""
-
 from __future__ import annotations
 
 import json
@@ -91,7 +67,6 @@ _RETIRED_WORKER_ENV: Final = frozenset(
 
 
 def reject_retired_worker_environment(environ: Mapping[str, str]) -> None:
-    """Reject removed worker authorities instead of silently overriding config."""
     present = sorted(_RETIRED_WORKER_ENV.intersection(environ))
     if present:
         raise WorkerConfigError(
@@ -106,13 +81,6 @@ _FALSY: Final = frozenset({"0", "false", "no", "off"})
 _DEFAULT_TYPE: Final = "pose-bbox56-proxy-v0"
 _DEFAULT_WEIGHTS: Final = "model.pt"
 _DEFAULT_ARCHITECTURE: Final = "arch.json"
-# Packaged default fall model, used when ML_WORKER_FALL_MODEL_ARTIFACT_DIR is
-# unset: the published pose+bbox56 proxy bundle pinned in
-# worker/tools/fetch_models/manifest.json and provisioned by
-# scripts/fetch-models.sh (nothing under models/ is tracked). Values mirror
-# worker/ml-worker.example.yaml's models.fall block; the 0.5 transition
-# threshold is the owner-fixed default that a promotion-eligible receipt may
-# override (worker/domains/registry.py).
 _DEFAULT_ARTIFACT_DIR: Final = "models/fall/pose-bbox56-gru"
 _DEFAULT_WINDOW: Final = 30
 _DEFAULT_STRIDE: Final = 5
@@ -127,14 +95,6 @@ _FETCH_MODELS_HINT: Final = (
 
 
 def _bool_env(name: str, env: Mapping[str, str]) -> bool | None:
-    """Parse an optional boolean env var.
-
-    Returns ``None`` when unset/blank so callers can distinguish "not set"
-    from an explicit ``false`` -- "explicit wins outright, silence defers"
-    (mirrored from ``WorkerRuntime._resolve_mjpeg_config``'s ``dev_mjpeg``
-    precedent) only works if silence is representable here, not collapsed to
-    a hardcoded ``False``.
-    """
     raw = env.get(name, "").strip().lower()
     if raw == "":
         return None
@@ -171,12 +131,6 @@ def _required_float(name: str, env: Mapping[str, str], *, because: str) -> float
 def _collect_required_int(
     name: str, env: Mapping[str, str], *, because: str, errors: list[str]
 ) -> int | None:
-    """Like ``_required_int``, but appends to ``errors`` instead of raising.
-
-    Issue #79 (track 2): callers collect every malformed fall-model env var
-    into one error report instead of the first ``_required_int`` call
-    aborting before the next field is even checked.
-    """
     try:
         return _required_int(name, env, because=because)
     except WorkerConfigError as error:
@@ -215,13 +169,6 @@ def _optional_float(name: str, env: Mapping[str, str]) -> float | None:
 
 
 def _warn_if_env_ignored(name: str, env: Mapping[str, str], *, reason: str) -> None:
-    """Warn when ``name`` is set in the environment but the current code path
-    does not read it.
-
-    Issue #198 (and #191 before it): a "set, documented, silently dead" env
-    var is an operator-facing footgun regardless of which var it is, so this
-    stays a small generic check rather than one-off handling per variable.
-    """
     if env.get(name, "").strip():
         LOGGER.warning("%s is set but ignored: %s", name, reason)
 
@@ -229,15 +176,6 @@ def _warn_if_env_ignored(name: str, env: Mapping[str, str], *, reason: str) -> N
 def clip_recording_config_from_environment(
     environ: Mapping[str, str] | None = None,
 ) -> ClipRecordingConfig:
-    """Build ``clip`` from env, deferring to ``ClipRecordingConfig``'s own
-    default when ``ML_WORKER_CLIP_RECORDING_ENABLED`` is unset.
-
-    An explicit env value (true or false) always wins outright. Env silence
-    must *not* be read as an explicit "false" -- it defers to whatever
-    ``ClipRecordingConfig.enabled`` itself defaults to, so a future change to
-    that default (e.g. always-on clip recording) takes effect on an
-    unconfigured boot instead of being silently overridden here.
-    """
     env = os.environ if environ is None else environ
     explicit = _bool_env(ML_WORKER_CLIP_RECORDING_ENABLED_ENV, env)
     return ClipRecordingConfig() if explicit is None else ClipRecordingConfig(enabled=explicit)
@@ -246,29 +184,11 @@ def clip_recording_config_from_environment(
 def fall_model_config_from_environment(
     environ: Mapping[str, str] | None = None,
 ) -> FallModelConfig:
-    """Build the legacy local fall config from the packaged pose+bbox56 bundle.
-
-    The zero-environment default is ``models/fall/pose-bbox56-gru`` with a
-    30x56 input, schema version 2, and operating threshold 0.5. Production
-    model selection is the versioned worker-config authority; the local
-    ``ML_WORKER_FALL_MODEL_*`` selection keys are retired and rejected before
-    configuration is resolved.
-    """
     env = os.environ if environ is None else environ
     artifact_dir_raw = env.get(ML_WORKER_FALL_MODEL_ARTIFACT_DIR_ENV, "").strip()
     is_default = not artifact_dir_raw
 
     if is_default:
-        # Issue #198: previously window/stride/operating_threshold were only
-        # ever read when ARTIFACT_DIR was also set, so an operator-set
-        # ML_WORKER_FALL_MODEL_OPERATING_THRESHOLD was silently discarded on
-        # the packaged-default path (the only path the shipped edge topology
-        # actually takes) and the field default (0.0007872396381571889, an
-        # upstream le2i operating point -- see the module docstring above)
-        # was used instead. An explicit env value now wins outright per
-        # field; env silence falls back to the packaged manifest default,
-        # same "explicit wins outright, silence defers" precedence used
-        # elsewhere in this module (see ``clip_recording_config_from_environment``).
         artifact_dir = _DEFAULT_ARTIFACT_DIR
         window_env = _optional_int(ML_WORKER_FALL_MODEL_WINDOW_ENV, env)
         stride_env = _optional_int(ML_WORKER_FALL_MODEL_STRIDE_ENV, env)
@@ -285,10 +205,6 @@ def fall_model_config_from_environment(
         )
         schema_version: int | None = _DEFAULT_SCHEMA_VERSION
         preprocessing_identity: str | None = _DEFAULT_PREPROCESSING_IDENTITY
-        # schema_version/preprocessing_identity have no packaged-default
-        # fallback path (unlike window/stride/operating_threshold above) --
-        # they always resolve to the packaged manifest's own values here, so
-        # an env value for either is unconditionally dead on this branch.
         _warn_if_env_ignored(
             ML_WORKER_FALL_MODEL_SCHEMA_VERSION_ENV,
             env,
@@ -322,12 +238,9 @@ def fall_model_config_from_environment(
             raise WorkerConfigError(
                 f"{len(errors)} fall model environment variable(s) invalid: " + "; ".join(errors)
             )
-        # Guaranteed non-None: the empty-errors check above already returned
-        # (raised) if any of the three collectors above appended a failure.
         assert window is not None
         assert stride is not None
         assert operating_threshold is not None
-        # Required (not optional) on this branch, so it is always env-sourced.
         operating_threshold_source = "env"
         schema_version = _optional_int(ML_WORKER_FALL_MODEL_SCHEMA_VERSION_ENV, env)
         preprocessing_identity = (
@@ -339,19 +252,11 @@ def fall_model_config_from_environment(
     architecture = (
         env.get(ML_WORKER_FALL_MODEL_ARCHITECTURE_ENV, "").strip() or _DEFAULT_ARCHITECTURE
     )
-    # Issue #198: the only prior way to discover the effective operating
-    # threshold was dumping an emitted event's `audit` blob out of the SQLite
-    # outbox. Logging it once here, at the boot-only call site, makes the
-    # resolved value -- and whether it came from env or the packaged
-    # manifest default -- visible without waiting for a detection to fire.
     LOGGER.info(
         "fall model operating_threshold resolved to %s (source: %s)",
         operating_threshold,
         operating_threshold_source,
     )
-    # The packaged bundle carries both members; which one runs is the
-    # profile's decision. The flow image ships no Torch (P1b-AC7), so its
-    # packaged default is the ONNX Runtime member.
     framework: Literal["pytorch", "onnxruntime"] = (
         "onnxruntime" if env.get("ML_WORKER_PROFILE", "").strip() == "flow" else "pytorch"
     )
@@ -385,7 +290,6 @@ def selected_fall_bundle_config_from_environment(
     selection_path: Path | None = None,
     models_root: Path | None = None,
 ) -> SelectedFallBundleConfig | None:
-    """Load the selected fall bundle; absence leaves the packaged model active."""
     selection_path = FALL_SELECTION_PATH if selection_path is None else selection_path
     models_root = FALL_MODELS_ROOT if models_root is None else models_root
     if not selection_path.exists():
@@ -426,32 +330,6 @@ def resolve_local_overrides(
     yaml_config: WorkerConfig | None,
     environ: Mapping[str, str] | None = None,
 ) -> tuple[WorkerModelsConfig, ClipRecordingConfig, DevMjpegConfig | None]:
-    """Settle ``models``/``clip``/``dev_mjpeg`` to merge into a pulled or
-    LKG-restored ``WorkerConfig``.
-
-    ``models``/``clip`` mirror the "explicit wins outright, silence defers"
-    precedence ``WorkerRuntime._resolve_mjpeg_config`` already uses for
-    ``dev_mjpeg``/``ML_WORKER_DEV_MJPEG*`` (worker/runtime/worker.py
-    ~535-554): an explicit local YAML value wins outright over env; with the
-    YAML silent (no local YAML at all -- the production pull-first default
-    -- or the YAML field left at its own default), the environment decides.
-
-    ``dev_mjpeg`` only needs the YAML half of that precedence here: unlike
-    ``models``/``clip``, ``WorkerRuntime._resolve_mjpeg_config`` already
-    falls back to ``ML_WORKER_DEV_MJPEG*`` env vars itself whenever the
-    resolved ``WorkerConfig.dev_mjpeg`` comes back disabled, reading
-    ``self._env`` directly -- so that half of the precedence already worked
-    even before this fix. What was missing (issue #113) was the YAML half:
-    ``BackendWorkerConfigPayload.to_worker_config`` never received
-    ``dev_mjpeg`` at all, so an explicit local ``dev_mjpeg.enabled: true``
-    was silently reset to the pydantic default (disabled) on every
-    successful pull -- with no failure and no log line, the operator-facing
-    MJPEG diagnostic port would simply never bind. Returning ``None`` here
-    when the YAML did not explicitly enable it (rather than synthesizing a
-    disabled ``DevMjpegConfig()``) preserves that existing env fallback:
-    ``to_worker_config`` only overrides the pulled config's default when the
-    caller actually has an explicit answer to give it.
-    """
     env = os.environ if environ is None else environ
     environment_models = worker_models_config_from_environment(env)
     yaml_models = yaml_config.models if yaml_config is not None else None
@@ -487,7 +365,6 @@ def resolve_local_overrides(
 def replay_trace_directory_from_environment(
     environ: Mapping[str, str] | None = None,
 ) -> Path | None:
-    """Return the opt-in local replay trace directory, if configured."""
     env = os.environ if environ is None else environ
     raw = env.get(WORKER_REPLAY_TRACE_DIR_ENV, "").strip()
     return None if not raw else Path(raw)

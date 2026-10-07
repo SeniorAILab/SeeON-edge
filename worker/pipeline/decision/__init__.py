@@ -1,5 +1,3 @@
-"""Decision stage: event aggregation, cooldown/idempotency and identity."""
-
 from __future__ import annotations
 
 from worker.pipeline.decision.event_aggregator import EventAggregator, unwrap_decider

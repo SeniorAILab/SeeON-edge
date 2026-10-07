@@ -1,5 +1,3 @@
-"""In-memory dashboard credential and session authority."""
-
 from __future__ import annotations
 
 import hmac
@@ -15,22 +13,10 @@ DASHBOARD_SESSION_TTL_SECONDS = 12 * 60 * 60
 
 
 def _compare_str(candidate: str, expected: str) -> bool:
-    """Constant-time compare of two ``str`` values that may contain non-ASCII
-    text (e.g. a Korean username or password).
-
-    ``hmac.compare_digest`` raises ``TypeError`` for non-ASCII ``str``
-    arguments -- it only accepts ASCII ``str`` or ``bytes``/``bytes``-like
-    objects. Encoding to UTF-8 bytes first keeps the comparison constant-time
-    while supporting any username/password the product's Korean-language UI
-    can produce.
-    """
-
     return hmac.compare_digest(candidate.encode("utf-8"), expected.encode("utf-8"))
 
 
 class DashboardCredentials(Protocol):
-    """Something that knows one dashboard username and can verify a login."""
-
     @property
     def username(self) -> str: ...
 
@@ -39,8 +25,6 @@ class DashboardCredentials(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class PlaintextDashboardCredentials:
-    """Env-var or built-in-default credentials: compared directly."""
-
     username: str
     password: str
 
@@ -50,8 +34,6 @@ class PlaintextDashboardCredentials:
 
 @dataclass(frozen=True, slots=True)
 class HashedDashboardCredentials:
-    """Persisted credentials: password compared via scrypt verify."""
-
     persisted: PersistedDashboardCredentials
 
     @property
@@ -66,8 +48,6 @@ class HashedDashboardCredentials:
 
 @dataclass(slots=True)
 class DashboardSessionStore:
-    """Process-local session authority; credential and token mutation is its purpose."""
-
     credentials: DashboardCredentials
     ttl_seconds: int = DASHBOARD_SESSION_TTL_SECONDS
     _sessions: dict[str, float] = field(default_factory=dict)
@@ -107,19 +87,11 @@ class DashboardSessionStore:
             self._sessions.clear()
 
     def invalidate(self) -> None:
-        """Retire even held references after an uncertain credential write."""
         with self._lock:
             self._active = False
             self._sessions.clear()
 
     def rotate_credentials(self, persisted: PersistedDashboardCredentials) -> None:
-        """Swap in newly-persisted credentials and revoke every existing session.
-
-        Called after credential persistence and audit publication; the caller
-        must hold ``_SESSION_STORE_INIT_LOCK`` while calling this so the
-        swap is observed atomically by concurrent requests resolving the
-        session store for the first time.
-        """
         with self._lock:
             if not self._active:
                 raise RuntimeError("dashboard session store is inactive")

@@ -1,5 +1,3 @@
-"""Relay-protected controls for bounded stored-clip reanalysis."""
-
 from __future__ import annotations
 
 import json
@@ -192,7 +190,7 @@ def _probe_dimensions(clip_path: Path) -> tuple[int, int] | None:
             if stream.width <= 0 or stream.height <= 0:
                 return None
             return stream.width, stream.height
-    except Exception:  # noqa: BLE001 - malformed sealed media is a bad request
+    except Exception:  # noqa: BLE001
         return None
 
 

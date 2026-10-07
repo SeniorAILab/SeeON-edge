@@ -1,25 +1,3 @@
-"""In-process batched pose serving client (nvidia-multistream-serving todo 7).
-
-The Wave-3 coordinator drains one latest-only slot per camera into ONE
-batched forward, so the in-process client must satisfy the structural
-``BatchServingClient`` protocol (worker/interfaces/serving.py) while keeping
-the single-frame ``ServingClient`` path -- and the pooled runner identity
-rules of ``SharedComponentPool`` -- exactly as they are.
-
-What is pinned here:
-- ``infer_batch`` issues exactly ONE model call whose source is the whole
-  frame list (batched forward), never a per-frame loop;
-- ``results[i]`` belongs to ``frames[i]`` (the order contract from
-  tests/test_serving_batch_contract.py, now against the REAL client);
-- the batch path and ``create()`` share ONE model instance per task, so a
-  camera fleet never multiplies model instances;
-- malformed input (wrong dtype, wrong ndim, mismatched channel count) raises
-  a loud typed error instead of being silently coerced.
-
-Single-frame/batch numeric parity against the real pose weights lives in
-tests/test_serving_batch_parity.py (cpu corpus in CI, GPU under real_stack).
-"""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -75,13 +53,6 @@ class _FakeResult:
 
 @final
 class _RecordingYoloModel:
-    """Fake ultralytics model returning one result per source element.
-
-    Each result encodes the *mean pixel value* of its own source image, so a
-    caller can prove which frame a result row came from -- the order contract
-    is checked against real payload identity, not row counts.
-    """
-
     names = {0: "person"}
 
     def __init__(self) -> None:
@@ -172,7 +143,6 @@ def test_infer_batch_issues_one_batched_forward_for_the_whole_frame_list() -> No
 
 
 def test_infer_batch_result_order_matches_frame_order_against_the_real_client() -> None:
-    """The todo-2(c) order contract, now enforced on the production client."""
     model = _RecordingYoloModel()
     client = _batch_client(model)
     frames = (
@@ -192,7 +162,6 @@ def test_infer_batch_result_order_matches_frame_order_against_the_real_client() 
 
 
 def test_infer_batch_and_create_share_one_model_instance_per_task() -> None:
-    """Pool identity rule: one runner per capability, never one per camera."""
     model = _RecordingYoloModel()
     serving = InProcessServingClient(_registry_with(model))
     client = serving.batch_serving_client
@@ -229,9 +198,6 @@ def test_infer_batch_rejects_mismatched_dtype_or_shape_loudly(
     client = _batch_client(model)
     good = _packet("camera-1", seq=1, value=5)
     bad = _packet("camera-2", seq=2, value=0)
-    # FramePacket validates decode-boundary input. Corrupt the borrowed frame
-    # after construction to prove serving also fails closed if upstream breaks
-    # that invariant.
     object.__setattr__(bad.borrow_host_frame(), "image", bad_image)
 
     with pytest.raises(BatchInputError) as raised:
@@ -243,11 +209,6 @@ def test_infer_batch_rejects_mismatched_dtype_or_shape_loudly(
 
 
 def test_infer_batch_rejects_ragged_geometry_instead_of_coercing() -> None:
-    """Ultralytics would letterbox mixed sizes; the seam refuses instead.
-
-    A batched forward whose rows have different source geometry cannot be
-    compared against single-frame results, so parity would silently break.
-    """
     model = _RecordingYoloModel()
     client = _batch_client(model)
     small = _packet("camera-1", seq=1, value=5)

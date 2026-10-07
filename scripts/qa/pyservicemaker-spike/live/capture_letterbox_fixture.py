@@ -1,18 +1,3 @@
-"""Capture real nvinfer pose rows beside the tracker boxes they belong to.
-
-The letterbox inverse in ``worker/adapters/deepstream/metadata.py`` was wrong for
-an entire bring-up while its unit test passed, because the test restated the
-implementation's own assumption about where nvinfer puts the padding. This tool
-records ground truth instead: for a handful of live frames it writes the raw
-57-wide pose rows exactly as nvinfer produced them, together with the frame-space
-boxes nvtracker attached to the same frame. A test can then assert that the
-inverse maps one onto the other without anyone having to assert the padding
-convention from memory.
-
-Runs against a live RTSP source inside the shipped image. Never imported by the
-worker; ``LIVE_URIS`` supplies the source.
-"""
-
 from __future__ import annotations
 
 import argparse

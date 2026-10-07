@@ -1,5 +1,3 @@
-"""Frozen, runtime-independent contracts for fall fixture artifacts."""
-
 from __future__ import annotations
 
 import hashlib
@@ -244,12 +242,6 @@ def test_fixtures_exclude_grayscale_and_bed_vocabulary() -> None:
 
 
 def test_resampled_gap_rows_are_zero_rows_at_the_exact_cadence() -> None:
-    """P1a-AC4/AC5: a dropped 15 fps bucket becomes one ``valid=0`` zero row.
-
-    The resampler is the single owner of fall input cadence, so a gap must
-    produce the same 56-wide zero row the classifier would see for a missing
-    observation -- never a repeated or interpolated pose.
-    """
     from worker.domains.fall.pose_bbox56 import pose_bbox56_row
     from worker.pipeline.perception.pts_resample import CADENCE_NS, PtsResampler
 
@@ -259,12 +251,10 @@ def test_resampled_gap_rows_are_zero_rows_at_the_exact_cadence() -> None:
     resampler: PtsResampler[str] = PtsResampler()
     assert [row.valid for row in resampler.push(0, "a")] == [1]
     assert [row.valid for row in resampler.push(CADENCE_NS, "b")] == [1]
-    # Two buckets skipped: exactly two invalid rows, then the observed row.
     produced = resampler.push(4 * CADENCE_NS, "c")
     assert [(row.pts_ns, row.valid, row.value) for row in produced] == [
         (2 * CADENCE_NS, 0, None),
         (3 * CADENCE_NS, 0, None),
         (4 * CADENCE_NS, 1, "c"),
     ]
-    # A second row inside an already-emitted bucket is dropped, not duplicated.
     assert resampler.push(4 * CADENCE_NS + 1, "d") == ()

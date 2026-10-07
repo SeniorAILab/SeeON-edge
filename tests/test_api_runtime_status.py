@@ -208,15 +208,11 @@ def test_status_round_trips_delivery_queue_capacity_and_kind_mix(
         "max_accepted_entries": MAX_ACCEPTED_ENTRIES,
         "max_accepted_bytes": MAX_ACCEPTED_BYTES,
         "by_kind": {
-            # Clip receipts are their own delivery kind; the backend reports
-            # every kind the worker can queue, including an empty one.
             "CLIP": 0,
             "EVENT": 1,
             "SNAPSHOT_ATTACHMENT": 1,
             "SNAPSHOT_DISPOSITION": 1,
         },
-        # Evidence the backend refused is retained rather than deleted, so the
-        # operator needs to see it here; nothing is retained in this fixture.
         "dead_lettered_count": expected.dead_lettered_count,
         "dead_lettered_bytes": expected.dead_lettered_bytes,
         "oldest_event_accepted_at": expected.oldest_event_accepted_at,
@@ -266,7 +262,6 @@ def test_runtime_status_schema_round_trip_and_rejects_extra_fields() -> None:
 
 
 def test_runtime_status_accepts_old_payload_omitting_detection(app: FastAPI) -> None:
-    """Old workers remain accepted and are explicitly reported as missing."""
     payload = _payload()
     camera = _payload_cameras(payload)[0]
     assert isinstance(camera, dict)
@@ -876,8 +871,6 @@ def test_runtime_status_exposes_additive_diagnostics(app: FastAPI) -> None:
 
 
 def test_flatten_runtime_cameras_marks_stale_camera_without_erasing_last_fps() -> None:
-    """워커가 죽어 facility가 stale이 되면, 마지막 measured_fps는 지우지 않되
-    카메라별로 stale을 같이 내려야 프론트가 '멈춘 값'과 '현재 값'을 구분할 수 있다."""
     store = RuntimeStatusStore(stale_after_sec=1.0)
     store.record(
         _payload(cameras=[{**_camera_row(), "measured_fps": 5.0}]),
@@ -907,13 +900,6 @@ def test_flatten_runtime_cameras_marks_fresh_camera_as_not_stale() -> None:
 def test_status_returns_unmapped_local_camera_id_unchanged(
     app: FastAPI,
 ) -> None:
-    """Baseline: an unmapped registry-local id is already the dashboard key.
-
-    Characterization of the unmodified route: when the worker reports the
-    local registry id and the camera has no backend_camera_id, /status must
-    keep that same key. This is the identity we later normalize mapped
-    aliases onto; the unmapped path must not change.
-    """
     app.state.edge_relay_token = "relay-token"
     app.state.camera_registry.create(
         camera_id="local-unmapped-1",
@@ -1165,7 +1151,6 @@ def test_latency_is_latest_memory_only_and_missing_after_restart() -> None:
 
     assert live == {"first_attempt_samples": 2, "max_sec": 20.0, "since_sec": 10.0}
     assert restarted.snapshot(now=21.0)["facilities"]["facility-1"]["latency"] is None
-    # Provisioning checks the PostgreSQL product and diagnostics schemas against these sets.
     tables = EXPECTED_TARGET_TABLES | DIAGNOSTICS_TARGET_TABLES
     assert "runtime_latency" not in tables
     assert "control_heartbeats" not in tables
@@ -1298,17 +1283,6 @@ def test_runtime_status_rejects_missing_and_invalid_tokens(app: FastAPI) -> None
 def test_runtime_status_accepts_despite_camera_inventory_facility_mismatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pins the #183 regression: a stale/mismatched camera_inventory entry
-    must not blank the dashboard for a facility that is otherwise legitimate.
-
-    Reproduces the exact production shape -- camera_inventory's own embedded
-    facility_id ("facility-prod") doesn't match the payload's facility_id
-    ("facility-1") -- while leaving API_FACILITY_ID unset, matching a device
-    that never got a real facility_id override. Before the fix,
-    _runtime_status_facility_binding() derived a facility set from
-    camera_inventory and 403'd anything not in it, unconditionally, even
-    though camera_inventory has no bearing on this purely-local endpoint.
-    """
     monkeypatch.delenv("API_FACILITY_ID", raising=False)
     app = create_app(lifespan=no_lifespan)
     app.state.edge_relay_token = "relay-token"
@@ -1326,13 +1300,6 @@ def test_runtime_status_accepts_despite_camera_inventory_facility_mismatch(
 def test_runtime_status_accepts_despite_unresolved_camera(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A camera absent from camera_inventory/camera_registry must not block
-    the runtime-status snapshot for every other camera in the same payload:
-    relay_runtime_status never forwards a canonical camera id anywhere (no
-    backend egress happens here at all), so _camera_binding()'s "unknown
-    camera" 403 protected nothing downstream -- it just discarded the
-    dashboard's only view into camera-1's state.
-    """
     monkeypatch.delenv("API_FACILITY_ID", raising=False)
     app = create_app(lifespan=no_lifespan)
     app.state.edge_relay_token = "relay-token"
@@ -1348,7 +1315,6 @@ def test_runtime_status_accepts_despite_unresolved_camera(
 def test_runtime_status_accepts_any_facility_without_env_gate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Env API_FACILITY_ID is no longer an admission gate for runtime-status."""
     monkeypatch.setenv("API_FACILITY_ID", "facility-configured")
     app = create_app(lifespan=no_lifespan)
     app.state.edge_relay_token = "relay-token"

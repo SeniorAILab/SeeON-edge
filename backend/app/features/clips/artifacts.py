@@ -1,5 +1,3 @@
-"""Privacy-bounded central clip artifact projection for clean and snapshot facts."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -17,8 +15,6 @@ class CentralClipArtifacts:
 
 
 class CentralClipArtifactQuery:
-    """Read stable service facts without exposing worker-owned table rows."""
-
     def __init__(self, database: PostgresDatabase) -> None:
         self.database = database
 

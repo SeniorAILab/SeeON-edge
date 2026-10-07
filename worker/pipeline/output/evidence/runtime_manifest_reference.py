@@ -1,5 +1,3 @@
-"""Transactional read boundary for evidence runtime-manifest references."""
-
 from __future__ import annotations
 
 from enum import StrEnum
@@ -11,8 +9,6 @@ class RuntimeManifestReferenceFailure(StrEnum):
 
 
 class RuntimeManifestReferenceError(RuntimeError):
-    """A staged event cannot prove its referenced runtime manifest exists."""
-
     def __init__(
         self,
         manifest_sha256: str,

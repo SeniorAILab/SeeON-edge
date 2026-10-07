@@ -1,5 +1,3 @@
-"""WireRecord construction shared by producer payload builders."""
-
 from __future__ import annotations
 
 import logging
@@ -26,7 +24,7 @@ def try_emit(sink: ExecutionRecordSink | None, record: WireRecord | None) -> boo
         return False
     try:
         return bool(sink.try_emit(record))
-    except Exception:  # noqa: BLE001 - producers must never raise
+    except Exception:  # noqa: BLE001
         LOGGER.warning(
             "execution-record sink.try_emit failed camera_id=%s record_kind=%s",
             record.camera_id,
@@ -36,7 +34,6 @@ def try_emit(sink: ExecutionRecordSink | None, record: WireRecord | None) -> boo
 
 
 def frame_causal_unit_id(camera_id: str, worker_boot_id: str, stream_epoch: int, seq: int) -> str:
-    """Pre-Gate-R placeholder: bucket frames by the deployed 30-frame window."""
     return f"{camera_id}:{worker_boot_id}:{stream_epoch}:frame:{seq // FALL_WINDOW_FRAMES}"
 
 
@@ -51,15 +48,6 @@ def fall_causal_unit_id(
     track_id: int | None,
     generation: int | None,
 ) -> str:
-    """Logical unit of one fall decision: camera, boot, epoch, track, generation.
-
-    A snapshot with no track (window-gated, outside-detection-window) or a
-    track the classifier has not yet given a generation carries explicit
-    NO_TRACK / NO_GENERATION tokens. 0 is a real NVDCF track id and the real
-    first generation, so coercing absence to 0 would alias those records onto
-    a live unit and hide the absence in the join key. Pre-Gate-R placeholder
-    membership rule; see worker/pipeline/diagnostics/AGENTS.md.
-    """
     track = NO_TRACK if track_id is None else str(track_id)
     gen = NO_GENERATION if generation is None else str(generation)
     return f"{camera_id}:{worker_boot_id}:{stream_epoch}:{track}:{gen}"
@@ -75,23 +63,11 @@ def module_causal_unit_id(
     module_qualified_id: str | None,
     frame_seq: int,
 ) -> str:
-    """Logical unit for a non-fall or unattributed decision: module + frame bucket.
-
-    Keeps bed-exit / window-gated / unattributed snapshots out of any fall
-    unit. Pre-Gate-R placeholder membership like the frame bucket.
-    """
     module = NO_MODULE if module_qualified_id is None else module_qualified_id
     return f"{camera_id}:{worker_boot_id}:{stream_epoch}:{module}:{frame_seq // FALL_WINDOW_FRAMES}"
 
 
 def wall_or(observed_at_ns: int | None) -> int:
-    """UTC epoch nanoseconds when this record was observed.
-
-    Every record is stamped on the wall clock so the Backend query can answer
-    "camera 7 at 14:03" with epoch ns. Stream time stays in ``source_pts_ns``
-    and per-producer order in ``producer_sequence``; a monotonic stamp would
-    make the query surface unanswerable (its base differs per process).
-    """
     return time.time_ns() if observed_at_ns is None else observed_at_ns
 
 

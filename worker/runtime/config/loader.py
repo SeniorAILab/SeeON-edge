@@ -35,9 +35,6 @@ def load_worker_config(path: str | Path) -> WorkerConfig:
                 "static camera roster is retired; register cameras in the dashboard "
                 "and pull the versioned worker config"
             )
-        # Reject by field presence before WorkerConfig can parse, normalize, or
-        # validate any policy content. Static YAML is never a numeric-policy
-        # authority, including when its document is malformed or forged.
         if "detection_policies" in raw:
             raise WorkerConfigError(
                 "static detection_policies authority is retired; numeric detection "
@@ -64,14 +61,6 @@ def load_worker_config(path: str | Path) -> WorkerConfig:
 
 
 def resolve_config_path(value: str | None = None) -> Path:
-    """Resolve an explicit ``--config`` YAML roster path.
-
-    Deliberately reads no environment variable. A camera roster must never
-    arrive through the environment (and therefore through compose, and
-    therefore through Git); on a real Edge the roster is pulled from ml-api,
-    which serves the dashboard-entered camera_registry DB. ``--config`` stays
-    available as an explicit developer/e2e escape hatch.
-    """
     stripped = (value or "").strip()
     if not stripped:
         raise WorkerConfigError("worker camera config path required via --config")

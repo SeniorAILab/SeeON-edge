@@ -1,5 +1,3 @@
-"""Worker-local diagnostics and frozen runtime-status wire projection."""
-
 from __future__ import annotations
 
 import threading
@@ -54,8 +52,6 @@ MEASURED_FPS_MAX_AGE_SEC = 10.0
 
 @final
 class WorkerDiagnostics:
-    """Thread-safe local metrics and strict legacy relay projection."""
-
     def __init__(
         self,
         status_store: StatusStore | None = None,
@@ -77,17 +73,7 @@ class WorkerDiagnostics:
         self._bed_exit_scoring_by_camera: dict[str, BedExitScoringDiagnostics] = {}
         self._device_residency_by_camera: dict[str, DeviceResidencyDiagnostics] = {}
         self._decision_completed_by_camera: dict[str, int] = {}
-        # Cameras whose detection results come from a producer other than the
-        # host ``CapabilityInferenceCoordinator`` -- today the ``nvidia``
-        # profile's ``NativePolicyPump``. Registered explicitly by the
-        # composition root instead of being inferred from ``self._inference``
-        # being ``None``: that fall-through silently reported every nvidia
-        # camera as ``expected=False`` (rendered "detection disabled") no
-        # matter what the producer was actually doing.
         self._native_detection_cameras: set[str] = set()
-        # Real attempt count for the native producer. Without it the relay
-        # payload had to synthesise admitted == completed, which pinned the
-        # backend's recent_success_rate at 1.0 and hid every failed frame.
         self._native_attempts_by_camera: dict[str, int] = {}
         self._track_id_switches_by_camera: dict[str, int] = {}
         self._track_id_switches_absorbed_by_camera: dict[str, int] = {}
@@ -137,7 +123,6 @@ class WorkerDiagnostics:
             self._fall_inference_device_by_camera[camera_id] = device
 
     def record_fall_unapplied_policy_threshold(self, camera_id: str, threshold: float) -> None:
-        """Report an operator threshold that was received but is not applied."""
         if not 0.0 <= threshold <= 1.0:
             raise ValueError("unapplied policy threshold must be a probability")
         with self._lock:
@@ -211,12 +196,6 @@ class WorkerDiagnostics:
         resolved_backend: str,
         actual_adapter_class: str,
     ) -> None:
-        """Record local-only boot selection details for one camera.
-
-        ``DecodeSelection`` remains the relay-compatible view. The profile
-        token and concrete adapter class are intentionally retained only in
-        the local runtime snapshot.
-        """
         with self._lock:
             self._decode_backend_by_camera[camera_id] = DecodeBackendObservability(
                 requested_profile_decode=requested_profile_decode,
@@ -245,13 +224,6 @@ class WorkerDiagnostics:
             self._encode_by_camera[camera_id] = selection
 
     def record_encode_open_failure(self, camera_id: str, reason: str) -> None:
-        """Record a camera's nvenc session-open failure and its libx264 demotion.
-
-        Unlike `record_decode_open_failure` (which sets `selected=None` --
-        decode has nothing safe to fall back to), #53 sanctions libx264 as
-        encode's always-available fallback, so this records the demotion
-        itself rather than a "no selection" state.
-        """
         normalized = reason if reason in ENCODE_FALLBACK_REASONS else "session_open_failed"
         with self._lock:
             previous = self._encode_by_camera.get(camera_id)
@@ -279,15 +251,6 @@ class WorkerDiagnostics:
         freshness: BedRegionCacheState,
         counters: BedRegionCacheCounterSnapshot,
     ) -> None:
-        """Refresh one camera's bed-region state (issue #207).
-
-        Called once per processed frame from ``CompositeExtractor`` (see
-        ``BedRegionRecorder`` in worker/pipeline/analytics/composite.py) --
-        like ``record_stage_timing``, this only updates an in-memory value;
-        it is not itself a log call, so per-frame frequency here does not
-        reproduce the "per-frame logging across 13 cameras" outage the issue
-        warns against. Actual emission is on `log_snapshot()`'s cadence.
-        """
         with self._lock:
             self._bed_region_by_camera[camera_id] = BedRegionDiagnostics(
                 freshness=freshness,
@@ -310,14 +273,6 @@ class WorkerDiagnostics:
         grace_positive_transitions: int,
         assignments_made: int,
     ) -> None:
-        """Refresh one camera's cumulative bed_exit scoring signal (#238).
-
-        Called from ``BedExitMonitor.update()`` (see ``BedExitScoringRecorder``
-        in worker/domains/bed_exit/detector.py) once per processed frame --
-        like ``record_bed_region``, this only overwrites an in-memory value;
-        it is not itself a log call. Actual emission is on `log_snapshot()`'s
-        cadence.
-        """
         with self._lock:
             self._bed_exit_scoring_by_camera[camera_id] = BedExitScoringDiagnostics(
                 max_containment_observed=max_containment_observed,
@@ -337,13 +292,6 @@ class WorkerDiagnostics:
     def record_device_residency(
         self, camera_id: str, diagnostics: DeviceResidencyDiagnostics
     ) -> None:
-        """Refresh one camera's device-resident pipeline counters.
-
-        Only ever called for a camera running the canonical ``nvidia``
-        profile -- same overwrite-in-place, emission-on-``log_snapshot``-
-        cadence convention as ``record_bed_region``/
-        ``record_bed_exit_scoring`` above.
-        """
         with self._lock:
             self._device_residency_by_camera[camera_id] = diagnostics
 
@@ -366,7 +314,6 @@ class WorkerDiagnostics:
             )
 
     def record_native_detection_attempt(self, camera_id: str) -> None:
-        """Count one perception frame the native producer took responsibility for."""
         with self._lock:
             self._native_attempts_by_camera[camera_id] = (
                 self._native_attempts_by_camera.get(camera_id, 0) + 1
@@ -397,18 +344,10 @@ class WorkerDiagnostics:
             self._bed_polygon_source_by_camera[camera_id] = source
 
     def register_incident_manager(self, camera_id: str, manager: object) -> None:
-        """Expose the manager's cumulative cooldown counter in local snapshots."""
         with self._lock:
             self._incident_managers[camera_id] = manager
 
     def register_native_detection(self, camera_id: str) -> None:
-        """Declare that a non-host producer owns this camera's detection.
-
-        The composition root calls this when it activates a producer that does
-        not populate the host inference telemetry source, so the relay payload
-        reports the producer as present instead of falling through to
-        ``expected=False``.
-        """
         with self._lock:
             self._native_detection_cameras.add(camera_id)
 
@@ -685,27 +624,6 @@ def _detection_for_camera(
     native_producer: bool,
     native_attempts: int,
 ) -> RelayDetectionPayload:
-    """Report detection telemetry for whichever producer owns this camera.
-
-    ``expected`` means "a detection producer is active for this camera", not
-    "the host inference coordinator exists". The backend short-circuits to
-    ``state="disabled"`` on ``expected=False`` before it looks at any counter
-    (``backend/app/features/status/detection_health.py``), so inferring the
-    answer from ``inference is None`` made every ``nvidia`` camera render as
-    "detection disabled" whether or not its ``NativePolicyPump`` was working,
-    and discarded the real ``decision_completed`` on the way out.
-
-    The native producer owns decode and inference inside the DeepStream child,
-    so it has no host-side admitted/succeeded/overwritten counts of its own.
-    The wire contract nevertheless enforces the host pipeline's stage ordering
-    (``decision_completed <= inference_succeeded <= inference_admitted``; see
-    ``RelayDetectionStatus.counters_are_ordered`` in the backend relay router)
-    and rejects the payload with HTTP 422 otherwise. For this producer the
-    three counts are definitionally equal: the child only publishes a
-    perception frame it has already inferred, and the pump completes a decision
-    for every frame it accepts. Reporting them equal satisfies the invariant
-    without inventing a number.
-    """
     if inference is not None:
         return detection_payload(
             expected=True,
@@ -715,12 +633,6 @@ def _detection_for_camera(
             decision_completed=decision_completed,
         )
     if native_producer:
-        # ``admitted`` is the real number of frames this producer took on;
-        # ``succeeded`` collapses onto ``completed`` because a frame that
-        # reaches a decision is by definition one the child already inferred.
-        # Reporting a real ``admitted`` is what makes the backend's
-        # recent_success_rate meaningful: it drops below 1.0 when frames fail
-        # instead of being pinned at 1.0 by a synthesised count.
         return detection_payload(
             expected=True,
             inference_admitted=max(native_attempts, decision_completed),

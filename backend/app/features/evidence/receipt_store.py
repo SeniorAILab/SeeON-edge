@@ -1,10 +1,3 @@
-"""Backend receipt persistence contract for locally produced clip artifacts.
-
-The schema migrator owns the production table.  This module deliberately owns
-no DDL: deployments inject the migrated persistence implementation through
-``app.state.artifact_receipt_store``.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -22,19 +15,19 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class ArtifactReceiptConflictError(RuntimeError):
-    """A retry changed immutable identity, hash, or size fields."""
+    ...
 
 
 class ArtifactReceiptVerificationError(RuntimeError):
-    """Declared artifact identity does not match the local regular file."""
+    ...
 
 
 class ArtifactReceiptPersistenceError(RuntimeError):
-    """No durable backend receipt store is available."""
+    ...
 
 
 class ReceiptMissingIncidentError(ArtifactReceiptPersistenceError):
-    """A manifest references an incident that has not reached durable storage."""
+    ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,13 +48,6 @@ class ArtifactReceipt:
 
 @runtime_checkable
 class ArtifactReceiptStore(Protocol):
-    """Durable compare-or-insert receipt port.
-
-    ``commit`` must return only after its transaction is durable.  It inserts a
-    first receipt, returns an identical existing receipt, and raises
-    ``ArtifactReceiptConflictError`` when immutable fields differ.
-    """
-
     def commit(self, receipt: ArtifactReceipt) -> ArtifactReceipt: ...
 
     def get(self, artifact_id: str) -> ArtifactReceipt | None: ...
@@ -97,7 +83,6 @@ def primary_artifact_id(clip_id: str, edge_event_id: str) -> str:
 
 
 def verified_artifact(handle: BinaryIO) -> VerifiedArtifact:
-    """Hash one open regular descriptor and preserve its identity and position."""
     try:
         descriptor_stat = os.fstat(handle.fileno())
         if not stat.S_ISREG(descriptor_stat.st_mode):
@@ -119,7 +104,6 @@ def verified_artifact(handle: BinaryIO) -> VerifiedArtifact:
 
 
 def verify_artifact(path: Path, receipt: ArtifactReceipt) -> None:
-    """Require a current regular-file size and SHA-256 match before use."""
     try:
         stat_result = path.stat()
     except OSError as exc:

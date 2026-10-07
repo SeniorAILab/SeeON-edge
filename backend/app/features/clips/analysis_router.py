@@ -1,5 +1,3 @@
-"""Dashboard relay and artifact reads for stored-clip reanalysis."""
-
 from __future__ import annotations
 
 import json

@@ -166,8 +166,6 @@ def test_runtime_camera_module_receives_policy_not_model_or_profile_threshold() 
         _payload(policy_wire=bundle.with_camera("cam/opaque:alpha", camera_policies).as_dict())
     ).to_worker_config("http://relay.invalid", "relay-token")
 
-    # The production module factories are exercised through the runtime's
-    # registered definitions; profile/device never participates in resolution.
     from worker.domains import DETECTION_MODULE_REGISTRY, CameraModuleContext
 
     fall_definition = DETECTION_MODULE_REGISTRY.get("fall", 2)
@@ -198,10 +196,6 @@ def test_runtime_camera_module_receives_policy_not_model_or_profile_threshold() 
     )
 
     assert isinstance(fall_module.decider, FallDomainDecider)
-    # P1a-AC7: the decision threshold is the eligible bundle receipt, else the
-    # image default 0.5. A facility/camera override is received and audited but
-    # is not yet authoritative for the fall transition threshold in P1a, so it
-    # must not silently change the decision.
     assert fall_module.decider.policy.policy.transition_threshold == 0.5
     assert config.detection_policies.resolve("cam/opaque:alpha", "fall", 2).values == type(
         FALL_POLICY_V2_DEFAULT

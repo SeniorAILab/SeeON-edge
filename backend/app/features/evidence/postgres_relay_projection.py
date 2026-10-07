@@ -1,11 +1,3 @@
-"""Native late-snapshot facts; initial acceptance belongs to EventOutbox.
-
-The injected database owns the complete transaction and pool lease. A supplied
-callback runs once even for matching facts, and remains tentative until the
-owner returns. This owner neither publishes audit work nor changes delivery
-obligations. HTTP/lifespan activation is a separate atomic integration.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -25,7 +17,6 @@ from backend.app.features.evidence.relay_projection import (
 
 
 def put_snapshot(connection: psycopg.Connection, incident_id: str, snapshot: RelaySnapshot) -> None:
-    """Borrow the caller's authority-checked transaction and locked incident."""
     _validate_snapshot(snapshot)
     expected = (
         snapshot.snapshot_id,
@@ -142,8 +133,6 @@ class PostgresRelayEvidenceProjection:
 
 
 def _incident_for_event(connection: psycopg.Connection, edge_event_id: str) -> str:
-    # Serialize competing terminal decisions for this incident. The outbox's
-    # initial-snapshot path takes the same incident lock (or inserts its row).
     row = connection.execute(
         "SELECT incident_id FROM incidents WHERE edge_event_id=%s FOR UPDATE",
         (edge_event_id,),

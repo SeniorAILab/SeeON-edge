@@ -1,10 +1,3 @@
-"""Native credential component tests; not HTTP/lifespan or deployment admission.
-
-Real database cases require the isolated PostgreSQL sandbox. A missing DSN
-fails; it never skips. Owner-return injections below do not simulate or
-prove actual wire-level COMMIT loss.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -268,7 +261,6 @@ def test_wrong_or_frozen_authority_cannot_rotate_credentials_or_invoke_hook(
 def test_injected_owner_return_loss_preserves_failure_and_never_retries_a_known_commit(
     postgres_product_sandbox: ProductSandbox, monkeypatch: pytest.MonkeyPatch, unknown: bool
 ) -> None:
-    """Store propagation only: inject AFTER real owned COMMIT, not on the wire."""
     sandbox = postgres_product_sandbox
     store = PostgresDashboardCredentialsStore(sandbox.database, sandbox.authority)
     store.save(username="previous", password="old secret")

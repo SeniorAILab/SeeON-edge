@@ -1,5 +1,3 @@
-"""Export a verified pose+bbox56 proxy bundle's Torch weights to ONNX at publish time."""
-
 from __future__ import annotations
 
 import argparse
@@ -14,6 +12,10 @@ from torch import nn
 from worker.adapters.model.errors import ModelLoadError
 from worker.adapters.model.pose_bbox56_bundle_support import member_digest, read_json, verify_bundle
 
+_DESCRIPTION = (
+    """Export a verified pose+bbox56 proxy bundle's Torch weights to ONNX at publish time."""
+)
+
 
 class _ProxyGru(nn.Module):
     def __init__(self, hidden_size: int, num_layers: int, dropout: float) -> None:
@@ -27,7 +29,6 @@ class _ProxyGru(nn.Module):
 
 
 def export_fall_onnx(bundle_dir: Path, *, force: bool = False) -> str:
-    """Export ``model.onnx`` and return its pinned SHA-256 digest."""
     root = bundle_dir.expanduser().resolve()
     manifest = read_json(root / "bundle-manifest.json")
     verify_bundle(root, manifest)
@@ -106,7 +107,7 @@ def _dropout(value: object) -> float:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=_DESCRIPTION)
     parser.add_argument("bundle_dir", type=Path)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()

@@ -1,5 +1,3 @@
-"""pyservicemaker implementation of the vendor-neutral media plane."""
-
 from __future__ import annotations
 
 import logging
@@ -31,18 +29,15 @@ from worker.interfaces.media_plane import (
 )
 from worker.types.metadata import SourceBinding
 
-#: How often the plane reports what perception is actually producing.
 _PERCEPTION_HEARTBEAT_FRAMES = 900
-#: Isolated malformed SDK metadata is tolerated; a broken conversion contract is fatal.
 _PROBE_CONSECUTIVE_FAILURE_THRESHOLD = 3
 
-#: A frame whose inference produced no tensor metadata still has real tracks.
 _EMPTY_POSE_ROWS: Final = np.zeros((0, 57), dtype=np.float32)
 LOGGER = logging.getLogger(__name__)
 
 
 class DeepStreamFlowStopTimeout(RuntimeError):
-    """The SDK Flow still owns media resources after requested shutdown."""
+    ...
 
 
 class FlowFactory(Protocol):
@@ -67,23 +62,15 @@ class DeepStreamMediaPlaneConfig:
 class _Recording:
     session_id: int
     on_sealed: Callable[[RecordingInfo], None]
-    #: When the recording must have sealed by. The SDK seals a Smart Record
-    #: session itself at the duration given at start; if its callback never
-    #: arrives the slot below would otherwise coalesce every later alert onto
-    #: this dead session and the camera silently stops producing evidence.
     seal_deadline: float
     sealed: bool = False
 
 
-#: Slack over the SDK's own seal duration before a silent session is declared
-#: abandoned. Sealing writes the file and calls back; seconds are enough.
 _SEAL_GRACE_SECONDS: Final = 30.0
 
 
 @dataclass(frozen=True, slots=True)
 class _FlowHandle:
-    """Everything the plane needs from the SDK, so tests can supply fakes."""
-
     flow: Any
     pipeline: Any
     record_config: Callable[..., Any]
@@ -111,8 +98,6 @@ def _default_flow_factory(config: DeepStreamMediaPlaneConfig) -> _FlowHandle:
 
 
 class _Probe:
-    """Vendor-neutral half of the probe; wrapped in a BatchMetadataOperator at build time."""
-
     def __init__(self, plane: DeepStreamMediaPlane) -> None:
         self._plane = plane
 
@@ -122,7 +107,6 @@ class _Probe:
 
 
 def _batch_operator(probe: _Probe) -> Any:
-    """Subclass the SDK operator lazily so this module imports without pyservicemaker."""
     from pyservicemaker import BatchMetadataOperator
 
     class _Operator(BatchMetadataOperator):
@@ -136,8 +120,6 @@ def _batch_operator(probe: _Probe) -> Any:
 
 
 class DeepStreamMediaPlane(MediaPlane):
-    """A single Flow worker; vendor calls are contained in this adapter."""
-
     def __init__(
         self,
         config: DeepStreamMediaPlaneConfig,
@@ -162,8 +144,6 @@ class DeepStreamMediaPlane(MediaPlane):
             child_instance_id=child_instance_id or str(uuid.uuid4()),
             transform_id=config.transform_id,
         )
-        # A pose path that produces nothing must not be silent: without these a
-        # dead parser looks exactly like an empty room for hours.
         self._frames_without_pose_tensor: dict[str, int] = {}
         self._objects_observed: dict[str, int] = {}
         self._matched_tracks: dict[str, int] = {}
@@ -198,14 +178,6 @@ class DeepStreamMediaPlane(MediaPlane):
             path.unlink()
 
     def start(self) -> None:
-        """Build the Flow from the registered roster and run it on its own thread.
-
-        A pyservicemaker Flow fixes its sources when it is built and blocks
-        when called, so the media plane runs it on a dedicated thread and ends
-        it through ``Pipeline.stop()``. Sources registered after this point are
-        refused (``SourceRosterFixed``): the worker restarts to change its
-        roster, exactly as the nvidia child does.
-        """
         if self._started:
             return
         self._build_flow()
@@ -218,17 +190,13 @@ class DeepStreamMediaPlane(MediaPlane):
     def _run_flow(self) -> None:
         try:
             self._flow()
-        except Exception as error:  # noqa: BLE001 - surfaced through status, never swallowed
+        except Exception as error:  # noqa: BLE001
             self._flow_error = error
         finally:
             self._flow_finished.set()
 
     def stop(self) -> None:
         if self._started:
-            # Disarm the probe first. Teardown removes sources from the table
-            # while the SDK is still delivering buffers, and a probe that keeps
-            # converting against an emptied table both floods the log with
-            # unmapped-pad warnings and races the SDK's own stream removal.
             self._accepting = False
             self._pipeline.stop()
             if self._flow_thread is not None:
@@ -241,22 +209,9 @@ class DeepStreamMediaPlane(MediaPlane):
             self._started = False
 
     def published_frames(self, camera_id: str) -> int:
-        """Frames this plane has published for a camera since it started.
-
-        Monotonic and never consumed. The metadata slot is a capacity-one
-        mailbox that the policy pump drains, so peeking at it reports silence
-        the moment the pump keeps up; this counter is the liveness signal that
-        survives consumption.
-        """
         return self._publish_sequence.get(camera_id, 0)
 
     def perception_counters(self, camera_id: str) -> tuple[int, int]:
-        """Objects the tracker delivered, and frames that carried no pose tensor.
-
-        A pose path that silently produces nothing is indistinguishable from an
-        empty room, which is exactly how a mis-bound output layer hid for a
-        whole bring-up. These make the difference observable.
-        """
         return (
             self._objects_observed.get(camera_id, 0),
             self._frames_without_pose_tensor.get(camera_id, 0),
@@ -279,7 +234,6 @@ class DeepStreamMediaPlane(MediaPlane):
         )
 
     def camera_id_for_pad(self, pad_index: int) -> str | None:
-        """Which camera a batch/pad index belongs to, or None when unmapped."""
         return self._sources.camera_id_for_pad(pad_index)
 
     def add_source(self, camera_id: str, uri: str) -> SourceBinding:
@@ -304,17 +258,6 @@ class DeepStreamMediaPlane(MediaPlane):
         self._sources.remove(camera_id)
 
     def source_failure(self, camera_id: str, category: str) -> SourceBinding:
-        """Rotate this camera's stream identity; the plugin owns media recovery.
-
-        A Flow fixes its sources when it is built, so this does not and cannot
-        rebuild the pipeline element. What it does is the part the decision
-        layer needs: a new ``stream_epoch``/``source_generation`` so frames
-        arriving after the outage are never mistaken for the old stream, and a
-        cleared live/preview state so nothing stale is served. Media recovery
-        is ``nvurisrcbin``'s own RTSP reconnect, configured on every source
-        (measured in the spike: a stalled source recovers within one interval).
-        The canonical camera id never changes across this.
-        """
         del category
         binding = self._sources.rebuild(camera_id)
         self._slot.register_source(binding)
@@ -376,7 +319,6 @@ class DeepStreamMediaPlane(MediaPlane):
                         snapshot_path.unlink(missing_ok=True)
 
     def native_snapshot(self, camera_id: str) -> bytes:
-        """Capture a native-resolution frame from the registered camera stream."""
         if camera_id not in self._sources.camera_ids():
             raise SnapshotUnavailable(f"unknown source has no OSD snapshot: {camera_id}")
         return self._native_frame_grabber(self._sources.uri(camera_id))
@@ -395,12 +337,7 @@ class DeepStreamMediaPlane(MediaPlane):
         if existing is not None:
             now = self._clock()
             if now < existing.seal_deadline:
-                # A recording really is in flight for this camera; one Smart
-                # Record session per source is the contract.
                 return existing.session_id
-            # The SDK never delivered this session's sealed callback. Keeping
-            # the slot would make every future alert on this camera return a
-            # dead session id and record nothing, with no error anywhere.
             self._abandoned_recordings += 1
             LOGGER.error(
                 "smart record session %d on camera_id=%s never sealed within %.0fs; "
@@ -422,17 +359,12 @@ class DeepStreamMediaPlane(MediaPlane):
 
     @property
     def abandoned_recordings(self) -> int:
-        """Smart Record sessions whose sealed callback never arrived."""
         return self._abandoned_recordings
 
     def stop_recording(self, camera_id: str, session_id: int) -> None:
         recording = self._recordings.get(camera_id)
         if recording is None or recording.session_id != session_id:
             raise RecordingRefused(f"unknown recording session {session_id} for {camera_id}")
-        # Measured (docs/research/pyservicemaker-p1b-spike.md): the SDK's
-        # Pipeline.stop_recording returns True but never seals, and the binding
-        # exposes no way to emit the element's stop-sr action signal. The clip
-        # therefore runs to the duration given at start and seals itself.
         raise EarlyStopUnsupported(
             f"pyservicemaker cannot stop session {session_id} on {camera_id} early; "
             "the recording seals at its start duration"
@@ -456,7 +388,7 @@ class DeepStreamMediaPlane(MediaPlane):
             command, done, result = self._commands.get()
             try:
                 value: Any = command()
-            except Exception as error:  # noqa: BLE001 - the caller re-raises on its own thread
+            except Exception as error:  # noqa: BLE001
                 value = error
             if result is not None:
                 result.append(value)
@@ -488,11 +420,6 @@ class DeepStreamMediaPlane(MediaPlane):
         )
         flow.attach(what=self._handle.make_probe("media-plane-probe", self._probe))
         terminal_flow = self._build_snapshot_branch(flow)
-        # `render(DISCARD)` is the terminal sink because it is the only one that
-        # keeps up: measured in this image, a `retrieve()` sink delivers roughly
-        # 2 batched buffers/s where `render` delivers 30, which starves the
-        # decision layer of frames. The binding exposes pixels only through that
-        # terminal retriever, so it cannot provide a non-throttling OSD snapshot.
         terminal_flow.render(mode=self._handle.render_mode_discard, enable_osd=False, sync=False)
         for camera_id in camera_ids:
             source = self._source_element(camera_id)
@@ -506,16 +433,10 @@ class DeepStreamMediaPlane(MediaPlane):
             )
 
     def _build_snapshot_branch(self, flow: Any) -> Any:
-        """Build one normally-closed OSD/JPEG branch for the batched stream.
-
-        The terminal Flow remains the discard sink. ``nvmultistreamtiler``
-        selects the requested source from the batch before OSD and JPEG
-        encoding; a single valve is opened only by ``snapshot``.
-        """
         if not self._config.snapshot_branch_enabled:
             return flow
         fork = flow.fork()
-        tee = fork._streams[0].originator  # noqa: SLF001 - Flow has no public stream endpoint
+        tee = fork._streams[0].originator  # noqa: SLF001
         tee_queue = "snapshot-tee-queue"
         valve = "snapshot-valve"
         tiler = "snapshot-tiler"
@@ -576,9 +497,6 @@ class DeepStreamMediaPlane(MediaPlane):
         return self._pipeline[self._sources.source_name(camera_id)]
 
     def _start_signal(self, camera_id: str, lookback_sec: int, duration_sec: int) -> int:
-        # Pipeline.start_recording is the SDK's working primitive: it returns
-        # the session id and delivers RecordingInfo to the callback when the
-        # clip seals (measured live: start(5,6) -> sr-done at +6.06 s).
         source_name = self._sources.source_name(camera_id)
         return int(
             self._call_on_pipeline(
@@ -592,20 +510,11 @@ class DeepStreamMediaPlane(MediaPlane):
         )
 
     def publish_frame(self, frame_meta: Any) -> None:
-        """Probe entry: convert one accepted frame and publish it to the slot.
-
-        Any exception escaping this callback aborts the process inside the SDK,
-        so a frame that cannot be converted is dropped and reported rather than
-        allowed to take the worker down with it.
-        """
         if not self._accepting:
-            # Stopping: the source table is being emptied out from under this
-            # callback, so there is nothing meaningful left to convert.
             return
         pad_index = int(frame_meta.pad_index)
         camera_id = self._sources.camera_id_for_pad(pad_index)
         if camera_id is None:
-            # Never raise from a probe callback: the SDK aborts the process.
             if pad_index not in self._unmapped_pads:
                 self._unmapped_pads.add(pad_index)
                 LOGGER.warning(
@@ -616,7 +525,7 @@ class DeepStreamMediaPlane(MediaPlane):
             return
         try:
             self._publish_frame(frame_meta, camera_id)
-        except Exception:  # noqa: BLE001 - an SDK probe must never raise
+        except Exception:  # noqa: BLE001
             self._record_probe_failure(camera_id)
 
     def _record_probe_failure(self, camera_id: str) -> None:
@@ -657,12 +566,6 @@ class DeepStreamMediaPlane(MediaPlane):
                     camera_id,
                     objects,
                 )
-            # nvinfer attaches tensor metadata per inferred frame; a frame can
-            # arrive without it (skipped inference interval, exhausted tensor
-            # pool). The tracked objects are still real, so publish the frame
-            # with no pose rows - every track is then explicitly unmatched -
-            # rather than dropping it, which would hide the frame from the
-            # decision layer and make the camera look silent.
             rows = _EMPTY_POSE_ROWS
         sequence = self._publish_sequence.get(camera_id, 0) + 1
         self._publish_sequence[camera_id] = sequence
@@ -683,8 +586,6 @@ class DeepStreamMediaPlane(MediaPlane):
         )
         self._probe_failures.pop(camera_id, None)
         if sequence % _PERCEPTION_HEARTBEAT_FRAMES == 0:
-            # Operator-visible in the message itself: this is the one line that
-            # distinguishes an empty room from a perception path that is dead.
             LOGGER.info(
                 "perception heartbeat camera_id=%s frames=%d objects=%d matched_tracks=%d "
                 "frames_without_pose_tensor=%d",
@@ -700,8 +601,6 @@ class DeepStreamMediaPlane(MediaPlane):
         recording = self._recordings.get(camera_id)
         if recording is None or recording.sealed:
             return
-        # The SDK's RecordingInfo names these file_directory/file_name; the
-        # older dirpath/filename spelling aborts the process from the callback.
         path = str(Path(str(info.file_directory)) / str(info.file_name))
         try:
             recording.on_sealed(
@@ -715,10 +614,6 @@ class DeepStreamMediaPlane(MediaPlane):
                 )
             )
         except Exception as error:
-            # This runs on the pipeline thread: an exception here terminates the
-            # worker and takes every camera down with it. The sealed media and
-            # its contributor sidecar are already on disk, so the publication is
-            # replayable; the recording is left unsealed for that retry.
             LOGGER.exception(
                 "clip publication failed for camera_id=%s session=%s; media is retained at %s "
                 "and will be republished (%s)",

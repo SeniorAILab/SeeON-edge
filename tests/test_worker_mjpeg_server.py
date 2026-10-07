@@ -31,8 +31,6 @@ from worker.pipeline.output.mjpeg_server import (
 )
 from worker.types.preview import OverlaySelection
 
-# A real, cv2-decodable JPEG for the clean snapshot provider used by
-# bed-zone recognition.
 _REAL_JPEG = cv2.imencode(".jpg", np.zeros((16, 16, 3), dtype=np.uint8))[1].tobytes()
 _RELAY_TOKEN = "relay-token"
 _AUTH_HEADERS = {"X-Edge-Relay-Token": _RELAY_TOKEN}
@@ -112,7 +110,6 @@ def _assert_forbidden(request: urllib.request.Request) -> bytes:
     except urllib.error.HTTPError as exc:
         assert exc.code == 403
         body = exc.read()
-        # Credential non-disclosure: rejection body must never echo the token.
         assert _RELAY_TOKEN.encode() not in body
         assert b"relay-token" not in body
         return body
@@ -205,9 +202,6 @@ def test_mjpeg_server_probe_requires_token_and_returns_sanitized_result() -> Non
     )
     server.start()
     base = f"http://127.0.0.1:{server.port}"
-    # Public literal IP so admission DNS pinning succeeds without depending on
-    # local resolver / special-use hostnames; the injected probe is what the
-    # test actually exercises after the gate.
     probe_url = "rtsp://user:secret@8.8.8.8/trackID=2"
     body = json.dumps({"rtsp_url": probe_url}).encode()
     try:
@@ -375,17 +369,6 @@ def test_mjpeg_stream_requests_bounded_refreshes_and_emits_new_frames() -> None:
 
 
 def test_stream_connect_and_disconnect_track_the_viewer_counter() -> None:
-    """Viewer gating (#48): the counter must clear even on a broken pipe.
-
-    A raw socket (not ``http.client``, which duplicates the fd behind a
-    ``makefile()`` the moment a response is read, making ``SO_LINGER`` a
-    no-op) lets this force an RST instead of a graceful FIN close. That makes
-    the server's next ``wfile.write`` raise ``ConnectionResetError`` -- the
-    exception return path in ``_handle_stream`` -- exercising the
-    ``finally: store.mark_viewer_disconnected(...)`` on that path, not just
-    normal completion. A graceful close can otherwise leave the socket
-    writable for a while on localhost, so this cannot rely on that.
-    """
     store = LatestFrameStore()
     store.publish_jpeg("camera-a", b"\xff\xd8jpeg\xff\xd9", frame_index=1)
     server = MjpegServer(store, MjpegServerConfig(port=0, probe_token=_RELAY_TOKEN))
@@ -452,12 +435,6 @@ def test_pose_get_and_set_round_trip_and_defaults_enabled() -> None:
 
 
 def test_pose_get_and_set_open_when_no_relay_token_configured() -> None:
-    """Issue #71: a standalone dev MJPEG server (no relay token wired at
-    all, i.e. ``MjpegServerConfig(probe_token=None)`` as used above) must
-    keep working unauthenticated -- preserving pre-existing dev ergonomics
-    -- even though pose GET/POST now gate on the relay token once one *is*
-    configured (see the paired ``..._require_token_when_configured`` test).
-    """
     store = LatestFrameStore()
     store.register_camera("camera-a")
     server = MjpegServer(store, MjpegServerConfig(port=0))
@@ -480,9 +457,6 @@ def test_pose_get_and_set_open_when_no_relay_token_configured() -> None:
 
 
 def test_pose_get_and_set_require_token_when_configured() -> None:
-    """Issue #71: once a relay token is configured, pose GET/POST require the
-    same ``X-Edge-Relay-Token`` header as ``/probe`` (``_authorized_probe``).
-    """
     store = LatestFrameStore()
     store.register_camera("camera-a")
     server = MjpegServer(store, MjpegServerConfig(port=0, probe_token="relay-token"))
@@ -1008,9 +982,6 @@ def test_bed_zone_recognize_runner_failure_returns_503(
 def test_media_endpoints_require_relay_token_no_wrong_correct(
     path_builder: object,
 ) -> None:
-    """Security finding #3: stream/snapshot/bed-zone match probe/delete
-    constant-time relay-token auth (``_authorized_probe``).
-    """
     store = LatestFrameStore()
     store.publish_jpeg("camera-a", _REAL_JPEG, frame_index=1)
 
@@ -1057,9 +1028,6 @@ def test_media_endpoints_require_relay_token_no_wrong_correct(
 
 
 def test_media_endpoints_fail_closed_when_no_token_configured() -> None:
-    """Unlike pose (fail-open for standalone dev), media routes match probe:
-    missing configured token rejects every caller.
-    """
     store = LatestFrameStore()
     store.publish_jpeg("camera-a", _REAL_JPEG, frame_index=1)
     server = MjpegServer(

@@ -1,5 +1,3 @@
-"""Relay incident and snapshot facts shared by the PostgreSQL relay projection."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,15 +6,15 @@ from pydantic import JsonValue
 
 
 class RelayEvidenceProjectionError(RuntimeError):
-    """A relay fact cannot be represented by compact evidence."""
+    ...
 
 
 class RelayEvidenceProjectionConflict(RelayEvidenceProjectionError):
-    """An idempotency key was replayed with different immutable facts."""
+    ...
 
 
 class RelayEvidenceProjectionMissingEvent(RelayEvidenceProjectionError):
-    """An artifact arrived before its incident."""
+    ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,8 +54,6 @@ def _validate_snapshot(snapshot: RelaySnapshot) -> None:
 
 
 def _snapshot_timestamp(snapshot_id: str) -> str:
-    # Separate companion routes predate captured_at on their wire model. Keep a
-    # deterministic, schema-valid boundary value until that contract is retired.
     del snapshot_id
     return "1970-01-01T00:00:00Z"
 

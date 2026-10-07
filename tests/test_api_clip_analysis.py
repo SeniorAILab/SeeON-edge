@@ -1,5 +1,3 @@
-"""Stored-clip analysis relay and artifact identity coverage."""
-
 from __future__ import annotations
 
 import hashlib

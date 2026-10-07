@@ -1,5 +1,3 @@
-"""Validation and activation for qualified detection-module definitions."""
-
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
@@ -217,8 +215,6 @@ def compile_detection_module_registry(
             key = (definition.module_id, binding.component_id)
             previous = shared_bindings.setdefault(key, binding)
             if previous != binding and definition.version == latest_versions[definition.module_id]:
-                # Different versions may intentionally change a binding. Conflicts
-                # across simultaneously selected modules are checked at activation.
                 shared_bindings[key] = binding
     latest_by_id = {
         module_id: by_qualified[(module_id, version)]
@@ -324,8 +320,6 @@ def _validate_definition(
                 f"schedule rule {rule.component_id!r} does not target an extractor"
             )
         interval = rule.resolve(1, temporal_profile)
-        # An on-demand extractor resolves to no interval: it is provisioned but
-        # never scheduled per frame.
         if interval is not None and interval <= 0:
             raise DetectionModuleCompilationError("schedule intervals must be positive")
 
@@ -336,8 +330,6 @@ def _reject_output_writer_conflicts(bindings: Iterable[ComponentBinding]) -> Non
         if binding.component_kind != "extractor" or binding.output_adapter is None:
             continue
         owner = owners.setdefault(binding.output_adapter, binding.component_id)
-        # One provisioned component shared by modules is one semantic writer.
-        # Different components writing the same adapter are ambiguous and fatal.
         if owner != binding.component_id:
             raise DetectionModuleActivationError(
                 f"output adapter {binding.output_adapter!r} has multiple active writers: "

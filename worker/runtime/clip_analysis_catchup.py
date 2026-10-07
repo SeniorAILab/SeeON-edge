@@ -1,5 +1,3 @@
-"""One-shot, bounded boot catch-up for published clips awaiting analysis."""
-
 from __future__ import annotations
 
 import logging

@@ -1,11 +1,3 @@
-"""Relay route app on the real PostgreSQL product sandbox, plus row oracles.
-
-The app is ``postgres_api_app`` (production composition root, no lifespan) with
-the relay token set and one registered camera. The oracles read the committed
-rows through the sandbox admin connection, never through the stores under test.
-Register next to the sandbox plugin: ``pytest_plugins = ("tests_support.postgres_sandbox",)``.
-"""
-
 from __future__ import annotations
 
 from typing import Any
@@ -31,7 +23,6 @@ def relay_postgres_app(
     rtsp_url: str = "rtsp://example/camera-1",
     label: str | None = None,
 ) -> FastAPI:
-    """Build the relay app; ``camera_id=None`` leaves the registry empty."""
     app = postgres_api_app(sandbox, audit_runtime)
     app.state.edge_relay_token = RELAY_TOKEN
     if camera_id is not None:
@@ -63,7 +54,6 @@ def outbox_rows(sandbox: ProductSandbox) -> list[tuple[Any, ...]]:
 
 
 def row_counts(sandbox: ProductSandbox) -> tuple[int, int]:
-    """(incidents, event_outbox) row counts."""
     row = sandbox.admin.execute(
         "SELECT (SELECT count(*) FROM incidents), (SELECT count(*) FROM event_outbox)"
     ).fetchone()
@@ -78,7 +68,6 @@ def artifact_count(sandbox: ProductSandbox) -> int:
 
 
 def camera_revision(sandbox: ProductSandbox, camera_id: str) -> tuple[int, int]:
-    """(revision, never_connected) of one registry row."""
     row = sandbox.admin.execute(
         "SELECT revision, never_connected FROM cameras WHERE camera_id = %s", (camera_id,)
     ).fetchone()
@@ -87,11 +76,6 @@ def camera_revision(sandbox: ProductSandbox, camera_id: str) -> tuple[int, int]:
 
 
 def fail_inserts(sandbox: ProductSandbox, table: str, *, sqlstate: str = "08006") -> None:
-    """Install a BEFORE INSERT trigger that raises ``sqlstate`` on ``table``.
-
-    ``08006`` (connection_failure) is classified as unavailable by the product
-    pool, so the admission transaction rolls back and nothing is acknowledged.
-    """
     function = f"relay_fault_{table}"
     sandbox.admin.execute(
         f"CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $$ "

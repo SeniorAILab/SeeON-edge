@@ -20,7 +20,6 @@ def normalize_person_keypoints(
     frame_height: int,
     confidence_threshold: float,
 ) -> NDArray[np.float32]:
-    """Normalize the first detected COCO-17 pose to ``float32[17, 3]``."""
     normalized = np.zeros((_N_KEYPOINTS, _KEYPOINT_DIMS), dtype=np.float32)
     if not pose_detections:
         return normalized

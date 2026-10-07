@@ -1,5 +1,3 @@
-"""Native incident query and incident-local review authority."""
-
 from __future__ import annotations
 
 import base64
@@ -51,17 +49,14 @@ class EvidenceReviewConflictError(RuntimeError):
         )
 
 
-# Delivery state reported for an incident that predates the event outbox.
 LEGACY_DELIVERY_STATE = "LEGACY_UNTRACKED"
 
 
 class EvidenceProjectionUnavailable(RuntimeError):
-    """An incident lacks a required durable delivery obligation."""
+    ...
 
 
 class CentralEvidenceReviewStore:
-    """Compare-and-swap the review columns owned by one incident row."""
-
     def __init__(self, database: PostgresDatabase, authority: AuthorityToken) -> None:
         if not isinstance(database, PostgresDatabase):
             raise TypeError("native incident reviews require a PostgreSQL owner")
@@ -129,8 +124,6 @@ class CentralEvidenceReviewStore:
 
 
 class CentralEvidenceQuery:
-    """Read privacy-bounded incident projections from native authorities."""
-
     def __init__(self, database: PostgresDatabase) -> None:
         if not isinstance(database, PostgresDatabase):
             raise TypeError("native incident queries require a PostgreSQL owner")
@@ -208,9 +201,6 @@ LEFT JOIN event_outbox AS delivery ON delivery.edge_event_id = incident.edge_eve
 def _summary_from_row(row: tuple[object, ...]) -> CentralEvidenceSummary:
     delivery_state = row[21]
     if delivery_state is None:
-        # The SQLite runtime delivered synchronously and kept no outbox, so an
-        # incident imported from it has no obligation row. Only a database that
-        # was never imported treats a missing obligation as a broken commit.
         if row[22] is not True:
             raise EvidenceProjectionUnavailable("incident delivery obligation is missing")
         delivery_state = LEGACY_DELIVERY_STATE

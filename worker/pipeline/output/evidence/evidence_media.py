@@ -1,5 +1,3 @@
-"""Strict finalized MP4 inspection from one immutable file descriptor."""
-
 from __future__ import annotations
 
 import hashlib
@@ -72,24 +70,6 @@ def inspect_finalized_media(path: Path, *, ffprobe_bin: str = "ffprobe") -> Medi
 
 
 def _media_length_ms(payload: dict[str, object], streams: object) -> int:
-    """How long the media actually runs, in milliseconds.
-
-    ``format.duration`` is not the answer. RTSP PTS carry the camera's uptime
-    origin, and for a clip cut 8237 seconds into such a stream ffprobe reported
-    ``format.duration=8271`` -- the distance from timeline zero, not the 34
-    seconds of footage. Measured against the ceiling below, that marked every
-    clip this deployment produced CORRUPT, which suppressed the manifest, which
-    kept every playable clip out of the catalogue: the operator saw nothing
-    while good footage sat on disk.
-
-    Subtracting ``start_time`` is not the answer either, because the value is
-    not consistently origin-inclusive -- a file written with an output
-    timestamp offset reports ``duration=34`` alongside ``start_time=8237``, and
-    the subtraction goes negative.
-
-    The video stream's own duration is unambiguous in both cases, so it wins
-    whenever ffprobe reports one.
-    """
     if isinstance(streams, list):
         for stream in streams:
             if not isinstance(stream, dict) or stream.get("codec_type") != "video":

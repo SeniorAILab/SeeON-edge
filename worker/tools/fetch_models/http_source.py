@@ -1,15 +1,3 @@
-"""Single-attempt HTTP byte source plus the retry policy the fetcher applies.
-
-Retry policy mirrors the retired ``scripts/fetch-models.sh`` (issue #188):
-only 429/408/5xx and transport errors are retried, ``Retry-After`` wins over
-the local backoff, and each wait carries jitter so two jobs on the same
-commit do not retry in lockstep. A 404 means the pin is wrong and fails fast.
-
-The source itself never retries: a failure part-way through a body must
-restart the whole file (hash and temp file included), and only the fetcher
-owns those. It raises ``RetryableSourceError`` so the fetcher can decide.
-"""
-
 from __future__ import annotations
 
 import os
@@ -29,12 +17,10 @@ _RETRYABLE_STATUSES: Final = frozenset({408, 429})
 
 
 class SourceError(RuntimeError):
-    """A download failed for good; the destination is left untouched."""
+    ...
 
 
 class RetryableSourceError(SourceError):
-    """A download failed in a way that may succeed on a later attempt."""
-
     def __init__(self, message: str, *, retry_after: float | None = None) -> None:
         super().__init__(message)
         self.retry_after = retry_after
@@ -42,7 +28,7 @@ class RetryableSourceError(SourceError):
 
 class ByteSource(Protocol):
     def stream(self, url: str, headers: Mapping[str, str]) -> Iterator[bytes]:
-        """Yield the body of ``url`` once; raise ``SourceError`` on failure."""
+        ...
 
 
 def _is_retryable(status: int) -> bool:
@@ -80,15 +66,12 @@ class RetryPolicy:
     rng: random.Random = field(default_factory=random.Random)
 
     def wait_seconds(self, attempt: int, retry_after: float | None) -> float:
-        """Seconds to wait after failed 1-based ``attempt`` before the next one."""
         if retry_after is not None:
             return min(retry_after, MAX_BACKOFF_SEC)
         return min(float(2 ** (attempt + 1)) + self.rng.uniform(0.0, 5.0), MAX_BACKOFF_SEC)
 
 
 class UrllibSource:
-    """Single-attempt ``ByteSource`` over ``urllib``."""
-
     def __init__(self, *, connect_timeout_sec: float = 20.0) -> None:
         self._timeout = connect_timeout_sec
 

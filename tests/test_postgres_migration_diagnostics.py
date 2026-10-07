@@ -1,5 +1,3 @@
-"""The isolated live diagnostics schema provisioned beside the product schema."""
-
 from __future__ import annotations
 
 from pathlib import Path

@@ -1,13 +1,3 @@
-"""The single alert sender: committed outbox obligations to the Hub ingest API.
-
-The relay route (right after its admission COMMIT) and the lifespan sender loop
-(for everything the route could not finish) share ``dispatch``. No SQL
-transaction is open while the Hub request runs: ``OutboxDelivery.claim`` commits
-the lease first and ``finish`` records the observation in a second transaction.
-A lost ``finish`` leaves an expiring lease, so the row is re-claimed and resent
-under the same edge event id, which the Hub deduplicates.
-"""
-
 from __future__ import annotations
 
 import base64
@@ -40,8 +30,6 @@ from shared.events.relay_failure_log import RelayFailureLog
 _LOGGER = logging.getLogger(__name__)
 
 RELAY_OUTBOX_BUDGET = OutboxBudget(max_entries=1_000_000, max_bytes=8 * 1024**3)
-# One day of 5 s row retries. The lease must outlive one Hub request, including
-# the optional snapshot upload that follows an accepted alert.
 RELAY_DELIVERY_BUDGET = DeliveryBudget(
     max_attempts=17_280,
     lease_seconds=120.0,
@@ -75,8 +63,6 @@ class AlertIngestClient(Protocol):
 
 @dataclass(slots=True)
 class OutboxSenderStatus:
-    """Operator-visible sender state; written only by the sender thread."""
-
     enabled: bool
     reason: str | None = None
     consecutive_failures: int = 0
@@ -94,7 +80,6 @@ def scoped_client(client: Any, backend_camera_id: str) -> AlertIngestClient:
 
 
 def alert_kwargs(envelope: str) -> dict[str, Any]:
-    """Rebuild the Hub request from the committed envelope, never from the request."""
     payload = json.loads(envelope)
     kwargs: dict[str, Any] = {
         "edge_event_id": payload["edge_event_id"],
@@ -130,11 +115,6 @@ def dispatch(
     *,
     on_accepted: Callable[[float], None] | None = None,
 ) -> EventReceipt | DeliveryFailure:
-    """Send one claimed obligation and record what the Hub answered.
-
-    The Hub answer is returned even when recording it fails: the incident is
-    already committed, and the unfinished lease makes the sender resend later.
-    """
     try:
         result = scoped_client(client, claim.backend_camera_id).send_alert_receipt(
             on_accepted=on_accepted, **alert_kwargs(claim.envelope)
@@ -164,8 +144,6 @@ def dispatch(
     if result.transport_error is not None:
         outcome = DeliveryOutcome.UNKNOWN
     elif result.disposition in _KEEP_OBLIGATION:
-        # A Hub without the ingest route (404/405) may be upgraded later; keep
-        # the obligation until max_attempts instead of dropping the alert.
         outcome = DeliveryOutcome.RETRY
     else:
         outcome = DeliveryOutcome.REJECTED
@@ -191,7 +169,6 @@ def _finish(
             backend_event_id=backend_event_id,
         )
     except (PostgresError, psycopg.Error, AuthorityFenced, DeliveryResponseConflict, ValueError):
-        # The lease expires and the row is re-claimed; the Hub dedupes the resend.
         _LOGGER.warning(
             "backend outbox delivery result not recorded; lease will expire",
             extra={"edge_event_id": claim.edge_event_id, "outcome": outcome.value},
@@ -199,7 +176,6 @@ def _finish(
 
 
 def send_outbox_once(app: Any, *, limit: int = SENDER_BATCH_LIMIT) -> DeliveryFailure | None:
-    """Drain due obligations; stop at the first retryable failure for backoff."""
     status: OutboxSenderStatus | None = getattr(app.state, "backend_outbox_sender_status", None)
     client = getattr(app.state, "backend_ingest_client", None)
     delivery = getattr(app.state, "event_outbox_delivery", None)
@@ -242,7 +218,6 @@ def sender_delay(
     retry_after: float | None,
     jitter: float,
 ) -> float:
-    """Exponential backoff with a jitter fraction in [0, 1), honoring Retry-After."""
     if consecutive_failures <= 0:
         return base
     exponential = min(SENDER_MAX_BACKOFF_SEC, base * 2 ** min(consecutive_failures, 16))

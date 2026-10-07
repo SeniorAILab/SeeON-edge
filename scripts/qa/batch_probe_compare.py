@@ -1,4 +1,13 @@
-"""Compare two `scripts/qa/batch_probe.py` row sidecars frame by frame.
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import sys
+from pathlib import Path
+from typing import Any
+
+_DESCRIPTION = """Compare two `scripts/qa/batch_probe.py` row sidecars frame by frame.
 
 Diagnostic only. Subject = the engine/batch under test, control = the batch-1
 engine on the same file sources (identical decoded frames, keyed by
@@ -13,15 +22,6 @@ Usage:
         --control ctrl.json.rows.jsonl [--pad-permutation 12,3,7,0,9,1,11,5,2,10,4,8,6] \
         [--iou 0.9 --dscore 0.05 --kpt-px 2.0]
 """
-
-from __future__ import annotations
-
-import argparse
-import json
-import math
-import sys
-from pathlib import Path
-from typing import Any
 
 _KEYPOINTS = 17
 _ROW_SCORE = 4
@@ -109,7 +109,7 @@ def compare(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=_DESCRIPTION)
     parser.add_argument("--subject", type=Path, required=True)
     parser.add_argument("--control", type=Path, required=True)
     parser.add_argument(

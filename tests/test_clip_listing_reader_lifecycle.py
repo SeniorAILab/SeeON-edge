@@ -1,5 +1,3 @@
-"""Schema-17 listing repository lifecycle is absent."""
-
 from __future__ import annotations
 
 import importlib

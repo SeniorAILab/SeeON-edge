@@ -163,12 +163,7 @@ from worker.types.preview import FallPreviewState
 from worker.types.trace import DecisionIdentity
 
 LOGGER: Final = logging.getLogger(__name__)
-# Off the hot path (#579/#580, S6). Sized for the retired 5 s SQLite busy_timeout and
-# not re-derived for the API's PostgreSQL pool budget (2.0 s acquire + 5 s statement,
-# backend/app/postgres_root.py), whose worst case is longer.
 HEARTBEAT_TIMEOUT_SEC: Final = 6.0
-# Matches edge/runtime/edge_worker.py's DETECTOR_VERSION -- same domain-detector
-# generation, ported wholesale rather than re-derived per worker/AGENTS.md.
 DETECTOR_VERSION: Final = "worker-domain-detectors-v1"
 CLIP_ANALYSIS_CPU_ENV: Final = "ML_WORKER_CLIP_ANALYSIS_CPU"
 
@@ -176,7 +171,6 @@ CLIP_ANALYSIS_CPU_ENV: Final = "ML_WORKER_CLIP_ANALYSIS_CPU"
 def _validate_fall_bundle_conformance(
     conformance: ort_pose_bbox56.PoseBbox56Conformance,
 ) -> None:
-    """Hold the adapter-read publisher contract to the domain implementation."""
     if conformance.keypoint_order != COCO17_KEYPOINT_ORDER:
         raise ModelLoadError(
             "bundle conformance keypoint_order differs from COCO-17 domain order: "
@@ -222,19 +216,10 @@ def _validate_fall_bundle_conformance(
 
 
 class EvidenceDeliveryError(RuntimeError):
-    """Evidence delivery is enabled but cannot be brought up safely.
-
-    ADR-0003: event delivery is always active. A relay misconfiguration or a
-    clip store owned by another process is a real failure, not something to
-    degrade past with a warning -- a worker
-    that looks healthy while alerts pile up unsent is the exact failure mode
-    that decision removes. Messages are sanitized: relay URLs and tokens stay
-    on ``__cause__``.
-    """
+    ...
 
 
 def _persisted_bed_regions(camera: CameraRuntimeConfig) -> tuple[BoundingBox, ...]:
-    """Convert every persisted region into the bed-exit domain envelope."""
     return tuple(
         BoundingBox(
             x1=min(x for x, _ in region.polygon),
@@ -257,13 +242,6 @@ def _debug_snapshots_provider(
     domain_deciders: Mapping[str, Decider],
     definitions: Mapping[str, DetectionModuleDefinition] | None = None,
 ) -> Callable[[int], tuple[Any, ...]]:
-    """Build one camera's cross-domain debug-snapshot collector.
-
-    Mirrors edge's per-frame `debug_snapshots` list (camera_worker.py:223-228):
-    every domain that registered a `debug_snapshot_adapter` contributes its
-    current snapshot, read from the live detector this closure captures.
-    """
-
     def provider(frame_index: int) -> tuple[Any, ...]:
         snapshots: list[Any] = []
         for name, detector in domain_deciders.items():
@@ -301,8 +279,6 @@ class CameraDetectionPlan:
 
 @final
 class HeartbeatReporter:
-    """Translate a camera READY transition into one bounded relay heartbeat."""
-
     def __init__(self, worker: WorkerConfig, camera: CameraRuntimeConfig) -> None:
         self._worker, self._camera = worker, camera
         self._last_attempt: float | None = None
@@ -341,7 +317,7 @@ class HeartbeatReporter:
             )
         except FatalAcceleratorError:
             raise
-        except Exception as exc:  # noqa: BLE001 - relay I/O is a non-fatal camera boundary
+        except Exception as exc:  # noqa: BLE001
             self._record_failure(
                 DeliveryFailure(
                     DeliveryDisposition.RETRY,
@@ -373,16 +349,6 @@ class HeartbeatReporter:
 @dataclass(frozen=True, slots=True)
 @final
 class _WindowGatedDecider:
-    """Common per-domain detection-window gate (issue #24).
-
-    Wraps another domain's :class:`Decider` so ``update()`` is skipped
-    entirely -- returning a no-decision (``()``) -- whenever ``clock()`` falls
-    outside ``window``. The wrapped decider's internal state is never touched
-    while gated, which is safe for domains whose state can simply freeze
-    outside their window (e.g. "fall"). ``bed_exit`` is deliberately never
-    wrapped by this gate: see :meth:`WorkerRuntime._build_decider`.
-    """
-
     decider: Decider
     window: DetectionWindow
     clock: Callable[[], datetime]
@@ -392,8 +358,6 @@ class _WindowGatedDecider:
 
     def update(self, input_value: DecisionInput) -> tuple[BusinessEvent, ...]:
         if not self.window.contains(self.clock()):
-            # The gate itself evaluated this frame: one fresh, authoritative
-            # outside-window snapshot, no shadow tail.
             object.__setattr__(
                 self,
                 "last_trace_snapshots",
@@ -414,8 +378,6 @@ class _WindowGatedDecider:
             return ()
         events = self.decider.update(input_value)
         if isinstance(self.decider, TraceSnapshotProvider):
-            # Mirror the inner decider's snapshots AND its freshness / shadow
-            # facts, so the aggregator reads a consistent view off this wrapper.
             object.__setattr__(self, "last_trace_snapshots", self.decider.last_trace_snapshots)
             object.__setattr__(
                 self,
@@ -441,12 +403,6 @@ class _WindowGatedDecider:
 def _decision_identity_for(
     config: WorkerConfig, module_qualified_id: str
 ) -> DecisionIdentity | None:
-    """Identity a module's decisions are stamped with: its compiled id + policy.
-
-    None when no effective policy is configured for that module; the decider
-    is then composed without an identity and its records carry no module claim
-    and no decision_trace_id. Never borrows another module's policy.
-    """
     module_id = module_qualified_id.split(".v", 1)[0]
     policy = config.detection_policies.defaults.get(module_id)
     if policy is None:
@@ -466,18 +422,10 @@ def _absorbed_track_id_switch_total(decision: EventAggregator) -> int:
 
 
 def _delivery_queue_dir(state_dir: Path) -> Path:
-    """Directory backing the publish-once delivery queue for this slot.
-
-    The queue directory is its own capacity authority: count and byte totals are
-    reconstructed by scanning it under the queue's cross-process lock, so there
-    is no second persisted ledger to diverge from it after a crash.
-    """
     return state_dir / "delivery-queue"
 
 
 class ClipAnalysisDisabled:
-    """Fail-closed analysis control seam for deployments without an assigned CPU."""
-
     def status(self, clip_id: str) -> object:
         del clip_id
         raise ClipAnalysisDisabledError("clip_analysis_disabled")
@@ -529,33 +477,6 @@ def _production_mps_source() -> bool:
 
 
 def production_boot_dependencies() -> bootstrap.BootDependencies:
-    """The real ``BootDependencies`` :class:`WorkerRuntime` injects by default.
-
-    Wraps the adapter-level, hardware-touching ``probe_cuda_capability``
-    (``worker.adapters.device.cuda.probe``, checks ``torch`` imports and
-    ``torch.cuda.is_available()``) into the ``CudaProbeSource`` shape
-    ``worker.runtime.profile.registry.default_verifiers`` expects for the
-    ``profile_device`` bootstrap stage's ``cuda`` verifier.
-
-    ``BootDependencies`` is a value, so the production default is constructed
-    here and injected into ``WorkerRuntime`` rather than being left to a
-    bootstrap fallback. That keeps missing capability wiring fail-closed.
-
-    ``mps_source`` wraps the adapter-level ``probe_mps_capability``
-    (``worker.adapters.device.mps.probe``, checks ``torch`` imports,
-    ``torch.backends.mps.is_built()``, and ``torch.backends.mps.is_available()``)
-    into the ``MpsProbeSource`` shape ``default_verifiers`` expects for the
-    ``mps`` verifier -- a bare ``Callable[[], bool]``
-    (``worker.runtime.profile.registry.MpsProbeSource``), unlike
-    ``CudaProbeSource`` which carries a richer result dataclass through; only
-    the ``available`` flag crosses that boundary, so ``_verify_mps`` reports a
-    generic "MPS is available"/"MPS is unavailable" reason rather than the
-    probe's detailed diagnostic string. Before this wiring existed, ``mps``
-    kept failing closed with "MPS capability probe is not configured" on
-    every host, including Apple Silicon where ``torch.backends.mps`` reports
-    available. This is the real default that fixes that. The ``cpu`` profile
-    is unaffected either way -- ``_verify_cpu`` never consults a source.
-    """
     return bootstrap.BootDependencies(
         default_verifiers(
             cuda_source=_production_cuda_source,
@@ -566,15 +487,6 @@ def production_boot_dependencies() -> bootstrap.BootDependencies:
 
 
 def _production_device_resident_source() -> VerifyResult:
-    """Device residency for `flow`, established from NVML rather than decode.
-
-    The retired `nvidia` profile proved residency by opening an NVDEC device.
-    Under `flow` the SDK owns decode inside its own process graph, so the
-    parent's evidence is NVML naming a driver and a device - the same source
-    the boot telemetry and provenance already use. Failing to see one is a
-    refusal to start, not a warning: ADR-0002 keeps required GPU infrastructure
-    fail-fast.
-    """
     status = probe_nvml_gpu_status()
     if not status.nvml_available:
         return VerifyResult(False, "flow", "device", status.reason)
@@ -584,34 +496,6 @@ def _production_device_resident_source() -> VerifyResult:
 
 
 def _production_gpu_status(*, probe_python_cuda: bool = True) -> RelayGpuPayload:
-    """The real GPU-telemetry producer `WorkerRuntime.__init__` calls once at boot.
-
-    Issue #132: `RelayGpuPayload` (`worker/runtime/telemetry/wire.py:56-64`) and
-    `WorkerDiagnostics.set_gpu_status` (`worker/runtime/telemetry/runtime_diagnostics.py`)
-    have existed since the relay wire schema was defined, but nothing in
-    production ever called `set_gpu_status` -- the same failure class as #124
-    (`update_decode` never called in production, fixed in 583d02e). This
-    function is the fix's composition point: it combines two adapter-level,
-    hardware-touching probes into the wire payload's shape.
-
-    `nvml_available`/`driver_version`/`device_name` come from
-    `probe_nvml_gpu_status` (`worker.adapters.device.nvml.probe`, checks
-    `pynvml` imports and `nvmlInit`/`nvmlDeviceGetCount`). `cuda_context_ok`
-    reuses `probe_cuda_capability` (`worker.adapters.device.cuda.probe`,
-    already probed above for the `profile_device` bootstrap stage) rather than
-    re-deriving CUDA-context health from NVML data -- NVML enumerating a
-    device is a necessary but not sufficient signal that this process's torch
-    build can actually construct a `device="cuda"` model (see
-    `probe_cuda_capability`'s own docstring on the broken-wheel failure mode),
-    so this deliberately answers "is NVML available" and "is CUDA usable" as
-    two independent questions, exactly as the wire schema's two separate
-    boolean fields imply.
-
-    Both probes fail closed and never raise, so an environment with neither
-    NVML nor CUDA (this repo's macOS dev/CI machines) reports
-    `nvml_available=False`/`cuda_context_ok=False` with a clear `nvml_error`
-    rather than breaking boot.
-    """
     nvml_status = probe_nvml_gpu_status()
     cuda_context_ok = probe_cuda_capability().available if probe_python_cuda else False
     return RelayGpuPayload(
@@ -626,22 +510,6 @@ def _production_gpu_status(*, probe_python_cuda: bool = True) -> RelayGpuPayload
 
 @final
 class NativeHeartbeatLoop:
-    """Periodic per-camera liveness for the Flow policy plane.
-
-    Flow source readiness is reported by its lifecycle supervisor. This loop
-    additionally reports liveness only while each policy pump advances, so a
-    stalled policy path cannot be pinned online by a timer.
-
-    Liveness here is observed, not assumed: a camera is reported ready only
-    when its pump's ``processed_count`` advanced since the previous tick, so a
-    stalled camera stops heartbeating instead of being pinned online by a
-    timer.
-
-    This deliberately runs off the decision path. The policy pump is the sole
-    consumer of a capacity-one metadata slot; blocking I/O inside it stalls
-    fall detection and overwrites frames.
-    """
-
     def __init__(
         self,
         worker: WorkerConfig,
@@ -655,13 +523,7 @@ class NativeHeartbeatLoop:
         self._reporters = {
             pump.camera_id: HeartbeatReporter(worker, by_id[pump.camera_id]) for pump in self._pumps
         }
-        # The reporter rate-limits to camera.heartbeat_interval_sec on its own,
-        # so ticking faster only shortens how long a newly live camera waits to
-        # appear; it does not increase relay traffic.
         self._tick_sec = tick_sec
-        # Seeded from the live counter, not from a sentinel below zero: a
-        # camera that has processed nothing must not be reported live by the
-        # very first tick.
         self._seen: dict[str, int] = {pump.camera_id: pump.processed_count for pump in self._pumps}
         self._stop = threading.Event()
 
@@ -689,9 +551,6 @@ class NativeHeartbeatLoop:
 
 @final
 class WorkerRuntime:
-    """Own process-wide models and camera-local mutable pipeline state."""
-
-    #: Flow is the worker's sole production media plane.
     _flow_media_plane: FlowMediaPlane | None = None
     _flow_lifecycle_supervisor: FlowLifecycleSupervisor | None = None
 
@@ -731,15 +590,6 @@ class WorkerRuntime:
         self._clip_store_dir = (
             Path(DEFAULT_CLIP_STORE_DIR) if clip_store_dir is None else clip_store_dir
         )
-        # Issue #191: a relay pull that carried no domains signal at all used
-        # to silently resolve to zero active domains (no fall/bed_exit
-        # detection scheduled, no error). Logging the resolved set -- and
-        # whether anything actually overrode the registry -- at startup
-        # makes that state visible instead of only discoverable by noticing
-        # detections never arrive. ``config.enabled_domains`` (the registry
-        # overlaid by ``config.domains.resolved_overrides()``) never returns
-        # an undefined/None state anymore, so there is no separate fallback
-        # branch here: an empty override map *is* "registry default".
         resolved_domain_names = tuple(self._module_versions)
         domain_source = (
             "config override" if self.config.domains.resolved_overrides() else "registry default"
@@ -774,28 +624,10 @@ class WorkerRuntime:
         self.watchdog: InferenceWatchdog | None = None
         self._evidence_export_runtime: EvidenceExportRuntime | None = None
         self._runtime_status_sender: RuntimeStatusSender | None = None
-        # GAP #1/#2 wiring (todo 20): one shared diagnostics sink, overlay
-        # renderer, and snapshot store per process -- same "one shared actor"
-        # pattern as `_clip_recorder`/`_compose_evidence_export` -- plus the
-        # per-camera evidence attacher `_default_pump_factory` reads.
         self.diagnostics = WorkerDiagnostics()
-        # #132: `set_gpu_status` existed with zero production callers --
-        # `runtime.device` in `/status` stayed permanently empty. Probing and
-        # recording once here (not per-camera, not periodically refreshed --
-        # see `_production_gpu_status`'s docstring for the follow-up note)
-        # mirrors `_boot_dependencies`' own eager probe call two lines above.
         self.diagnostics.set_gpu_status(_production_gpu_status(probe_python_cuda=False))
         self._snapshot_store = SnapshotStore(self._resolved_clip_store_dir())
         self._camera_evidence_attachers: dict[str, AlertEvidenceAttacher] = {}
-        # #15 (resolved): `mjpeg_server.py` had been ported without a call
-        # site, so `:8090` never opened and the dashboard's camera view stayed
-        # dead even though `compose.edge.yaml` enables the switch and the
-        # backend proxies `/api/v1/streams/{id}` there. The dev MJPEG server
-        # IS the sanctioned viewer and is really started by
-        # `_start_live_view_server` below (real bind, covered by
-        # tests/test_worker_live_view_composition.py). The switch is resolved
-        # once here so the per-camera live-view pumps built during `_activate`
-        # can be handed the tap.
         self._mjpeg_config = self._resolve_mjpeg_config()
         self._live_frames = LatestFrameStore()
         self._mjpeg_server: MjpegServer | None = None
@@ -812,13 +644,6 @@ class WorkerRuntime:
         self._execution_record_exporter = None
 
     def _stop_flow_media_plane(self) -> None:
-        """Stop the Flow and let it go, without touching its roster.
-
-        Removing its sources on the way out bought nothing - the plane and its
-        slot are discarded here, and a roster change requires a restart anyway -
-        while driving the SDK's per-stream teardown, which core-dumped the
-        process on a 13-camera shutdown after the Flow failed to stop in time.
-        """
         if self._flow_media_plane is None:
             return
         self._live_frames.set_demand_listener(None)
@@ -841,19 +666,6 @@ class WorkerRuntime:
         return base / subdir
 
     def _resolve_mjpeg_config(self) -> MjpegServerConfig:
-        """Settle the live view's two switches into one answer.
-
-        Both exist on purpose and neither may be silently ignored: the YAML
-        ``dev_mjpeg`` block is how an operator pins host/port in a config file,
-        and ``ML_WORKER_DEV_MJPEG*`` is how the shipped ``compose.edge.yaml``
-        turns it on for the deployed worker. An explicit ``dev_mjpeg.enabled``
-        in the config wins outright (it is the more specific statement); with
-        the config silent, the environment decides.
-
-        The relay token doubles as the probe token, matching edge, so the
-        backend's probe origin authenticates against the same secret it
-        already holds.
-        """
         configured = self.config.dev_mjpeg
         source = (
             MjpegServerConfig(enabled=True, host=configured.host, port=configured.port)
@@ -864,8 +676,6 @@ class WorkerRuntime:
             enabled=source.enabled,
             host=source.host,
             port=source.port,
-            # `_authorized_probe` does a plain string comparison, so the
-            # SecretStr has to be unwrapped here or every probe would 403.
             probe_token=self.config.relay.token.get_secret_value(),
         )
 
@@ -889,9 +699,6 @@ class WorkerRuntime:
         )
         try:
             _ = bootstrap.bootstrap_or_exit(stages, context=self._context)
-            # `bootstrap_or_exit` exits the process on any boot failure, so
-            # reaching this line already means boot succeeded -- there is no
-            # deferred/partial failure state left to report here.
             self.diagnostics.set_worker_status(
                 RelayWorkerPayload(
                     alive=True,
@@ -943,24 +750,11 @@ class WorkerRuntime:
         self._context.release_lease()
 
     def _start_live_view_server(self) -> None:
-        """Open the operator MJPEG port once the cameras behind it exist.
-
-        Runs after ``bootstrap_or_exit`` so every camera is already registered
-        in ``_live_frames`` -- a request for an unknown camera is a 404, and
-        binding earlier would serve those for the whole boot window.
-
-        ``start_optional_mjpeg_server`` returns ``None`` both when the feature
-        is off and when the bind fails. That is the intended asymmetry: a
-        cosmetic view losing its port must not take fall detection down with
-        it, so the failure is logged and the worker keeps running.
-        """
         if self._boot is None:
             raise RuntimeError("live view server cannot start before flow boot")
         if not self._mjpeg_config.enabled:
             LOGGER.info("dev_mjpeg disabled; live view server not started")
             return
-        # Analysis lookup spans the stable mount, including historical active
-        # subdirectories. New recordings still use `_resolved_clip_store_dir`.
         clip_store_dir = self._clip_store_dir
         cpu_index = _clip_analysis_cpu_index(self._env)
         supervisor = (
@@ -968,7 +762,6 @@ class WorkerRuntime:
             if cpu_index is None
             else ClipAnalysisSupervisor(
                 python_executable=sys.executable,
-                # The same digest-verified pose ONNX the Flow engine was built from.
                 pose_model_path=Path(self._env["ML_WORKER_FLOW_ONNX_PATH"]),
                 bed_model_path=Path(BED_ONNX_MODEL_PATH),
                 profile=ClipAnalysisProfile(
@@ -1036,26 +829,6 @@ class WorkerRuntime:
         )
 
     def _start_runtime_status_sender(self) -> None:
-        """Start periodic runtime-status relay delivery (default 5s cadence).
-
-        A separate channel from :class:`HeartbeatReporter` -- that is a
-        READY-gated liveness ping on ``camera.heartbeat_interval_sec`` (default
-        30s) to ``POST /api/v1/relay/heartbeat``; this publishes the process's
-        ``WorkerDiagnostics`` telemetry (decode selection, measured fps,
-        clip-recorder/gpu/worker status) to ``POST /api/v1/relay/runtime-status``
-        on its own timer, independent of any camera's readiness. Never fatal to
-        camera activation.
-
-        ``facility_by_camera`` is built from every configured camera (never a
-        filtered subset), so no camera's telemetry silently drops out of the
-        payload for lacking a mapping entry.
-
-        ``request`` is looked up from ``runtime_status_sender_module`` here
-        (rather than relying on ``RelayRuntimeStatusTransport``'s default
-        parameter, which binds ``bounded_request`` once at class-definition
-        time) so tests can substitute the HTTP transport by monkeypatching
-        ``runtime_status_sender_module.bounded_request``.
-        """
         facility_by_camera: Mapping[str, str] = MappingProxyType(
             {camera.camera_id: camera.facility_id for camera in self.config.cameras}
         )
@@ -1094,7 +867,6 @@ class WorkerRuntime:
         return models
 
     def _admit_selected_fall_bundle(self) -> None:
-        """Verify the selected active bundle before any model warmup or camera starts."""
         models = self._fall_models()
         selected = models.selected
         if selected is None:
@@ -1111,10 +883,6 @@ class WorkerRuntime:
         self._selected_bundle_admission = admit_model_bundle(selected.models_root, selected.desired)
 
     def _initialize_flow_media_plane(self, boot: BootContext) -> SharedComponentGraph:
-        """Compose Flow only from explicitly provisioned DeepStream artifacts."""
-        # The boot gate already ran verify_flow_boot_inputs for this profile;
-        # re-verify here so the plane is never constructed against inputs that
-        # changed since the gate, and keep the returned identity for the manifest.
         self._flow_engine_identity = verify_flow_boot_inputs(
             self._env, deployed_batch=len(self.config.cameras)
         )
@@ -1152,14 +920,9 @@ class WorkerRuntime:
                 worker_boot_id=str(self._worker_boot_uuid),
             )
         self._flow_media_plane.bind_live_frames(self._live_frames)
-        # The plane is not started here: a pyservicemaker Flow fixes its sources
-        # when it is built, so _activate_flow registers the roster first, then
-        # starts it, then waits for the first accepted frame (the real-batch
-        # warmup). Roster changes go through the worker restart directive.
         return self._initialize_flow_policy_graph(boot)
 
     def _initialize_flow_policy_graph(self, boot: BootContext) -> SharedComponentGraph:
-        """Build the CPU policy graph for the Flow media plane."""
         fall_model = self._create_fall_model()
         models = self._fall_models()
         flags = {"person-box-source": models.box_source == "person"}
@@ -1168,10 +931,6 @@ class WorkerRuntime:
         identities: list[SharedComponentIdentity] = []
         for binding in bindings:
             if binding.component_id == "fall-classifier":
-                # The verified runner's bundle names both identity fields.  Its
-                # preprocessing contract is distinct from the selection
-                # document's input-observation schema, so both routes emit the
-                # runner vocabulary in the applied manifest.
                 bundle = self._loaded_fall_bundle
                 if bundle is None:
                     raise RuntimeError("flow policy requires a loaded fall bundle")
@@ -1184,11 +943,6 @@ class WorkerRuntime:
                     )
                 )
                 continue
-            # The media plane owns every perception component. Their applied
-            # identity is the published weights each derives from (the ONNX
-            # export and the TensorRT engine are build products of that
-            # artifact, verified separately by the engine identity file at
-            # boot), so the runtime manifest names their published lineage.
             digest = binding.artifact_digest
             preprocessing = binding.preprocessing_identity
             if not isinstance(digest, str) or not digest or not preprocessing:
@@ -1223,19 +977,6 @@ class WorkerRuntime:
         return bundle.published_weights_digest
 
     def _create_fall_model(self) -> FallModelProtocol:
-        """Construct the selected bundle or the packaged fall model.
-
-        Fall model selection has no implicit fallback: an operator who omits
-        ``models.fall`` gets a refused boot, not a silent switch to a
-        different model with different performance characteristics. "Which
-        model ran that night" must never be answered by an unconfigured
-        default (same fail-closed principle as ``ML_WORKER_PROFILE`` and the
-        decode policy's unknown-value ``RuntimeError``).
-
-        Flow accepts only the ONNX Runtime runner. Selected bundles are
-        constructed from their admitted proof; packaged bundles are loaded
-        through the same ONNX Runtime adapter.
-        """
         models = self._fall_models()
         selected = models.selected
         if selected is not None:
@@ -1298,7 +1039,6 @@ class WorkerRuntime:
         boot: BootContext,
         handler: FaultHandler,
     ) -> tuple[bootstrap.CameraStageOutcome, ...]:
-        """Activate Flow sources and the existing image-free policy pumps."""
         media_plane = self._flow_media_plane
         if media_plane is None:
             raise RuntimeError("flow media plane is not initialized")
@@ -1318,10 +1058,6 @@ class WorkerRuntime:
             for camera in self.config.cameras
         )
         self._replay_sealed_clips(sealed_bindings)
-        # Every roster source is registered; build and run the Flow now, then
-        # require one accepted metadata frame before any pump or readiness
-        # exists. This is the real-batch warmup: engines are verified, never
-        # built (ADR-0002), so the first frame proves the whole chain.
         media_plane.start()
         self._await_flow_first_frame(pumps)
         self._native_policy_pumps = tuple(pumps)
@@ -1373,7 +1109,6 @@ class WorkerRuntime:
         return outcomes
 
     def _compose_evidence_export(self) -> None:
-        """Build and initialize the durable evidence exporter before activation."""
         probe_camera_id = self.config.cameras[0].camera_id if self.config.cameras else "worker"
         try:
             runtime = EvidenceExportRuntime.from_config(
@@ -1407,7 +1142,6 @@ class WorkerRuntime:
         self._evidence_export_runtime = runtime
 
     def _start_export_sender(self) -> None:
-        """Start the initialized evidence sender after Flow activation succeeds."""
         if self._evidence_export_runtime is None:
             raise EvidenceDeliveryError("evidence delivery was not composed")
         try:
@@ -1455,18 +1189,11 @@ class WorkerRuntime:
             from worker.adapters.model.pose_bbox56_bundle_support import member_digest, read_json
 
             return member_digest(read_json(root / "bundle-manifest.json"), "calibration.json")
-        except Exception:  # noqa: BLE001 - missing identity refuses by name at compose
+        except Exception:  # noqa: BLE001
             return None
 
     @staticmethod
     def _replay_sealed_clips(bindings: Sequence[FlowEvidenceBinding]) -> int:
-        """Republish clips a previous boot sealed but could not publish.
-
-        Returns the number that failed again. A sidecar exists precisely because
-        a publication already failed once; if it fails again the media and the
-        sidecar are still on disk for the next attempt. Refusing to activate
-        cameras over one stale clip would trade every camera for one recording.
-        """
         failures = 0
         for binding in bindings:
             try:
@@ -1483,7 +1210,6 @@ class WorkerRuntime:
     def _await_flow_first_frame(
         self, pumps: list[NativePolicyPump], *, timeout_sec: float = 30.0
     ) -> None:
-        """Block until one registered source publishes an accepted frame."""
         media_plane = self._flow_media_plane
         if media_plane is None:
             raise RuntimeError("flow media plane is not initialized")
@@ -1508,9 +1234,6 @@ class WorkerRuntime:
                     _ = media_plane.metadata.wait_accepted(token, timeout_sec=1.0)
                 except TimeoutError:
                     continue
-                # A camera is READY only once its own accepted frame proves the
-                # whole chain for it; announcing readiness before the plane
-                # produced anything would advertise a camera that cannot alert.
                 ready.add(camera_id)
                 HeartbeatReporter(self.config, cameras[camera_id]).mark_ready(camera_id)
         if not ready:
@@ -1519,8 +1242,6 @@ class WorkerRuntime:
             )
         unproven = sorted(set(tokens) - ready)
         if unproven:
-            # The plane's per-source reconnect keeps trying; these cameras are
-            # simply not READY yet, and the operator must be able to see which.
             LOGGER.warning(
                 "flow warmup: %d of %d cameras published a frame; still waiting on %s",
                 len(ready),
@@ -1540,7 +1261,7 @@ class WorkerRuntime:
                 size_bytes=publication.size_bytes,
                 duration_ms=publication.duration_ms,
             )
-        except Exception as exc:  # noqa: BLE001 - publication already succeeded
+        except Exception as exc:  # noqa: BLE001
             LOGGER.warning(
                 "clip analysis ready hook failed stage=clip_analysis_ready clip_id=%s "
                 "exception_class=%s",
@@ -1562,8 +1283,6 @@ class WorkerRuntime:
         if media_plane is None:
             raise RuntimeError("flow media plane is not initialized")
         endpoint = assert_rtsp_endpoint_allowed(camera.inference_rtsp_url)
-        # Decode is the SDK's now; the host decode-selection record went with the
-        # host pipeline. The diagnostic still names what the roster asked for.
         self.diagnostics.register_decode(camera.camera_id, camera.decode_backend or "auto")
         self._live_frames.register_camera(camera.camera_id)
         binding = media_plane.add_source(camera.camera_id, endpoint.pinned_url)
@@ -1661,8 +1380,6 @@ class WorkerRuntime:
         self._native_policy_pumps_by_camera[camera.camera_id] = pump
         pumps.append(pump)
         self.diagnostics.register_native_detection(camera.camera_id)
-        # Readiness is announced by the warmup once this camera's own accepted
-        # frame arrives, not here: the plane has not even started yet.
 
     def _fall_preview_states(self, camera_id: str) -> Mapping[int, FallPreviewState]:
         pump = self._native_policy_pumps_by_camera.get(camera_id)
@@ -1673,12 +1390,6 @@ class WorkerRuntime:
         boot: BootContext,
         plans: Mapping[str, CameraDetectionPlan],
     ) -> None:
-        """Apply provenance after shared identities and camera plans settle.
-
-        The schema value identifies the release this worker targets, not a
-        database observed at runtime; workers deliberately do not open one.
-        Provenance is auxiliary, so failures must never prevent detection.
-        """
         graph = self._shared_graph
         if graph is None:
             raise RuntimeError("runtime provenance requires initialized components")
@@ -1686,10 +1397,6 @@ class WorkerRuntime:
             cameras = tuple(
                 build_applied_camera_state(
                     camera_id=camera.camera_id,
-                    # The profile's declared decode, not the profile's name: the
-                    # manifest records which decoder actually ran, and under flow
-                    # that is the SDK's NVDEC. Reporting "flow" here made every
-                    # boot fail the manifest's vocabulary check.
                     effective_decode_backend=self._boot.runtime_profile.effective_decode_backend,
                     ingest_target_fps=self.temporal_profile.target_fps,
                     module_qualified_ids=tuple(
@@ -1753,7 +1460,6 @@ class WorkerRuntime:
         self._refresh_flow_recording_telemetry()
 
     def _refresh_flow_recording_telemetry(self) -> None:
-        """Publish Flow Smart Record and NVENC counters on every status tick."""
         media_plane = self._flow_media_plane
         if media_plane is None:
             return
@@ -1888,9 +1594,6 @@ class WorkerRuntime:
                 if snapshot.unapplied_transition_window is not None:
                     envelope["unapplied_transition_window"] = snapshot.unapplied_transition_window
                 if snapshot.unapplied_policy_threshold is not None:
-                    # The alert envelope is a frozen wire contract, so an
-                    # operator threshold that P1a does not apply is reported on
-                    # the runtime status surface instead of silently dropped.
                     self.diagnostics.record_fall_unapplied_policy_threshold(
                         camera.camera_id, snapshot.unapplied_policy_threshold
                     )
@@ -1927,7 +1630,6 @@ class WorkerRuntime:
         fall_model: FallModelProtocol,
         tracker: GreedyIouTracker | None = None,
     ) -> Decider:
-        """Compile one registered module without domain-name dispatch."""
         definition = self._module_registry.get(name, self._module_versions.get(name))
         window = self._resolved_window(name)
         context = CameraModuleContext(
@@ -1966,7 +1668,6 @@ def _night_window_active(window: DetectionWindow | None) -> Callable[[], bool]:
 
 
 def _is_confirmed_cpu_fall_runner(model: FallModelProtocol | None) -> bool:
-    """Report CPU policy inference only from a runner that declares CPU placement."""
     if model is None:
         return False
     device = getattr(model, "device", None)

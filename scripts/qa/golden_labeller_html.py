@@ -1,12 +1,4 @@
 # ruff: noqa: E501
-"""Render a golden worksheet CSV as a single offline HTML labelling page.
-
-The page plays each candidate clip from the local clip store, lets the owner
-pick ``real`` / ``false`` / ``unsure`` per episode, and exports the filled
-worksheet CSV from the browser (no server, no upload). The exported CSV is the
-input to ``tests_support/golden_episodes.py``.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -14,6 +6,14 @@ import csv
 import html
 import json
 from pathlib import Path
+
+_DESCRIPTION = """Render a golden worksheet CSV as a single offline HTML labelling page.
+
+The page plays each candidate clip from the local clip store, lets the owner
+pick ``real`` / ``false`` / ``unsure`` per episode, and exports the filled
+worksheet CSV from the browser (no server, no upload). The exported CSV is the
+input to ``tests_support/golden_episodes.py``.
+"""
 
 _PAGE = """<!doctype html>
 <meta charset="utf-8">
@@ -71,7 +71,7 @@ def render(worksheet: Path, output: Path, labeller: str) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=html.unescape(__doc__ or ""))
+    parser = argparse.ArgumentParser(description=html.unescape(_DESCRIPTION))
     parser.add_argument("--worksheet", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--labeller", required=True)

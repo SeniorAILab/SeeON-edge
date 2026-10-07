@@ -1,5 +1,3 @@
-"""Activation owns the edge_site singleton; the rollback predicate tells its seed from a write."""
-
 from __future__ import annotations
 
 from contextlib import closing
@@ -60,7 +58,6 @@ _ENROLLMENT: dict[str, ConnectionValue] = {
 def _snapshot(
     root: Path, statement: str | None = None, params: tuple[object, ...] = ()
 ) -> tuple[Path, Path]:
-    """Export the seeded old database after one optional raw statement on it; return both."""
     root.mkdir()
     source, destination = source_and_destination(root)
     if statement is not None:
@@ -76,7 +73,6 @@ def _custom_site_snapshot(root: Path) -> Path:
 
 
 def _activate(target: MigrationTarget, root: Path, route: str) -> AuthorityToken:
-    """Transfer the fenced provisioning authority by the named activation route."""
     if route == "fresh":
         directory = root / "fresh-state"
         directory.mkdir()
@@ -94,10 +90,6 @@ def _import(target: MigrationTarget, snapshot: Path) -> None:
 
 
 def _prepare(target: MigrationTarget, root: Path, route: str) -> tuple[Path, Path]:
-    """Import what the route needs; return the old database path and the snapshot to restore.
-
-    A fresh install has no old database, so its path names the file activation checks.
-    """
     if route == "fresh":
         return root / "fresh-state" / "edge.sqlite3", _snapshot(root / "reference")[1]
     if route == "no-site":
@@ -109,10 +101,6 @@ def _prepare(target: MigrationTarget, root: Path, route: str) -> tuple[Path, Pat
 
 
 def _fence(target: MigrationTarget, source: Path, snapshot: Path, root: Path) -> Path:
-    """Fence the old database at the current generation and return its receipt.
-
-    An absent old database is fenced without a snapshot, as on a fresh install.
-    """
     receipts = root / "receipts"
     receipts.mkdir(mode=0o700)
     receipt = receipts / "fence.json"
@@ -190,7 +178,6 @@ def test_activation_keeps_an_imported_customized_edge_site(
     }
 
 
-# A fresh install has no SQLite rollback: unfence refuses a receipt that records no source.
 @pytest.mark.parametrize(
     ("route", "updates", "expected"),
     [
@@ -221,7 +208,6 @@ def test_rollback_check_tells_the_activation_seed_from_a_later_write(
     if updates is not None:
         _save(target, token, updates)
     freeze(target.database, target.authority_path)
-    # After activation: a fresh transfer refuses a path that already holds a file.
     receipt = _fence(target, source, snapshot, tmp_path)
 
     decision = rollback_check(

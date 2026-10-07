@@ -1,18 +1,3 @@
-"""P1b gate items 2/3/4/6 on live facility cameras (generation 3).
-
-Production-shaped probe over ``batch_capture().infer().track()``:
-- tensor-meta rows are copied device->host through cudart (no Torch in the
-  media-plane process);
-- rows are mapped from network space (letterboxed 640x640) into frame space and
-  matched to tracked objects one-to-one with an IoU gate; a row is consumed at
-  most once; an object without a gated row is explicitly ``unmatched``;
-- NvDCF lifecycle is recorded per id (first/last frame, frames present, gaps);
-- an id switch is counted only when a new id is born within 5 s of an id that
-  actually disappeared (absent >= 2 frames) and their boxes overlap.
-
-Camera URIs arrive only via ``LIVE_URIS`` in the environment.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -32,7 +17,7 @@ from pyservicemaker import BatchMetadataOperator, Flow, Pipeline, Probe, RenderM
 REASSOC_SEC = 5.0
 IOU_GATE = 0.5
 SCORE_MIN = 0.05
-NET_W, NET_H = 640, 640  # nvinfer infer-dims, maintain-aspect-ratio=1, asymmetric padding
+NET_W, NET_H = 640, 640
 
 _cudart = ctypes.CDLL("libcudart.so")
 _cudart.cudaMemcpy.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
@@ -72,12 +57,6 @@ class _DLManagedTensor(ctypes.Structure):
 
 
 def tensor_rows(tensor) -> np.ndarray:
-    """Copy the output tensor to host with cudart. No Torch, no second context.
-
-    cudart uses the process's primary CUDA context, the same one DeepStream's
-    plugins use, so this adds no CUDA context. The tensor is released with the
-    buffer; the rows are our own copy.
-    """
     capsule = tensor.__dlpack__(None)
     managed = ctypes.cast(
         _PyCapsule_GetPointer(capsule, b"dltensor"), ctypes.POINTER(_DLManagedTensor)
@@ -87,7 +66,7 @@ def tensor_rows(tensor) -> np.ndarray:
     for i in range(dl.ndim):
         n *= int(dl.shape[i])
     host = np.empty(n, dtype=np.float32)
-    if dl.device.device_type == 1:  # kDLCPU
+    if dl.device.device_type == 1:
         ctypes.memmove(host.ctypes.data, dl.data + dl.byte_offset, n * 4)
     else:
         rc = _cudart.cudaMemcpy(host.ctypes.data, dl.data + dl.byte_offset, n * 4, _CUDA_D2H)
@@ -97,7 +76,6 @@ def tensor_rows(tensor) -> np.ndarray:
 
 
 def net_to_frame(row: np.ndarray, frame_w: int, frame_h: int) -> tuple[float, float, float, float]:
-    """Inverse of nvinfer's letterbox: scale = min(NET/W, NET/H), pad at right/bottom."""
     scale = min(NET_W / frame_w, NET_H / frame_h)
     return (row[0] / scale, row[1] / scale, row[2] / scale, row[3] / scale)
 
@@ -182,7 +160,6 @@ class ProductionShapedProbe(BatchMetadataOperator):
                     float(rp.top + rp.height),
                 )
                 objects.append((int(obj.object_id), box, float(obj.confidence)))
-            # deterministic one-to-one gated matching: best IoU first, each row consumed once
             pairs = sorted(
                 (
                     (iou(box, cbox), oi, ri)
@@ -230,8 +207,6 @@ class ProductionShapedProbe(BatchMetadataOperator):
                 q.append(record)
                 tr = tracks.get(oid)
                 if tr is None:
-                    # birth: switch only if some id truly disappeared (>= 2 frames absent)
-                    # within the window and its last box overlaps this one
                     lost = [
                         (lid, lt)
                         for lid, lt in tracks.items()
@@ -272,7 +247,6 @@ def pct(values: list[float], fraction: float) -> float | None:
 
 
 def _json_safe(value: object) -> object:
-    """numpy scalars are not JSON serialisable; keep the receipt writable."""
     if isinstance(value, np.generic):
         return value.item()
     raise TypeError(f"unserialisable {type(value).__name__}")

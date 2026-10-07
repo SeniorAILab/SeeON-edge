@@ -177,16 +177,12 @@ def test_concurrent_lkg_writes_preserve_newest_directive(tmp_path: Path) -> None
     assert stored is not None
     assert stored.directive == RestartDirective(generation=1, version=9, registry=9)
     assert stored.payload["registry_version"] == 9
-    # Re-open the filesystem cache to confirm the write is durable, not cached.
     reopened = WorkerConfigLkgStore(store.database_path).load()
     assert reopened is not None
     assert reopened.payload["registry_version"] == 9
 
 
 def test_race_loss_with_healthy_stored_lkg_returns_lkg_snapshot(tmp_path: Path) -> None:
-    """A fresh pull that validates but loses the revision race to a strictly
-    newer, still-healthy on-disk LKG must fall back to that LKG unchanged
-    (issue #34, race-loss branch with a healthy stored LKG)."""
     store = WorkerConfigLkgStore(tmp_path / "worker-config.sqlite3")
     newer_payload = _payload(registry_version=9, config_version=9, restart_epoch=1)
     assert store.save(newer_payload, RestartDirective(generation=1, version=9, registry=9))
@@ -205,7 +201,6 @@ def test_race_loss_with_healthy_stored_lkg_returns_lkg_snapshot(tmp_path: Path) 
     assert snapshot.stale is True
     assert snapshot.registry_version == 9
     assert snapshot.directive == RestartDirective(generation=1, version=9, registry=9)
-    # The healthy LKG that won the race is left in place.
     stored = store.load()
     assert stored is not None
     assert stored.registry_version == 9
@@ -215,19 +210,6 @@ def test_race_loss_with_corrupt_stored_lkg_clears_current_and_returns_fresh(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A fresh pull that validates but loses the revision race to a strictly
-    newer stored LKG that no longer re-validates must not leave the corrupt
-    LKG in place -- it would keep winning the race forever. Instead, clear
-    the stored `config_current` row via `WorkerConfigLkgStore.clear()`,
-    log loudly, and return the fresh (race-losing) snapshot since a
-    parseable-but-older config beats an unparseable newer one (issue #34,
-    decided design option 3).
-
-    Since PR #61's move off the JSON-file store onto `worker-state.sqlite3`
-    (`config_current`/`config_history` tables), there is no single file to
-    unlink -- `clear()` deletes only the `config_current` pointer row so
-    `load()` stops returning the corrupt payload, while leaving
-    `config_history` intact for audit-trail joinability."""
     store = WorkerConfigLkgStore(tmp_path / "worker-config.sqlite3")
     corrupt_payload = _payload(registry_version=9, config_version=9, restart_epoch=1)
     corrupt_payload["cameras"] = [
@@ -254,8 +236,6 @@ def test_race_loss_with_corrupt_stored_lkg_clears_current_and_returns_fresh(
     assert snapshot.stale is False
     assert snapshot.registry_version == 5
     assert snapshot.directive == RestartDirective(generation=1, version=5, registry=5)
-    # The corrupt LKG's current pointer must be cleared, not left behind to
-    # keep winning the revision race against every future legitimate pull.
     assert store.load() is None
     error = capsys.readouterr().err
     assert "WARNING" in error
@@ -318,11 +298,6 @@ def test_save_degrades_to_false_when_database_parent_is_uncreatable(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """open_connection's `path.parent.mkdir(parents=True, exist_ok=True)` raises
-    OSError (specifically NotADirectoryError) when a path component that should
-    be a directory is actually a file. save() must degrade to False rather than
-    let that OSError escape -- an unwritable state dir must not crash the
-    worker, matching the old JSON store's failure contract."""
     blocker = tmp_path / "blocker-file"
     blocker.write_text("not a directory")
     database_path = blocker / "state" / "worker-state.sqlite3"
@@ -359,7 +334,6 @@ def test_load_ignores_unrelated_database_files(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The bounded filesystem cache has no schema dependency."""
     database_path = tmp_path / "worker-state.sqlite3"
     connection = sqlite3.connect(database_path)
     try:
@@ -376,7 +350,6 @@ def test_load_ignores_unrelated_database_files(
 
 
 def test_clear_removes_current_snapshot_but_keeps_bounded_revisions(tmp_path: Path) -> None:
-    """Clearing a corrupt current snapshot preserves revision cache entries."""
     store = WorkerConfigLkgStore(tmp_path / "worker-state.sqlite3")
     payload = _payload(registry_version=9, config_version=9, restart_epoch=1)
     assert store.save(payload, RestartDirective(generation=1, version=9, registry=9))
@@ -393,9 +366,6 @@ def test_clear_degrades_to_false_when_database_parent_is_uncreatable(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Mirrors `test_save_degrades_to_false_when_database_parent_is_uncreatable`:
-    an unwritable state dir must degrade `clear()` to False rather than
-    crash the worker."""
     blocker = tmp_path / "blocker-file"
     blocker.write_text("not a directory")
     database_path = blocker / "state" / "worker-state.sqlite3"

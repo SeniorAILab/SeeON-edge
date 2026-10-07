@@ -1,22 +1,3 @@
-"""A migrated incident replayed from the worker queue is accepted once, not refused.
-
-Oracles, none of them the code under test:
-
-- ``TARGET_DECISIONS["event_outbox"]`` in the migration mapping: the old runtime's
-  pending set is the worker file queue, retained on its volume and replayed, so the
-  target outbox starts empty and the replay fills it.
-- ADR 0009, recovery: no second event ID or external delivery for a replayed event.
-- The sha-pinned worker-wire goldens: the relay body the worker sends and the queue
-  entry it retains for that alert.
-- The old runtime's row for a relayed alert (``relay_projection`` on main): incident
-  ``incident:<edge_event_id>`` holding the alert's identity values verbatim.
-
-The SQLite source, worker volume and PostgreSQL target are case-local. The migration
-runs through its public calls (export, import, fence, reconcile, transfer). The replay
-goes through the real relay route on the migrated root, as the runtime role, to the
-contract-exact Hub fixture over loopback HTTP.
-"""
-
 from __future__ import annotations
 
 import base64
@@ -104,7 +85,6 @@ def _worker_wire() -> _Wire:
     queue_entry = _pinned(goldens, queue_path)
     retained = json.loads(queue_entry)
     values = json.loads(base64.b64decode(retained["values_b64"]))
-    # The retained entry holds the alert's identity values; the wire adds only audit.
     assert values == {key: alert[key] for key in values}
     assert set(alert) - set(values) == {"audit"}
     receipt = json.loads(_pinned(goldens, "r/alert.response.json"))
@@ -122,11 +102,6 @@ def _worker_wire() -> _Wire:
 
 
 def _relayed_source(root: Path, alert: dict[str, Any]) -> tuple[Path, Path]:
-    """The old runtime after it committed the alert's incident and before the Hub took it.
-
-    Its audit log is empty: the relay path writes no audit record, and the API verifies
-    the migrated chain before it admits the replay.
-    """
     source = create_schema19_source(root / "state" / "edge.sqlite3")
     snapshots = root / "snapshots"
     snapshots.mkdir()
@@ -168,7 +143,6 @@ def _relayed_source(root: Path, alert: dict[str, Any]) -> tuple[Path, Path]:
 
 
 def _worker_volume(root: Path, wire: _Wire) -> Path:
-    """A stopped old worker whose only pending delivery is the alert."""
     state = root / "worker-state"
     queue = state / "delivery-queue"
     queue.mkdir(parents=True)
@@ -258,7 +232,6 @@ def test_migrated_pending_alert_replays_to_one_accepted_delivery(
         )
         assert audit.verify_once() and audit.start_session_once()
         with ServedFixture() as hub:
-            # No test camera: the relay resolves the alert's camera from the migrated row.
             app = relay_postgres_app(sandbox, audit, client=hub_client(hub.origin), camera_id=None)
             headers = {**RELAY_HEADERS, "Content-Type": "application/json"}
             with TestClient(app) as client:
@@ -274,7 +247,6 @@ def test_migrated_pending_alert_replays_to_one_accepted_delivery(
                 }
                 assert _hub_sends(hub) == 1
 
-                # A retry after a lost response lands on the same delivery.
                 retried = client.request(wire.method, wire.path, content=wire.body, headers=headers)
                 assert (retried.status_code, retried.json()) == (202, first.json())
                 assert _hub_sends(hub) == 1

@@ -22,8 +22,6 @@ class _Track:
 
 @final
 class GreedyIouTracker:
-    """Assign persistent IDs to index-ordered boxes using greedy IoU matches."""
-
     def __init__(self, min_iou: float = 0.3, max_misses: int = 30) -> None:
         self._min_iou: float = min_iou
         self._max_misses: int = max_misses
@@ -35,20 +33,12 @@ class GreedyIouTracker:
         return frozenset(track.track_id for track in self._tracks)
 
     def update(self, boxes: tuple[BoundingBox, ...]) -> tuple[int, ...]:
-        """Track detections, treating an empty tuple as no observation.
-
-        Call :meth:`observe` when inference explicitly observed an empty scene;
-        call :meth:`coast` when no inference result exists for the frame.
-        ``update(())`` remains the neutral compatibility surface so callers
-        cannot manufacture misses from an absent result.
-        """
         if not boxes:
             self.coast()
             return ()
         return self.observe(boxes)
 
     def observe(self, boxes: tuple[BoundingBox, ...]) -> tuple[int, ...]:
-        """Apply one actual inference observation, including an empty one."""
         existing = list(self._tracks)
         matches = greedy_match(
             tuple(track.last_box for track in existing),
@@ -89,7 +79,7 @@ class GreedyIouTracker:
         return tuple(box_to_track_id[box_index] for box_index in range(len(boxes)))
 
     def coast(self) -> None:
-        """Preserve all tracks when this frame carried no inference result."""
+        ...
 
 
 __all__ = ["GreedyIouTracker", "iou"]

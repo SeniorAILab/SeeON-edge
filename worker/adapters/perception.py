@@ -1,5 +1,3 @@
-"""Adapt current Python runner outputs onto PerceptionFrameV1."""
-
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -180,8 +178,6 @@ def _parse_channel_state(payload: Mapping[str, object], key: str = "state") -> C
 
 
 class PythonInferencePerceptionAdapter:
-    """Public adapter from current Python inference outputs to PerceptionFrameV1."""
-
     def adapt(
         self,
         *,

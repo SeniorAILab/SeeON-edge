@@ -59,10 +59,6 @@ def _write_bundle(
 
 
 def test_default_registry_has_no_fall_fallback() -> None:
-    # Given / When / Then
-    # The fall model has no registry-backed fallback: it must be explicitly
-    # configured (worker.runtime.worker.WorkerRuntime._create_fall_model), so
-    # "fall" is not a registered task in the default registry at all.
     with pytest.raises(UnknownModelTaskError):
         default_registry().get_factory("fall")
 
@@ -70,13 +66,10 @@ def test_default_registry_has_no_fall_fallback() -> None:
 def test_sklearn_adapter_loads_artifact_and_preserves_feature_provenance(
     tmp_path: Path,
 ) -> None:
-    # Given
     artifact_dir = _write_bundle(tmp_path / "fall" / "random-forest")
 
-    # When
     runner = FallDetector(models_dir=tmp_path)
 
-    # Then
     assert runner.artifact_dir == artifact_dir
     assert runner.metadata.mode == "features"
     assert runner.operating_threshold == 0.37
@@ -91,7 +84,6 @@ def test_sklearn_adapter_loads_artifact_and_preserves_feature_provenance(
 def test_sklearn_warmup_runs_one_forward_with_engineered_feature_shape(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # Given
     artifact_dir = _write_bundle(tmp_path / "fall" / "random-forest")
     model = _ProbabilityModel()
 
@@ -101,10 +93,8 @@ def test_sklearn_warmup_runs_one_forward_with_engineered_feature_shape(
     monkeypatch.setattr(sklearn_fall, "_load_joblib_model", load_model)
     runner = FallDetector(models_dir=tmp_path)
 
-    # When
     runner.warmup()
 
-    # Then
     assert artifact_dir.is_dir()
     assert model.shapes == [(1, EXPECTED_FEATURE_DIM)]
 
@@ -112,7 +102,6 @@ def test_sklearn_warmup_runs_one_forward_with_engineered_feature_shape(
 def test_sklearn_digest_mismatch_rejects_before_deserialization(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # Given
     _ = _write_bundle(tmp_path / "fall" / "random-forest")
     model_load_attempted = False
 
@@ -123,7 +112,6 @@ def test_sklearn_digest_mismatch_rejects_before_deserialization(
 
     monkeypatch.setattr(sklearn_fall, "_load_joblib_model", load_model)
 
-    # When / Then
     with pytest.raises(ModelLoadError, match="artifact digest"):
         _ = FallDetector(models_dir=tmp_path, expected_artifact_digest="0" * 64)
 
@@ -133,10 +121,8 @@ def test_sklearn_digest_mismatch_rejects_before_deserialization(
 def test_sklearn_metadata_rejects_wrong_engineered_feature_dimension(
     tmp_path: Path,
 ) -> None:
-    # Given
     _ = _write_bundle(tmp_path / "fall" / "random-forest", feature_dim=44)
 
-    # When / Then
     with pytest.raises(ModelLoadError, match="feature_dim"):
         _ = FallDetector(models_dir=tmp_path)
 
@@ -144,24 +130,20 @@ def test_sklearn_metadata_rejects_wrong_engineered_feature_dimension(
 def test_sklearn_missing_weight_artifact_fails_during_construction(
     tmp_path: Path,
 ) -> None:
-    # Given
     artifact_dir = _write_bundle(tmp_path / "fall" / "random-forest")
     (artifact_dir / "model.pkl").unlink()
 
-    # When / Then
     with pytest.raises(ModelLoadError, match="missing model.pkl"):
         _ = FallDetector(models_dir=tmp_path)
 
 
 def test_sklearn_default_threshold_and_typed_shape_error(tmp_path: Path) -> None:
-    # Given
     _ = _write_bundle(
         tmp_path / "fall" / "random-forest",
         operating_threshold=None,
     )
     runner = FallDetector(models_dir=tmp_path)
 
-    # When / Then
     assert runner.operating_threshold == DEFAULT_OPERATING_THRESHOLD
     with pytest.raises(ModelInputError, match="expected 45 features"):
         _ = runner.predict(np.zeros((44,), dtype=np.float32))

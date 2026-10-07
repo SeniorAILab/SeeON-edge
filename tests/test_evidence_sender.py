@@ -364,6 +364,5 @@ def test_exhausted_with_full_retention_emits_exhausted_retention_full_and_keeps_
     record = _only_delivery(sink)
     assert record.outcome == "exhausted-retention-full"  # type: ignore[attr-defined]
     assert record.payload["retained"] is False  # type: ignore[attr-defined]
-    # Still queued and deferred: nothing was delivered and nothing was dropped.
     assert [entry["entry_id"] for entry in DeliveryQueue(tmp_path).entries()] == ["event-event-a"]
     assert "event-event-a" in sender._deferred

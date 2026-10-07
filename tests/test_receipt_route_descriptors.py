@@ -1,5 +1,3 @@
-"""Route-owned descriptor acquisition; no PostgreSQL or HTTP delivery claim."""
-
 import errno
 import hashlib
 import os
@@ -46,8 +44,6 @@ def _observe(monkeypatch):
 
     def open_file(path, flags, *args, **kwargs):
         if path == "clip.mp4":
-            # A flag regression fails before opening a writer-less FIFO; no
-            # timing assertion or hung test is needed for that negative control.
             assert flags & os.O_NONBLOCK
         descriptor = real_open(path, flags, *args, **kwargs)
         opened.append(descriptor)

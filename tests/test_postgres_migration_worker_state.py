@@ -1,11 +1,3 @@
-"""Prove the old worker is stopped from the lock files it leaves, never from their absence.
-
-The worker's own ``GpuLease`` and ``DeliveryQueue`` build every state directory
-here, so the names and lock modes are the ones a real worker uses. A new lease
-that the worker cannot take, and a queue lock its sender cannot take, are the
-oracle that the probe holds what it claims to hold.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -40,7 +32,6 @@ EMPTY_DIGEST = QueueDigest(
 
 
 def _booted_worker(root: Path) -> tuple[Path, DeliveryQueue]:
-    """A worker that booted, made its queue, and stopped: both locks released."""
     state = root / "worker-state"
     with GpuLease.acquire(state):
         queue = DeliveryQueue(state / QUEUE_DIRECTORY_NAME)
@@ -48,7 +39,6 @@ def _booted_worker(root: Path) -> tuple[Path, DeliveryQueue]:
 
 
 def _lease_refused_worker(root: Path) -> Path:
-    """A worker refused before its queue: the lease file exists, the queue does not."""
     state = root / "worker-state"
     with GpuLease.acquire(state):
         pass

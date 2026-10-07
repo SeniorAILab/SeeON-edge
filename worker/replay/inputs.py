@@ -1,16 +1,3 @@
-"""Reconstruct image-free decider inputs from persisted analysis traces.
-
-Replay never re-runs extraction (pose/person/bed) -- those already ran once,
-on the real frame, and their numeric result is what ``AnalysisTrace`` froze.
-Re-running them here would require a network serving client (forbidden for
-replay) and would not be "deterministic replay of captured traces" but a
-second, independent inference pass. Replay instead reconstructs the exact
-``FrameObservation``/``DecisionInput`` the original decider saw and re-runs
-only the camera-local decider (classifier + latch/monitor) against a chosen
-policy revision, so any difference is attributable to the module/policy
-under test, not to nondeterministic extraction.
-"""
-
 from __future__ import annotations
 
 from contracts.observation import (
@@ -28,7 +15,6 @@ from worker.types import DecisionInput
 def analysis_trace_to_decision_input(
     trace: AnalysisTrace, *, live_track_ids: tuple[int, ...]
 ) -> DecisionInput:
-    """Rebuild an old persisted analysis frame for the surviving HTTP replay."""
     boxes = tuple(
         BoundingBox(*person.box, confidence=person.confidence) for person in trace.persons
     )
@@ -71,13 +57,6 @@ def replay_trace_to_decision_input(
     pts_ns: int | None = None,
     seq: int = 0,
 ) -> DecisionInput:
-    """Build a decider input from one declared replay-trace-v2 frame.
-
-    V2 stores unit coordinates plus the real source frame size, so replay
-    projects every fact back into the exact pixel space production observed:
-    integer boxes and polygons for the bed rasteriser, float keypoints for the
-    pose head. pose+bbox56 rows therefore round-trip byte for byte.
-    """
     width = row.frame_width if row is not None else 1
     height = row.frame_height if row is not None else 1
     boxes = []

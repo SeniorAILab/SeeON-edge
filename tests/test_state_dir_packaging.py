@@ -1,11 +1,3 @@
-"""Static packaging contract for local runtime paths and central edge state.
-
-The API and worker retain separate image-owned XDG state directories for
-non-database runtime files, but all persistent SQLite owners use the one
-``edge-state`` volume at ``/var/lib/seeon-state/edge.sqlite3``. The migrator
-alone also mounts the two released legacy volumes during one-time import.
-"""
-
 from __future__ import annotations
 
 import re
@@ -22,10 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class _ComposeLoader(yaml.SafeLoader):
-    """compose.edge.yaml uses Docker Compose's `!reset null` tag (clears an
-    inherited `build:` key) which plain `yaml.safe_load` doesn't know how to
-    construct; only the volume/environment structure matters here, so the
-    tagged value itself is discarded."""
+    ...
 
 
 _ComposeLoader.add_constructor("!reset", lambda loader, node: None)
@@ -40,8 +29,6 @@ API_RESOLVER_PATH = ROOT / "backend" / "app" / "shared" / "state_dir.py"
 
 
 def _dockerfile_mkdir_p_args(dockerfile_name: str) -> list[str]:
-    """Every whitespace-separated path argument passed to a `RUN mkdir -p ...`
-    instruction in the given Dockerfile, in file order."""
     text = (ROOT / dockerfile_name).read_text(encoding="utf-8")
     args: list[str] = []
     instructions: list[str] = []
@@ -67,7 +54,6 @@ def _dockerfile_mkdir_p_args(dockerfile_name: str) -> list[str]:
 
 
 def _compose_named_volume_target(compose: dict, service: str, volume_name: str) -> str:
-    """Return the target for an exact named-volume source on ``service``."""
     entries = compose["services"][service]["volumes"]
     for entry in entries:
         if isinstance(entry, str) and entry.startswith(f"{volume_name}:"):
@@ -81,9 +67,6 @@ def compose() -> dict:
     return yaml.load(
         (ROOT / "compose.edge.yaml").read_text(encoding="utf-8"), Loader=_ComposeLoader
     )
-
-
-# --- Dockerfiles own the path at build time -------------------------------
 
 
 def test_dockerfile_edge_mkdirs_worker_state_dir() -> None:
@@ -103,8 +86,6 @@ def test_dockerfile_backend_mkdirs_api_state_dir() -> None:
 
 
 def test_dockerfiles_declare_no_volume_for_state_dir() -> None:
-    # Match only an actual `VOLUME` instruction line, not the word appearing
-    # in an explanatory comment (e.g. "deliberately no VOLUME here").
     volume_instruction = re.compile(r"^\s*VOLUME\b", re.MULTILINE)
     for name in ("Dockerfile.edge", "Dockerfile.backend"):
         text = (ROOT / name).read_text(encoding="utf-8")
@@ -113,9 +94,6 @@ def test_dockerfiles_declare_no_volume_for_state_dir() -> None:
             "state dir (prevents anonymous-volume sprawl and derived-image RUN "
             "neutralization)"
         )
-
-
-# --- compose owns one central database volume -----------------------------
 
 
 @pytest.mark.parametrize("service", ["edge-db-cutover", "ml-api"])
@@ -130,9 +108,6 @@ def test_compose_no_longer_sets_ml_worker_state_dir_env() -> None:
         "ML_WORKER_STATE_DIR must be removed from compose.edge.yaml — production "
         "path ownership belongs to the Docker image, not an env override"
     )
-
-
-# --- image-owned local state paths remain stable --------------------------
 
 
 def test_worker_resolver_matches_dockerfile_and_compose(
@@ -163,9 +138,6 @@ def test_api_resolver_matches_dockerfile_and_compose(
     assert _compose_named_volume_target(compose, "ml-api", "edge-state") != str(resolved)
 
 
-# --- resolvers must not read any override env var (env sprawl is the point) ---
-
-
 def test_worker_resolver_reads_no_environment_override() -> None:
     source = WORKER_RESOLVER_PATH.read_text(encoding="utf-8")
     assert "os.environ" not in source and "getenv" not in source, (
@@ -180,9 +152,6 @@ def test_api_resolver_reads_no_environment_override() -> None:
         "backend/app/shared/state_dir.py must not read any env var override — "
         "the single XDG-style rule has no override, by design"
     )
-
-
-# --- persistent database owners converge on the central path --------------
 
 
 def test_shared_edge_database_path_matches_compose_mount(compose: dict) -> None:
@@ -202,9 +171,6 @@ def test_worker_config_cache_is_local_to_the_worker_state_directory() -> None:
 
     assert worker_path.name == "config-lkg"
     assert worker_path.parent == Path.home() / ".local/state/ml-worker"
-
-
-# --- the GPU lease remains in the worker-local state directory -------------
 
 
 def test_gpu_lease_uses_worker_local_state_not_central_database_volume(

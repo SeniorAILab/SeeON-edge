@@ -1,5 +1,3 @@
-"""Typed, sanitized contracts for durable evidence export."""
-
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
@@ -12,8 +10,6 @@ class DeliveryDisposition(StrEnum):
 
 
 class DeliveryFailureCode(StrEnum):
-    """Stable backend reasons that change delivery ownership."""
-
     CAMERA_MAPPING_MISSING = "CAMERA_MAPPING_MISSING"
 
 
@@ -29,21 +25,11 @@ class DeliveryFailure:
     code: str
     status_code: int | None = None
     retry_after_seconds: float | None = None
-    # Set only on the transport-exception branch (no HTTP response at all):
-    # "<ExceptionClassName>: <str(exc)>", bounded in length. Never derived
-    # from a response body -- see shared/events/relay_failure_log.py.
     transport_error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class EventReceipt:
-    # "accepted" carries an upstream id. "accepted_local" is the edge backend
-    # naming its own terminal decision: it durably recorded the event and will
-    # never push it upstream, so no upstream id will ever exist and `event_id`
-    # is empty. The edge backend is the only party that knows this; a worker
-    # cannot infer it from a missing field, because an absent id is equally
-    # consistent with a mangled response. So it must be stated, never guessed --
-    # see the two deliberate local-accept sites in the relay router.
     status: Literal["accepted", "accepted_local"]
     edge_event_id: str
     event_id: str

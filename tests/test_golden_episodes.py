@@ -48,7 +48,6 @@ def _write(path: Path, payload: dict[str, object]) -> None:
 
 
 def test_committed_fixture_is_an_empty_provisional_placeholder() -> None:
-    """Labels are owner-supplied; the repo never carries invented episodes."""
     payload = json.loads(Path("tests/fixtures/episodes/golden-v1.json").read_text(encoding="utf-8"))
     assert payload["provisional"] is True
     assert payload["episodes"] == []
@@ -249,7 +248,6 @@ def test_non_provisional_fixture_rejects_roster_shortfall_and_single_event_type(
 
 
 def test_provisional_fixture_bypasses_completion_protocol(tmp_path: Path) -> None:
-    """A provisional fixture may be incomplete while owner labels are pending."""
     path = tmp_path / "golden.json"
     payload = _fixture([], ["owner"], provisional=True)
     payload["camera_roster"] = ["camera-1"]

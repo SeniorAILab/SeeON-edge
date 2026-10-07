@@ -1,11 +1,3 @@
-"""Receipt file proof shared by persistence owners; no database or acknowledgement.
-
-Manifest facts and their digest come from the same descriptor read. Rechecks
-compare that captured content and pathname identity as well as the caller's
-live media descriptor. Temporary descriptors close within each check; ownership
-of the supplied media descriptor never transfers here.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -32,14 +24,11 @@ from backend.app.features.evidence.receipt_store import (
 
 @dataclass(frozen=True, slots=True)
 class ReceiptHooks:
-    """Deterministic race hooks; production leaves both callbacks absent."""
-
     after_preflight: Callable[[], None] | None = None
     before_final_check: Callable[[], None] | None = None
 
 
 def open_receipt_media(root: Path, path: Path) -> OpenedRegularFile:
-    """Return an owned regular descriptor; the caller must close it."""
     return _open_regular(root, path)
 
 

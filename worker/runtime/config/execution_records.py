@@ -1,9 +1,3 @@
-"""Environment-sourced execution-record export settings (ADR-0002).
-
-``None`` means the feature is off. Enabling without every capacity/batch/flush
-value refuses to start; those integers have no defaults.
-"""
-
 from __future__ import annotations
 
 import os
@@ -32,7 +26,6 @@ class ExecutionRecordsSettings:
 def execution_records_settings_from_environment(
     environ: Mapping[str, str] | None = None,
 ) -> ExecutionRecordsSettings | None:
-    """Return settings when enabled; ``None`` is the seam default (feature off)."""
     env = os.environ if environ is None else environ
     enabled = _bool_env(ML_WORKER_EXECUTION_RECORDS_ENABLED_ENV, env)
     if enabled is None or not enabled:

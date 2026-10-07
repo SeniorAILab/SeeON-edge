@@ -44,8 +44,6 @@ class SharedComponentGraph:
 
 
 class SharedComponentPool:
-    """Process-local pool keyed by immutable execution and artifact identity."""
-
     def __init__(self) -> None:
         self._components: dict[SharedComponentIdentity, object] = {}
 
@@ -78,11 +76,6 @@ def compose_shared_components(
     identity_overrides: Mapping[str, tuple[str, str]] | None = None,
     clock: Clock = perf_counter,
 ) -> SharedComponentGraph:
-    """Materialize the selected graph through its declared provisioners.
-
-    Provisioner names resolve only through this fixed, injected mapping; no
-    module path or arbitrary Python symbol is ever loaded from configuration.
-    """
     configured_provisioners: dict[str, SharedProvisioner] = {
         "serving-client": lambda binding, selected_device: serving_client.create(
             _serving_task(binding), device=selected_device
@@ -230,12 +223,6 @@ def _require_runner(component: object, component_id: str) -> RunnerProtocol:
 
 @dataclass(frozen=True, slots=True)
 class SharedYoloExtractors:
-    """Hold the process-shared YOLO extractors provisioned by runtime.
-
-    ``person`` is ``None`` whenever ``box_source`` (issue #44) is "pose" --
-    the person model is then never provisioned at all, not merely unused.
-    """
-
     pose: NamedExtractor
     person: NamedExtractor | None
     bed: NamedExtractor

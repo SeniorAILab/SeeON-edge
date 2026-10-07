@@ -1,5 +1,3 @@
-"""HTTP schemas for execution-record ingest receipts and engineer queries."""
-
 from __future__ import annotations
 
 from typing import Any

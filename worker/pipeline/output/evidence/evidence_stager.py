@@ -1,5 +1,3 @@
-"""Durably admit event and snapshot envelopes to the publish-once delivery queue."""
-
 from __future__ import annotations
 
 import json
@@ -31,13 +29,6 @@ from worker.pipeline.output.evidence.runtime_manifest_reference import (
 
 @dataclass(frozen=True, slots=True, init=False)
 class DurableEvidenceStager:
-    """Queue-only durable boundary for an incident and optional snapshot facts.
-
-    The event is admitted independently before callers perform any media work.
-    A failed admission is raised to the detector path: silently continuing would
-    drop an unreplayable safety event.
-    """
-
     queue_directory: Path
     camera_id: str
     facility_id: str
@@ -57,7 +48,6 @@ class DurableEvidenceStager:
         clock: Callable[[], float] = lambda: 0.0,
         runtime_manifest_sha256: str | None = None,
     ) -> None:
-        """Construct the queue boundary."""
         object.__setattr__(self, "queue_directory", queue_directory)
         object.__setattr__(self, "camera_id", camera_id)
         object.__setattr__(self, "facility_id", facility_id)
@@ -122,7 +112,6 @@ class DurableEvidenceStager:
             raise RuntimeError(f"snapshot disposition admission failed: {result.fault}")
 
     def complete(self, edge_event_id: str, clip_id: str | None) -> None:
-        """Clips are optional media and do not alter delivery of the event."""
         del edge_event_id, clip_id
 
     def _envelope(self, event: WorkerEventPayload) -> tuple[bytes, bytes, tuple[str, ...]]:
@@ -157,8 +146,6 @@ class DurableEvidenceStager:
         return encoded_values, encoded_trace, tuple(sorted((*shed_detail_keys, *shed_audit_keys)))
 
 
-#: The relay-required core is defined at the shared wire boundary and asserted
-#: against ``RelayAlertRequest`` in backend contract coverage.
 _PROTECTED_VALUE_KEYS: Final = limits.REQUIRED_ALERT_FIELDS
 _PROTECTED_TRACE_KEYS: Final = frozenset({CONFIG_VERSION_KEY, RUNTIME_MANIFEST_SHA256_KEY})
 
@@ -166,18 +153,6 @@ _PROTECTED_TRACE_KEYS: Final = frozenset({CONFIG_VERSION_KEY, RUNTIME_MANIFEST_S
 def _shed_to_limit(
     payload: dict[str, object], limit: int, protected: frozenset[str]
 ) -> tuple[bytes, tuple[str, ...]]:
-    """Serialize ``payload``, shedding bulk detail rather than losing the event.
-
-    An oversized envelope used to raise out of :meth:`DurableEvidenceStager.stage`
-    from ``EventEntry.__post_init__``, before ``try_admit`` was ever reached. That
-    bypassed the queue's fail-closed admission contract entirely: the fall event
-    was destroyed with no ``AdmissionFault`` and no durable record. A legitimate
-    event carrying many keypoints was enough to trigger it.
-
-    Detail is therefore shed largest-key-first until the canonical form fits,
-    while relay-required fields are protected. Shed key names are returned for
-    durable queue metadata, never injected into the wire payload.
-    """
     encoded = _canonical_bytes(payload)
     if len(encoded) <= limit:
         return encoded, ()
@@ -196,9 +171,6 @@ def _shed_to_limit(
         if len(encoded) <= limit:
             return encoded, tuple(sorted(shed))
 
-    # Every sheddable field is gone and the protected core still does not fit.
-    # Refusing here would destroy the event, so surface the overflow to the
-    # caller as a hard error only in this genuinely unrepresentable case.
     raise ValueError(
         f"evidence envelope protected core cannot fit within {limit} bytes: "
         f"protected fields alone serialize to {len(encoded)} bytes"

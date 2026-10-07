@@ -1,5 +1,3 @@
-"""Worker-internal envelope types (image-free, frozen dataclasses)."""
-
 from __future__ import annotations
 
 from worker.types.bed_pose_features import (

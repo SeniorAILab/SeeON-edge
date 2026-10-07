@@ -1,5 +1,3 @@
-"""Clip-analysis publication hook doubles."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field

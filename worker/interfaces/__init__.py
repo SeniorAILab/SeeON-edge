@@ -1,5 +1,3 @@
-"""Worker seam Protocols: one per replaceable boundary."""
-
 from __future__ import annotations
 
 from worker.interfaces.bus import FrameBus, FrameSubscription

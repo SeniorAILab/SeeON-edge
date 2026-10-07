@@ -46,7 +46,6 @@ def test_central_evidence_schema_has_owned_strict_records_and_integrity_guards(
 def test_backend_central_evidence_query_is_privacy_bounded(
     postgres_product_sandbox: ProductSandbox,
 ) -> None:
-    # Given: one incident carrying a private facility id in the PostgreSQL authority.
     sandbox = postgres_product_sandbox
     sandbox.admin.execute(
         """
@@ -69,10 +68,8 @@ def test_backend_central_evidence_query_is_privacy_bounded(
         """
     )
 
-    # When: the backend reads its summary by edge event id.
     summary = CentralEvidenceQuery(sandbox.database).get("event:query")
 
-    # Then: the summary names the incident without facility or payload fields.
     assert summary is not None
     assert summary.incident_id == "incident:query"
     assert summary.camera_id == "camera:opaque"

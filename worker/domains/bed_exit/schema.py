@@ -20,21 +20,9 @@ class BedExitConfig:
     facility_id: str
     min_containment: float = BED_EXIT_POLICY_V1_DEFAULT.min_containment
     hold_frames: int = BED_EXIT_POLICY_V1_DEFAULT.hold_frames
-    # `grace_frames` is retained only for `BedExitPolicyV1` wire compatibility
-    # (shared.detection_policies is a wire vocabulary; changing its field
-    # names/types has backend blast radius). It no longer gates bed-exit
-    # emission timing -- `outside_dwell_sec` below does, measured in wall/PTS
-    # seconds so behavior is invariant to ingest fps. Domain-only, analogous
-    # to `night_window`.
     grace_frames: int = BED_EXIT_POLICY_V1_DEFAULT.grace_frames
     night_window: NightWindow | None = None
-    # Continuous, posture-confirmed, spatially-contained dwell in a resident's
-    # own bed required before an exit can be armed (positive evidence of
-    # having been in bed at all).
     in_bed_dwell_sec: float = 3.0
-    # Continuous spatial non-containment required, once armed, before a
-    # bed-exit event fires. Absence (track loss) never satisfies this --
-    # only live, positively-observed frames advance it.
     outside_dwell_sec: float = 2.0
 
     def __post_init__(self) -> None:

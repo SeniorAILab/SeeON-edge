@@ -1,8 +1,3 @@
-"""Build a versioned golden episode fixture from independent worksheets.
-
-Run with ``python -m scripts.qa.golden_from_worksheet``.
-"""
-
 from __future__ import annotations
 
 import argparse

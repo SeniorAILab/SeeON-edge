@@ -1,5 +1,3 @@
-"""Durable recovery records for Flow Smart Record clips."""
-
 from __future__ import annotations
 
 import json
@@ -16,8 +14,6 @@ from worker.types import BusinessEvent
 
 
 class FlowSealedMediaMissingError(RuntimeError):
-    """A sealed clip was lost before its durable publication could be retried."""
-
     def __init__(self, clip_id: str, path: Path) -> None:
         super().__init__(f"sealed Flow clip media is missing clip_id={clip_id} path={path}")
         self.clip_id = clip_id
@@ -33,14 +29,6 @@ class FlowSealedRecovery:
 
 
 class FlowSealedSidecars:
-    """Persist sealed Flow clip attribution in the worker state directory.
-
-    The state directory is used rather than the plane's output directory: Flow
-    owns the latter and deployments may clean it independently of worker state.
-    The sidecar records the media path, so it remains recoverable across that
-    ownership boundary.
-    """
-
     def __init__(self, directory: Path) -> None:
         self._directory = directory
 
@@ -117,7 +105,6 @@ class FlowSealedSidecars:
 
 
 def _event_payload(event: BusinessEvent) -> dict[str, object]:
-    """Keep only the immutable event facts publication needs, never pixels."""
     return {
         "domain": event.domain,
         "event_type": event.event_type,

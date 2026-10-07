@@ -1,5 +1,3 @@
-"""Privacy-bounded values for operator review state."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass

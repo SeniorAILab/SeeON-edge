@@ -1,5 +1,3 @@
-"""Closed vocabulary and process-scope for sender event.delivery records."""
-
 from __future__ import annotations
 
 import pytest

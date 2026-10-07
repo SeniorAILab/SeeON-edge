@@ -1,19 +1,3 @@
-"""P1b-AC7: the Flow worker process owns exactly one CUDA context.
-
-``nvidia-smi`` reports processes, not contexts, so a PID count cannot answer
-this. The CUDA driver can: a device's *primary* context is the one DeepStream
-and cudart share, and any second CUDA client in the process would either make
-its own context current on some thread or push a non-primary one. This asserts
-the honest, checkable form of that:
-
-* the device's primary context is active once the media plane has run;
-* no non-primary context is current on this thread after a device-to-host copy;
-* neither Torch nor CuPy is imported, so no other library can hold one.
-
-Marked ``real_stack``: it needs a GPU and the DeepStream image, so CI deselects
-it and the receipt comes from running it inside the shipped image.
-"""
-
 from __future__ import annotations
 
 import ctypes
@@ -60,8 +44,6 @@ def test_the_host_copy_path_makes_no_cuda_context_current() -> None:
     driver = _driver()
     assert _current_context(driver) is None, "Python must hold no CUDA context before the copy"
 
-    # A NumPy input takes the host seam and never touches CUDA; the point here
-    # is that importing and exercising the copy module introduces no context.
     copied = host_array_from_tensor(np.zeros((2, 57), dtype=np.float32))
     assert copied.shape == (2, 57)
 
@@ -83,8 +65,6 @@ print(",".join(name for name in ("torch", "cupy") if name in sys.modules))
 
 
 def test_the_worker_process_imports_no_other_cuda_client() -> None:
-    # A fresh interpreter is the worker process; this pytest process may already
-    # hold Torch from unrelated tests, so sys.modules here proves nothing.
     probe = subprocess.run(
         [sys.executable, "-c", _WORKER_IMPORTS_PROBE],
         capture_output=True,

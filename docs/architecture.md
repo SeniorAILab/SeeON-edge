@@ -479,9 +479,10 @@ This row is genuinely Linux-only, and not by accident:
 `/proc/self/fd/{descriptor}` reference to an already-open inode so the probe
 cannot be TOCTOU-swapped for a different file. That is production code, so the
 capability itself requires `/proc` — the deploy target is a Linux container, so
-this is a deliberate floor rather than a portability bug. `tests/test_clip_recorder.py`
-documents it in its module docstring and keeps these two cases specifically to
-pin that floor.
+this is a deliberate floor rather than a portability bug.
+`tests/test_evidence_trust_boundaries.py::test_media_probe_uses_same_open_inode_when_path_is_swapped`
+pins the same-inode probe: `ffprobe` still reads the original bytes when the
+path is swapped mid-probe.
 
 The row stays `ported`: the evidence exists and CI runs on Ubuntu. What is
 missing is *local* proof, which matters because this branch was developed and

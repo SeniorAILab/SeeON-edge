@@ -1,5 +1,3 @@
-"""Pre-execution admission for stored clip analysis."""
-
 from __future__ import annotations
 
 import logging
@@ -26,11 +24,10 @@ LOGGER = logging.getLogger(__name__)
 
 
 class ClipAnalysisSupervisorError(RuntimeError):
-    """A supervisor operation could not safely start."""
+    ...
 
 
 def validate_runtime(cpu_index: int | None) -> int:
-    """Validate the process-wide execution boundary before serving admissions."""
     if cpu_index is None:
         raise ClipAnalysisSupervisorError("clip_analysis_cpu_required")
     available = os.sched_getaffinity(0)
@@ -95,7 +92,6 @@ def prepare_job(
     profile_sha256: str,
     probe: Callable[[Path], clip_analysis_process.ClipMediaFacts],
 ) -> tuple[clip_analysis_process.ClipAnalysisJob | None, ClipAnalysisStatus]:
-    """Probe and validate a queued clip before it occupies the execution slot."""
     try:
         facts = probe(pending.clip_path)
         _pre_admission(profile, pending.size_bytes, pending.duration_ms, facts.width, facts.height)

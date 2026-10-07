@@ -66,12 +66,6 @@ class YoloPoseRunner:
         return self.predict_full(image)
 
     def run_batch(self, images: Sequence[Image]) -> tuple[PoseRunnerResult, ...]:
-        """One batched forward over ``images``, results in input order.
-
-        The batch shares this runner's single model instance and predict
-        options, so a row's result is the same result it would get alone
-        (pinned by tests/test_serving_batch_parity.py).
-        """
         if not images:
             return ()
         results = predict_many(self._get_model(), images, self._options)

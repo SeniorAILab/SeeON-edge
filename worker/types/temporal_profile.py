@@ -1,21 +1,3 @@
-"""Explicit owner of ingest fps and per-domain decision rates.
-
-Pipeline defaults and the composition-root schedule must compute from this
-object. The current production identity is ``ingest_fps=30.0``: target fps
-30.0, pose sampled at 15.0fps (``pose_fps``, pinned independently of ingest
-so the fall-domain model-conformance check keeps validating against the
-pose cadence it was trained on), bed every 180 frames (1/6 Hz, unchanged).
-
-Design B (todo 13): TemporalProfile is authoritative for ingest fps.
-A relay-declared ``CameraRuntimeConfig.fps`` is a recorded hint and is
-never the CapturePolicy owner. Rejected design A (relay as per-camera
-override) because raising this profile for a 15fps measurement would
-then leave relay-configured cameras at their declared rate and the
-capacity run would measure nothing. Pose extractor cadence remains
-``camera.frame_stride`` until a later todo re-denominates it from
-``pose_fps``; that split is explicit, not a silent fallback.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -26,20 +8,10 @@ from typing import Final
 
 
 class TemporalProfileError(ValueError):
-    """Closed config error for a malformed temporal profile."""
+    ...
 
 
-# Identity of today's shipped cadence. Raising ingest_fps re-denominates the
-# bed interval in the same edit so the bed decision rate stays 1/6 Hz: the
-# frame count is the derived value, the Hz is the invariant. 180 frames at
-# 30fps is the same 6 seconds of wall clock as the previous 90 frames at
-# 15fps, so bed-exit decision cadence is unchanged by this raise.
 _CURRENT_INGEST_FPS: Final = 30.0
-# Pinned independently of ingest_fps (rather than left to default to it) so
-# raising ingest_fps does not silently also raise pose_fps: the fall-domain
-# model-conformance check in worker/runtime/worker.py compares against this
-# exact value and must keep validating the pose cadence the model was
-# trained on.
 _CURRENT_POSE_FPS: Final = 15.0
 _CURRENT_BED_INTERVAL_FRAMES: Final = 180
 _CURRENT_BED_DECISION_HZ: Final = _CURRENT_INGEST_FPS / _CURRENT_BED_INTERVAL_FRAMES
@@ -60,8 +32,6 @@ def _default_decision_hz() -> dict[str, float]:
 
 @dataclass(frozen=True, slots=True)
 class TemporalProfile:
-    """Owns ingest fps, pose fps, and per-domain decision Hz."""
-
     ingest_fps: float
     pose_fps: float | None = None
     decision_hz: Mapping[str, float] = field(default_factory=_default_decision_hz)

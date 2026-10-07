@@ -1,5 +1,3 @@
-"""Export the nano pose weights to a dynamic-batch, digest-pinned ONNX artifact."""
-
 from __future__ import annotations
 
 import argparse
@@ -13,6 +11,8 @@ from contracts.artifacts import pose_weight_path
 from worker.adapters.model.errors import ModelLoadError
 from worker.runtime.flow.onnx_shape import batch_axis_is_dynamic, input_dims
 
+_DESCRIPTION = """Export the nano pose weights to a dynamic-batch, digest-pinned ONNX artifact."""
+
 Exporter = Callable[[Path], Path]
 
 
@@ -23,12 +23,6 @@ def _export(weights: Path) -> Path:
 
 
 def _canonicalize(payload: bytes) -> bytes:
-    """Drop the two export outputs that vary between identical runs.
-
-    ultralytics stamps ``date`` into ``metadata_props`` and the inferred
-    ``value_info`` annotations differ from run to run; neither affects the
-    graph, and dropping them makes the digest reproducible per source weight.
-    """
     import onnx
 
     model = onnx.load_from_string(payload)
@@ -60,7 +54,6 @@ def _self_check(path: Path) -> None:
 def export_pose_onnx(
     model_path: Path | None = None, *, force: bool = False, exporter: Exporter | None = None
 ) -> str:
-    """Export the nano pose model, self-check it at B=2, and return its digest."""
     source = (pose_weight_path("n") if model_path is None else model_path).expanduser().resolve()
     if not source.is_file():
         raise ModelLoadError(f"pose weights do not exist: {source}")
@@ -92,7 +85,7 @@ def export_pose_onnx(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=_DESCRIPTION)
     parser.add_argument("model_path", nargs="?", type=Path, default=pose_weight_path("n"))
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()

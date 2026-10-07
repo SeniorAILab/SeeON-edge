@@ -1,18 +1,3 @@
-"""Report every surviving reference to a deleted tree.
-
-P2 deletes whole packages. A deletion is only finished when nothing still names
-the thing that is gone - not just Python imports, but the string and path
-references that live in Dockerfiles, compose files, CI workflows, shell scripts,
-manifests and docs, none of which any type checker will catch.
-
-The scan walks tracked text files (``git ls-files``), skips binaries and the
-handful of generated artefacts that legitimately embed old paths, and prints one
-line per surviving reference. Empty output for every listed tree is P2-AC5.
-
-    uv run python scripts/deletion_closure_scan.py
-    uv run python scripts/deletion_closure_scan.py --tree worker/native
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -22,7 +7,6 @@ import sys
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
-#: Trees P2 removes. A reference to any of these after deletion is a leak.
 DELETED_TREES: tuple[str, ...] = (
     "worker/native",
     "worker/runtime/deepstream",
@@ -34,9 +18,6 @@ DELETED_TREES: tuple[str, ...] = (
     "worker/pipeline/perception/tracker.py",
 )
 
-#: Files that may legitimately name a deleted path: lockfiles nobody edits by
-#: hand, immutable recorded measurements, vendored design output, and this
-#: scan's own declaration of the trees.
 EXCLUDED: tuple[str, ...] = (
     "front/pnpm-lock.yaml",
     "uv.lock",
@@ -70,15 +51,6 @@ def _is_text(path: Path) -> bool:
 
 
 def _patterns(trees: Sequence[str]) -> list[tuple[str, re.Pattern[str]]]:
-    """Forms a surviving reference can take.
-
-    Three, because a leak hides in whichever one you forgot: the repo-relative
-    path, the dotted module, and the *relative* path a file inside the tree's
-    parent would use - a Dockerfile under `worker/` naming `native/deepstream`,
-    or a CMake file naming `../native`. The relative form is built from the last
-    two segments rather than the bare leaf, because a leaf like `decode` or
-    `bus` appears everywhere in ordinary prose and would drown the report.
-    """
     patterns: list[tuple[str, re.Pattern[str]]] = []
     for tree in trees:
         forms = {re.escape(tree), re.escape(tree.removesuffix(".py").replace("/", "."))}

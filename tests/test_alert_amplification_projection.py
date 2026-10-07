@@ -1,12 +1,3 @@
-"""WP4 measurement: real B -> I incident staging and authenticated projection.
-
-Media-free by construction. This drives the actual product composition
-(``DurableEvidenceStager`` -> ``EvidenceOutbox.stage`` -> central incident
-staging -> ``CentralEvidenceQuery`` -> authenticated ``GET /api/v1/incidents``)
-on the disposable PostgreSQL product sandbox. No RTSP, no frames, no clip bytes,
-no human adjudication, and no model/policy attribution.
-"""
-
 from __future__ import annotations
 
 import base64
@@ -85,7 +76,6 @@ def _incidents_via_api(relay: TestClient) -> list[dict[str, object]]:
         )
         first = client.get("/api/v1/incidents")
         assert first.status_code == 200, first.text
-        # Repeated polling must not mint a second incident identity.
         second = client.get("/api/v1/incidents")
         assert second.status_code == 200
         assert first.json() == second.json()
@@ -150,8 +140,6 @@ def test_api_projection_lacks_a_projection_timestamp_field(
     postgres_product_sandbox: ProductSandbox,
     postgres_audit_runtime: PostgresAuditRuntime,
 ) -> None:
-    """Measured finite gap, recorded rather than fabricated."""
-
     with ServedFixture() as served:
         relay = relay_client(served.origin, postgres_product_sandbox, postgres_audit_runtime)
         _stage_and_deliver(relay, tmp_path)
@@ -167,13 +155,6 @@ def test_incident_multiplication_is_structurally_impossible(
     postgres_product_sandbox: ProductSandbox,
     postgres_audit_runtime: PostgresAuditRuntime,
 ) -> None:
-    """The falsifier cannot even be staged: the schema forbids two I for one E.
-
-    This is stronger than detecting duplication after the fact — one
-    ``edge_event_id`` can never own two incident identities, so API incident
-    amplification is ruled out by construction rather than by observation.
-    """
-
     with ServedFixture() as served:
         relay = relay_client(served.origin, postgres_product_sandbox, postgres_audit_runtime)
         _stage_and_deliver(relay, tmp_path)

@@ -95,6 +95,8 @@ jobs:
           docker compose --env-file .env.edge.prod.example \
             -f compose.edge.yaml config -q
 
+      - run: uv run --group lint python scripts/check_no_comments.py
+
   # The whole cost centre: pytest was 18m27s of a 19m37s job. Sharded across
   # SHARD_TOTAL runners by test file, which needs no new dependency in uv.lock.
   test:

@@ -16,7 +16,6 @@ from urllib.parse import urlsplit
 
 from tests_support.local_backend_fixture import RouteRecord
 
-# Explicit + keeps the policy scan off this file; the formatter joins implicit concatenation.
 INSECURE_HTTP_ENV = "API_BACKEND_" + "ALLOW_INSECURE_HTTP"
 
 
@@ -39,8 +38,6 @@ class CorrelationRow:
     incident_ids: tuple[str, ...]
     terminal_state: str
     clock_order_valid: bool = True
-    # Separate from identity completeness: temporal-order evidence (for example
-    # an API projection timestamp) is required only for order-dependent claims.
     order_evidence_valid: bool = True
 
 
@@ -90,8 +87,6 @@ class SessionBudgetExceeded(RuntimeError):
 
 
 class SessionLatch:
-    """Run-owned five-minute latch for one attempt and at most one session."""
-
     def __init__(
         self,
         role: str,
@@ -225,10 +220,6 @@ def classify_rows(rows: Sequence[CorrelationRow]) -> Classification:
     if not rows:
         return _inconclusive("no correlation rows")
 
-    # A positive multiplication finding is sound even when the chain is
-    # otherwise incomplete: two accepted backend identities for one immutable
-    # edge_event_id is already a defect, and a later missing join cannot make
-    # it healthy. Missing identities only block concluding *health*.
     duplication = _multiplication_defect(rows)
     if duplication is not None:
         return duplication
@@ -288,9 +279,6 @@ def classify_rows(rows: Sequence[CorrelationRow]) -> Classification:
             "distinct machine-positive transitions cannot establish model/policy truth",
         )
     if any(len(ordinals) > 1 for ordinals in edge_to_attempts.values()):
-        # "Ordered attempts converged" is an order-dependent claim, so it is
-        # enforced-blocked without temporal-order evidence. Identity-derived
-        # findings above remain reportable.
         if not all(row.order_evidence_valid for row in rows):
             return _inconclusive("ordered-attempt convergence requires temporal-order evidence")
         return Classification(
@@ -327,12 +315,6 @@ def validate_temporal_order(
     projection_time: float | None,
     uncertainty_ms: float,
 ) -> bool:
-    """True only when attempt -> receipt -> projection holds within uncertainty.
-
-    Presence of a timestamp is never sufficient: a reversed or malformed
-    relation must not enable an order-dependent claim.
-    """
-
     if projection_time is None or not attempt_times or not receipt_times:
         return False
     values = (*attempt_times, *receipt_times, projection_time, uncertainty_ms)
@@ -812,7 +794,6 @@ def descriptor_scan_scope() -> DescriptorScanScope:
 
 
 def probe_procfs_visibility() -> bool:
-    """True when this principal's own processes can be enumerated at all."""
     return descriptor_scan_scope().inspected_processes > 0
 
 
@@ -935,9 +916,6 @@ def _multiplication_defect(rows: Sequence[CorrelationRow]) -> Classification | N
     for edge_id, incident_ids in incidents.items():
         if len(incident_ids) <= 1:
             continue
-        # The oracle is one E and ONE stable B mapping to many I. Without a
-        # single accepted backend identity the multiplication cannot be
-        # attributed to the API projection layer.
         if len(backends.get(edge_id, set())) != 1:
             return _inconclusive(
                 "API incident multiplication requires exactly one accepted backend identity"
@@ -1001,19 +979,6 @@ def _inconclusive(reason: str) -> Classification:
 
 
 def _open_references_for_path(mount_path: Path) -> tuple[str, ...]:
-    """Descriptor references to ``device`` held by this principal's processes.
-
-    A run-owned tmpfs is mode 0700 owned by this uid, so only this uid and root
-    can open it. This uid's own processes are enumerable through the normal
-    ``/proc`` the host already provides, and they are the only principal this
-    run can be responsible for. Two classes are deliberately out of scope
-    rather than gate failures, because neither can be changed by an operator
-    and neither can hold a descriptor this run handed out: processes owned by a
-    different uid, and this uid's own non-dumpable helpers whose ``fd``
-    directory the kernel reassigns to root (for example PAM's ``(sd-pam)``).
-    ``descriptor_scan_scope`` reports the residual skipped count so the
-    assumption stays explicit instead of silent.
-    """
     own_uid = os.getuid()
     prefix = f"{mount_path}/"
     references: list[str] = []
@@ -1031,8 +996,6 @@ def _open_references_for_path(mount_path: Path) -> tuple[str, ...]:
         except (FileNotFoundError, PermissionError):
             continue
         for descriptor in entries:
-            # readlink resolves the descriptor's own target name and, unlike
-            # stat, never requires permission on the target itself.
             try:
                 target = os.readlink(descriptor)
             except (FileNotFoundError, PermissionError):

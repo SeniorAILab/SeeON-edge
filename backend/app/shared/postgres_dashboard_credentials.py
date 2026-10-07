@@ -1,9 +1,3 @@
-"""Native credential persistence; app ownership and HTTP activation live elsewhere.
-
-The supplied database owns every complete transaction and pool lease. This
-store never bootstraps storage, selects authority or constructs a fallback.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -47,8 +41,6 @@ class PostgresDashboardCredentialsStore:
             if len(rows) != 1 or type(rows[0][0]) is not int or rows[0][0] != 1:
                 raise DashboardCredentialsStoreError(_UNREADABLE) from None
             _, username, algorithm, salt, password_hash, updated_at, timestamp_valid = rows[0]
-            # Match the native row format, including its own UTC validator;
-            # corrupt present rows must never become bootstrap-eligible absence.
             if (
                 not isinstance(username, str)
                 or not 1 <= len(username) <= 128
@@ -77,7 +69,6 @@ class PostgresDashboardCredentialsStore:
         password: str,
         after_write: Callable[[psycopg.Connection], None] | None = None,
     ) -> PersistedDashboardCredentials:
-        # Scrypt runs before acquisition, never while holding the authority lock.
         record = PersistedDashboardCredentials.from_password(username=username, password=password)
 
         def write(connection: psycopg.Connection) -> PersistedDashboardCredentials:
@@ -99,7 +90,6 @@ class PostgresDashboardCredentialsStore:
                 after_write(connection)
             return record
 
-        # Do not translate or retry write failures, particularly unknown COMMIT.
         return self._database.transact(write)
 
 

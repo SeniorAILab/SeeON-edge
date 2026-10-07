@@ -1,5 +1,3 @@
-"""The PostgreSQL composition root: refuse missing wiring, serve through PG, close on shutdown."""
-
 from __future__ import annotations
 
 import json

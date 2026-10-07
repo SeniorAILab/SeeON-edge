@@ -1,5 +1,3 @@
-"""Generation-2 adversarial cases for the observability-10 delta."""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime

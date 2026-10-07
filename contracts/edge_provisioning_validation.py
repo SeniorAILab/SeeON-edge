@@ -75,8 +75,6 @@ def require_uuid_v7(value: JsonValue) -> str:
 
 
 def require_canonical_id(value: JsonValue) -> str:
-    """Hub-owned canonical identifier: opaque, bounded. The backend issues
-    cuid ids today and may issue UUIDs; the Edge must not assume a format."""
     parsed = require_string(value, 64)
     if _CANONICAL_ID.fullmatch(parsed) is None:
         raise ContractViolation("value must be a canonical backend id")

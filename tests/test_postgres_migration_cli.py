@@ -1,5 +1,3 @@
-"""The cutover command line on real PG18: exit codes, one-line output and no leaked secrets."""
-
 from __future__ import annotations
 
 import hashlib
@@ -26,12 +24,10 @@ from tests_support.postgres_migration import (
 pytest_plugins = ("tests_support.postgres_migration",)
 
 _PASSWORD = "synthetic-runtime-password-1"
-# Stands in for the per-test runtime role, which parametrize cannot see.
 _RUNTIME = "<runtime role>"
 _NOT_OWNER_ONLY = "must be a regular file readable only by its owner"
 _NO_PASSWORD = "must carry a printable ASCII password"
 
-# Values seeded into the synthetic source that no report or output line may carry.
 _SEEDED_VALUES = ("rtsp", "camera.invalid", "operator", bytes(range(64)).hex())
 
 
@@ -366,10 +362,6 @@ def test_cli_refuses_a_runtime_dsn_file_before_touching_the_target(
 
 
 def _fresh_install_paths(root: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
-    """The product's SQLite path, moved under the test root, and an operator-named one.
-
-    Both directories exist and neither database does.
-    """
     canonical = root / "state" / "edge.sqlite3"
     source = root / "fresh-state" / "edge.sqlite3"
     for path in (canonical, source):
@@ -398,7 +390,6 @@ def test_cli_fresh_install_opens_an_empty_target_from_the_default_source(
     provisioned = authority_row(names.admin, names.schema)
     transfer = ["transfer", *owner, "--authority-file", str(authority)]
 
-    # --source names a fresh install's legacy path; without --fresh-install it is a usage error.
     with pytest.raises(SystemExit) as misused:
         main([*transfer, "--source", str(source)])
     misused_row = authority_row(names.admin, names.schema)
@@ -419,7 +410,6 @@ def test_cli_fresh_install_opens_an_empty_target_from_the_default_source(
     assert generation == 2
     assert authority_row(names.admin, names.schema) == (2, token, True, True)
     assert not pending_authority_path(authority).exists()
-    # A fresh install leaves no SQLite file behind at either path.
     assert [*canonical.parent.iterdir(), *source.parent.iterdir()] == []
 
 
@@ -477,7 +467,6 @@ def test_cli_fresh_install_refuses_legacy_data_at_either_path(
     refused_row = authority_row(names.admin, names.schema)
     refused_bytes = authority.read_bytes()
     refused_pending = pending_authority_path(authority).exists()
-    # The counterfactual: the same command once the legacy artifact is gone.
     planted.unlink()
     accepted = main(argv)
     capsys.readouterr()
@@ -540,7 +529,6 @@ def test_cli_fences_a_fresh_install_at_its_activated_generation(
     )
     fence_output = capsys.readouterr()
     fenced_sha256 = hashlib.sha256(canonical.read_bytes()).hexdigest()
-    # A fresh install has no snapshot to check, so no rollback report exists.
     unfenced = main(
         [
             "unfence-sqlite",
@@ -607,8 +595,6 @@ def test_cli_rolls_back_before_transfer_after_the_fence(
         "--fence-receipt",
         receipt,
     ]
-    # SQLite never opens the fenced source: even a read-only open leaves a -shm that
-    # rollback-check denies as sqlite:shm_content.
     assert main(fence) == 0
     if imported:
         assert main(["import", *owner, "--snapshot", str(snapshot)]) == 0
@@ -659,6 +645,5 @@ def test_cli_rolls_back_before_transfer_after_the_fence(
     )
     assert hashlib.sha256(source.read_bytes()).hexdigest() == before_sha256
     assert _user_version(source) == before_user_version
-    # Before transfer nothing needs a freeze: the authority is still the provisioned one.
     assert authority_row(names.admin, names.schema) == provisioned
     assert authority_file_token(authority)[0] == 1

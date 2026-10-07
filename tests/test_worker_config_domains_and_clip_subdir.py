@@ -1,22 +1,3 @@
-"""Worker-side plumbing for the two ml-api-local overrides added alongside the
-detection-settings and clip-storage-location backend slices (see
-``.omc/plans/redesign-api-contracts.md`` §4/§5):
-
-* ``BackendWorkerConfigPayload.domains`` -- a per-domain enable/disable map
-  (``backend/app/features/detection_settings``) that, once present at all,
-  replaces the per-camera-``domains``-derived enabled set entirely rather than
-  merging with it.
-* ``BackendWorkerConfigPayload.clip_store_subdir`` -- a single relative
-  subdirectory (``backend/app/features/clips/storage_location_store.py``)
-  threaded into ``ClipRecordingConfig.store_subdir`` and, at the worker
-  runtime, appended under the constructor-injected clip-store root.
-
-Both fields degrade fail-open per malformed entry (mirroring the existing
-``detection_windows``/``cameras`` degradation covered by
-``test_worker_config_pull_models.py``) rather than rejecting the whole pulled
-payload.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -36,9 +17,6 @@ def _camera_payload(camera_id: str = "camera-1") -> dict[str, object]:
         "facility_id": "facility-1",
         "rtsp_url": "rtsp://camera/stream",
     }
-
-
-# --- resolved_domain_enabled: fail-open per-domain parsing -----------------
 
 
 def test_resolved_domain_enabled_parses_a_well_formed_map() -> None:
@@ -87,9 +65,6 @@ def test_resolved_domain_enabled_drops_only_the_malformed_entry_and_logs(
     assert capsys.readouterr().err
 
 
-# --- resolved_clip_store_subdir: fail-open parsing --------------------------
-
-
 def test_resolved_clip_store_subdir_accepts_a_relative_path() -> None:
     payload = BackendWorkerConfigPayload.model_validate(
         {
@@ -128,9 +103,6 @@ def test_resolved_clip_store_subdir_falls_open_to_none_on_malformed_value(
     assert capsys.readouterr().err
 
 
-# --- to_worker_config: merge behavior ---------------------------------------
-
-
 def test_to_worker_config_with_no_domains_override_preserves_camera_domains_default() -> None:
     payload = BackendWorkerConfigPayload.model_validate(
         {
@@ -146,8 +118,6 @@ def test_to_worker_config_with_no_domains_override_preserves_camera_domains_defa
 
 
 def test_to_worker_config_domains_override_replaces_camera_domains_entirely() -> None:
-    """A local domains override wins outright, even over a per-camera
-    ``domains`` list that would otherwise have enabled a different set."""
     payload = BackendWorkerConfigPayload.model_validate(
         {
             "config_version": 1,
@@ -163,10 +133,6 @@ def test_to_worker_config_domains_override_replaces_camera_domains_entirely() ->
 
 
 def test_to_worker_config_domains_override_can_represent_all_domains_off() -> None:
-    """The empty-tuple-vs-None ambiguity this override was designed to avoid:
-    an explicit "everything off" must stay explicit -- both domains named
-    with ``enabled: false`` -- not collapse into the registry's ambient
-    enable-all (which only applies to a domain the override never names)."""
     payload = BackendWorkerConfigPayload.model_validate(
         {
             "config_version": 1,
@@ -182,10 +148,6 @@ def test_to_worker_config_domains_override_can_represent_all_domains_off() -> No
 
 
 def test_to_worker_config_domains_override_is_a_partial_overlay_not_a_replace() -> None:
-    """The actual defect this overlay fixes: an override naming only ONE
-    domain must not force every *other* known domain off. A domain the
-    override never mentions defers to the registry default (both domains
-    default enabled), not to a hardcoded "everything unmentioned is off"."""
     payload = BackendWorkerConfigPayload.model_validate(
         {
             "config_version": 1,
@@ -200,22 +162,7 @@ def test_to_worker_config_domains_override_is_a_partial_overlay_not_a_replace() 
     assert config.enabled_domains == ("bed_exit",)
 
 
-# --- to_worker_config: issue #191 -- registry overlay, not replace ---------
-#
-# ``WorkerConfig.enabled_domains`` resolves every domain against the
-# registry (``DOMAIN_REGISTRY[name].enabled``) overlaid by
-# ``config.domains.resolved_overrides()`` -- config no longer *replaces* the
-# registry's set of known domains, so a relay pull that carries no domains
-# signal whatsoever (no override, no per-camera domains, no detection
-# windows -- the exact shape of a fresh install) can no longer disarm
-# anything: an empty overrides map just means every domain defers to its own
-# registry default.
-
-
 def test_to_worker_config_with_no_domains_signal_resolves_to_registry_defaults() -> None:
-    """No domains override, no per-camera domains, no detection windows:
-    every domain defers to its registry default (fall, bed_exit both on) --
-    the boot floor -- rather than an undefined/fail-open marker."""
     payload = BackendWorkerConfigPayload.model_validate(
         {"config_version": 1, "cameras": [_camera_payload()]}
     )
@@ -227,9 +174,6 @@ def test_to_worker_config_with_no_domains_signal_resolves_to_registry_defaults()
 
 
 def test_to_worker_config_with_explicit_empty_camera_domains_list_stays_off() -> None:
-    """A camera that explicitly declares zero domains (``"domains": []``) is
-    a genuine opt-out, distinct from a camera that never mentioned domains
-    at all, and must resolve to empty -- not the registry default."""
     payload = BackendWorkerConfigPayload.model_validate(
         {
             "config_version": 1,
@@ -256,9 +200,6 @@ def test_to_worker_config_with_specific_camera_domains_resolves_exactly_as_given
 
 
 def test_to_worker_config_clip_store_subdir_merges_into_a_local_clip_config() -> None:
-    """The pulled subdir must land on top of a locally-sourced ``clip``
-    config (e.g. clip.enabled from env, see #66/#68) rather than replacing it
-    outright."""
     payload = BackendWorkerConfigPayload.model_validate(
         {
             "config_version": 1,
@@ -285,9 +226,6 @@ def test_to_worker_config_without_clip_store_subdir_leaves_local_clip_config_unt
     assert config.clip.store_subdir == "already-set"
 
 
-# --- ClipRecordingConfig.store_subdir validator -----------------------------
-
-
 def test_clip_recording_config_accepts_a_relative_store_subdir() -> None:
     config = ClipRecordingConfig(store_subdir="sub/dir")
     assert config.store_subdir == "sub/dir"
@@ -299,15 +237,11 @@ def test_clip_recording_config_rejects_unsafe_store_subdir(value: str) -> None:
         ClipRecordingConfig(store_subdir=value)
 
 
-# --- WorkerRuntime._resolved_clip_store_dir ---------------------------------
-
-
 def _fake_runtime(
     store_subdir: str | None,
     *,
     clip_store_dir: Path = Path(DEFAULT_CLIP_STORE_DIR),
 ) -> WorkerRuntime:
-    """A minimal stand-in carrying the state read by the unbound method."""
     from types import SimpleNamespace
 
     return SimpleNamespace(
@@ -336,9 +270,6 @@ def test_resolved_clip_store_dir_appends_a_selected_subdir(tmp_path: Path) -> No
 def test_resolved_clip_store_dir_defensively_rejects_an_unsafe_subdir(
     tmp_path: Path, unsafe_subdir: str
 ) -> None:
-    """Belt-and-suspenders: pull_models.py already validates this before it
-    reaches WorkerConfig, but a path feeding filesystem construction is
-    re-checked here rather than trusted at a distance."""
     runtime = _fake_runtime(unsafe_subdir, clip_store_dir=tmp_path)
 
     with pytest.raises(RuntimeError, match="relative and traversal-free"):

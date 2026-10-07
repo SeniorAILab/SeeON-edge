@@ -1,20 +1,3 @@
-"""Worker -> Backend execution-record (diagnostics) wire contract.
-
-One JSON body per POST to ``/api/v1/relay/execution-records``. The worker
-builds it from its bounded in-memory lanes; the Backend validates it into the
-``diagnostics`` feature's store types. This module is the single source of the
-field names and value rules on both sides, so neither side hand-copies them.
-
-Every record is immutable and self-identified: ``record_id`` is the SHA-256 of
-its canonical JSON without the id itself, and ``batch_id`` is the SHA-256 of
-the sorted record ids plus the gap ranges. Both ids are what make retries
-idempotent. Ids are computed here so a worker cannot accidentally send two
-different bodies under one id.
-
-Nothing here talks HTTP. ``shared.events`` may import only ``contracts`` and
-itself.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -38,23 +21,9 @@ RECORD_KINDS: Final = frozenset(
 )
 TIME_QUALITIES: Final = frozenset({"monotonic", "wall", "pts", "unknown"})
 
-# Record kinds that are produced by a process-scoped observer (the durable
-# delivery-queue drainer) rather than by a camera stream. Their rows carry the
-# observing boot id and PROCESS_SCOPE for source_generation and stream_epoch.
-# This is declared vocabulary: the Backend keys those rows into a per-boot
-# process-scope segment, and the join to the originating stream happens through
-# causal_unit_id (the edge_event_id), which the event.delivery record shares.
-# It is not a fallback for a missing stream identity on any other kind.
 PROCESS_SCOPED_KINDS: Final = frozenset({"backend.acceptance"})
 PROCESS_SCOPE: Final = 0
 
-# event.delivery has two producers with different scopes and is deliberately
-# NOT in PROCESS_SCOPED_KINDS: the Flow evidence binding records queue admission
-# with the real frame identity (stream-scoped), while the durable-queue drainer
-# records each attempt outcome with the observing boot and PROCESS_SCOPE
-# (process-scoped, same convention as backend.acceptance). Both share
-# causal_unit_id == edge_event_id. A consumer must not assume one scope for
-# this kind.
 STORAGE_STATES: Final = frozenset({"committed", "STORAGE_UNAVAILABLE"})
 
 _JSON_KW: Final = {"sort_keys": True, "separators": (",", ":"), "ensure_ascii": False}
@@ -62,7 +31,7 @@ _IDENTITY_MAX: Final = 128
 
 
 class ExecutionRecordContractError(ValueError):
-    """The body violates the wire contract; the Backend answers 422."""
+    ...
 
 
 def canonical_json(value: object) -> str:
@@ -101,8 +70,6 @@ def _sha256_hex(value: object, what: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class WireProvenance:
-    """Execution identity every record in the batch points at."""
-
     worker_build_revision: str
     worker_image_digest: str
     model_digest: str
@@ -130,14 +97,6 @@ class WireProvenance:
 
 @dataclass(frozen=True, slots=True)
 class WireRecord:
-    """One immutable producer observation.
-
-    ``record_id`` is derived, never supplied: it is the SHA-256 of the canonical
-    JSON of every other field. ``payload`` must already be JSON-serializable and
-    bounded by the producer; the Backend rejects oversize payloads per its
-    retention budget, it does not truncate them.
-    """
-
     record_kind: str
     camera_id: str
     worker_boot_id: str
@@ -232,8 +191,6 @@ class WireRecord:
 
 @dataclass(frozen=True, slots=True)
 class WireGap:
-    """A known drop the worker itself observed (lane overflow, export failure)."""
-
     producer: str
     from_sequence: int
     to_sequence: int
@@ -258,8 +215,6 @@ class WireGap:
             _non_negative(self.stream_epoch, "stream_epoch")
 
     def to_json(self) -> dict[str, object]:
-        # Legacy omission preserves old-worker batch identities. Absence is
-        # unresolved scope, never the genuine numeric (0, 0) process lane.
         return {
             name: getattr(self, name) for name in self.__slots__ if getattr(self, name) is not None
         }
@@ -286,8 +241,6 @@ class WireGap:
 
 @dataclass(frozen=True, slots=True)
 class WireBatch:
-    """One POST body. ``batch_id`` is derived from the record ids and gaps."""
-
     camera_id: str
     worker_boot_id: str
     provenance: WireProvenance
@@ -354,12 +307,6 @@ class WireBatch:
 
 @dataclass(frozen=True, slots=True)
 class WireBatchReceipt:
-    """Backend answer. ``committed`` means the diagnostics commit succeeded.
-
-    It is never a Hub acceptance and never an event receipt; a worker must not
-    treat it as either.
-    """
-
     batch_id: str
     accepted: int
     duplicates: int

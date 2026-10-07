@@ -24,8 +24,6 @@ def test_nvenc_capability_false_when_encoder_token_absent() -> None:
         del args, timeout_sec
         return "V..... libx264               libx264 H.264 / AVC encoder\n"
 
-    # Fail closed: this repo's macOS dev machines hit exactly this path (real
-    # `ffmpeg -encoders` output on this host has no h264_nvenc).
     capability = probe_nvenc_capability(runner=runner)
 
     assert capability == NvencCapability(False, "ffmpeg has no h264_nvenc encoder")
@@ -75,7 +73,6 @@ def test_nvenc_capability_false_when_ffmpeg_query_raises_unexpected_error() -> N
         del args, timeout_sec
         raise ValueError("unexpected")
 
-    # Encode probe must never break startup, even on an unmodeled error.
     capability = probe_nvenc_capability(runner=runner)
 
     assert capability == NvencCapability(False, "ffmpeg encoder probe failed: ValueError")

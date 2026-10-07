@@ -1,11 +1,3 @@
-"""``python -m worker.tools.fetch_models`` -- provision the models root.
-
-Exit codes: 0 every artifact present and verified; 1 a download or hash
-verification failed (nothing unverified is left at a final path); 2 usage or
-manifest error. ``HF_TOKEN`` is read from the environment for Hugging Face
-sources only and is never echoed.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -87,12 +79,10 @@ def _resolve_dest(explicit: Path | None, env: Mapping[str, str]) -> Path:
 
 
 class _RefusingSource:
-    """``--check`` byte source: any download attempt is a failure."""
-
     def stream(self, url: str, headers: Mapping[str, str]) -> Iterator[bytes]:
         del headers
         raise SourceError(f"--check: {url} would need downloading")
-        yield b""  # pragma: no cover -- makes this a generator like the real source
+        yield b""  # pragma: no cover
 
 
 def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = None) -> int:

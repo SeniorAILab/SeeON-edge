@@ -269,17 +269,6 @@ def test_catalog_qualifies_production_modules_components_and_model_bindings() ->
 
 
 def test_pose_binding_identity_is_byte_identical_across_fall_v2_and_bed_exit_v1() -> None:
-    """Cross-camera batched pose (nvidia-multistream-serving) rests on this.
-
-    A single inference owner may batch every camera's pose frames into ONE
-    forward only because fall.v2 and bed_exit.v1 declare the SAME pose
-    component: same artifact, same preprocessing, same serving task. If the
-    two modules ever diverge on any identity field, ``SharedComponentPool``
-    correctly produces two runners and one batched pose lane becomes wrong,
-    not merely slower. The equality above compares whole bindings; this pins
-    the individual fields so a failure names which one drifted, and pins the
-    derived ``SharedComponentIdentity`` that the pool actually keys on.
-    """
     fall_pose = next(
         binding
         for binding in DETECTION_MODULE_REGISTRY.get("fall", 2).shared_bindings

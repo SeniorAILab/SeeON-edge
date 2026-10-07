@@ -1,5 +1,3 @@
-"""Schema-19 guard the one-time migration applies to the retired SQLite source."""
-
 from __future__ import annotations
 
 import hashlib
@@ -20,13 +18,11 @@ from shared.release_identity import EDGE_DATABASE_SCHEMA_VERSION
 
 
 class EdgeDatabaseError(RuntimeError):
-    """Base failure for the edge database foundation."""
+    ...
 
 
 @dataclass(slots=True)
 class MigrationRequiredError(EdgeDatabaseError):
-    """The database is empty or below schema 19; no migration path exists from it."""
-
     found: int
     minimum: int
 
@@ -49,7 +45,7 @@ class NewerSchemaError(EdgeDatabaseError):
 
 
 class SchemaLedgerError(EdgeDatabaseError):
-    """The version marker and the on-disk schema disagree with the compiled contract."""
+    ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,25 +66,18 @@ class CompatibilityDisposition(StrEnum):
 
 MigrationIdentity = tuple[int, str, str]
 
-# The frozen ledger identity of schema 18. The checksum is the historical
-# release value every deployed schema-18 database already records; it is a
-# constant, not a hash of the current DDL, so it stays stable across the
-# retirement of the v1-v18 migration ledger.
 SCHEMA_18_IDENTITY: Final[MigrationIdentity] = (
     18,
     "strict_ten_table_application_schema",
     "d43dbc02e395e3df5117f7dc96814a87299f949cac7195cc72fb950d60964c9c",
 )
 
-# Literal sha256('\n'.join(EXECUTION_RECORD_CREATE_STATEMENTS)). Tests assert
-# the pin; a DDL edit must bump this identity deliberately.
 SCHEMA_19_IDENTITY: Final[MigrationIdentity] = (
     19,
     "strict_sixteen_table_application_schema",
     "650ddbab612389019ead5e994e9407c8f87f90177d40f88da5c16c8e3f129686",
 )
 
-# Explicit rolling-version matrix: exactly one schema is supported at runtime.
 CURRENT_SCHEMA_RANGE: Final = SchemaCompatibility(
     minimum=EDGE_DATABASE_SCHEMA_VERSION,
     maximum=EDGE_DATABASE_SCHEMA_VERSION,
@@ -115,12 +104,6 @@ def verify_runtime_schema(
     connection: sqlite3.Connection,
     compatibility: SchemaCompatibility = CURRENT_SCHEMA_RANGE,
 ) -> int:
-    """Verify the version marker, the schema-19 ledger row, and the structural contract.
-
-    The ledger may contain rows 1-17 plus 18 plus 19 (upgraded deployed DB),
-    18 plus 19 (extended fresh-18 DB), or only 19 (fresh create). The last row
-    must be ``SCHEMA_19_IDENTITY``.
-    """
     row = connection.execute("PRAGMA user_version").fetchone()
     version = 0 if row is None else int(row[0])
     disposition = classify_schema(version, compatibility)
@@ -145,7 +128,6 @@ def verify_runtime_schema(
 
 
 def _verify_application_tables(connection: sqlite3.Connection) -> None:
-    """Require the exact schema-19 table allowlist and structural contract."""
     _verify_table_set(
         connection,
         expected=APPLICATION_TABLES,
@@ -182,7 +164,6 @@ def _verify_table_set(
 
 
 def schema19_identity_checksum() -> str:
-    """sha256 of the execution-record CREATE statements joined by newlines."""
     return hashlib.sha256("\n".join(EXECUTION_RECORD_CREATE_STATEMENTS).encode()).hexdigest()
 
 

@@ -1,5 +1,3 @@
-"""Durable exactly-one terminal clip outcome for every event identity."""
-
 from __future__ import annotations
 
 import hashlib

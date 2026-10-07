@@ -1,10 +1,3 @@
-"""Smart Record against a live RTSP source, per the DS docs.
-
-The docs say: only RTSP sources are enabled for smart record; recording cannot
-start until an I-frame is in the cache; start_time is seconds *before* now and
-the cache must exceed it; overlapping records are unsupported.
-"""
-
 from __future__ import annotations
 
 import json
@@ -42,9 +35,6 @@ flow = (
     .batch_capture([URI], record_config=record, width=640, height=360)
     .render(mode=RenderMode.DISCARD, enable_osd=False, sync=False)
 )
-# The DS docs: Smart Record requires an RTSP source. These cameras negotiate
-# HEVC over UDP badly, so pin RTP over TCP (select-rtp-protocol=4) before the
-# pipeline leaves NULL; also give the jitterbuffer a sane latency.
 pipeline["batch_capture-source-0_0"].set(
     {"select-rtp-protocol": 4, "latency": 200, "low-latency-mode": True}
 )
@@ -55,7 +45,6 @@ state = {"source": None}
 def drive() -> None:
     time.sleep(12)
     source = "batch_capture-source-0_0"
-    # Clean stop semantics: one session, explicit stop after 4 s of a 20 s window.
     s3 = pipeline.start_recording(source, 0, 20, on_done)
     events.append({"t": time.monotonic(), "event": "start(0,20)", "args": [s3]})
     time.sleep(4)
@@ -83,7 +72,7 @@ def _write_report() -> None:
 threading.Thread(target=drive, daemon=True).start()
 try:
     flow()
-except Exception as exc:  # noqa: BLE001 - measurement records the failure
+except Exception as exc:  # noqa: BLE001
     events.append({"t": time.monotonic(), "event": "flow-error", "args": [repr(exc)]})
 
 _write_report()

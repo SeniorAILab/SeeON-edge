@@ -1,5 +1,3 @@
-"""Task-to-runner registry for in-process model execution."""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -19,8 +17,6 @@ class WarmupModel(Protocol):
     def warmup(self) -> None: ...
 
 
-# This registry provisions only camera runners. Fall models use the separate
-# fall-family registry; warmup is an optional runner capability, not a model kind.
 ModelAdapter: TypeAlias = RunnerProtocol
 RunnerFactory: TypeAlias = Callable[..., ModelAdapter]
 
@@ -39,8 +35,6 @@ class UnknownModelTaskError(KeyError):
 
 
 class ModelRegistry:
-    """Map model task names to runner factories."""
-
     def __init__(self) -> None:
         self._factories: dict[str, RunnerFactory] = {}
 
@@ -63,12 +57,6 @@ class ModelRegistry:
 
 
 def default_registry() -> ModelRegistry:
-    """Build the default registry.
-
-    "fall" is deliberately absent: the fall model has no registry-backed
-    fallback (see ``WorkerRuntime._create_fall_model``), so registering one
-    here would just be dead code shadowing the fail-closed boot check.
-    """
     registry = ModelRegistry()
     registry.register("pose", _yolo_pose)
     registry.register("person", _yolo_person)
@@ -76,10 +64,6 @@ def default_registry() -> ModelRegistry:
     return registry
 
 
-# The ultralytics runners are the host/nvidia profiles' camera runners. They
-# are resolved when a task is created, not when this module imports: under the
-# flow profile DeepStream owns pose and ORT owns bed, and that process asserts
-# torch/ultralytics are never imported (P1b-AC7).
 def _yolo_pose(**kwargs: ModelOption) -> ModelAdapter:
     from worker.adapters.model.yolo_pose import YoloPoseRunner
 
@@ -99,12 +83,6 @@ def _yolo_bed_seg(**kwargs: ModelOption) -> ModelAdapter:
 
 
 def flow_registry() -> ModelRegistry:
-    """The P1b flow profile's registry: DeepStream owns pose, ORT owns bed.
-
-    "pose"/"person" are deliberately absent - the media plane performs
-    detection and no host runner may exist for them. "bed" is the ONNX Runtime
-    CPU segmenter so the process never imports torch or ultralytics.
-    """
     registry = ModelRegistry()
     registry.register("bed", _ort_bed_seg)
     return registry

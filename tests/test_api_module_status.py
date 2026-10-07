@@ -98,9 +98,6 @@ def _identities(
     runtime: str,
     device: str,
 ) -> tuple[SharedComponentIdentity, ...]:
-    # The fall classifier's digest is resolved from the loaded bundle at
-    # composition time, never from the registry; stand in for that here the
-    # way the runtime does, with a digest for a bundle that was loaded.
     resolved = "7bb75a2932e1a1250dc900013b2c80b220de5e23f3ea568e05f1db21d0a757e3"
     identities = []
     for binding in registry.shared_bindings({"fall": 2}, flags={}):

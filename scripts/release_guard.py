@@ -1,4 +1,13 @@
-"""Refuse to release unless every version carrier agrees with the tag.
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+import tomllib
+from pathlib import Path
+
+_DESCRIPTION = """Refuse to release unless every version carrier agrees with the tag.
 
 A release of this repository is cut by pushing an annotated tag shaped
 ``seeon-edge-v<semver>``. That tag is the only thing an operator sees, so it
@@ -16,21 +25,10 @@ Run it by hand before tagging:
     python3 scripts/release_guard.py --tag seeon-edge-v0.1.0
 """
 
-from __future__ import annotations
-
-import argparse
-import json
-import re
-import sys
-import tomllib
-from pathlib import Path
-
 TAG_PREFIX = "seeon-edge-v"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-#: Every file in the tree that states the PRODUCT version, and how to read it.
-#: Keep this exhaustive — the guard is worth exactly as much as this list is.
 TOML_CARRIERS: tuple[str, ...] = (
     "pyproject.toml",
     "backend/pyproject.toml",
@@ -38,21 +36,6 @@ TOML_CARRIERS: tuple[str, ...] = (
     "shared/pyproject.toml",
 )
 JSON_CARRIERS: tuple[str, ...] = ("front/package.json",)
-
-# Deliberately NOT carriers — do not add them, and do not "fix" them to match a
-# release tag:
-#
-#   front/src/shared/releaseIdentity.ts
-#       EDGE_DATABASE_FORMAT_IDENTITY = 'seeon-edge-v1' is the on-disk DATABASE
-#       FORMAT identity, paired with EDGE_DATABASE_SCHEMA_VERSION = 19. It only
-#       coincidentally spells like the tag. It moves when the database format
-#       lineage changes, never when the product ships; bumping it to track a
-#       release would tell every edge device its existing database belongs to a
-#       different format lineage.
-#   worker/runtime/provenance/environment.py
-#       Reports torch / CUDA / NVIDIA driver versions — other people's versions.
-#       MANIFEST_SCHEMA_VERSION is the export manifest's own schema, and
-#       exporter_version is ultralytics'.
 
 _SEMVER = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 
@@ -66,7 +49,6 @@ def _read_json_version(path: Path) -> str:
 
 
 def read_carriers(root: Path = REPO_ROOT) -> dict[str, str]:
-    """Map every carrier's repo-relative path to the version it states."""
     carriers: dict[str, str] = {}
     for relative in TOML_CARRIERS:
         carriers[relative] = _read_toml_version(root / relative)
@@ -76,7 +58,6 @@ def read_carriers(root: Path = REPO_ROOT) -> dict[str, str]:
 
 
 def check(carriers: dict[str, str], tag: str | None) -> list[str]:
-    """Return every reason this tree must not be released. Empty means go."""
     problems: list[str] = []
     versions = set(carriers.values())
     if len(versions) != 1:
@@ -91,7 +72,7 @@ def check(carriers: dict[str, str], tag: str | None) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=_DESCRIPTION)
     parser.add_argument(
         "--tag",
         default=None,

@@ -1,5 +1,3 @@
-"""Status-tick supervision for the Flow media plane."""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
@@ -47,13 +45,6 @@ class _CameraState:
 
 @final
 class FlowLifecycleSupervisor:
-    """Rotate stalled Flow sources from the same accepted-frame slot as pumps.
-
-    Thirty seconds permits six ``nvurisrcbin`` five-second reconnect attempts
-    before declaring an outage, while keeping the old stream epoch from
-    surviving an extended reconnect.
-    """
-
     DEFAULT_SILENCE_TIMEOUT_SEC = 30.0
 
     def __init__(
@@ -89,9 +80,6 @@ class FlowLifecycleSupervisor:
 
         now = self._clock()
         for camera_id, state in self._states.items():
-            # The plane's published-frame counter, not the metadata slot: the
-            # slot is a capacity-one mailbox the policy pump drains, so peeking
-            # at it reports silence exactly when the pump is keeping up.
             sequence = self._plane.published_frames(camera_id)
             if not isinstance(sequence, int):
                 raise TypeError("accepted Flow metadata sequence must be an integer")

@@ -1,5 +1,3 @@
-"""Fail-closed prebuilt-engine admission for the DeepStream Flow profile."""
-
 from __future__ import annotations
 
 import hashlib
@@ -13,17 +11,15 @@ from worker.runtime.flow.onnx_shape import OnnxShapeError, batch_axis_is_dynamic
 
 
 class EngineIdentityError(RuntimeError):
-    """A prebuilt Flow engine is absent or does not match its identity proof."""
+    ...
 
 
 class FlowWarmupTimeout(RuntimeError):
-    """The Flow bootstrap source did not yield an accepted metadata frame."""
+    ...
 
 
 @dataclass(frozen=True, slots=True)
 class FlowColdStart:
-    """Verify immutable artifacts, then warm the already-built media plane."""
-
     engine_path: Path
     identity_path: Path
     files: Mapping[str, Path]
@@ -44,11 +40,6 @@ def verify_engine_identity(
     *,
     deployed_batch: int | None = None,
 ) -> dict[str, str]:
-    """Verify all identity-file digests without ever building at runtime.
-
-    Returns the verified identity so the composition root can name the
-    engine's digest as the pose component's artifact identity.
-    """
     if not engine_path.is_file():
         raise EngineIdentityError(
             f"Flow engine is absent: {engine_path}; run edge-engine-build before activation"
@@ -103,7 +94,6 @@ def _sha256(path: Path) -> str:
 __all__ = ["EngineIdentityError", "FlowColdStart", "FlowWarmupTimeout", "verify_engine_identity"]
 
 
-#: Every env key the flow media plane needs before a camera may be admitted.
 FLOW_BOOT_ENV: Final = (
     "ML_WORKER_FLOW_ENGINE_PATH",
     "ML_WORKER_FLOW_ENGINE_IDENTITY_PATH",
@@ -119,7 +109,6 @@ FLOW_BOOT_ENV: Final = (
     "ML_WORKER_FLOW_BATCH_SIZE",
 )
 
-#: Identity keys whose recorded digest must match the file on disk.
 FLOW_IDENTITY_FILES: Final = {
     "infer_config_sha256": "ML_WORKER_FLOW_INFER_CONFIG",
     "tracker_config_sha256": "ML_WORKER_FLOW_TRACKER_CONFIG",
@@ -132,13 +121,6 @@ FLOW_IDENTITY_FILES: Final = {
 def verify_flow_boot_inputs(
     env: Mapping[str, str], *, deployed_batch: int | None = None
 ) -> dict[str, str]:
-    """Fail closed on the flow profile's wiring and its engine identity.
-
-    The flow plane has no native manifest, so this is the boot gate's only
-    proof that what will run is what ``edge-engine-build`` produced. Every
-    recorded digest is checked against the file on disk; nothing is ever built
-    here (ADR-0002).
-    """
     missing = [key for key in FLOW_BOOT_ENV if not env.get(key)]
     if missing:
         raise EngineIdentityError(f"flow profile wiring is missing: {', '.join(missing)}")

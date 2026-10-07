@@ -1,11 +1,3 @@
-"""Worker entrypoint: canonical `python -m worker` CLI.
-
-Owns argparse and exit codes and constructs `WorkerRuntime` from
-`worker.runtime.worker` directly. See docs/architecture.md ("Entrypoint")
-for the exit-code table and worker/runtime/AGENTS.md ("CLI") for the
-supported contract.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -55,8 +47,6 @@ from worker.runtime.worker import WorkerRuntime
 
 LOGGER = logging.getLogger(__name__)
 
-# Mirrors docs/architecture.md "Entrypoint" and worker/runtime/bootstrap.py's
-# GENERIC_RUNTIME_EXIT_CODE / REFUSE_TO_START_EXIT_CODE / FATAL_ACCELERATOR_EXIT_CODE.
 CLEAN_SHUTDOWN_EXIT_CODE = 0
 GENERIC_RUNTIME_ERROR_EXIT_CODE = 1
 CONFIG_ERROR_EXIT_CODE = 2
@@ -66,13 +56,6 @@ _EDGE_RELAY_URL = "http://ml-api:8000"
 
 
 def _positive_int(raw: str) -> int:
-    """argparse `type=` for `--max-frames-per-camera`: reject non-integer,
-    zero, and negative values, mirroring edge's `_positive_int`
-    (edge/runtime/edge_worker.py). Raising `ArgumentTypeError` makes argparse
-    call `parser.error(...)`, which exits with CONFIG_ERROR_EXIT_CODE (2) --
-    the same contract already covered for unknown flags in
-    tests/test_worker_cli_residue.py.
-    """
     try:
         value = int(raw)
     except ValueError:
@@ -133,11 +116,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _send_heartbeat_on_start(config: WorkerConfig) -> None:
-    """Best-effort heartbeat POST per camera, mirroring the legacy
-    ``heartbeat_on_start`` supervisor option: fire once at process start
-    using the same canonical payload/headers ``HeartbeatReporter.mark_ready``
-    uses on a camera's first READY transition, rather than waiting for it.
-    """
     headers = {
         "Content-Type": "application/json",
         "X-Edge-Relay-Token": config.relay.token.get_secret_value(),
@@ -156,7 +134,7 @@ def _send_heartbeat_on_start(config: WorkerConfig) -> None:
                 encode_json(payload),
                 _HEARTBEAT_ON_START_TIMEOUT_SEC,
             )
-        except Exception as exc:  # noqa: BLE001 - startup heartbeat is best-effort
+        except Exception as exc:  # noqa: BLE001
             failure = DeliveryFailure(
                 DeliveryDisposition.RETRY,
                 "UNEXPECTED",
@@ -187,20 +165,7 @@ def _log_heartbeat_on_start_failure(camera_id: str, failure: DeliveryFailure) ->
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Parse CLI args, load config, and run the worker.
-
-    Exit codes (docs/architecture.md "Entrypoint"):
-      0 - clean shutdown
-      1 - generic runtime error
-      2 - config or resolution error
-      3 - refuse-to-start (a bootstrap gate failed)
-      4 - fatal accelerator fault (worker/runtime/faults/handler.py, hard exit)
-    """
     args = _build_parser().parse_args(argv)
-    # Resolved once so --check-config inspects exactly the directory the
-    # runtime will use. A container that passes --state-dir but whose
-    # diagnostics read the home default would report on a directory nothing
-    # writes to.
     state_dir = args.state_dir if args.state_dir is not None else resolve_state_dir()
 
     logging.basicConfig(
@@ -214,34 +179,6 @@ def main(argv: list[str] | None = None) -> int:
         LOGGER.error("worker configuration refused: %s", exc)  # noqa: TRY400
         return CONFIG_ERROR_EXIT_CODE
 
-    # Ordering note: legacy edge/runtime/edge_worker.py:141-149 runs
-    # run_global_bootstrap([profile_verify_stage(...)]) BEFORE loading config
-    # (edge_worker.py:155-159) on the real-run path, refusing to start
-    # without ever touching config on a bad profile. This entrypoint does
-    # not replicate that: worker.runtime.bootstrap.profile_device_stage's
-    # device verifiers fail closed unless given a real cuda/mps probe
-    # source, and that wiring is owned by the WorkerRuntime composition
-    # root (worker/runtime/worker.py), not exposed standalone to this CLI.
-    # Calling it here with no injected probe would make every real cuda/mps
-    # deployment refuse-to-start unconditionally regardless of actual
-    # hardware, which is worse than today's ordering. Config load stays
-    # first until that probe wiring is exposed to __main__.py too (same
-    # composition-root constraint as loop_factory, below).
-
-    # Startup config resolution (docs/architecture.md "Entrypoint",
-    # worker/runtime/config/config_pull.py). Two branches:
-    #
-    # 1. Explicit YAML (`--config` only — there is deliberately no env
-    #    equivalent, so a roster can never arrive through compose or Git):
-    #    load it, then let `resolve_startup_config` attempt a relay pull that
-    #    takes precedence when the backend is reachable, falling back to the
-    #    YAML on any pull failure. This keeps the developer/e2e escape hatch
-    #    alive without ever losing the YAML fallback.
-    # 2. No YAML at all (the production default): pull directly from the relay
-    #    via `load_worker_config_from_relay`, which already saves a successful
-    #    pull to the last-known-good (LKG) store and falls back to that store
-    #    on a failed pull. Refuse to start only when there is neither a fresh
-    #    pull nor an LKG.
     yaml_requested = args.config is not None
     snapshot: ConfigSnapshot | None = None
 
@@ -271,14 +208,6 @@ def main(argv: list[str] | None = None) -> int:
         try:
             snapshot = resolve_startup_config(yaml_config, relay_url, relay_token)
         except (WorkerConfigError, ValidationError):
-            # Defensive only: every call to the `_snapshot_from_payload` /
-            # `_snapshot_from_stored` pair inside config_pull.py -- including
-            # the "fresh pull validated but lost the LKG race" branch -- is
-            # now guarded by its own `except (ValidationError,
-            # WorkerConfigError)` (issue #34), so no path inside
-            # `resolve_startup_config` currently raises either exception here.
-            # This entrypoint still owns the exit code, so the catch stays as
-            # a backstop against a future regression.
             LOGGER.exception("worker config resolution failed")
             return CONFIG_ERROR_EXIT_CODE
         config = snapshot.config
@@ -310,19 +239,6 @@ def main(argv: list[str] | None = None) -> int:
             return CONFIG_ERROR_EXIT_CODE
 
         if args.check_config:
-            # Strictly static: the baked relay endpoint plus RELAY_TOKEN
-            # presence and shape only. RELAY_URL is retired (rejected above by
-            # `reject_retired_worker_environment`), so this reports the baked
-            # endpoint, not an env var. No network call and no LKG write --
-            # `WorkerConfigLkgStore.load` is read-only, so reporting whether a
-            # cache exists is safe, but the live pull (and any
-            # `lkg_store.save`) is deferred to boot. `--check-config` must
-            # never mutate the resolved worker state directory
-            # (`worker/runtime/state_dir.py`, `~/.local/state/ml-worker`, no
-            # env override) and must not touch the packaged model
-            # (`resolve_local_overrides`, below) (worker/runtime/AGENTS.md,
-            # "--check-config performs no model, camera, or relay side
-            # effect").
             stored = WorkerConfigLkgStore(state_dir=state_dir).load()
             if stored is None:
                 LOGGER.info(
@@ -343,17 +259,6 @@ def main(argv: list[str] | None = None) -> int:
                 )
             return CLEAN_SHUTDOWN_EXIT_CODE
 
-        # `resolve_local_overrides` provisions the packaged default fall model
-        # (worker/runtime/config/local_env.py) and runs *before* the guarded
-        # relay pull. A missing/dangling packaged artifact -- the CI
-        # `Dockerfile.edge` image bakes empty model dirs; real edges mount the
-        # weights at runtime -- makes it raise `WorkerConfigError`, and a
-        # malformed manifest can surface `ValidationError`. Both are
-        # config/packaging faults, so they map to CONFIG_ERROR_EXIT_CODE with a
-        # logged message rather than escaping `main()` as a raw traceback that
-        # reports the generic runtime exit code and misrepresents the fault.
-        # This guard does not weaken the validation: a missing model still
-        # refuses to boot, fail-closed.
         try:
             models, clip, dev_mjpeg = resolve_local_overrides(None, os.environ)
         except (WorkerConfigError, ValidationError):
@@ -371,10 +276,6 @@ def main(argv: list[str] | None = None) -> int:
                 relay_url, relay_token, models=models, clip=clip, dev_mjpeg=dev_mjpeg
             )
         except (WorkerConfigError, ValidationError):
-            # Defensive only: see the matching comment on the YAML branch's
-            # `resolve_startup_config` call -- `load_worker_config_from_relay`
-            # no longer has an unguarded `_snapshot_from_stored` re-derivation
-            # (issue #34), so this is a backstop, not a live path.
             LOGGER.exception("worker config pull failed")
             return CONFIG_ERROR_EXIT_CODE
         if snapshot is None:
@@ -431,14 +332,6 @@ def main(argv: list[str] | None = None) -> int:
         pull_config=_pull_and_apply_runtime_settings,
     )
 
-    # `loop_factory` is intentionally omitted here: composing the real
-    # per-camera ingest loop (opencv->CpuAvAdapter, nvdec->NvdecCuvidAdapter,
-    # fail-fast on unknown) is composition-root territory owned by
-    # `WorkerRuntime` itself (`worker/runtime/worker.py`), not the CLI entry.
-    # `WorkerRuntime.__init__` supplies the real profile-driven default.
-    # The flow profile's bed recognizer is the ONNX Runtime segmenter; every
-    # other profile keeps the ultralytics runners. Selecting the registry here
-    # keeps that decision in the composition root, not in a registry default.
     profile_name = os.environ.get("ML_WORKER_PROFILE", "").strip()
     serving_registry = flow_registry() if profile_name == "flow" else None
     runtime = WorkerRuntime(

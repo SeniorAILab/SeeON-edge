@@ -1,11 +1,7 @@
-"""Finite limits for durable delivery-queue envelopes."""
-
 from __future__ import annotations
 
 from typing import Final
 
-# Every string is restricted to printable ASCII, so its serialized JSON size is
-# exactly its character count.  Binary decision data is base64 encoded.
 ENTRY_ID_MAX_CHARS = 128
 EDGE_EVENT_ID_MAX_CHARS = 128
 EVENT_TYPE_MAX_CHARS = 32
@@ -22,11 +18,6 @@ SNAPSHOT_SIZE_BYTES_MAX = 9_223_372_036_854_775_807
 DISPOSITION_MAX_CHARS = 64
 DISPOSITION_REASON_MAX_CHARS = 1024
 
-# ``contracts.relay`` intentionally exposes only the legacy unvalidated
-# ``RelayAlertPayload`` mapping, not the relay request schema or its required
-# keys.  Importing the Pydantic model from ``backend`` would violate this
-# shared-leaf boundary, so the relay-model drift test is the strongest legal
-# guard until the frozen contract exports an importable schema.
 REQUIRED_ALERT_FIELDS: Final = frozenset(
     {"camera_id", "detected_at", "event_type", "facility_id", "probability"}
 )
@@ -48,12 +39,6 @@ def _base64_chars(byte_count: int) -> int:
 
 
 def maximum_serialized_envelope_bytes() -> int:
-    """Return the exact worst-case canonical JSON envelope size.
-
-    This deliberately builds the envelope from the named maxima instead of
-    maintaining an unrelated guessed queue-byte limit.  The queue uses compact,
-    sorted, ASCII JSON, and all textual inputs are printable ASCII.
-    """
     import json
 
     common = {

@@ -1,5 +1,3 @@
-"""Fence the provisioning authority and transfer it once to a new writer generation."""
-
 from __future__ import annotations
 
 import uuid
@@ -23,17 +21,14 @@ from backend.app.edge_db.migration.mapping import DELIVERY_TABLES, require_ident
 from backend.app.edge_db.migration.worker_state import worker_stopped
 from backend.app.edge_db.postgres import CommitOutcomeUnknown, PostgresDatabase, PostgresError
 
-# Only the fenced provisioning generation may be transferred, and only once.
 _PROVISIONED_GENERATION = 1
 
 
 def pending_authority_path(authority_path: Path) -> Path:
-    """The staged next token; it survives a crash between commit and publish."""
     return authority_path.with_name(f".{authority_path.name}.pending")
 
 
 def freeze(database: PostgresDatabase, authority_path: Path) -> int:
-    """Stop accepting and egress for the authority named by the file."""
     return freeze_authority(database, read_authority_file(authority_path))
 
 
@@ -45,11 +40,6 @@ def transfer(
     worker_state_dir: Path | None = None,
     fresh_install_source: Path | None = None,
 ) -> AuthorityToken:
-    """Fence, then commit one generation bump with a new token and open the gates.
-
-    With ``fresh_install_source`` the target needs no imported snapshot; it must
-    instead be empty and unimported, and the named legacy SQLite path must not exist.
-    """
     if fresh_install_source is not None:
         _require_no_legacy_source(fresh_install_source)
     require_identifier(schema, "schema")
@@ -77,15 +67,12 @@ def transfer(
                 lambda connection: _advance(connection, schema, current, successor, fresh=fresh)
             )
         except CommitOutcomeUnknown as error:
-            # The pending file stays unless the database proves which token it holds.
             if _resolve(database, schema, authority_path, pending) is None:
                 raise MigrationError(
                     "transfer did not commit; the authority is unchanged"
                 ) from error
             return successor
         except (AuthorityFenced, MigrationError, PostgresError, psycopg.Error) as error:
-            # Return validation or pool exit can fail after COMMIT; keep the only
-            # new token until the database proves whether it committed.
             try:
                 resolved = _resolve(database, schema, authority_path, pending)
             except (PostgresError, psycopg.Error):
@@ -98,14 +85,12 @@ def transfer(
 
 
 def _require_no_legacy_source(source: Path) -> None:
-    # A host that still holds legacy data must export and import it, never start empty.
     for path in (source, Path(f"{source}-wal"), Path(f"{source}-journal")):
         if path.exists() or path.is_symlink():
             raise MigrationError("legacy SQLite source exists; export and import it instead")
 
 
 def _require_transferable(database: PostgresDatabase, schema: str, current: AuthorityToken) -> None:
-    # Checked before freezing so a repeated command cannot fence a live deployment.
     row = database.read(lambda connection: _authority_row(connection, schema, lock=False))
     if row[:2] != (current.generation, current.writer_token):
         raise AuthorityFenced("cannot transfer a different persistence authority")
@@ -122,7 +107,6 @@ def _advance(
     fresh: bool,
 ) -> None:
     if fresh:
-        # The same locks and guards as an import, so no row can land before the gates open.
         lock_all(connection, schema)
     row = _authority_row(connection, schema, lock=True)
     if row != (current.generation, current.writer_token, False, False):
@@ -132,8 +116,6 @@ def _advance(
         require_empty(connection, schema)
     else:
         _require_imported_without_delivery(connection, schema)
-    # Serving reads the edge_site singleton strictly, so activation owns its bootstrap
-    # row; an imported row is left exactly as the snapshot had it.
     activated_at = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     connection.execute(
         sql.SQL(
@@ -174,7 +156,6 @@ def _require_imported_without_delivery(connection: psycopg.Connection, schema: s
 def _resolve(
     database: PostgresDatabase, schema: str, authority_path: Path, pending: Path
 ) -> AuthorityToken | None:
-    """Publish the pending token if it committed, drop it if not, else refuse."""
     staged = read_authority_file(pending)
     current = read_authority_file(authority_path)
     generation, writer_token, _, _ = database.read(

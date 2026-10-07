@@ -1,10 +1,3 @@
-"""Frozen diagnostics vocabulary and batch value types.
-
-No Pydantic. Enums mirror ``execution_records_ddl``. Late-ACK unit ids
-are ``sha256(original_unit_id + ":late:" + batch_id)`` hex because the
-DDL identity check is 1..128 chars.
-"""
-
 from __future__ import annotations
 
 import hashlib

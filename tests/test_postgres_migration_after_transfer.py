@@ -1,11 +1,3 @@
-"""Reconcile after transfer: the gates may be open, and the seed is the only difference allowed.
-
-The fenced check keeps failing an opened target, so the report still proves when
-a copy was taken too late. The after-transfer check instead needs the authority
-to have moved on, tolerates only the ``edge_site`` row activation seeds into a
-target the snapshot gave none, and reads a source the fence stamped by its bytes.
-"""
-
 from __future__ import annotations
 
 import json
@@ -54,12 +46,10 @@ _ENROLLMENT: dict[str, ConnectionValue] = {
     "edge_installation_id": "edge-after-01",
     "enrollment_generation": 1,
 }
-# Values seeded into the synthetic source that no report or output line may carry.
 _SEEDED_VALUES = ("rtsp", "camera.invalid", "operator", bytes(range(64)).hex())
 
 
 def _export(root: Path, statement: str | None = None) -> tuple[Path, Path]:
-    """The seeded old database after one optional raw statement, and its snapshot."""
     root.mkdir()
     source, destination = source_and_destination(root)
     if statement is not None:
@@ -160,7 +150,6 @@ def test_the_runtime_audit_verifier_accepts_the_transferred_chain(
         ).fetchall()
     token = _activate(target, snapshot)
 
-    # The runtime verifies the whole chain before it serves, so the old tail must survive the copy.
     checkpoint = PostgresAuditStore(target.database, token).verify()
 
     assert (checkpoint.row_count, checkpoint.audit_id, checkpoint.record_hash) == (

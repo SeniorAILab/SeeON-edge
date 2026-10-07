@@ -9,11 +9,6 @@ import backend.app.features.cameras.router as cameras_router
 
 @pytest.mark.xfail(strict=True, reason="Known bug #254: local override hash can decrease version")
 def test_local_override_hash_can_produce_lower_config_version() -> None:
-    """Characterizes #254: the hash-based offset has no ordering semantics.
-
-    This test searches a small space of start times to find two valid edits
-    that produce a lower config_version on the second save.
-    """
     pulled_version = 7
 
     def local_version(start: str) -> int:
@@ -45,7 +40,6 @@ def test_local_override_hash_can_produce_lower_config_version() -> None:
     reason="Known bug #591: policy-scaled config_version can exceed INT4",
 )
 def test_policy_scaled_config_version_exceeds_int4() -> None:
-    """Characterizes #591: base*1e9 + hash part can exceed 32-bit signed int."""
     base = 735_739
     hash_part = int(hashlib.sha256(b"example-policy").hexdigest()[:8], 16) % 1_000_000_000
     scaled = base * 1_000_000_000 + hash_part

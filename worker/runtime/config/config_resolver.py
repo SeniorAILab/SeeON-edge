@@ -11,21 +11,6 @@ def resolve_runtime_config(
     yaml_config: WorkerConfig,
     pulled: PulledWorkerConfig | None,
 ) -> Mapping[str, NightWindowConfig | None]:
-    """Resolve each known domain's detection window.
-
-    Covers every domain the worker build knows about (``KNOWN_DOMAIN_NAMES``)
-    plus any domain the backend pulled a window for, even one this build
-    doesn't recognize yet (forward-compatible).
-
-    A pulled config that supplied *any* window info (a non-empty
-    ``detection_windows`` map, or the deprecated single ``night_window``) is
-    authoritative for every domain: a domain it didn't mention resolves to
-    ALWAYS (24/7), not the local YAML alias -- mirroring the backend-payload
-    rule that a present ``detectionWindows`` map fully supersedes legacy
-    aliases, so a cleared window is never resurrected by a stale one. Only
-    when the pulled config said nothing at all about windows does the local
-    YAML config's own window/alias apply (the offline/dev path).
-    """
     domain_names = set(KNOWN_DOMAIN_NAMES)
     if pulled is not None:
         domain_names |= set(pulled.detection_windows)
@@ -69,7 +54,6 @@ def _pulled_domain_window(
     window = pulled.detection_windows.get(name)
     if window is not None:
         return window
-    # Deprecated single-window field; treated as a "bed_exit" pull only.
     return pulled.night_window if name == "bed_exit" else None
 
 

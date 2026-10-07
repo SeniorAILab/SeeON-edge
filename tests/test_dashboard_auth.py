@@ -25,8 +25,6 @@ def sandbox(postgres_product_sandbox: ProductSandbox) -> ProductSandbox:
 
 @pytest.fixture
 def build_app(sandbox: ProductSandbox, postgres_audit_runtime: PostgresAuditRuntime):
-    """Build a no-lifespan app on the shared sandbox; a second call is a restart."""
-
     def _build(**state) -> FastAPI:
         app = postgres_api_app(sandbox, postgres_audit_runtime)
         app.state.edge_relay_token = "worker-secret"

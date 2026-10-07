@@ -27,9 +27,6 @@ def test_letterbox_inverse_is_exact_for_boxes_and_keypoints() -> None:
     binding = SourceBinding("boot", "child", "camera", 2, 3, "transform")
     rows = np.zeros((1, 57), dtype=np.float32)
     rows[0, 4] = 0.9
-    # nvinfer letterboxes 1280x720 into the 640 square with the padding at the
-    # right and bottom, so the inverse is the scale alone. Measured on hardware:
-    # removing a centred pad instead shifted every box and matched nothing.
     rows[0, :4] = (50, 50, 150, 150)
     rows[0, 6:9] = (100, 100, 0.7)
     meta = SimpleNamespace(
@@ -84,7 +81,7 @@ def test_sdk_frame_number_is_not_replaced_by_the_application_publish_sequence() 
 
 def test_association_blocks_row_reuse_and_marks_coasted_track_unmatched() -> None:
     rows = np.zeros((3, 57), dtype=np.float32)
-    rows[:, 4] = (0.9, 0.8, 0.05)  # score threshold is strictly greater than .05
+    rows[:, 4] = (0.9, 0.8, 0.05)
     rows[0, :4] = (64, 64, 128, 128)
     rows[1, :4] = (64, 64, 128, 128)
     meta = SimpleNamespace(
@@ -102,9 +99,9 @@ def test_association_blocks_row_reuse_and_marks_coasted_track_unmatched() -> Non
 def test_evidence_counts_raw_filtered_unmatched_and_matched_rows() -> None:
     binding = SourceBinding("boot", "child", "camera", 2, 3, "transform")
     rows = np.zeros((3, 57), dtype=np.float32)
-    rows[:, 4] = (0.9, 0.8, 0.05)  # the last raw row is filtered
+    rows[:, 4] = (0.9, 0.8, 0.05)
     rows[0, :4] = (64, 64, 128, 128)
-    rows[1, :4] = (320, 320, 384, 384)  # eligible, but unmatched
+    rows[1, :4] = (320, 320, 384, 384)
     meta = SimpleNamespace(
         buffer_pts=10,
         object_items=[_object(7, 10, 10, 10, 10)],
@@ -207,16 +204,6 @@ def test_slot_rejects_stale_source_generation() -> None:
 
 
 def test_slot_rejects_a_none_pts_frame_and_accepts_the_next_real_one() -> None:
-    """A frame with unresolved `source_pts` must be rejected, not merged in.
-
-    Production's only publisher (`deepstream/metadata.py:156`) always sets
-    an int `source_pts`; a `None` here can only be a malformed/synthetic
-    frame. Letting it through fabricates a rollback-looking PTS downstream
-    (Finding #1, PR #588 review) and corrupts dwell/window math keyed off
-    real elapsed PTS, so it must be rejected under its own counter, before
-    the high-water logic, and must never poison the high-water mark that
-    gates the very next real frame.
-    """
     binding = SourceBinding("boot", "child", "camera", 2, 3, "transform")
     rows = np.zeros((1, 57), dtype=np.float32)
     rows[0, 4] = 0.9
@@ -253,12 +240,6 @@ def test_slot_rejects_a_none_pts_frame_and_accepts_the_next_real_one() -> None:
 
 
 def test_a_frame_without_pose_tensors_is_published_with_every_track_unmatched() -> None:
-    """nvinfer can deliver a frame with no tensor metadata attached.
-
-    The tracked objects are still real, so dropping the frame would hide it
-    from the decision layer and make a streaming camera look silent. It must be
-    published with no pose rows, leaving every track explicitly unmatched.
-    """
     from pathlib import Path
     from types import SimpleNamespace
 
@@ -304,15 +285,6 @@ def test_a_frame_without_pose_tensors_is_published_with_every_track_unmatched() 
 
 
 def test_the_letterbox_inverse_reproduces_boxes_nvinfer_and_nvtracker_actually_produced() -> None:
-    """Ground truth, not a restatement of the implementation.
-
-    The previous version of this test encoded the same wrong padding convention
-    as the code, so both agreed while the worker matched nothing for an entire
-    bring-up. This one loads raw 57-wide pose rows captured from nvinfer beside
-    the frame-space boxes nvtracker attached to the same frames, and requires the
-    inverse to land on them. Captured by
-    scripts/qa/pyservicemaker-spike/live/capture_letterbox_fixture.py.
-    """
     capture = json.loads(
         (Path(__file__).parent / "fixtures" / "nvinfer_letterbox_capture.json").read_text(
             encoding="utf-8"

@@ -1,5 +1,3 @@
-"""Versioned, non-destructive PostgreSQL schemas and least-privilege role provisioning."""
-
 from __future__ import annotations
 
 import base64
@@ -30,7 +28,6 @@ SCHEMA_VERSION: Final = 1
 SCHEMA_NAME: Final = "seeon_edge_postgres_v1"
 MIN_SERVER_VERSION_NUM: Final = 180000
 DDL_FILES: Final = ("postgres_product.sql", "postgres_diagnostics.sql", "postgres_delivery.sql")
-# The live diagnostics schema carries the same execution_* DDL under its own ledger.
 DIAGNOSTICS_SCHEMA_VERSION: Final = 1
 DIAGNOSTICS_SCHEMA_NAME: Final = "seeon_edge_diagnostics_postgres_v1"
 DIAGNOSTICS_DDL_FILE: Final = "postgres_diagnostics.sql"
@@ -43,7 +40,6 @@ CREATE TABLE schema_migrations (
 );
 """
 
-# Least privilege by table: the runtime never runs DDL and owns nothing.
 _SELECT_ONLY: Final = ("schema_migrations",)
 _APPEND_ONLY: Final = (
     "audit_events",
@@ -110,7 +106,6 @@ def provision(
     statement_timeout_ms: int,
     lock_timeout_ms: int,
 ) -> ProvisionResult:
-    """Create or verify both schemas, the runtime role and the fenced authority."""
     diagnostics = diagnostics_schema_name(schema)
     require_identifier(runtime_role, "runtime role")
     product = _layout(
@@ -178,14 +173,9 @@ def set_runtime_password(
     statement_timeout_ms: int,
     lock_timeout_ms: int,
 ) -> bool:
-    """Store the password of a provisioned runtime role as a SCRAM verifier.
-
-    The verifier is rewritten only when the password differs; the result says whether it was.
-    """
     diagnostics = diagnostics_schema_name(schema)
     require_identifier(runtime_role, "runtime role")
     if not (password and password.isascii() and password.isprintable()):
-        # Without SASLprep, only printable ASCII hashes the same on the client and server.
         raise MigrationError("runtime password must be non-empty printable ASCII")
     with psycopg.connect(owner_conninfo, autocommit=True, connect_timeout=10) as connection:
         with connection.transaction():
@@ -254,7 +244,6 @@ def _ensure_schema(connection: psycopg.Connection, schema: str, layout: _Layout)
 
 
 def _apply(connection: psycopg.Connection, schema: str, layout: _Layout) -> None:
-    # Guard functions pin `search_path FROM CURRENT`; the schema must lead it here.
     connection.execute(
         sql.SQL("SET LOCAL search_path TO {}, pg_catalog, pg_temp").format(sql.Identifier(schema))
     )
@@ -286,7 +275,6 @@ def _ensure_role(connection: psycopg.Connection, schemas: tuple[str, ...], role:
 
 
 def _ensure_password(connection: psycopg.Connection, role: str, password: str) -> bool:
-    # pg_authid is superuser-only; a non-superuser owner fails here with 42501.
     row = connection.execute(
         "SELECT rolpassword FROM pg_catalog.pg_authid WHERE rolname = %s", (role,)
     ).fetchone()
@@ -294,7 +282,6 @@ def _ensure_password(connection: psycopg.Connection, role: str, password: str) -
         raise MigrationError("runtime role is not provisioned")
     if row[0] is not None and _scram_matches(row[0], password):
         return False
-    # Hash on the client so the plaintext never reaches the server log.
     verifier = connection.pgconn.encrypt_password(
         password.encode("ascii"), role.encode("ascii"), algorithm=b"scram-sha-256"
     )
@@ -307,7 +294,6 @@ def _ensure_password(connection: psycopg.Connection, role: str, password: str) -
 
 
 def _scram_matches(verifier: str, password: str) -> bool:
-    """Check a `SCRAM-SHA-256$<iterations>:<salt>$<StoredKey>:<ServerKey>` verifier."""
     method, _, secret = verifier.partition("$")
     if method != "SCRAM-SHA-256":
         return False
@@ -376,7 +362,6 @@ def _grant(connection: psycopg.Connection, schema: str, role: str, tables: froze
         if table in _SELECT_ONLY:
             privileges = "SELECT"
         elif table == _AUTHORITY:
-            # Row locks (FOR SHARE) need UPDATE on one column; the key cannot change.
             privileges = "SELECT, UPDATE (singleton)"
         elif table in _APPEND_ONLY:
             privileges = "SELECT, INSERT"

@@ -1,13 +1,3 @@
-"""Real diagnostics PostgreSQL fixtures on the isolated test DSN; never an ambient database.
-
-Execution records live in their own ``<product schema>_diagnostics`` schema, applied
-from ``postgres_diagnostics.sql``. ``postgres_diagnostics_sandbox`` owns a fresh
-schema and a started pool per test; ``create_diagnostics_schema`` prepares the
-schema the real lifespan opens next to a product sandbox, and
-``diagnostics_database_for`` serves stacks that build the store themselves.
-Register with ``pytest_plugins = ("tests_support.postgres_diagnostics_sandbox",)``.
-"""
-
 from __future__ import annotations
 
 import os
@@ -63,7 +53,6 @@ def _admin_connection(dsn: str) -> Iterator[psycopg.Connection]:
     except (psycopg.Error, OSError, ValueError, TypeError):
         admin = None
     if admin is None:
-        # Outside the except block: do not chain a libpq error containing the DSN.
         pytest.fail("isolated PostgreSQL test database is unreachable", pytrace=False)
     try:
         admin.execute("SET statement_timeout TO 5000")
@@ -74,11 +63,6 @@ def _admin_connection(dsn: str) -> Iterator[psycopg.Connection]:
 
 
 def create_diagnostics_schema(admin: psycopg.Connection, base_schema: str) -> str:
-    """Create ``<base_schema>_diagnostics`` with its DDL once; return its name.
-
-    The DDL runs with the diagnostics schema first on a transaction-local
-    search_path, so an admin session pinned to the product schema keeps its path.
-    """
     schema = base_schema + DIAGNOSTICS_SCHEMA_SUFFIX
     with admin.transaction():
         admin.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(schema)))
@@ -102,11 +86,6 @@ def drop_diagnostics_schema(admin: psycopg.Connection, schema: str) -> None:
 
 @pytest.fixture
 def postgres_diagnostics_sandbox() -> Iterator[DiagnosticsSandbox]:
-    """Own one diagnostics schema and bounded pool per test, with the real DDL.
-
-    The admin connection is independent of the pool and its search_path is the
-    diagnostics schema, so oracles read the same unqualified tables the store writes.
-    """
     dsn = _test_dsn()
     with _admin_connection(dsn) as admin:
         schema = create_diagnostics_schema(admin, "seeon_diag_test_" + uuid4().hex)
@@ -126,11 +105,6 @@ def postgres_diagnostics_sandbox() -> Iterator[DiagnosticsSandbox]:
 
 @pytest.fixture
 def postgres_lifespan_diagnostics_schema(postgres_product_sandbox: ProductSandbox) -> Iterator[str]:
-    """Provision the schema the real lifespan opens beside the product sandbox.
-
-    Migration provision owns this in a deployment; the fixture drops it afterwards
-    because the product sandbox only drops its own schema.
-    """
     admin = postgres_product_sandbox.admin
     schema = create_diagnostics_schema(admin, postgres_product_sandbox.schema)
     try:
@@ -141,7 +115,6 @@ def postgres_lifespan_diagnostics_schema(postgres_product_sandbox: ProductSandbo
 
 @contextmanager
 def diagnostics_database_for(base_schema: str) -> Iterator[PostgresDatabase]:
-    """Serve a started pool on ``<base_schema>_diagnostics``; close and drop it on exit."""
     dsn = _test_dsn()
     with _admin_connection(dsn) as admin:
         schema = create_diagnostics_schema(admin, base_schema)

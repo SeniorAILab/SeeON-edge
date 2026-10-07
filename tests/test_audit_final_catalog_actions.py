@@ -69,7 +69,6 @@ def _reject_audit_inserts(sandbox: ProductSandbox) -> None:
 
 
 def _restore_audit_inserts(sandbox: ProductSandbox, runtime: PostgresAuditRuntime) -> None:
-    # The extra trigger fails the exact trigger contract, so re-verify only after dropping it.
     sandbox.admin.execute("DROP TRIGGER reject_audit_test ON audit_events")
     assert runtime.verify_once()
 
@@ -145,7 +144,6 @@ def _sync_fixture(
 def test_connection_sync_route_commits_canonical_action_and_detail(
     postgres_product_sandbox: ProductSandbox, postgres_audit_runtime: PostgresAuditRuntime
 ) -> None:
-    # Given: an enrolled roster whose sync coordinator shares the product database.
     sandbox = postgres_product_sandbox
     coordinator, _state = _sync_fixture(sandbox)
     app = postgres_api_app(sandbox, postgres_audit_runtime)
@@ -154,10 +152,8 @@ def test_connection_sync_route_commits_canonical_action_and_detail(
         login = client.post("/api/v1/auth/session", json={"username": "admin", "password": "admin"})
         assert login.status_code == 204
 
-        # When: the dashboard requests an explicit roster sync.
         response = client.post("/api/v1/connection/sync-cameras")
 
-    # Then: the route commits exactly the canonical sync action and detail.
     assert response.status_code == 200
     rows = sandbox.admin.execute(
         "SELECT action,target_id,actor_type,auth_mechanism,detail_json FROM audit_events "
@@ -171,14 +167,12 @@ def test_connection_sync_route_commits_canonical_action_and_detail(
 def test_connection_sync_audit_is_one_atomic_operation(
     postgres_product_sandbox: ProductSandbox, postgres_audit_runtime: PostgresAuditRuntime
 ) -> None:
-    # Given: an enrolled roster and a real PostgreSQL rejection at audit INSERT.
     sandbox = postgres_product_sandbox
     runtime = postgres_audit_runtime
     coordinator, state = _sync_fixture(sandbox)
     before = _edge_site(sandbox)
     _reject_audit_inserts(sandbox)
 
-    # When: the sync commits its acceptance and audit in one transaction.
     with pytest.raises(AuditRuntimeUnavailable):
         coordinator.trigger(
             force=True,
@@ -186,11 +180,9 @@ def test_connection_sync_audit_is_one_atomic_operation(
             audit=_audit(runtime, AuditAction.CONNECTION_SYNC, "camera-roster"),
         )
 
-    # Then: the failed audit leaves the sync state untouched.
     assert _edge_site(sandbox) == before
     assert _action_count(sandbox, AuditAction.CONNECTION_SYNC) == 0
 
-    # When: audit inserts are accepted again and the sync repeats.
     _restore_audit_inserts(sandbox, runtime)
     result = coordinator.trigger(
         force=True,
@@ -198,7 +190,6 @@ def test_connection_sync_audit_is_one_atomic_operation(
         audit=_audit(runtime, AuditAction.CONNECTION_SYNC, "camera-roster"),
     )
 
-    # Then: acceptance and its one audit row commit together.
     assert result.status == "synced"
     assert _action_count(sandbox, AuditAction.CONNECTION_SYNC) == 1
     assert state.load().last_client_revision == 1
@@ -208,7 +199,6 @@ def _confirmation_fixture(
     sandbox: ProductSandbox,
 ) -> tuple[TopologyConfirmationStore, TopologyConfirmationPreview, TopologySuccessEnvelope]:
     _enroll(sandbox)
-    # The terminal CAS revalidates these accepted-snapshot versions against the preview.
     sandbox.admin.execute(
         "UPDATE edge_site SET registry_version=12,topology_client_revision=1,"
         "topology_server_revision=7 WHERE id=1"
@@ -233,30 +223,25 @@ def _confirmation_fixture(
 def test_topology_confirmation_audit_rolls_back_terminal_state(
     postgres_product_sandbox: ProductSandbox, postgres_audit_runtime: PostgresAuditRuntime
 ) -> None:
-    # Given: a saved omission preview and a real PostgreSQL rejection at audit INSERT.
     sandbox = postgres_product_sandbox
     runtime = postgres_audit_runtime
     store, preview, terminal = _confirmation_fixture(sandbox)
     _reject_audit_inserts(sandbox)
 
-    # When: the terminal confirmation and its audit share one transaction.
     with pytest.raises(AuditRuntimeUnavailable):
         _audit(runtime, AuditAction.TOPOLOGY_CONFIRM, _SNAPSHOT_ID).apply(
             store, lambda append: store.complete(preview, terminal, after_write=append)
         )
 
-    # Then: the preview stays unconfirmed and no audit row escaped.
     loaded = store.load()
     assert loaded is not None and loaded.confirmed is False
     assert _action_count(sandbox, AuditAction.TOPOLOGY_CONFIRM) == 0
 
-    # When: audit inserts are accepted again and the confirmation repeats.
     _restore_audit_inserts(sandbox, runtime)
     _audit(runtime, AuditAction.TOPOLOGY_CONFIRM, _SNAPSHOT_ID).apply(
         store, lambda append: store.complete(preview, terminal, after_write=append)
     )
 
-    # Then: the terminal state and its one audit row commit together.
     loaded = store.load()
     assert loaded is not None and loaded.confirmed is True
     assert _action_count(sandbox, AuditAction.TOPOLOGY_CONFIRM) == 1
@@ -287,7 +272,6 @@ def _snapshot_artifacts(sandbox: ProductSandbox) -> list[tuple[object, ...]]:
 def test_snapshot_actions_share_projection_transactions(
     postgres_product_sandbox: ProductSandbox, postgres_audit_runtime: PostgresAuditRuntime
 ) -> None:
-    # Given: three accepted events and the native late-snapshot owner.
     sandbox = postgres_product_sandbox
     runtime = postgres_audit_runtime
     outbox = EventOutbox(
@@ -297,7 +281,6 @@ def test_snapshot_actions_share_projection_transactions(
         outbox.accept(_event(edge_event_id), backend_camera_id=None, forward=False)
     projection = PostgresRelayEvidenceProjection(sandbox.database, sandbox.authority)
 
-    # When: an attachment and a disposition each carry their audit into the projection.
     _audit(runtime, AuditAction.RELAY_SNAPSHOT_ATTACHMENT, "snapshot-1").apply(
         projection,
         lambda append: projection.attach_snapshot(
@@ -321,7 +304,6 @@ def test_snapshot_actions_share_projection_transactions(
         ),
     )
 
-    # Then: each fact commits with exactly one audit row.
     committed = [
         ("event-attach", "snapshot-1", "AVAILABLE"),
         ("event-disposition", None, "UNAVAILABLE"),
@@ -330,7 +312,6 @@ def test_snapshot_actions_share_projection_transactions(
     assert _action_count(sandbox, AuditAction.RELAY_SNAPSHOT_ATTACHMENT) == 1
     assert _action_count(sandbox, AuditAction.RELAY_SNAPSHOT_DISPOSITION) == 1
 
-    # When: PostgreSQL rejects the audit INSERT of a further attachment.
     _reject_audit_inserts(sandbox)
     with pytest.raises(AuditRuntimeUnavailable):
         _audit(runtime, AuditAction.RELAY_SNAPSHOT_ATTACHMENT, "snapshot-3").apply(
@@ -346,6 +327,5 @@ def test_snapshot_actions_share_projection_transactions(
             ),
         )
 
-    # Then: the attachment rolled back with its audit row.
     assert _snapshot_artifacts(sandbox) == committed
     assert _action_count(sandbox, AuditAction.RELAY_SNAPSHOT_ATTACHMENT) == 1

@@ -1,11 +1,3 @@
-"""Direct camera-model residue plus the supported static-YAML boundary.
-
-Camera roster validation still belongs to ``CameraRuntimeConfig`` and
-``WorkerConfig`` because pulled, versioned configuration constructs those
-models. ``load_worker_config`` no longer accepts a non-empty static roster; its
-remaining YAML contract is limited to non-mutable local settings.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -91,9 +83,6 @@ def test_camera_runtime_config_defaults_to_opencv_decode_backend() -> None:
     config = CameraRuntimeConfig(**_camera())
 
     assert config.decode_backend is None
-    # Production ingest runs ~30fps (worker/types/temporal_profile.py); the
-    # bed-exit dwell redesign fixed CURRENT_TEMPORAL_PROFILE's previously
-    # wrong 15.0 ingest fps, which this default is sourced from.
     assert config.fps == 30.0
     assert config.inference_rtsp_url == "rtsp://camera.local/trackID=2"
     assert config.main_rtsp_url is None

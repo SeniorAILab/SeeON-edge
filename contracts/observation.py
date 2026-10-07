@@ -4,9 +4,6 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final
 
-# DetectionResult is the documented raw-detection interchange type at the
-# runner/observation-builder boundary. FrameObservation is the normalized
-# per-frame contract used by downstream perception, demo, and api code.
 FALL_LABEL_TEXT: Final = "FALL"
 NORMAL_LABEL_TEXT: Final = "NORMAL"
 
@@ -18,15 +15,6 @@ class BoundingBox:
     x2: int
     y2: int
     confidence: float
-    # Optional mask contour (issue #243): bed ROIs from instance segmentation
-    # or an operator's persisted `bed_zone_polygon` carry the silhouette
-    # polygon for shape-accurate rendering. None for plain detection boxes
-    # (person/fall). x1..y2 stays the source of truth for person-tracker IoU
-    # and remains the containment fallback when no polygon is present; when
-    # a bed carries one, `bed_exit.geometry.containment_ratio` (#219) reads
-    # it as the source of truth for bed containment instead of x1..y2, since
-    # x1..y2 alone is only an axis-aligned bounding box around the polygon
-    # and can measurably overstate a rotated/irregular bed's true area.
     polygon: tuple[tuple[int, int], ...] | None = None
 
 
@@ -45,23 +33,13 @@ Regions = tuple[tuple[BoundingBox, ...], tuple[object, ...]]
 class DetectionResult:
     boxes: tuple[BoundingBox, ...] = field(default_factory=tuple)
     labels: tuple[DetectionLabel, ...] = field(default_factory=tuple)
-    # per-person COCO-17 keypoints; each kpt = (x:int, y:int, conf:float)
     keypoints: tuple[tuple[tuple[int, int, float], ...], ...] = field(default_factory=tuple)
-    # static bed ROIs from a one-shot COCO detection at stream start;
-    # cached once and carried per-frame so the per-frame path stays a single pose pass.
     bed_boxes: tuple[BoundingBox, ...] = field(default_factory=tuple)
     bed_exit_statuses: tuple[object, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True, slots=True)
 class FrameObservation:
-    """Per-frame perception observation payload.
-
-    detections: boxes and labels.
-    poses: per-person COCO-17 keypoints.
-    regions: bed boxes and bed-exit statuses.
-    """
-
     detections: Detections = field(default_factory=lambda: ((), ()))
     poses: tuple[tuple[tuple[int, int, float], ...], ...] = field(default_factory=tuple)
     regions: Regions = field(default_factory=lambda: ((), ()))
@@ -108,8 +86,6 @@ class FrameObservation:
 
 
 class BedRegionCacheState(StrEnum):
-    """Provenance of the bed ROI applied to a frame (dev overlay + ops telemetry)."""
-
     FRESH = "fresh"
     CACHED = "cached"
     EMPTY = "empty"
@@ -118,19 +94,5 @@ class BedRegionCacheState(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class BedRegionDebugSnapshot:
-    """Per-frame bed-ROI cache provenance for the dev overlay and ops telemetry.
-
-    ``age_frames`` and ``reset_reason`` (frame-index age of the cached ROI,
-    and why a per-frame reset fired) were removed in #208 along with the
-    frame-index mechanisms that produced them. Both assumed ``frame_index``
-    was monotonic for a camera's whole lifetime; it is only monotonic within
-    one decode session, so both went silently wrong across a reconnect
-    (``age_frames`` could go negative before being clamped to a
-    misleadingly-confident 0; ``reset_reason`` fired on every reconnect, not
-    just genuine discontinuities). Nothing downstream reads either field.
-    ``scheduled_empty_bed_cycles >= 2`` is now the sole cache-invalidation
-    signal; see ``SceneState.resolve_bed_regions``.
-    """
-
     source: BedRegionCacheState
     empty_cycles: int = 0

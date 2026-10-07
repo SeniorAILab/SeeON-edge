@@ -1,5 +1,3 @@
-"""Build one immutable TensorRT engine after model provisioning."""
-
 from __future__ import annotations
 
 import argparse
@@ -241,13 +239,8 @@ def build_engine(
             batch_size=batch_size,
         ):
             return existing
-        # A changed deployment batch is a cache miss. Rebuild it before any
-        # source can activate rather than booting against a stale engine.
     engine.parent.mkdir(parents=True, exist_ok=True)
     engine.unlink(missing_ok=True)
-    # nvinfer writes its engine beside the ONNX, and the deployment mounts the
-    # model directory read-only, so build against a staged copy in the writable
-    # cache. The identity still hashes the provisioned model, not the copy.
     build_dir = engine.parent / "nvinfer-build"
     build_dir.mkdir(parents=True, exist_ok=True)
     build_onnx = build_dir / onnx.name
@@ -269,10 +262,6 @@ def build_engine(
             f"{result.stderr.strip() or result.stdout.strip() or result.returncode}"
         )
     if not engine.is_file():
-        # When nvinfer builds rather than deserialises, it writes the engine
-        # beside the ONNX under its own name and ignores `model-engine-file`.
-        # That file is the artefact that serves - verified on hardware - so
-        # adopt it into the configured path instead of failing.
         produced = build_onnx.with_name(f"{build_onnx.name}_b{batch_size}_gpu0_fp16.engine")
         if not produced.is_file():
             raise EngineBuildError(

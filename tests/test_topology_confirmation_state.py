@@ -1,5 +1,3 @@
-"""Native confirmation persistence, including the post-network CAS boundary."""
-
 from __future__ import annotations
 
 import traceback
@@ -51,8 +49,6 @@ def sandbox(postgres_product_sandbox):
             "enrollment_generation": PRINCIPAL.enrollment_generation,
         }
     )
-    # A real accepted snapshot whose client/server/registry versions match the
-    # preview. These fields are revalidated by the terminal CAS, not mocked.
     sandbox.admin.execute(
         "UPDATE edge_site SET registry_version=12,topology_client_revision=4,"
         "topology_server_revision=7 WHERE id=1"
@@ -245,7 +241,6 @@ def test_borrowed_completion_does_not_commit_before_outer_owner(sandbox):
 )
 def test_post_network_stale_facts_reject_before_completion_hook(sandbox, assignment):
     store, preview = _saved(sandbox)
-    # Trusted literal test cases, never request-supplied SQL.
     sandbox.admin.execute("UPDATE edge_site SET " + assignment + " WHERE id=1")
     before, calls = _row(sandbox), []
     with pytest.raises(TopologyConfirmationStateConflictError):

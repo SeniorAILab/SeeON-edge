@@ -1,5 +1,3 @@
-"""Serialized Smart Record extension policy for one camera."""
-
 from __future__ import annotations
 
 from collections import deque
@@ -43,8 +41,6 @@ class ClipSealed:
 
 
 class DuplicateRecordingSealedError(RuntimeError):
-    """The media plane delivered a completion callback more than once."""
-
     def __init__(self, session_id: int) -> None:
         super().__init__(f"recording session {session_id} was sealed more than once")
         self.session_id = session_id
@@ -71,8 +67,6 @@ class _Recording:
 
 
 class SmartRecordActor:
-    """Own the delayed-stop policy that gives Smart Record its extension semantics."""
-
     def __init__(
         self,
         *,
@@ -132,7 +126,6 @@ class SmartRecordActor:
             return self._smart_record_start_refused_total
 
     def admit(self, event_ref: str, detected_at: str) -> None:
-        """Accept an admitted alert without ever issuing an overlapping start."""
         if not event_ref:
             raise ValueError("event_ref must not be empty")
         if not detected_at:
@@ -151,7 +144,6 @@ class SmartRecordActor:
                 self._start_pending()
 
     def tick(self) -> None:
-        """Retry refused starts and issue the single early-stop command when due."""
         with self._lock:
             self._next_sequence()
             if self._state is SmartRecordState.IDLE and self._pending:
@@ -163,22 +155,16 @@ class SmartRecordActor:
             if self._clock() < recording.stop_due:
                 return
             if recording.stop_due >= recording.hard_deadline:
-                # The clip already ends at the window the plane was given, so
-                # there is nothing to cut short: let it seal itself and mark the
-                # clip as bounded by that window.
                 recording.boundary = "extension_bounded"
                 return
             self._state = SmartRecordState.STOPPING
             try:
                 self._media_plane.stop_recording(self._camera_id, recording.session_id)
             except EarlyStopUnsupported:
-                # This plane cannot cut a clip short; it seals at the duration
-                # given at start, which still bounds the clip.
                 self._state = SmartRecordState.RECORDING
                 recording.boundary = "extension_bounded"
 
     def on_sealed(self, info: RecordingInfo) -> None:
-        """Handle a media-plane completion callback exactly once by session id."""
         with self._lock:
             self._next_sequence()
             if info.camera_id != self._camera_id:
@@ -191,9 +177,6 @@ class SmartRecordActor:
             recording = self._require_recording()
             if info.session_id != recording.session_id:
                 raise ValueError(f"unexpected recording session {info.session_id}")
-            # A clip seals either because the actor asked (STOPPING) or because
-            # it reached the duration given at start. The plane owns that
-            # duration, so natural completion is the normal path, not an error.
             if self._state is SmartRecordState.RECORDING:
                 recording.boundary = "extension_bounded"
             self._state = SmartRecordState.FINALIZING

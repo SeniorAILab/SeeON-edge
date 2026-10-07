@@ -44,8 +44,6 @@ def make_app(
     postgres_product_sandbox: ProductSandbox,
     postgres_audit_runtime: PostgresAuditRuntime,
 ) -> Callable[[], FastAPI]:
-    """Each call is a new app on the one sandbox, with receipts for the clips written so far."""
-
     def make() -> FastAPI:
         app = postgres_api_app(postgres_product_sandbox, postgres_audit_runtime)
         add_accepted_media_receipts(app)
@@ -97,7 +95,6 @@ def _write_clip(
 
 
 def _write_playback(video_path: Path, content: bytes, *, valid_sidecar: bool = True) -> None:
-    """Write a rendition bundle: versioned file + the single attestation manifest."""
     digest = hashlib.sha256(content).hexdigest()
     playback = video_path.with_name(f"clip.playback-h264.{digest[:16]}.mp4")
     playback.write_bytes(content)
@@ -375,24 +372,11 @@ def test_nested_relative_video_path_cannot_escape_physical_store(
 def test_local_evidence_plays_when_no_backend_receipt_exists(
     clip_env: Path, make_app: Callable[[], FastAPI]
 ) -> None:
-    """An operator must be able to watch what this box recorded.
-
-    A receipt is only committed after a successful upstream export, which needs
-    clip export enabled (Hub-owned config, off by default) and a Hub-issued
-    camera id. Refusing playback until one exists made every clip on this
-    deployment permanently unplayable: verified HEVC on disk, thumbnail and
-    manifest present, listed as video_available, and the browser answering
-    "영상을 재생하지 못했습니다" every time.
-    """
     clip_id = "clip-no-receipt"
     _write_clip(clip_env, Path(), clip_id, f"clips/{clip_id}/clip.mp4")
 
     with TestClient(make_app()) as client:
         _login(client)
-        # A deployment where no receipt was ever committed, because clip
-        # export never ran. The suite otherwise injects accepted receipts for
-        # every clip, which is exactly why this regression reached production
-        # unnoticed.
         client.app.state.artifact_receipt_store = MediaReceiptStore()
         response = client.get(f"/api/v1/clips/{clip_id}/video")
 
@@ -406,7 +390,6 @@ def test_a_receipt_that_was_refused_still_blocks_playback(
     make_app: Callable[[], FastAPI],
     with_playback: bool,
 ) -> None:
-    """Dropping the existence requirement must not admit a refused artifact."""
     clip_id = f"clip-refused-receipt-{with_playback}"
     video = _write_clip(clip_env, Path(), clip_id, f"clips/{clip_id}/clip.mp4")
     if with_playback:
@@ -434,7 +417,6 @@ def test_a_receipt_that_was_refused_still_blocks_playback(
 def test_bytes_that_disagree_with_their_receipt_are_still_refused(
     clip_env: Path, make_app: Callable[[], FastAPI]
 ) -> None:
-    """The integrity guarantee is the part worth keeping, and it stays strict."""
     clip_id = "clip-tampered"
     _write_clip(clip_env, Path(), clip_id, f"clips/{clip_id}/clip.mp4")
 
@@ -452,8 +434,6 @@ def test_bytes_that_disagree_with_their_receipt_are_still_refused(
 
 
 class _CountingHandle:
-    """Wraps a clip descriptor and counts the reads served through it."""
-
     def __init__(self, inner: BinaryIO) -> None:
         self._inner = inner
         self.reads = 0
@@ -497,7 +477,6 @@ def test_head_video_answers_with_the_get_header_section_and_no_body(
     clip_env: Path,
     make_app: Callable[[], FastAPI],
 ) -> None:
-    """A player probes the clip before it opens one; HEAD must not 404 (#452)."""
     clip_id = "clip-head-contract"
     _write_clip(clip_env, Path(), clip_id, f"clips/{clip_id}/clip.mp4")
 
@@ -521,7 +500,6 @@ def test_head_video_reads_no_clip_bytes_and_releases_the_descriptor(
     make_app: Callable[[], FastAPI],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A HEAD that streamed the file would cost exactly what it exists to avoid."""
     clip_id = "clip-head-cheap"
     _write_clip(clip_env, Path(), clip_id, f"clips/{clip_id}/clip.mp4")
     handles = _count_video_reads(monkeypatch)

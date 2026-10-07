@@ -1,5 +1,3 @@
-"""Product incident, snapshot, audit and delivery obligation in one PostgreSQL commit."""
-
 from __future__ import annotations
 
 import base64
@@ -37,16 +35,15 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _log_publication_accounting_failure() -> None:
-    # Deliberately exclude exception details and traceback from operator logs.
     _LOGGER.error("event audit publication accounting failed after owned failure")
 
 
 class EventIdentityConflict(RuntimeError):
-    """An already accepted event cannot be rebound to different content."""
+    ...
 
 
 class OutboxCapacityExceeded(RuntimeError):
-    """No acceptance occurred; the producer must retain its durable copy."""
+    ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,7 +128,6 @@ class EventOutbox:
         def admit(connection: psycopg.Connection) -> AcceptedEvent:
             nonlocal publication
             require_authority(connection, self.authority)
-            # Serialize quota reservation and duplicate decisions, not SDK callbacks.
             connection.execute(
                 "SELECT pg_advisory_xact_lock('event_outbox'::regclass::oid::bigint)"
             )
@@ -140,8 +136,6 @@ class EventOutbox:
                 (event.edge_event_id,),
             ).fetchone()
             if existing is not None:
-                # Mapping/config may change after acceptance, but cannot alter the
-                # already committed destination or invent a second delivery.
                 if existing[0] != digest:
                     raise EventIdentityConflict("event ID conflicts with accepted content")
                 return AcceptedEvent(event.edge_event_id, True, existing[1])
@@ -227,8 +221,6 @@ class EventOutbox:
                 raise failure from None
             return AcceptedEvent(event.edge_event_id, False, state)
 
-        # There is no network send, response construction, or retry in this transaction.
-        # The value cannot escape a failed/unknown COMMIT or failed pool release.
         try:
             accepted = self.database.transact(admit)
         except BaseException as error:
@@ -236,14 +228,9 @@ class EventOutbox:
                 try:
                     self.audit_runtime.publish_failed(publication, error)
                 except InvalidAuditPublication:
-                    # Do not steal another operation's token, mask cancellation
-                    # or lose the original indeterminate-COMMIT latch.
                     self.audit_runtime.record_failure(error)
                     _log_publication_accounting_failure()
             raise
         if publication is not None:
-            # A newer failure may invalidate readiness without invalidating this
-            # known committed receipt. Never project readiness from its response.
             self.audit_runtime.publish_committed(publication)
-        # An exact duplicate has no new mutation or audit publication.
         return accepted

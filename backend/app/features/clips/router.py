@@ -1,5 +1,3 @@
-"""Evidence clip playback and audit routes."""
-
 from __future__ import annotations
 
 from typing import Annotated
@@ -133,12 +131,6 @@ def clip_artifacts(
     )
 
 
-# HEAD answers with the GET header section and no body (issue #452): a
-# player probes content-type/length/accept-ranges before it opens a clip,
-# and FastAPI does not synthesise HEAD from GET. One endpoint serves both
-# so the headers, the receipt gate, the range handling and the audit trail
-# cannot drift between the methods; OpenedFileResponse suppresses the file
-# reads for HEAD, so the probe stays cheap.
 @router.api_route("/clips/{clip_id}/video", methods=HEAD_METHODS)
 def clip_video(
     clip_id: str,
@@ -155,15 +147,6 @@ def clip_video(
         )
     receipt_store = _app_state_value(request, "artifact_receipt_store")
     receipt = receipt_store.get(manifest.clip_id) if receipt_store is not None else None
-    # A receipt is proof the served bytes are the recorded ones, so when one
-    # exists it is enforced below without exception. Its ABSENCE is not
-    # evidence of tampering: a receipt is only committed after a successful
-    # upstream export, which needs clip export enabled (Hub-owned config,
-    # off by default) and a Hub-issued camera id. Requiring one before an
-    # operator may review local footage made every clip on this deployment
-    # permanently unplayable -- verified media on disk, thumbnail and all,
-    # answering "영상을 재생하지 못했습니다" forever. Evidence a carer cannot
-    # watch is evidence the system did not capture.
     if receipt is not None and not receipt.accepted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -227,10 +210,6 @@ def clip_thumbnail(
             detail="clip thumbnail not found",
         ) from exc
     append_governed(request, actor_id=actor, action=AuditAction.CLIP_THUMBNAIL, target_id=clip_id)
-    # A thumbnail's Content-Length is only knowable from the bytes themselves
-    # (they arrive through one bounded, containment-checked read), so HEAD runs
-    # the identical path and drops the body last -- headers stay byte-identical
-    # to the GET, and the read stays capped at MAX_THUMBNAIL_BYTES.
     return drop_body_for_head(
         request,
         Response(

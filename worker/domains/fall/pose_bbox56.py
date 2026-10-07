@@ -33,8 +33,6 @@ COCO17_KEYPOINT_ORDER: Final = (
 )
 POSE_BBOX56_DIM: Final = 56
 POSE_BBOX56_CONFIDENCE_GATE: Final = 0.5
-# Contract vocabulary lives in `contracts`; this re-export keeps the domain's
-# public surface unchanged for its existing importers.
 POSE_BBOX56_PREPROCESSING_IDENTITY: Final = _CONTRACT_PREPROCESSING_IDENTITY
 
 Keypoint: TypeAlias = tuple[float, float, float]
@@ -44,8 +42,6 @@ PoseBbox56Row: TypeAlias = tuple[float, ...]
 
 @dataclass(frozen=True, slots=True)
 class PoseBbox56Track:
-    """One pose-head observation, deliberately excluding pixel data."""
-
     track_id: str | int
     keypoints: Sequence[Sequence[float]]
     bbox: Sequence[float] | None
@@ -57,7 +53,6 @@ def pose_bbox56_row(
     frame_width: int,
     frame_height: int,
 ) -> PoseBbox56Row:
-    """Encode the G001 COCO-17 + pose-head box feature row as IEEE float32."""
     zero = _zero_row()
     if frame_width <= 0 or frame_height <= 0 or bbox is None:
         return zero
@@ -111,7 +106,6 @@ def pose_bbox56_row(
 def pose_bbox56_tracks(
     tracks: Iterable[PoseBbox56Track], frame_width: int, frame_height: int
 ) -> tuple[tuple[str | int, PoseBbox56Row], ...]:
-    """Produce deterministic rows sorted by the stable track identifier."""
     ordered = sorted(tracks, key=lambda track: track.track_id)
     return tuple(
         (track.track_id, pose_bbox56_row(track.keypoints, track.bbox, frame_width, frame_height))
@@ -127,7 +121,6 @@ def native_pose_bbox56_row(
     *,
     box_source: str,
 ) -> PoseBbox56Row:
-    """Native boundary equivalent; only a pose-head box is authoritative."""
     if box_source != "pose":
         return _zero_row()
     return pose_bbox56_row(keypoints, bbox, frame_width, frame_height)

@@ -1,5 +1,3 @@
-"""Atomic publication of browser playback rendition bundles."""
-
 from __future__ import annotations
 
 import hashlib
@@ -25,7 +23,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class _ManifestPublicationUncertain(OSError):
-    """The manifest replacement may already be visible on durable storage."""
+    ...
 
 
 def write_playback_rendition(
@@ -35,7 +33,6 @@ def write_playback_rendition(
     timeout_s: float = 120.0,
     read_timing: Callable[[Path], VideoTiming] | None = None,
 ) -> Path | None:
-    """Publish a digest-addressed rendition and its single attestation pointer."""
     if probe_video_codec(clip_path, run) in {"avc1", "h264"}:
         return None
     timing_reader = read_video_timing if read_timing is None else read_timing

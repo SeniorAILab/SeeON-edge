@@ -92,11 +92,6 @@ def _standing_pose(track_id: int = PERSON_ID, bed_id: int = 0) -> FrameBedPoseFe
 
 
 def test_own_bed_exit_emits_once_after_grace_period() -> None:
-    """A track must arm (posture-confirmed in-bed dwell) before an outside
-    dwell can ever fire; `outside_dwell_sec=3.0` keeps two non-firing
-    outside frames before the third crosses the threshold, mirroring the
-    old frame-count "grace period" shape under the new PTS-dwell model."""
-    # Given
     monitor = _monitor(grace_frames=2, outside_dwell_sec=3.0)
     assert (
         monitor.update(
@@ -122,7 +117,6 @@ def test_own_bed_exit_emits_once_after_grace_period() -> None:
         == ()
     )
 
-    # When
     before_grace = tuple(
         monitor.update(
             _input(
@@ -151,7 +145,6 @@ def test_own_bed_exit_emits_once_after_grace_period() -> None:
         )
     )
 
-    # Then
     assert before_grace == ((), ())
     assert onset == (
         BusinessEvent(
@@ -170,18 +163,12 @@ def test_own_bed_exit_emits_once_after_grace_period() -> None:
 
 
 def test_dwell_outcome_is_identical_at_15fps_and_30fps() -> None:
-    """Dwell is measured via `input_value.time_sec` (PTS seconds), never frame
-    counts, so the same real-time scenario must produce the same outcome
-    whether frames arrive at 15fps or 30fps -- twice as many frames covering
-    the same wall-clock span at 30fps must not double-count dwell, and half
-    as many must not starve it either."""
-
     def _run(step_sec: float) -> tuple[BusinessEvent, ...]:
         monitor = _monitor(in_bed_dwell_sec=3.0, outside_dwell_sec=2.0)
         events: list[BusinessEvent] = []
         time_sec = 0.0
         frame_index = 0
-        while time_sec <= 3.2:  # > in_bed_dwell_sec of real time, in bed
+        while time_sec <= 3.2:
             events.extend(
                 monitor.update(
                     _input(
@@ -197,7 +184,7 @@ def test_dwell_outcome_is_identical_at_15fps_and_30fps() -> None:
             time_sec += step_sec
             frame_index += 1
         outside_start = time_sec
-        while time_sec - outside_start <= 2.2:  # > outside_dwell_sec, outside
+        while time_sec - outside_start <= 2.2:
             events.extend(
                 monitor.update(
                     _input(
@@ -225,20 +212,11 @@ def test_dwell_outcome_is_identical_at_15fps_and_30fps() -> None:
 
 
 def test_standing_beside_bed_for_ten_seconds_then_walking_away_never_emits() -> None:
-    """Review of real bed-exit clips found caregiver activity, not a genuine
-    exit, in 3 of 6 cases: a standing caregiver's bbox easily reaches
-    containment >= min_containment while they lean over the bed. `IN_BED_A`
-    fully contains against `BED_A` (own_ratio 1.0), so geometry alone would
-    arm here -- but `standing()`'s hip_depth sits below
-    `_MIN_IN_BED_HIP_DEPTH`, so `posture_confirms_in_bed` is never true and
-    `in_bed_dwell_sec` never accumulates. Ten seconds of standing overlap
-    (more than 3x `in_bed_dwell_sec`) must never arm the track, and walking
-    away afterward must not emit either, since it was never armed."""
     monitor = _monitor(in_bed_dwell_sec=3.0, outside_dwell_sec=2.0)
     events: list[BusinessEvent] = []
     time_sec = 0.0
     frame_index = 0
-    while time_sec <= 10.0:  # far past in_bed_dwell_sec, standing at the bed
+    while time_sec <= 10.0:
         events.extend(
             monitor.update(
                 _input(
@@ -254,7 +232,7 @@ def test_standing_beside_bed_for_ten_seconds_then_walking_away_never_emits() -> 
         time_sec += 1.0 / 15.0
         frame_index += 1
     walk_away_start = time_sec
-    while time_sec - walk_away_start <= 2.2:  # walks away, past outside_dwell_sec
+    while time_sec - walk_away_start <= 2.2:
         events.extend(
             monitor.update(
                 _input(
@@ -273,17 +251,6 @@ def test_standing_beside_bed_for_ten_seconds_then_walking_away_never_emits() -> 
 
 
 def test_release_reopens_a_failed_bed_exit_for_one_retry() -> None:
-    """`release_onset` reopens episode bookkeeping only -- not the detector's
-    own arm latch (hysteresis, addendum #1).
-
-    Supersedes `test_release_reopens_a_failed_stale_exit_after_the_track_
-    reassociates`: that test's premise -- a vanishing track (empty
-    `person_boxes`/`track_ids`) "failing" a bed-exit onset -- is now
-    architecturally impossible, since absence never emits under the dwell
-    model. The retry scenario that still makes sense is a downstream
-    failure after a genuine, armed exit: the retry must still require a
-    fresh, positively-observed in-bed dwell before it can re-fire.
-    """
     monitor = _monitor(grace_frames=1)
     assert (
         monitor.update(
@@ -355,7 +322,6 @@ def test_release_reopens_a_failed_bed_exit_for_one_retry() -> None:
 
 
 def test_cross_bed_movement_never_emits_or_reassigns() -> None:
-    # Given
     monitor = _monitor(grace_frames=1)
     _ = monitor.update(
         _input(
@@ -366,7 +332,6 @@ def test_cross_bed_movement_never_emits_or_reassigns() -> None:
         )
     )
 
-    # When
     outputs = tuple(
         monitor.update(
             _input(
@@ -379,7 +344,6 @@ def test_cross_bed_movement_never_emits_or_reassigns() -> None:
         for frame_index in range(1, 5)
     )
 
-    # Then
     assert outputs == ((), (), (), ())
     assert monitor.last_debug_snapshot is not None
     assert tuple(status.occupancy for status in monitor.last_debug_snapshot.statuses) == (
@@ -389,24 +353,6 @@ def test_cross_bed_movement_never_emits_or_reassigns() -> None:
 
 
 def test_expired_cached_roi_does_not_advance_grace_or_emit() -> None:
-    """An expired ROI must neither emit nor permanently wedge the camera.
-
-    The name says only the first half. The second half is the one that matters
-    more in a ward: an expiry must not leave the camera in a state where real
-    bed exits stop alerting. So this asserts both directions --
-
-    * while the cached ROI is ``EXPIRED``, grace does not advance and nothing
-      is emitted (false positives), and
-    * once a fresh ROI returns, a genuine bed exit still emits after grace
-      (false negatives).
-
-    The original repository split these across
-    ``test_expired_cached_roi_cannot_fabricate_bed_exit`` and
-    ``test_expired_cached_roi_cannot_suppress_fresh_bed_exit``. Both properties
-    live here now; auditing this file by test name alone will miss the recovery
-    half.
-    """
-    # Given
     monitor = _monitor(grace_frames=2, outside_dwell_sec=3.0)
     _ = monitor.update(
         _input(
@@ -416,11 +362,6 @@ def test_expired_cached_roi_does_not_advance_grace_or_emit() -> None:
             frame_index=0,
         )
     )
-    # Arms at t=1.0 (dt=1.0 >= in_bed_dwell_sec=1.0). `update()` returns
-    # early for an unusable region *before* touching assignment state at
-    # all (worker/domains/bed_exit/detector.py:222), so the dwell clock
-    # freezes at this frame's `last_time_sec` for the whole EXPIRED run
-    # below and only resumes spanning the gap once FRESH returns.
     _ = monitor.update(
         _input(
             person_boxes=(IN_BED_A,),
@@ -431,7 +372,6 @@ def test_expired_cached_roi_does_not_advance_grace_or_emit() -> None:
         )
     )
 
-    # When
     expired_outputs = tuple(
         monitor.update(
             _input(
@@ -457,14 +397,12 @@ def test_expired_cached_roi_does_not_advance_grace_or_emit() -> None:
         for frame_index, time_sec in ((6, 1.5), (7, 2.0), (8, 4.5))
     )
 
-    # Then
     assert expired_outputs == ((), (), (), ())
     assert fresh_outputs[:2] == ((), ())
     assert len(fresh_outputs[2]) == 1
 
 
 def test_missing_bed_roi_produces_zero_alerts_and_preserves_assignment() -> None:
-    # Given
     monitor = _monitor(grace_frames=0)
     _ = monitor.update(
         _input(
@@ -474,7 +412,6 @@ def test_missing_bed_roi_produces_zero_alerts_and_preserves_assignment() -> None
             frame_index=0,
         )
     )
-    # Arms at t=1.0 (dt=1.0 >= in_bed_dwell_sec=1.0).
     _ = monitor.update(
         _input(
             person_boxes=(IN_BED_A,),
@@ -485,7 +422,6 @@ def test_missing_bed_roi_produces_zero_alerts_and_preserves_assignment() -> None
         )
     )
 
-    # When
     missing_roi = monitor.update(
         _input(
             person_boxes=(OUTSIDE_BEDS,),
@@ -504,7 +440,6 @@ def test_missing_bed_roi_produces_zero_alerts_and_preserves_assignment() -> None
         )
     )
 
-    # Then
     assert missing_roi == ()
     assert len(fresh_roi) == 1
     assert monitor.last_debug_snapshot is not None
@@ -512,30 +447,17 @@ def test_missing_bed_roi_produces_zero_alerts_and_preserves_assignment() -> None
 
 
 def test_early_return_reports_zero_shadow_snapshots_as_authoritative() -> None:
-    """bed_exit has no shadow decision path (the shadow state machine that
-    used to record separate "shadow" rows -- including a
-    ``bed-polygon-invalid`` row -- was deleted entirely, see
-    worker/domains/bed_exit/detector.py's ``last_shadow_trace_count``
-    docstring). Every trace snapshot this monitor produces is authoritative,
-    so the count must always read zero -- including on the frame where the
-    bed region itself is unusable and ``update()`` returns early. A stale
-    nonzero shadow count here would mislabel that single "bed unavailable"
-    row as a shadow row, which the runbook tells operators to ignore."""
     from worker.pipeline.decision import EventAggregator
     from worker.pipeline.decision.incident_manager import IncidentManager
 
     monitor = _monitor()
     person = BoundingBox(10, 10, 30, 40, 0.9)
 
-    # An ordinary contained frame first, to prove the count is zero on the
-    # common path too, not only vacuously on the very first call.
     monitor.update(
         _input(person_boxes=(person,), bed_boxes=(BED_A,), track_ids=(1,), frame_index=0)
     )
     assert monitor.last_shadow_trace_count == 0
 
-    # Frame with no bed boxes: early return. Must still report zero, or the
-    # single authoritative unavailability row would be labelled shadow.
     monitor.update(_input(person_boxes=(person,), bed_boxes=(), track_ids=(1,), frame_index=1))
     assert monitor.last_shadow_trace_count == 0
     assert len(monitor.last_trace_snapshots) == 1
@@ -546,12 +468,6 @@ def test_early_return_reports_zero_shadow_snapshots_as_authoritative() -> None:
 
 
 def _drive_to_onset(monitor: bed_exit.BedExitMonitor) -> tuple[BusinessEvent, ...]:
-    """Assign, arm via a posture-confirmed in-bed dwell, then exit.
-
-    Matches `_monitor()`'s default `in_bed_dwell_sec=outside_dwell_sec=1.0`:
-    frame 0 assigns, frame 1 (1s later, lying/sitting posture) arms, frame 2
-    (another 1s later, outside) fires exactly one event.
-    """
     monitor.update(
         _input(person_boxes=(IN_BED_A,), bed_boxes=(BED_A,), track_ids=(PERSON_ID,), frame_index=0)
     )
@@ -577,12 +493,6 @@ def _authoritative_rows(monitor: bed_exit.BedExitMonitor) -> tuple[DecisionTrace
 
 
 def test_onset_repeat_after_exit_is_explained_by_hysteresis_not_silent() -> None:
-    """TC3-02 (superseded): firing an exit clears the armed latch (hysteresis,
-    addendum #1) -- the very next frame at the same outside position can
-    never recompute a second trigger without a fresh, positively-observed
-    in-bed dwell, so it never even reaches the episode authority. The row
-    must still carry triggered=False and name the hysteresis reason
-    (outside-not-armed), not read as a silently dropped repeat."""
     monitor = _monitor(grace_frames=2)
     onset = _drive_to_onset(monitor)
     assert len(onset) == 1
@@ -603,9 +513,6 @@ def test_onset_repeat_after_exit_is_explained_by_hysteresis_not_silent() -> None
 
 
 def test_onset_outside_night_window_is_an_explicit_non_event() -> None:
-    """TC3-03: with the clock outside the internal NightWindow the monitor
-    computes the onset but emits nothing. The row must say
-    outside-detection-window with triggered=False."""
     monitor = _monitor(grace_frames=2)
     monitor._clock = _clock_at(hour=12)
     onset = _drive_to_onset(monitor)

@@ -25,34 +25,12 @@ from worker.types.trace import DecisionTraceReason
 
 _LOGGER = logging.getLogger(__name__)
 
-# Anti-occlusion guard before trusting posture fields (ported from the
-# deleted shadow state machine, worker/domains/bed_exit/state_machine.py,
-# which measured this threshold against real camera views).
 _MIN_OBSERVABILITY = 0.35
 
-# hip_depth sign/magnitude convention measured by the deleted shadow state
-# machine: positive = lying/sitting weight on the mattress (IN_BED +0.257,
-# SITTING_UP +0.236, EDGE_SITTING +0.043); negative = upright/standing
-# (OUT_OF_BED -0.289). 0.10 sits strictly between EDGE_SITTING and
-# SITTING_UP -- rim-perched is excluded (the state machine treated
-# EDGE_SITTING as exit-eligible, never arming), genuine lying/sitting is
-# included, and a standing caregiver's negative hip_depth is well clear of
-# either side. torso_angle is NOT used: the deleted state machine's own
-# measurements showed it reads ~pi/2 for every posture and does not
-# discriminate.
 _MIN_IN_BED_HIP_DEPTH = 0.10
 
 
 class BedExitScoringRecorder(Protocol):
-    """Structural view of ``WorkerDiagnostics.record_bed_exit_scoring()``.
-
-    Kept narrow for the same layering reason as
-    ``worker/pipeline/analytics/composite.py``'s ``BedRegionRecorder``
-    (issue #238): the domain layer depends on this shape instead of
-    importing ``worker.runtime.telemetry.runtime_diagnostics.WorkerDiagnostics``
-    directly.
-    """
-
     def record_bed_exit_scoring(
         self,
         camera_id: str,
@@ -78,22 +56,10 @@ class _Assignment:
         self.bed_id: int | None = None
         self.candidate_bed_id: int | None = None
         self.candidate_frames: int = 0
-        # One-way-per-cycle latch: only a continuous, posture-confirmed,
-        # spatially-contained dwell in this bed sets it True (arms an exit).
-        # Cleared only by firing an exit or by track loss -- never by a mere
-        # dip below dwell -- so a resident must fully re-earn "was in bed"
-        # before the same track can exit again (hysteresis; prevents
-        # oscillating containment from re-firing, issue addendum #1).
         self.in_bed_dwell_sec: float = 0.0
         self.outside_dwell_sec: float = 0.0
         self.armed: bool = False
         self.last_time_sec: float | None = None
-        # This track's most recently observed box, updated every live frame.
-        # Used only to spatially gate the outside-dwell hand-off: a successor
-        # track must actually overlap where this one was last seen, so an
-        # unrelated body elsewhere (e.g. a caregiver at the door) can never
-        # inherit this assignment's outside-dwell progress just by being the
-        # only other unclaimed live track in frame.
         self.last_box: BoundingBox | None = None
 
     def update_candidate(self, bed_id: int | None) -> None:
@@ -109,19 +75,6 @@ class _Assignment:
 
 
 class BedExitMonitor:
-    """Interpret numeric observations with camera-local bed assignment state.
-
-    Exit requires positive evidence, never absence: a track must be observed
-    lying/sitting in its own bed for ``config.in_bed_dwell_sec`` (posture-
-    confirmed via pose keypoints, not bbox containment alone -- a standing
-    caregiver's bbox can reach containment without ever lying down) before
-    it is armed, and then observed outside that bed's polygon continuously
-    for ``config.outside_dwell_sec`` on live frames before firing. A track
-    disappearing (occlusion, tracker drop, frame edge) never emits by
-    itself; dwell is measured via ``DecisionInput.time_sec`` (PTS), never
-    frame counts, so behavior is invariant to ingest fps.
-    """
-
     def __init__(
         self,
         *,
@@ -158,30 +111,14 @@ class BedExitMonitor:
         self._lost_track_ids: list[int] = []
         self.last_debug_snapshot: BedExitDebugSnapshot | None = None
         self.last_trace_snapshots: tuple[DecisionTraceSnapshot, ...] = ()
-        # bed_exit has no shadow decision path (the shadow state machine was
-        # deleted: an equally-bad absence bug, and this containment path now
-        # carries the posture gate directly). Always zero -- generic infra
-        # (worker/interfaces/decision.py's `ShadowTraceProvider`, consumed by
-        # worker/pipeline/decision/event_aggregator.py) still duck-types this
-        # attribute, so it must keep existing and truthfully report "no
-        # shadow path" rather than being removed.
         self.last_shadow_trace_count: int = 0
         self._scoring_recorder = scoring_recorder
-        # Cumulative-since-boot, matching `StageTimingAccumulator.max_sec` and
-        # `BedRegionCacheCounterSnapshot`'s precedent elsewhere in this
-        # codebase -- never reset per `RuntimeStatusSender` tick. Distinguishes
-        # (b) "never scored inside the polygon" from (c) "scored inside, but
-        # the exit counter never crossed the grace threshold" when bed_exit
-        # fires zero events overnight (issue #238); #224's `BedRegionDiagnostics`
-        # only covers whether the region itself was usable, not what this
-        # monitor did with it once it was.
         self._max_containment_observed: float = 0.0
         self._grace_positive_transitions: int = 0
         self._assignments_made: int = 0
 
     @property
     def track_id_switch_absorbed_total(self) -> int:
-        """Re-associations the episode authority absorbed instead of re-alerting."""
         return self._episodes.track_id_switch_absorbed_total
 
     @property
@@ -192,11 +129,9 @@ class BedExitMonitor:
         self._night_window = night_window
 
     def release_onset(self, event: BusinessEvent) -> None:
-        """Reopen only the exact bed-exit onset that failed durable staging."""
         self._episodes.release(event)
 
     def coast(self, *, frame_index: int | None = None) -> tuple[BusinessEvent, ...]:
-        """Hold assignment/latch state when no person inference was made."""
         self._latch.coast()
         freshness = self._latch.status_snapshot
         previous = self.last_debug_snapshot
@@ -247,8 +182,6 @@ class BedExitMonitor:
                     },
                 ),
             )
-            # No shadow path exists at all: every snapshot here is
-            # authoritative, so the trailing-shadow count must be zero.
             self.last_shadow_trace_count = 0
             self.last_debug_snapshot = BedExitDebugSnapshot(
                 frame_index=input_value.frame_index,
@@ -262,14 +195,6 @@ class BedExitMonitor:
 
         frame = self._update_frame(input_value)
         if self._scoring_recorder is not None:
-            # Same discipline as `record_bed_region` (#207/#224): this only
-            # overwrites an in-memory value on the existing per-frame call
-            # path -- no new thread, timer, or per-frame I/O. Actual emission
-            # is on `log_snapshot()`'s ~5s `RuntimeStatusSender` cadence.
-            # Telemetry, never detection. This call sits directly before the
-            # onset latch, so a raising recorder discarded the bed-exit event
-            # itself. Five other auxiliary capabilities in this runtime were
-            # found holding that same power over a resident alert.
             try:
                 self._scoring_recorder.record_bed_exit_scoring(
                     self._config.camera_id,
@@ -284,8 +209,6 @@ class BedExitMonitor:
                     exc_info=True,
                 )
         event_time = 0.0 if input_value.time_sec is None else input_value.time_sec
-        # The night window gates proposals, not freshness. The snapshot still
-        # uses the real frame so the overlay renders `bed:exit`.
         in_window = self._night_window is None or self._night_window.contains(self._clock())
         self._latch.update()
         freshness = self._latch.status_snapshot
@@ -300,9 +223,6 @@ class BedExitMonitor:
             observation_age_sec=freshness.observation_age_sec,
         )
         if not in_window:
-            # Onsets computed this frame are suppressed by the detection window.
-            # The trace must say so: a triggered=True row with no event and no
-            # reason would read as a delivery failure.
             self._mark_suppressed(
                 track_ids={event.person_id for event in frame.events},
                 reason=str(DecisionTraceReason.OUTSIDE_DETECTION_WINDOW),
@@ -329,18 +249,9 @@ class BedExitMonitor:
             )
             emitted.extend(produced)
             if not produced:
-                # The episode authority declined this onset; name why. A None
-                # mapping means it was not a suppression (cannot follow a
-                # qualifying onset today) and the row keeps its own reason.
                 reason = suppression_reason(self._episodes.last_disposition)
                 if reason is not None:
                     self._mark_suppressed(track_ids={event.person_id}, reason=reason)
-        # Track loss is decoupled from emission: absence never emits (a
-        # stale/disappeared track produced no event above), but the episode
-        # authority still needs to know an assigned identity is gone so an
-        # already-OPEN episode can move to UNKNOWN for possible
-        # re-association or eventual expiry, instead of staying silently
-        # bound to a dead track id forever.
         for lost_id in self._lost_track_ids:
             self._episodes.track_lost(
                 camera_id=self._config.camera_id,
@@ -367,12 +278,6 @@ class BedExitMonitor:
         return tuple(emitted)
 
     def _mark_suppressed(self, *, track_ids: set[int | None], reason: str) -> None:
-        """Rewrite this frame's triggered snapshots for ``track_ids`` as suppressed.
-
-        The row keeps its states and values; triggered flips to False and the
-        reason names the suppression, so the non-event is explained rather
-        than looking like a lost delivery.
-        """
         if not track_ids:
             return
         rewritten: list[DecisionTraceSnapshot] = []
@@ -413,22 +318,6 @@ class BedExitMonitor:
             item.track_id: item for item in input_value.bed_pose_features.items
         }
 
-        # NvDCF runs without ReID: median track lifetime measures well under
-        # a typical in_bed_dwell_sec (and outside_dwell_sec) on several
-        # cameras, so state keyed purely by track ID would rarely accumulate
-        # enough dwell under any single ID to arm, or to complete an exit
-        # already in progress. A never-before-assigned live track that, this
-        # same frame, independently re-satisfies the identical bed's
-        # containment+posture gate is occupancy evidence of whoever is in
-        # the polygon, not of a specific track ID, so its armed/in-bed-dwell
-        # progress hands off instead of resetting to zero. Symmetrically, a
-        # never-before-assigned live track that is *not* contained in that
-        # same bed (and not contained in any other bed either) is evidence
-        # that whoever vacated it is still out, so an armed assignment's
-        # outside_dwell_sec hands off the same way instead of being dropped
-        # on the identity switch. Either hand-off requires the stale
-        # assignment to have owned a bed already: a bare "new ID appeared"
-        # is never by itself exit evidence.
         unclaimed_live = [
             (pid, box)
             for pid, box in zip(person_ids, observation.boxes, strict=True)
@@ -464,10 +353,6 @@ class BedExitMonitor:
                 containment_ratio(box, bed_box) >= self._config.min_containment
                 for _, box in unclaimed_live
             ):
-                # The vacated bed is already re-occupied by some live,
-                # unclaimed track (posture-confirmed or not) -- that alone
-                # disproves the departure was ever an exit, so no one
-                # elsewhere in frame can inherit it.
                 return None
             candidates = [
                 pid
@@ -480,15 +365,6 @@ class BedExitMonitor:
             ]
             return candidates[0] if len(candidates) == 1 else None
 
-        # A track can vanish mid-exit (occlusion, tracker drop, walking out of
-        # frame). Absence must never emit: an assignment that disappears is
-        # simply retired, with no event, regardless of how far its dwell
-        # timers had climbed. This is the fix for the firehose's dominant
-        # cause -- the previous stale-track path fired on `grace_frames > 0`,
-        # i.e. on any departure merely "in progress", including a single
-        # noisy sub-threshold frame immediately followed by track death
-        # (issue #246) and a resident simply lying still while briefly
-        # unmatched by the tracker.
         for stale_id in sorted(set(self._assignments) - live_ids):
             assignment = self._assignments[stale_id]
             had_assignment = assignment.bed_id is not None
@@ -580,10 +456,6 @@ class BedExitMonitor:
             containments = tuple(
                 containment_ratio(person_box, bed_box) for bed_box in observation.bed_boxes
             )
-            # `observation.bed_boxes` is non-empty here -- `update()` returns
-            # early otherwise -- so `containments` always has at least one
-            # value (#238: this is signal (b), "was anyone ever scored close
-            # to a bed at all", independent of whether an assignment formed).
             self._max_containment_observed = max(self._max_containment_observed, *containments)
             candidate_bed_id = best_bed_id(containments, self._config.min_containment)
             if assignment.bed_id is None:
@@ -642,12 +514,6 @@ class BedExitMonitor:
                 )
                 continue
 
-            # Real elapsed PTS time since this assignment's last observed
-            # frame. A frame with no `time_sec` never fabricates 0.0 into an
-            # absolute timestamp here -- it simply contributes zero dwell
-            # this frame (the anchor is left unmoved so the next real
-            # timestamp spans correctly across the gap) and the trace
-            # records that time was missing rather than silently proceeding.
             time_missing = input_value.time_sec is None
             if time_missing:
                 dt = 0.0
@@ -680,17 +546,6 @@ class BedExitMonitor:
                     assignment.in_bed_dwell_sec >= self._config.in_bed_dwell_sec
                 ):
                     assignment.armed = True
-                    # This is the sole positive-evidence transition: a track
-                    # just earned "confirmed in bed" (posture + containment
-                    # sustained for in_bed_dwell_sec). It feeds two cumulative
-                    # signals from the same site -- (1) telemetry's "did
-                    # anything ever climb toward exit-eligible" counter
-                    # (issue #238; name kept from the deleted grace-frame
-                    # model for wire/dashboard continuity), and (2) the
-                    # episode authority's sole re-arm signal: a resident
-                    # confirmed back in bed after a prior exit must clear
-                    # that episode's OPEN/RESOLVED hold before the same
-                    # track+bed can exit-alert again.
                     self._grace_positive_transitions += 1
                     self._recovery_events.append(
                         BedExitEvent(person_id=person_id, bed_id=own_bed_id)
@@ -727,9 +582,6 @@ class BedExitMonitor:
                 bed_id != own_bed_id and ratio >= self._config.min_containment
                 for bed_id, ratio in enumerate(containments)
             ):
-                # Moved to a different bed's containment: neutral, not a
-                # departure from *this* bed -- resets the arming climb (a
-                # visit elsewhere earns no partial credit) but never fires.
                 assignment.outside_dwell_sec = 0.0
                 assignment.in_bed_dwell_sec = 0.0
                 traces.append(
@@ -786,9 +638,6 @@ class BedExitMonitor:
             if triggered:
                 events.append(BedExitEvent(person_id=person_id, bed_id=own_bed_id))
                 exit_beds.add(own_bed_id)
-                # One-way latch clears on firing: the same track+bed must be
-                # positively re-observed in bed for the full in_bed_dwell_sec
-                # before it can arm (and therefore exit) again.
                 assignment.armed = False
                 assignment.in_bed_dwell_sec = 0.0
                 assignment.outside_dwell_sec = 0.0

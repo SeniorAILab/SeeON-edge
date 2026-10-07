@@ -1,5 +1,3 @@
-"""Closed, versioned audit action and privacy-bounded detail catalogs."""
-
 from __future__ import annotations
 
 import json
@@ -207,7 +205,6 @@ def recovery_detail(failure_code: str, ended_at: str) -> AuditDetail:
 
 
 def parse_detail_json(action: AuditAction, encoded: str) -> AuditDetail:
-    """Parse stored/untrusted JSON directly into the action-specific detail type."""
     try:
         raw = _DETAIL_ADAPTER.validate_json(encoded)
     except ValidationError as error:

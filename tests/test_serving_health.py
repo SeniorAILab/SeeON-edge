@@ -39,9 +39,6 @@ def test_health_ready_200_after_gateway_lifespan_boot() -> None:
 def test_lifespan_boot_logs_resolved_state_directory(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The fixed ``~/.local/state/ml-api`` resolver has no env override left
-    to inspect externally, so this startup log line is the operator-visible
-    record of where lifespan boot resolved state to."""
     app = create_app()
 
     with caplog.at_level("INFO"), TestClient(app):

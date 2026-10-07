@@ -1,5 +1,3 @@
-"""Current-plus-previous detection policies on the API-owned PostgreSQL pool."""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -168,7 +166,6 @@ class DetectionPolicyStore:
                 )
             if raw is None or record is None or not record.previous_present:
                 raise PolicyRollbackUnavailable("no prior policy state is available for rollback")
-            # Failed records hide values for listing; rollback must validate raw history.
             previous = decode_policy_values(
                 raw["previous_values_json"], raw["previous_content_sha256"], raw
             )
@@ -218,13 +215,6 @@ class DetectionPolicyStore:
         return self._read_snapshot(read)
 
     def acknowledge_applied(self, facility_id: str) -> None:
-        """Mark every pending activation at or below the latest generation as applied.
-
-        The caller must establish that the heartbeat acknowledges the current
-        desired configuration. This source API has no acknowledged-generation
-        argument: its bound is the latest generation inside this transaction.
-        """
-
         def persist(connection: psycopg.Connection) -> None:
             activation_generation = current_generation(connection, facility_id)
             with connection.cursor(row_factory=dict_row) as cursor:
@@ -266,9 +256,6 @@ class DetectionPolicyStore:
         try:
             return self.database.transact(persist)
         except psycopg.Error:
-            # Native diagnostics can include the SQL and complete row values.
-            # Authority, canonical validation and unknown-COMMIT errors are
-            # deliberately not caught here.
             raise PolicyActivationRefused(0, "policy database operation failed") from None
 
     def _read_snapshot(self, callback: Callable[[psycopg.Connection], _Result]) -> _Result:
@@ -294,11 +281,8 @@ class DetectionPolicyStore:
                 observed["module_id"],
                 observed["module_version"],
             )
-            # A concurrent repair must never be overwritten by an old read.
             if current != observed:
                 return
-            # The outward canonical validation error stays intact; persisted
-            # diagnostics must fit PostgreSQL text and the schema's 256-char cap.
             reason = error.reason.replace("\x00", r"\u0000")[:256]
             connection.execute(
                 "UPDATE policies SET status='failed',refusal_reason=%s,applied_at=NULL,"

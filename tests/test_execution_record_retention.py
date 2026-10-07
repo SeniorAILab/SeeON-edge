@@ -1,5 +1,3 @@
-"""Retention, prune, coarsening, and capacity receipts for execution records."""
-
 from __future__ import annotations
 
 import hashlib
@@ -39,9 +37,6 @@ pytest_plugins = ("tests_support.postgres_diagnostics_sandbox",)
 CAMERA = "cam-a"
 BOOT = "boot-1"
 HORIZON = 1_000
-# used_bytes counts logical live-row bytes, so an empty store measures 0; a
-# 512 KiB envelope (high_water ~480 KiB) admits a few hundred ~211 B payloads
-# before pressure and keeps the fills below small enough to run per test.
 DISK_BUDGET = 512 * 1024
 PAYLOAD_BLOB = "x" * 200
 PROVENANCE = Provenance(
@@ -121,7 +116,6 @@ def _batch(
 
 
 def _catalog_row_bytes(admin: psycopg.Connection) -> int:
-    """Sum every live row of every execution_* table the catalog lists in the schema."""
     names = [
         str(row[0])
         for row in admin.execute(
@@ -166,11 +160,6 @@ def test_segment_seals_at_segment_bytes(postgres_diagnostics_sandbox: Diagnostic
     diag = postgres_diagnostics_sandbox
     budget = RetentionBudget(total_bytes=DISK_BUDGET, unit_horizon_ns=HORIZON)
     store = _store(diag, budget)
-    # max_record_bytes is segment_bytes / 4 by design, so one segment always
-    # holds at least four admitted records; eight ~211 B records must therefore
-    # spill from a sealed segment into a new OPEN one once the 8 KiB segment
-    # envelope fills (eight records still fit one OPEN segment at 512 KiB —
-    # ingest enough copies of the same-size payload to force a seal).
     blob = PAYLOAD_BLOB
     per_record = 211
     needed = (budget.segment_bytes // per_record) + 2
@@ -274,9 +263,6 @@ def test_prune_removes_whole_units_across_two_segments(
     diag = postgres_diagnostics_sandbox
     budget = RetentionBudget(total_bytes=DISK_BUDGET, unit_horizon_ns=HORIZON)
     store = _store(diag, budget)
-    # ~1000 records (~211 B payload each) over many 8 KiB segments exceed
-    # high_water (~480 KiB of live rows); the terminal "old" unit must be
-    # pruned coherently even though its records straddle segments.
     blob = PAYLOAD_BLOB
     old_records = tuple(
         _record(
@@ -338,7 +324,6 @@ def test_forced_terminal_when_nothing_terminal(
     budget = RetentionBudget(total_bytes=DISK_BUDGET, unit_horizon_ns=HORIZON)
     store = _store(diag, budget)
     blob = PAYLOAD_BLOB
-    # 800 single-record batches are ~747 KB of live rows unpruned, past high_water.
     for index in range(800):
         store.ingest_batch(
             _batch(
@@ -363,13 +348,7 @@ def test_forced_terminal_when_nothing_terminal(
         str(row[0])
         for row in admin.execute("SELECT coverage_kind FROM execution_coverage").fetchall()
     }
-    # Hard invariant: never over the total envelope. high_water is the
-    # prune trigger and may be exceeded by at most one interval of
-    # accrual error (what control_reserve absorbs); an exact check
-    # brings it back under.
     assert used_bytes(admin) <= budget.total_bytes
-    # Each exact call prunes whole units and stops near low_water using
-    # the measured ratio; it converges within a bounded number of calls.
     for _ in range(50):
         if used_bytes(admin) <= budget.high_water:
             break
@@ -387,10 +366,6 @@ def test_forced_terminal_when_nothing_terminal(
 def test_storage_unavailable_when_nothing_prunable(
     postgres_diagnostics_sandbox: DiagnosticsSandbox,
 ) -> None:
-    # A 256-byte envelope has a 240-byte high_water. The provenance, coverage
-    # and batch rows the first ingest writes already exceed it and no unit is
-    # terminal, so the ingest cannot prune its way under the line and must
-    # refuse with STORAGE_UNAVAILABLE.
     diag = postgres_diagnostics_sandbox
     budget = RetentionBudget(total_bytes=256, unit_horizon_ns=HORIZON)
     store = _store(diag, budget)
@@ -420,8 +395,6 @@ def test_used_bytes_matches_catalog_rows_and_exceeds_payload(
     admin = diag.admin
     empty = used_bytes(admin)
     assert empty == _catalog_row_bytes(admin)
-    # Live rows only: empty tables cost nothing, so table overhead can never
-    # trip retention on its own.
     assert empty == 0
     assert empty < DISK_BUDGET
 
@@ -503,13 +476,7 @@ def test_coarsening_yields_unknown_without_widening_exact_rows(
 def test_enforce_prunes_a_bounded_number_of_units_per_call_and_converges(
     postgres_diagnostics_sandbox: DiagnosticsSandbox,
 ) -> None:
-    """Live regression: a 4x-over backlog made one ingest request prune for
-    minutes on the event loop. Each enforce call now prunes at most
-    MAX_UNITS_PER_ENFORCE whole units, commits (progress was made), and the
-    envelope converges over the following calls."""
     diag = postgres_diagnostics_sandbox
-    # 60 units of ~15 KB live rows against a 128 KiB budget: reaching
-    # low_water needs ~53 prunes, so the per-call bound actually binds.
     budget = RetentionBudget(total_bytes=128 * 1024, unit_horizon_ns=HORIZON)
     for unit in range(60):
         records = tuple(
@@ -522,9 +489,6 @@ def test_enforce_prunes_a_bounded_number_of_units_per_call_and_converges(
             )
             for index in range(30)
         )
-        # Ingest with an enormous budget so nothing is pruned while filling.
-        # The receive clock starts after every observed time: a batch is
-        # received no earlier than its records were observed, as on a real edge.
         big = ExecutionRecordStore(
             diag.database,
             RetentionBudget(total_bytes=1 << 40),
@@ -537,11 +501,9 @@ def test_enforce_prunes_a_bounded_number_of_units_per_call_and_converges(
     now = 10 + 60 * 5 + HORIZON + 1
     ok = diag.database.transact(lambda connection: enforce_budget(connection, budget, now))
     after_one = _unit_count(admin)
-    assert ok is True  # progress made, ingest may commit
+    assert ok is True
     assert before - after_one <= MAX_UNITS_PER_ENFORCE
     assert before - after_one >= 1
-    # Keep calling: it must converge to <= high_water without ever pruning
-    # more than the bound in one call.
     calls = 0
     while used_bytes(admin) > budget.high_water and calls < 100:
         prior = _unit_count(admin)
@@ -553,9 +515,7 @@ def test_enforce_prunes_a_bounded_number_of_units_per_call_and_converges(
         assert prior - now_units <= MAX_UNITS_PER_ENFORCE
         calls += 1
     assert used_bytes(admin) <= budget.high_water
-    assert calls < 100  # converged, never by more than the bound per call
-    # Batch receipts older than the oldest surviving record are gone;
-    # receipts of surviving records are kept (exactness of the orphan drop).
+    assert calls < 100
     oldest_observed = admin.execute(
         "SELECT MIN(observed_at_ns) FROM execution_records WHERE camera_id = %s", (CAMERA,)
     ).fetchone()[0]
@@ -563,7 +523,6 @@ def test_enforce_prunes_a_bounded_number_of_units_per_call_and_converges(
         "SELECT COUNT(*) FROM execution_batches WHERE received_at_ns < %s", (oldest_observed,)
     ).fetchone()[0]
     assert stale == 0
-    # Every receipt that still has a record is kept.
     live = admin.execute(
         """
         SELECT COUNT(*) FROM execution_batches b
@@ -577,14 +536,10 @@ def test_enforce_prunes_a_bounded_number_of_units_per_call_and_converges(
 def test_newer_boot_is_decided_by_observation_time_not_boot_id_text(
     postgres_diagnostics_sandbox: DiagnosticsSandbox,
 ) -> None:
-    """Live regression: boot ids are UUIDs. The worker restarted with a boot id
-    that sorted LOWER than the dead boot's, the string comparison called the
-    live boot "older", every new unit was marked terminal on arrival and pruned
-    first, and 5,300 dead-boot units were kept. Newest is by observation."""
     diag = postgres_diagnostics_sandbox
     budget = RetentionBudget(total_bytes=2**20, unit_horizon_ns=HORIZON)
     store = _store(diag, budget)
-    dead_boot, live_boot = "f0437fa1-dead", "91a6a31d-live"  # live sorts lower
+    dead_boot, live_boot = "f0437fa1-dead", "91a6a31d-live"
     assert live_boot < dead_boot
     store.ingest_batch(
         _batch(
@@ -623,8 +578,6 @@ def _unit_states(connection: psycopg.Connection) -> dict[str, tuple[int, str]]:
 def test_issue577_known_gap_survives_dense_watermark_closure(
     postgres_diagnostics_sandbox: DiagnosticsSandbox,
 ) -> None:
-    """Dense units close from the lane watermark. An overlapping known gap is
-    INCOMPLETE_KNOWN, and a unit already marked known is not rewritten COMPLETE."""
     diag = postgres_diagnostics_sandbox
     budget = RetentionBudget(total_bytes=2**20, unit_horizon_ns=HORIZON)
     store = _store(diag, budget)
@@ -684,7 +637,6 @@ def test_issue577_known_gap_survives_dense_watermark_closure(
 def test_issue577_epoch_closure_preserves_unfinished_uncertainty(
     postgres_diagnostics_sandbox: DiagnosticsSandbox,
 ) -> None:
-    """A known gap does not exclude additional loss at an abrupt epoch end."""
     diag = postgres_diagnostics_sandbox
     budget = RetentionBudget(total_bytes=2**20, unit_horizon_ns=HORIZON)
     store = _store(diag, budget)
@@ -724,8 +676,6 @@ def test_issue577_epoch_closure_preserves_unfinished_uncertainty(
 def test_issue577_pressure_chooses_globally_oldest_not_camera_name(
     postgres_diagnostics_sandbox: DiagnosticsSandbox,
 ) -> None:
-    """cam-a sorts first but was observed later. Pressure must terminal the
-    quieter cam-z unit without claiming the forced closure is fully known."""
     diag = postgres_diagnostics_sandbox
     horizon = 100_000
     budget = RetentionBudget(total_bytes=2**20, unit_horizon_ns=horizon)
@@ -798,8 +748,6 @@ def test_issue577_pressure_chooses_globally_oldest_not_camera_name(
 def test_issue577_pressure_tie_breaks_on_unit_id_not_camera_name(
     postgres_diagnostics_sandbox: DiagnosticsSandbox,
 ) -> None:
-    """Equal observation times break ties by causal_unit_id. cam-a must not win
-    just because its name sorts first."""
     diag = postgres_diagnostics_sandbox
     horizon = 100_000
     budget = RetentionBudget(total_bytes=2**20, unit_horizon_ns=horizon)
@@ -908,8 +856,6 @@ def _complete_old_then_seal(
 def test_issue577_segment_seal_uses_membership_not_unrelated_open_unit(
     postgres_diagnostics_sandbox: DiagnosticsSandbox,
 ) -> None:
-    """A pending segment whose own units are terminal becomes final even while
-    a later segment on the lane still has an open unit. Sealing drops no rows."""
     diag = postgres_diagnostics_sandbox
     old_count, live_count = _spanning_lane(diag)
     before = _segment_members(diag.admin)
@@ -937,9 +883,6 @@ def test_issue577_segment_seal_uses_membership_not_unrelated_open_unit(
 def test_issue577_spanning_unit_survives_seal_and_prunes_whole(
     postgres_diagnostics_sandbox: DiagnosticsSandbox,
 ) -> None:
-    """Finalizing one segment of a causal unit must not delete that segment's
-    rows while another segment still holds the unit. Prune removes every
-    segment of the unit together."""
     diag = postgres_diagnostics_sandbox
     old_count, live_count = _spanning_lane(diag)
     membership = diag.database.transact(_complete_old_then_seal)

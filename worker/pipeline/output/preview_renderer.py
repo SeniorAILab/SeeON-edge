@@ -1,5 +1,3 @@
-"""CPU-rendered overlays for the operator live preview."""
-
 from __future__ import annotations
 
 import io
@@ -31,16 +29,12 @@ class PreviewTrack:
 
 
 class PreviewRenderer:
-    """Draw persisted geometry and CPU policy state on a clean SDK JPEG."""
-
     _NORMAL_COLOR = (34, 197, 94)
     _SUSPECTED_COLOR = (239, 68, 68)
     _UNKNOWN_COLOR = (59, 130, 246)
     _BED_COLOR = (245, 158, 11)
 
     def __init__(self, font_path: str | Path = DEFAULT_FONT_PATH) -> None:
-        # Loading is deliberately eager: a bad edge image must fail during
-        # composition rather than intermittently on an HTTP request thread.
         self._font = ImageFont.truetype(str(font_path), 18)
 
     def render(
@@ -152,13 +146,6 @@ class PreviewRenderer:
     def _person_label(
         confidence: float, state: FallPreviewState | None, bed_number: int | None
     ) -> str:
-        """Operator-facing label: detection confidence, bed, and fall state.
-
-        The NvDCF track counter is deliberately absent: it restarts per
-        stream, climbs on every re-acquisition, and tells an operator nothing.
-        The detector confidence does - a 25 % box on a bed rail reads as the
-        weak guess it is.
-        """
         parts = [f"사람 {confidence:.0%}"]
         if bed_number is not None:
             parts.append(f"침대{bed_number}")
@@ -192,12 +179,6 @@ class PreviewRenderer:
     def _bed_number_at(
         point: tuple[int, int], beds: tuple[tuple[tuple[int, int], ...], ...]
     ) -> int | None:
-        """1-based index of the first saved bed polygon containing the point.
-
-        The point is the bottom-centre of the person box, which is where a
-        standing person touches the floor and where a lying person's box sits
-        inside the bed. Ray casting; no shapely in the runtime image.
-        """
         px, py = point
         for bed_number, polygon in enumerate(beds, start=1):
             inside = False

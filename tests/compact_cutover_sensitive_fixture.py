@@ -1,5 +1,3 @@
-"""Distinct secret aliases used by dense cutover redaction tests."""
-
 from __future__ import annotations
 
 import base64

@@ -1,5 +1,3 @@
-"""API admission rejects unsafe RTSP destinations before store/probe."""
-
 from __future__ import annotations
 
 import pytest

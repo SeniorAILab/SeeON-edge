@@ -1,5 +1,3 @@
-"""CPU-only loader for the published pose+bbox56 proxy bundle."""
-
 from __future__ import annotations
 
 import math
@@ -36,13 +34,6 @@ class _ProxyGru(nn.Module):
 
 
 class PoseBbox56BundleRunner:
-    """Verified, binary-source proxy exposed through the three-class seam.
-
-    Each result retains the observed pre-calibration logit and the loaded
-    temperature. The three policy fields remain the calibrated sigmoid's
-    complement, the calibrated sigmoid, and a synthetic zero respectively.
-    """
-
     device: Final[str] = "cpu"
 
     def __init__(
@@ -58,9 +49,6 @@ class PoseBbox56BundleRunner:
         self._temperature = temperature
         self.receipt_threshold = receipt_threshold
         self.promotion_eligible = promotion_eligible
-        # The composition root verifies these against the registry's pinned
-        # component identity before any camera activates, so they must come
-        # from the bundle itself, never from a constant in this adapter.
         self.artifact_digest = artifact_digest
         self.preprocessing_identity = preprocessing_identity
 

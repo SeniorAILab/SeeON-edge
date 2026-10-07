@@ -1,5 +1,3 @@
-"""Detection policies against the explicit isolated PostgreSQL product sandbox."""
-
 from __future__ import annotations
 
 import hashlib
@@ -214,7 +212,6 @@ def test_diff_apply_precedence_identity_encoding_and_ordering(
     assert _store(sandbox).resolve_bundle(_FACILITY, cameras) == bundle
     assert store.activations(_FACILITY) == (first, override)
     assert store.generation(_FACILITY) == 2
-    # No facility remains the source-defined image default, even with stored rows.
     assert store.generation(None) == 0 and store.resolve_bundle(None, cameras) == image
     assert store.resolve_bundle("other-facility", cameras) == image
 
@@ -275,7 +272,6 @@ def test_optimistic_tokens_reject_stale_apply_and_rollback_without_hooks(
     second = _apply(store, 0.72, expected=first.activation_generation)
     before = _rows(sandbox)
     hooks = []
-    # Even equal values must not bypass the optimistic token check.
     for threshold in (0.72, 0.81):
         with pytest.raises(PolicyRevisionConflict):
             _apply(store, threshold, expected=first.activation_generation, after_write=hooks.append)
@@ -481,7 +477,6 @@ def test_malformed_records_are_refused_and_fenced_failed_status_is_durable(
     store.acknowledge_applied(_FACILITY)
     assert _rows(sandbox)[0] == after
     freeze_authority(sandbox.database, sandbox.authority)
-    # Already-recorded failures are read-only refusals, not implicit new writes.
     with pytest.raises(PolicyActivationRefused, match="refused"):
         store.resolve_bundle(_FACILITY, ())
     assert _rows(sandbox)[0] == after
@@ -764,7 +759,6 @@ def test_registry_alias_remapping_and_namespace_collision_keep_native_policy_ref
     registry.update(_LOCAL, CameraUpdate.model_validate({"backend_camera_id": None}))
     assert store.activations(_FACILITY)[0].camera_id == _LOCAL
     assert _rows(sandbox)[0]["camera_id"] == _LOCAL
-    # The restrictive native reference prevents deleting a camera with policies.
     with pytest.raises(CameraRegistryWriteError):
         registry.delete(_LOCAL)
     assert registry.get(_LOCAL) is not None and len(_rows(sandbox)) == 1
@@ -783,7 +777,6 @@ def test_native_driver_refusals_hide_row_values_and_never_supply_a_default_bundl
     assert private_id not in "".join(traceback.format_exception(refused.value))
     assert refused.value.__suppress_context__ and refused.value.__cause__ is None
     assert not hooks and _rows(sandbox) == []
-    # A real server error on the read path must not masquerade as image defaults.
     sandbox.admin.execute("ALTER TABLE policies RENAME TO unavailable_policies")
     with pytest.raises(PolicyActivationRefused, match="policy database operation failed"):
         store.resolve_bundle(_FACILITY, ())
@@ -1004,7 +997,7 @@ def test_real_unknown_commit_never_replays_reloads_or_publishes_activation(
         if pid in attempts:
             commits.append(pid)
             if committed:
-                commit(connection)  # Actual server COMMIT, independently observed below.
+                commit(connection)
             raise psycopg.OperationalError("injected COMMIT receipt loss")
         commit(connection)
 
@@ -1136,7 +1129,6 @@ def test_acknowledgement_marks_latest_pending_only_in_requested_facility_and_is_
         "pending",
         "applied",
     ]
-    # Source semantics intentionally bind to latest inside ACK, not a wire generation.
     store.acknowledge_applied(_FACILITY)
     assert {activation.status for activation in store.activations(_FACILITY)} == {"applied"}
     assert store.activations("other-facility")[0].status == "pending"

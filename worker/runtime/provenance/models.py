@@ -19,7 +19,7 @@ _SOURCE_REVISION = re.compile(r"[0-9a-f]{40}\Z")
 
 
 class AppliedRuntimeManifestError(RuntimeError):
-    """Applied runtime identity is unresolved, contradictory, or unsafe."""
+    ...
 
 
 @dataclass(frozen=True, slots=True)

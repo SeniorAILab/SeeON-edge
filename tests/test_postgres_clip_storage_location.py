@@ -1,5 +1,3 @@
-"""Clip selection persistence against the real PostgreSQL product sandbox."""
-
 from __future__ import annotations
 
 from collections.abc import Iterator
@@ -60,7 +58,6 @@ def _independent_database(sandbox: ProductSandbox) -> Iterator[PostgresDatabase]
         database.start()
         yield database
     finally:
-        # The sandbox drops only its unique namespace, after all owners close.
         database.close(timeout_sec=3.0)
 
 
@@ -230,7 +227,6 @@ def test_hook_shares_owned_write_transaction_and_rolls_back_another_table_atomic
         assert store.put(selected_path, after_write=hook) == selected_path
     assert len(connections) == len(hooks) == 1
     assert store.get() == ("initial/clips" if fail else selected_path)
-    # Unlike runtime export no-ops, repeated clip selections still update the timestamp.
     assert sandbox.admin.execute("SELECT updated_at FROM edge_site").fetchone() == (
         _FIRST_TIME if fail else _SECOND_TIME,
     )

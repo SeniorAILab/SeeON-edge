@@ -126,9 +126,6 @@ def test_owner_fall_hits_false_positive_rate_and_window_fraction(
     _write_trace(traces_dir / "positive.jsonl", "cam-positive", 60)
     _write_trace(traces_dir / "negative.jsonl", "cam-negative", 30)
 
-    # Positive trace: two real owner falls (hits, at 20s and 40s) plus one
-    # spurious "fall" far outside both +/-10s exclusion windows (a false
-    # positive on the ground-truth trace itself).
     positive_run = ReplayRun(
         camera_id="cam-positive",
         module_qualified_id="fall.v2",
@@ -170,25 +167,16 @@ def test_owner_fall_hits_false_positive_rate_and_window_fraction(
         {"offset_sec": 20.0, "hit": True, "peak_fall_transition_score": 0.95},
         {"offset_sec": 40.0, "hit": True, "peak_fall_transition_score": 0.6},
     ]
-    # One false positive on the positive trace (its 0s event, outside both
-    # +/-10s exclusion windows) plus two on the negative trace.
     assert receipt["false_positive_episode_count"] == 3
     assert receipt["exposed_camera_hours"] == pytest.approx(50 / 3600)
     assert receipt["false_positive_episodes_per_camera_hour"] == pytest.approx(216.0)
-    # 2 scored snapshots (t=20 positive, t=5 negative) vs. 2 classifier-warmup
-    # snapshots (t=0 positive, t=15 negative); t=40's 0.6 is also scored.
     assert receipt["live_track_frames_scored"] == 3
     assert receipt["live_track_frames_classifier_warmup"] == 2
     assert receipt["fraction_live_track_frames_with_full_window"] == pytest.approx(3 / 5)
     assert receipt["resample_gap_rows_total"] == 5
     assert receipt["model_receipt_threshold"] == 0.42
     assert receipt["model_promotion_eligible"] is True
-    # Both labels hit, so recall_ratio is hits/labels = 2/2.
     assert receipt["recall_ratio"] == pytest.approx(1.0)
-    # _FakeRunner is promotion-eligible with a receipt threshold, so the
-    # effective threshold is the receipt's, exactly as _fall() resolves it
-    # live; _FakeRunner carries no confirmation-rule receipt, so votes/window
-    # fall back to the policy default.
     assert receipt["effective_policy"] == {
         "operating_threshold": 0.42,
         "threshold_source": "receipt",
@@ -226,9 +214,6 @@ def test_duration_hours_sums_per_stream_epoch_not_trace_wide_span(
     rows = (
         _row("cam", 0, 0, epoch=0),
         _row("cam", 1, 10, epoch=0),
-        # A reconnect an hour later starts a new epoch. A trace-wide max-min
-        # would count that dead hour as camera-exposed duration; summing each
-        # epoch's own span must not.
         _row("cam", 2, 3600, epoch=1),
         _row("cam", 3, 3605, epoch=1),
     )

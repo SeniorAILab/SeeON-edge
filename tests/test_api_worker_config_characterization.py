@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 from backend.app.main import create_app, no_lifespan
 from contracts.worker_config import PulledNightWindow, PulledWorkerConfig
 
-# Worker relay auth
 RELAY_HEADER_NAME: Final = "X-Edge-Relay-Token"
 RELAY_TOKEN: Final = "relay-token"
 RELAY_HEADERS = {RELAY_HEADER_NAME: RELAY_TOKEN}
@@ -91,14 +90,13 @@ class _FakeDetectionPolicyStore:
         assert self._bundle is not None, "resolve_bundle called without a configured bundle"
         return self._bundle
 
-    def acknowledge_applied(self, _facility_id: str) -> None:  # pragma: no cover - not exercised
+    def acknowledge_applied(self, _facility_id: str) -> None:  # pragma: no cover
         return
 
 
 def _app() -> FastAPI:
     app = create_app(lifespan=no_lifespan)
     app.state.edge_relay_token = RELAY_TOKEN
-    # Stable pulled baseline seen by the route
     app.state.pulled_config = PulledWorkerConfig(
         config_version=7,
         restart_epoch=2,
@@ -127,7 +125,6 @@ def _patch_minimal_dependencies(
 
             return _Loaded()
 
-    # Camera registry and bed zones
     monkeypatch.setattr(
         cameras_router,
         "_store",
@@ -135,7 +132,6 @@ def _patch_minimal_dependencies(
         raising=True,
     )
     monkeypatch.setattr(cameras_router, "_bed_zone_store", lambda app: _FakeBedZoneStore())
-    # Clip storage location store (empty selection by default -> key absent)
     class _FakeClipStorageLocationStore:
         def get(self) -> str:
             return ""
@@ -146,25 +142,21 @@ def _patch_minimal_dependencies(
         lambda app: _FakeClipStorageLocationStore(),
         raising=True,
     )
-    # No local detection overrides by default
     monkeypatch.setattr(
         cameras_router, "_detection_settings_store", lambda app: _FakeDetectionSettingsStore({})
     )
-    # Connection facility_id lookup (used only when policies are present)
     monkeypatch.setattr(
         cameras_router,
         "get_connection_settings_store",
         lambda app: _FakeConnSettingsStore(),
         raising=True,
     )
-    # Runtime export setting
     monkeypatch.setattr(
         cameras_router,
         "get_runtime_settings_store",
         lambda app: _FakeRuntimeSettingsStore(enabled=runtime_enabled, version=runtime_version),
         raising=True,
     )
-    # No numeric policies by default
     monkeypatch.setattr(
         cameras_router,
         "_detection_policy_store",
@@ -184,13 +176,6 @@ def _dump_minified(obj: dict[str, object]) -> bytes:
 def test_byte_snapshot_no_policies_includes_unmapped_camera_and_runtime_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pins the exact worker-config body when no policies or local overrides exist.
-
-    Covers:
-    - unmapped camera stays included (logs only)
-    - no detection_policies key
-    - runtime export defaults are present (false/version 0)
-    """
     app = _app()
     registry = {
         "registry_version": 5,
@@ -248,13 +233,6 @@ def test_byte_snapshot_no_policies_includes_unmapped_camera_and_runtime_defaults
 def test_byte_snapshot_with_policies_threads_facility_and_scales_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pins the exact body when a numeric policy bundle is active.
-
-    Covers:
-    - detection_policies present as a closed object
-    - facility_id added to each camera
-    - config_version scaled (base*1e9 + hashpart), restart_epoch incremented by generation
-    """
     app = _app()
     registry = {
         "registry_version": 3,
@@ -270,7 +248,6 @@ def test_byte_snapshot_with_policies_threads_facility_and_scales_version(
         ],
     }
     _patch_minimal_dependencies(monkeypatch, registry_snapshot=registry, runtime_enabled=False)
-    # Patch detection policy store into the router module
     import backend.app.features.cameras.router as cameras_router
 
     bundle = _FakeDetectionPolicyBundle(
@@ -313,15 +290,7 @@ def test_byte_snapshot_with_policies_threads_facility_and_scales_version(
 def test_byte_snapshot_with_local_detection_overrides_applies_and_sets_domains(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pins merge precedence of local detection overrides over pulled windows.
-
-    Covers:
-    - domains map present with enabled flags
-    - detection_windows updated with local window and tz reused from pulled
-    - night_window mirrors bed_exit window when present
-    """
     app = _app()
-    # Pulled live window for fall domain carries Asia/Seoul tz that must be reused
     app.state.pulled_config = PulledWorkerConfig(
         config_version=3,
         restart_epoch=1,
@@ -333,7 +302,6 @@ def test_byte_snapshot_with_local_detection_overrides_applies_and_sets_domains(
     app.state.restart_epoch = 1
     registry = {"registry_version": 9, "cameras": []}
     _patch_minimal_dependencies(monkeypatch, registry_snapshot=registry, runtime_enabled=False)
-    # Monkeypatch local detection settings
     import backend.app.features.cameras.router as cameras_router
 
     settings = _FakeDetectionSettingsStore(
@@ -383,7 +351,6 @@ def test_byte_snapshot_with_local_detection_overrides_applies_and_sets_domains(
 def test_byte_snapshot_threads_runtime_export_setting_without_restart_change(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pins runtime export settings added without changing restart directive fields."""
     app = _app()
     registry = {"registry_version": 11, "cameras": []}
     _patch_minimal_dependencies(

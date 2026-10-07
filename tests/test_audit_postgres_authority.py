@@ -1,10 +1,3 @@
-"""With the PostgreSQL root configured, audit has one authority: PostgreSQL.
-
-The real lifespan boots from deployment-style secret files. A schema-19
-``edge.sqlite3`` sentinel stands where the legacy audit store would open it, so
-a split-brain session row or read shows up as a changed or new file there.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -23,7 +16,6 @@ pytest_plugins = ("tests_support.postgres_sandbox", "tests_support.postgres_app_
 
 
 def _redirect_edge_database(sentinel: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Point every loaded backend and worker binding of the SQLite path at the sentinel."""
     for name, module in tuple(sys.modules.items()):
         if name.split(".")[0] not in {"backend", "worker"}:
             continue

@@ -1,11 +1,3 @@
-"""Tests for ``worker.tools.fetch_models`` -- the ``edge-model-fetch`` one-shot.
-
-Owner decision 2026-08-28: models stay out of the images and are fetched from
-pinned upstreams into the ``worker-models`` volume. These tests drive the
-fetcher against a fake byte source so hash verification, idempotency, partial
-file recovery, retry policy, and token handling are proven without a network.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -104,8 +96,6 @@ def _manifest_dict(**overrides: object) -> dict[str, object]:
 
 
 class FakeSource:
-    """Scripted byte source: per-URL bodies, optional failures, call log."""
-
     def __init__(self, bodies: Mapping[str, bytes]) -> None:
         self.bodies = dict(bodies)
         self.calls: list[tuple[str, dict[str, str]]] = []
@@ -326,9 +316,6 @@ def _selected_bundle_delivery(
     return manifest, FakeSource(bodies), selection_path, bundle
 
 
-# --- manifest -------------------------------------------------------------
-
-
 def test_committed_manifest_parses_and_pins_every_family_the_worker_loads() -> None:
     manifest = load_manifest(MANIFEST_PATH)
     paths = {artifact.path for artifact in manifest.artifacts}
@@ -348,8 +335,6 @@ def test_committed_manifest_parses_and_pins_every_family_the_worker_loads() -> N
         "bed/yolo26l-seg.onnx",
         "bed/yolo26l-seg.onnx.sha256",
     } <= paths
-    # The V2 bundle is self-verifying from its own bundle-manifest.json, so no
-    # tracked sidecar copies exist any more.
     assert manifest.sidecars == ()
     assert not any(path.startswith("fall/lstm/") for path in paths)
     published_source = manifest.sources["published-pose-bbox56-fall-model"]
@@ -365,7 +350,6 @@ def test_committed_manifest_parses_and_pins_every_family_the_worker_loads() -> N
 
 
 def test_committed_manifest_digests_agree_with_runtime_pins() -> None:
-    """Perception artifacts remain pinned by the compiled Flow registry."""
     from worker.domains.registry import _COMPONENT_ARTIFACT_DIGESTS
 
     by_path = {artifact.path: artifact.sha256 for artifact in load_manifest().artifacts}
@@ -375,8 +359,6 @@ def test_committed_manifest_digests_agree_with_runtime_pins() -> None:
 
 
 def test_bundled_sidecars_are_byte_identical_to_tracked_models_dir() -> None:
-    """`.dockerignore` drops `models/` from the image, so the tool carries
-    copies; they must stay identical to the git-tracked originals."""
     for relative in load_manifest().sidecars:
         bundled = SIDECAR_ROOT / relative
         tracked = REPO_ROOT / "models" / relative
@@ -413,9 +395,6 @@ def test_source_urls_are_pinned_to_revision_or_tag() -> None:
     assert manifest.artifacts[1].url == (
         "https://github.com/ultralytics/assets/releases/download/v8.4.0/metadata.json"
     )
-
-
-# --- fetch + verify -------------------------------------------------------
 
 
 def test_fetch_all_downloads_verifies_and_is_idempotent(tmp_path: Path) -> None:
@@ -591,7 +570,7 @@ def test_fetch_all_rejects_tampered_selected_bundle_with_boot_reason(tmp_path: P
 def test_hash_mismatch_fails_and_leaves_nothing_at_the_final_path(tmp_path: Path) -> None:
     manifest = parse_manifest(_manifest_dict())
     source = _fake_for(manifest)
-    source.bodies[manifest.artifacts[0].url] = b"\x00tamperd" * 700  # same size, wrong bytes
+    source.bodies[manifest.artifacts[0].url] = b"\x00tamperd" * 700
 
     with pytest.raises(VerificationError, match="sha256 mismatch"):
         fetch_all(manifest, tmp_path, source, env={}, retry=_no_sleep_policy())
@@ -600,18 +579,9 @@ def test_hash_mismatch_fails_and_leaves_nothing_at_the_final_path(tmp_path: Path
 
 
 def test_pose_bbox56_bundle_is_judged_the_way_the_runner_judges_it(tmp_path: Path) -> None:
-    """Fetch loads the bundle with the runner's own constructor, so it refuses
-    exactly what boot refuses and nothing else.
-
-    A redeploy re-fetches the published manifest over the exported one, leaving
-    the ONNX on disk but unlisted; a file-exists check alone once reported
-    success on a bundle the worker then refused at boot.
-    """
     bundle = tmp_path / "fall" / "pose-bbox56-gru"
     bundle.mkdir(parents=True)
     write_pose_bbox56_bundle(bundle)
-    # The published model.pt is the very one the bundle carries, so fetch's own
-    # download does not disturb the bundle's identity.
     weights = (bundle / "model.pt").read_bytes()
     raw = _manifest_dict(
         artifacts=[
@@ -630,17 +600,13 @@ def test_pose_bbox56_bundle_is_judged_the_way_the_runner_judges_it(tmp_path: Pat
     good_onnx = onnx.read_bytes()
     good_manifest = (bundle / "bundle-manifest.json").read_text(encoding="utf-8")
 
-    # Exported bundle: on disk, listed, digests verify -> provisioning proceeds.
     report = fetch_all(manifest, tmp_path, source, env={}, retry=_no_sleep_policy())
     assert report.results, "provisioning must run when the bundle is loadable"
 
-    # Fresh site: no ONNX at all -> refused naming the missing file.
     onnx.unlink()
     with pytest.raises(VerificationError, match="missing model.onnx"):
         fetch_all(manifest, tmp_path, source, env={}, retry=_no_sleep_policy())
 
-    # Redeploy: ONNX back on disk but the re-fetched manifest no longer lists it
-    # -> refused, because the runner's constructor refuses it.
     onnx.write_bytes(good_onnx)
     stripped = json.loads(good_manifest)
     stripped["files"] = [f for f in stripped["files"] if f["relative_path"] != "model.onnx"]
@@ -648,15 +614,11 @@ def test_pose_bbox56_bundle_is_judged_the_way_the_runner_judges_it(tmp_path: Pat
     with pytest.raises(VerificationError, match="not loadable by the Flow runner"):
         fetch_all(manifest, tmp_path, source, env={}, retry=_no_sleep_policy())
 
-    # Tampered member: listed but the digest no longer matches disk -> refused.
     (bundle / "bundle-manifest.json").write_text(good_manifest, encoding="utf-8")
     onnx.write_bytes(b"tampered")
     with pytest.raises(VerificationError, match="not loadable by the Flow runner"):
         fetch_all(manifest, tmp_path, source, env={}, retry=_no_sleep_policy())
 
-    # Manifest lists model.onnx but not model.pt: the runner loads, but boot's
-    # composition also names the bundle by its published weights' digest and
-    # refuses - so fetch must refuse too.
     onnx.write_bytes(good_onnx)
     no_pt = json.loads(good_manifest)
     no_pt["files"] = [f for f in no_pt["files"] if f["relative_path"] != "model.pt"]
@@ -689,7 +651,7 @@ def test_corrupted_existing_file_is_re_downloaded(tmp_path: Path) -> None:
     source = _fake_for(manifest)
     dest = tmp_path / "fall/lstm/model.pt"
     dest.parent.mkdir(parents=True)
-    dest.write_bytes(b"\x00garbage" * 700)  # right size (8*700), wrong hash
+    dest.write_bytes(b"\x00garbage" * 700)
 
     result = fetch_artifact(
         manifest.artifacts[0], tmp_path, source, env={}, retry=_no_sleep_policy()
@@ -715,8 +677,6 @@ def test_stale_partial_file_from_interrupted_run_is_discarded(tmp_path: Path) ->
 
 
 def test_mid_stream_transport_error_restarts_the_file_from_scratch(tmp_path: Path) -> None:
-    """A retry must not append to a half-written body; the hash would then be
-    right by accident only if the server resumed, which it never does here."""
     manifest = parse_manifest(_manifest_dict())
     source = _fake_for(manifest)
     url = manifest.artifacts[0].url
@@ -761,7 +721,7 @@ def test_gives_up_after_configured_attempts(tmp_path: Path) -> None:
 
 def test_non_retryable_status_fails_fast(tmp_path: Path) -> None:
     manifest = parse_manifest(_manifest_dict())
-    source = FakeSource({})  # every URL 404s
+    source = FakeSource({})
     waits: list[float] = []
     policy = RetryPolicy(attempts=6, sleep=waits.append)
 
@@ -948,9 +908,6 @@ def test_missing_receipt_or_cross_tree_receipt_fails_without_publish(tmp_path: P
         parse_manifest(raw)
 
 
-# --- attempts env + CLI ---------------------------------------------------
-
-
 @pytest.mark.parametrize("raw", ["0", "-1", "six", "1.5"])
 def test_attempts_env_rejects_non_positive_or_non_integer(raw: str) -> None:
     with pytest.raises(SourceError, match="positive integer"):
@@ -1035,8 +992,6 @@ def test_module_entrypoint_matches_compose_command() -> None:
 
 
 def test_fetch_models_imports_only_the_standard_library() -> None:
-    """The tool runs in the slim worker image before anything else and must
-    never pull the runtime graph (or torch) into the one-shot."""
     package = REPO_ROOT / "worker" / "tools" / "fetch_models"
     for module in package.glob("*.py"):
         for line in module.read_text(encoding="utf-8").splitlines():
