@@ -875,6 +875,7 @@ _LINT_STEPS = [
         ),
     },
     {"run": "uv run --group lint python scripts/check_no_comments.py"},
+    {"run": "uv run --group lint python scripts/check_boundaries.py"},
 ]
 
 _SHARD_DISCOVERY = (
