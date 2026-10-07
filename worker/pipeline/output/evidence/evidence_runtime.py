@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from shared.boundary import Boundary, isolate
 from worker.interfaces.execution_records import ExecutionRecordSink
 from worker.pipeline.output.evidence.evidence_sender import (
     EvidenceSender,
@@ -123,10 +124,9 @@ class EvidenceExportRuntime:
 
     def _run_sender(self) -> None:
         while not self._stop_event.is_set():
-            try:
+            step = SenderStep.RETRY_SCHEDULED
+            with isolate(Boundary.SENDER_TICK, stage="evidence_sender_tick"):
                 step = self.sender.run_once()
-            except Exception:  # noqa: BLE001
-                step = SenderStep.RETRY_SCHEDULED
             if step not in {SenderStep.EVENT_ACKED, SenderStep.CLIP_ACKED}:
                 self._wake_sender.wait(1.0)
                 self._wake_sender.clear()

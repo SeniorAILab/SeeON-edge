@@ -14,6 +14,8 @@ from psycopg import sql
 from psycopg.pq import TransactionStatus
 from psycopg_pool import ConnectionPool, PoolClosed, PoolTimeout, TooManyRequests
 
+from shared.boundary import register_translation_target
+
 _Result = TypeVar("_Result")
 
 
@@ -46,6 +48,9 @@ class PoolBudget:
 
 class PostgresError(RuntimeError):
     ...
+
+
+register_translation_target(PostgresError)
 
 
 class PostgresStartupError(PostgresError):

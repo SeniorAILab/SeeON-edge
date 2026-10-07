@@ -21,6 +21,7 @@ ALWAYS_PROPAGATE: Final[tuple[type[BaseException], ...]] = (
 )
 
 _fatal: list[type[BaseException]] = []
+_translation_targets: list[type[Exception]] = []
 
 
 class Boundary(StrEnum):
@@ -35,6 +36,16 @@ def register_fatal(*types: type[BaseException]) -> None:
     for kind in types:
         if kind not in _fatal:
             _fatal.append(kind)
+
+
+def register_translation_target(*types: type[Exception]) -> None:
+    for kind in types:
+        if kind not in _translation_targets:
+            _translation_targets.append(kind)
+
+
+def translation_targets() -> tuple[type[Exception], ...]:
+    return tuple(_translation_targets)
 
 
 def fatal_types() -> tuple[type[BaseException], ...]:
@@ -171,6 +182,8 @@ def cleanup_on_failure(*cleanups: Callable[[], None]) -> Iterator[None]:
 
 @contextmanager
 def translate(to: type[E], message: str) -> Iterator[None]:
+    if not issubclass(to, translation_targets()):
+        raise TypeError(f"translate target {to.__name__} is not a registered translation target")
     try:
         yield
     except BaseException as error:
@@ -210,6 +223,8 @@ __all__ = [
     "isolate",
     "probe",
     "register_fatal",
+    "register_translation_target",
     "root_sink",
     "translate",
+    "translation_targets",
 ]
