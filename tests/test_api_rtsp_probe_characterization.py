@@ -25,7 +25,6 @@ def _app() -> Any:
 def test_camera_probe_unavailable_when_origin_blank(monkeypatch: pytest.MonkeyPatch) -> None:
     app = _app()
 
-    # Fake store with one camera
     class _FakeStore:
         def get(self, camera_id: str) -> dict[str, Any] | None:
             return (
@@ -36,15 +35,12 @@ def test_camera_probe_unavailable_when_origin_blank(monkeypatch: pytest.MonkeyPa
 
     import backend.app.features.cameras.router as cameras_router
 
-    # Bypass dashboard auth
     monkeypatch.setattr(cameras_router, "_authorize", lambda request: "user", raising=True)
     monkeypatch.setattr(cameras_router, "_store", lambda app: _FakeStore(), raising=True)
-    # Allow any RTSP URL at validation
     monkeypatch.setattr(
         cameras_router, "assert_rtsp_endpoint_allowed", lambda url: _Endpoint(url), raising=True
     )
 
-    # Settings with blank origin triggers probe_unavailable=True
     class _S:
         worker_probe_origin: str = ""
         worker_probe_timeout_s: int = 5
@@ -68,7 +64,6 @@ def test_camera_probe_unavailable_when_origin_blank(monkeypatch: pytest.MonkeyPa
 def test_camera_probe_maps_worker_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     app = _app()
 
-    # Fake store with one camera
     class _FakeStore:
         def get(self, camera_id: str) -> dict[str, Any] | None:
             return (
@@ -79,11 +74,9 @@ def test_camera_probe_maps_worker_payload(monkeypatch: pytest.MonkeyPatch) -> No
 
     import backend.app.features.cameras.router as cameras_router
 
-    # Bypass dashboard auth
     monkeypatch.setattr(cameras_router, "_authorize", lambda request: "user", raising=True)
     monkeypatch.setattr(cameras_router, "_store", lambda app: _FakeStore(), raising=True)
 
-    # Settings with non-empty origin
     class _S:
         worker_probe_origin: str = "http://worker.invalid"
         worker_probe_timeout_s: int = 5
@@ -92,7 +85,6 @@ def test_camera_probe_maps_worker_payload(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(core_config, "get_settings", lambda: _S(), raising=True)
 
-    # Fake successful HTTP call returning a worker payload
     class _Resp:
         def __enter__(self) -> _Resp:
             return self
@@ -125,9 +117,7 @@ def test_create_camera_invalid_rtsp_returns_400(monkeypatch: pytest.MonkeyPatch)
     app = _app()
     import backend.app.features.cameras.router as cameras_router
 
-    # Bypass auth to hit validation quickly
     monkeypatch.setattr(cameras_router, "_authorize", lambda request: "user", raising=True)
-    # Force validation failure before DB touch
     monkeypatch.setattr(
         cameras_router,
         "assert_rtsp_endpoint_allowed",
@@ -153,7 +143,6 @@ def test_update_camera_invalid_rtsp_returns_400(monkeypatch: pytest.MonkeyPatch)
     app = _app()
     import backend.app.features.cameras.router as cameras_router
 
-    # Bypass auth and provide a fake current record
     monkeypatch.setattr(cameras_router, "_authorize", lambda request: "user", raising=True)
 
     class _FakeStore:
