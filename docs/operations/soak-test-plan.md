@@ -16,9 +16,11 @@
 - clip 디스크 회전(rotation)이 여러 사이클에 걸쳐서도 올바르게 동작하는지
 - 장시간 fps 안정성
 
-clip evidence의 핵심 내구성 경로가 `/proc/self/fd/{descriptor}`
-(`worker/pipeline/output/evidence/evidence_media.py:75`)에 의존하는 **Linux
-전용** 구현이라, fd 누수 관찰 자체도 Linux 호스트에서만 유효하다.
+clip evidence의 미디어 검사(`worker/pipeline/output/evidence/evidence_media.py`의
+`_probe_media()`)는 `/proc/self/fd`가 있으면 `/proc/self/fd/{descriptor}`를,
+없으면 `/dev/fd/{descriptor}`를 `ffprobe`에 넘기므로(`5e9c485`부터) Linux
+전용이 아니다. 아래 fd 카운트 측정은 `/proc/<pid>/fd`를 읽으므로 Linux 호스트
+기준이다.
 
 ## 시나리오 정의
 
@@ -28,7 +30,7 @@ clip evidence의 핵심 내구성 경로가 `/proc/self/fd/{descriptor}`
 | 카메라 수 | 2개 이상 RTSP 카메라 |
 | clip 저장 | `clip.enabled=true` (worker YAML 또는 env — [`docs/operations/config-pitfalls.md`](config-pitfalls.md) #3 참고) |
 | 이벤트 주입 | 낙상/침대이탈 이벤트를 주기적으로 인위 발생 (예: 사람이 직접 시연하거나 테스트 클립 재생) |
-| 실행 환경 | Linux + 실 NVIDIA GPU 호스트 (CUDA 프로파일). macOS/MPS 환경은 `/proc/self/fd` 부재로 clip 경로의 본래 코드가 실행되지 않아 대상 아님 |
+| 실행 환경 | Linux + 실 NVIDIA GPU 호스트 (CUDA 프로파일) |
 
 ## 측정 지표와 통과/실패 기준
 
@@ -49,9 +51,9 @@ clip evidence의 핵심 내구성 경로가 `/proc/self/fd/{descriptor}`
 ### 2. 파일 디스크립터(fd) 카운트 안정성
 
 - **측정**: `/proc/<pid>/fd`(worker PID) 내 항목 수를 RSS와 동일한 주기로
-  샘플링한다. clip evidence 경로가 `/proc/self/fd/{descriptor}`를 직접
-  사용하므로(`worker/pipeline/output/evidence/evidence_media.py:75`) 이
-  경로는 **Linux 전용**이며, 이 지표 역시 Linux 호스트에서만 유효하다.
+  샘플링한다. 이 측정 방법이 `/proc`를 읽으므로 이 지표는 Linux 호스트
+  기준이다. clip evidence 경로 자체는 위 배경에 적은 대로 `/proc` 없이도
+  동작한다.
 - **기준**:
   - **통과**: fd 카운트가 이벤트/재연결 발생과 상관없이 일정 범위 내에서
     등락하며, 24시간 구간 전체에서 우상향 추세가 없다.
@@ -83,10 +85,13 @@ clip evidence의 핵심 내구성 경로가 `/proc/self/fd/{descriptor}`
 
 - **측정**: clip 저장이 디스크 공간 상한에 가까워지도록 유도(또는 충분히 긴
   시간 동안 자연 누적)한 뒤, 오래된 clip이 정책대로 삭제되는지 여러 사이클에
-  걸쳐 확인한다. `ClipRecorder.start()`의 sweep/rotate/admit 순서는 **부팅
-  시 1회**만 보장되므로 (`worker/runtime/worker.py:1170-1177`), 소크 테스트의
-  목적은 재부팅 없이 장시간 실행 중에도 이 회전 로직 자체(주기적 sweep 등)가
-  반복적으로 올바르게 동작하는지 확인하는 데 있다.
+  걸쳐 확인한다. 이 항목이 인용하던 `ClipRecorder.start()`는 `ClipRecorder`와
+  함께 `db09fc1`에서 삭제됐고, 현재 worker 코드에는 보관 기간이나 디스크 상한에 따라
+  clip을 자동으로 삭제하는 경로가 없다:
+  `worker/pipeline/output/evidence/clip_config.py`의
+  `configured_retention_days()`와 `configured_disk_high_watermark()`는 정의만
+  있고 호출하는 곳이 없다. 따라서 이 항목은 회전 구현이 생긴 뒤에야 판정할 수
+  있다.
 - **기준**:
   - **통과**: 여러 회전 사이클에 걸쳐 디스크 사용량이 설정된 상한을 넘지
     않고, 오래된 clip이 정책대로(예: 오래된 순) 삭제된다.

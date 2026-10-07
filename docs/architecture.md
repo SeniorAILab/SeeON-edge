@@ -318,9 +318,9 @@ Rollback of a bad worker image is image-digest based; see
 
 Every non-`__init__` source file in the legacy tree has exactly one owner below.
 These rows are historical citations of a migration, not operator instructions.
-`tests/test_worker_architecture_docs.py` asserts the map stays complete and
-unambiguous while the legacy tree exists, and stops constraining it once the
-tree is deleted.
+`tests/test_worker_architecture_docs.py`, which asserted that the map was
+complete and unambiguous while the legacy tree existed, has been deleted, so no
+test constrains these rows any more.
 
 | Current source | Final owner |
 | --- | --- |
@@ -431,7 +431,7 @@ feature it proves. Developer-convenience harnesses are deferred with the tools.
 | Bed-exit interpretation and latching | `worker/domains/bed_exit/` | `tests/test_domains_bed_exit.py`, `tests/test_worker_domains_bed_exit.py` | ported |
 | Incident cooldown and duplicate suppression | `worker/pipeline/decision/incident_manager.py` | `tests/test_worker_incident_manager.py` | ported |
 | Relay heartbeat and alert egress | `shared/events/edge_ingest_client.py` | `tests/test_e2e_night_bed_exit_relay.py` | ported |
-| Evidence clip recording and finalisation | `worker/pipeline/output/evidence/clip_recorder.py` | `tests/test_clip_recorder.py` | ported |
+| Evidence clip recording and finalisation | `worker/pipeline/output/evidence/smart_record_actor.py` (recording), `worker/pipeline/output/evidence/flow_clip_publication.py` and `worker/pipeline/output/evidence/clip_publication.py` (finalisation and publication) | `tests/test_smart_record_actor.py`, `tests/test_flow_clip_publication.py`, `tests/test_worker_clip_publication.py` | ported |
 | Snapshot store | `worker/pipeline/output/evidence/snapshot_store.py` | `tests/test_snapshot_store.py` | ported |
 | Evidence outbox and export delivery | `worker/pipeline/output/evidence/evidence_runtime.py` | `tests/test_worker_evidence_export_composition.py` | ported |
 | Worker config load and LKG fallback | `worker/runtime/config/loader.py` | `tests/test_ml_worker_yaml_config.py` | ported |
@@ -464,40 +464,20 @@ cell is a backticked `edge/` path is reserved for the ownership map above.
 These are known divergences between the plan and the tree. They are recorded
 here so nobody documents an intention as a fact.
 
-**One parity row cannot be fully proven on macOS.** The ledger calls a row
-`ported` when a behaviour test covers it. Running the cited tests for every
-`ported` row on this host gives 214 passed, 2 failed, and both failures belong
-to one row:
-
-| Cited test | Row it is evidence for | Why it cannot run |
-| --- | --- | --- |
-| `tests/test_clip_recorder.py::test_clip_recorder_finalizes_atomic_manifest_with_pre_and_post_window` | Evidence clip recording and finalisation | resolving `/proc/self/fd/N` fails, so no manifest is published |
-| `tests/test_clip_recorder.py::test_clip_recorder_fsyncs_media_and_manifest_before_staging_cleanup` | Evidence clip recording and finalisation | reads `/proc/self/fd`, which macOS does not have |
-
-This row is genuinely Linux-only, and not by accident:
-`worker/pipeline/output/evidence/evidence_media.py` hands `ffprobe` a
-`/proc/self/fd/{descriptor}` reference to an already-open inode so the probe
-cannot be TOCTOU-swapped for a different file. That is production code, so the
-capability itself requires `/proc` — the deploy target is a Linux container, so
-this is a deliberate floor rather than a portability bug.
+**Resolved: the clip recording row used to be unprovable on macOS.** Two of
+its cited tests, in `tests/test_clip_recorder.py`, failed on macOS, and the row
+was recorded as Linux-only because
+`worker/pipeline/output/evidence/evidence_media.py` handed `ffprobe` a
+`/proc/self/fd/{descriptor}` reference. Neither holds any more. The recorder and
+that test file were deleted in `db09fc1`, and the row now cites the Smart Record
+and clip publication tests. Since `5e9c485`, `_probe_media()` in
+`evidence_media.py` passes `/proc/self/fd/{descriptor}` when `/proc/self/fd`
+exists and `/dev/fd/{descriptor}` otherwise. In both cases the path names the
+file that `inspect_finalized_media()` already holds open, so the probe still
+cannot be TOCTOU-swapped for a different file, and it does not require `/proc`.
 `tests/test_evidence_trust_boundaries.py::test_media_probe_uses_same_open_inode_when_path_is_swapped`
 pins the same-inode probe: `ffprobe` still reads the original bytes when the
-path is swapped mid-probe.
-
-The row stays `ported`: the evidence exists and CI runs on Ubuntu. What is
-missing is *local* proof, which matters because this branch was developed and
-gated on macOS. Treat it as CI-verified rather than dev-verified, and do not
-read its local failures as a parity gap.
-
-All eight local failures outside the vendor-drift one trace to this single
-design decision, not to a missing tool: five in
-`tests/test_clip_export_reconciliation.py`, two in `tests/test_clip_recorder.py`,
-one in `tests/test_evidence_trust_boundaries.py`. `ffprobe` **is** installed on
-this machine, so "install ffprobe" does not clear any of them. Note that the
-production error text says otherwise — it reports `ffprobe unavailable` for an
-unresolvable `/proc/self/fd/N` too, which is
-[#11](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/11) and is a
-misreported reason rather than a second cause.
+path is swapped mid-probe. The test picks its descriptor root by the same rule.
 
 **Snapshot store used to be listed here too, and no longer is.** Three of its
 cited tests also failed on macOS, but for an entirely different reason: they
