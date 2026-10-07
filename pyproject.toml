@@ -120,6 +120,14 @@ strict = true
 module = ["shared.*"]
 strict = true
 
+[[tool.mypy.overrides]]
+module = ["backend.app.features.cameras.worker_config_service"]
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["backend.app.features.cameras.rtsp_probe_service"]
+strict = true
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

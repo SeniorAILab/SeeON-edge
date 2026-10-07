@@ -843,6 +843,18 @@ _LINT_STEPS = [
     {"run": "uv run --group lint ruff check ."},
     {"run": "uv run --group lint lint-imports"},
     {
+        "run": (
+            "uv run --group lint mypy --follow-imports=silent "
+            "backend/app/features/cameras/worker_config_service.py"
+        )
+    },
+    {
+        "run": (
+            "uv run --group lint mypy --follow-imports=silent "
+            "backend/app/features/cameras/rtsp_probe_service.py"
+        )
+    },
+    {
         "name": ("Scope fidelity (no env-provisioned identity or camera roster)"),
         "run": (
             "uv run python scripts/verify_scope_fidelity.py --fixture\n"
