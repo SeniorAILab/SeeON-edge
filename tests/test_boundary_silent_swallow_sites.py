@@ -1,5 +1,6 @@
 import logging
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -85,6 +86,11 @@ def test_mps_is_built_failure_keeps_false_and_logs(caplog: pytest.LogCaptureFixt
     ]
 
 
+class Idle:
+    def run_once(self) -> SenderStep:
+        return SenderStep.IDLE
+
+
 class RaisingOnceSender:
     def __init__(self, runtime_stop: threading.Event) -> None:
         self.stop = runtime_stop
@@ -99,21 +105,18 @@ class RaisingOnceSender:
 def test_evidence_sender_tick_failure_is_logged_and_loop_keeps_retry(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    runtime = object.__new__(EvidenceExportRuntime)
+    runtime = EvidenceExportRuntime(store_dir=Path(), queue_directory=Path(), sender=Idle())
     runtime._stop_event = threading.Event()
     runtime._wake_sender = threading.Event()
     runtime._wake_sender.set()
     sender = RaisingOnceSender(runtime._stop_event)
     runtime.sender = sender
-    with caplog.at_level(logging.WARNING, logger="shared.boundary"):
+    with caplog.at_level(logging.WARNING):
         runtime._run_sender()
     assert sender.calls == 1
     assert not runtime._wake_sender.is_set()
-    assert contained(caplog) == [
-        (
-            "contained failure boundary=sender_tick stage=evidence_sender_tick "
-            "exception_class=RuntimeError"
-        )
+    assert [r.getMessage() for r in caplog.records] == [
+        "evidence sender tick failing exception_class=RuntimeError failures=1"
     ]
 
 
