@@ -70,7 +70,6 @@ RUN if [ "$SOURCE_REVISION" = "0000000000000000000000000000000000000000" ] \
     printf '%s\n' "$EDGE_DATABASE_SCHEMA_VERSION" > /opt/seeon/edge-database-schema-version; \
     chmod 0444 /opt/seeon/ml-worker-image-revision /opt/seeon/edge-database-schema-version
 LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
-      org.opencontainers.image.source="SeniorAILab/eldercare-fall-ml-v2" \
       seeon.edge.database.schema-version="${EDGE_DATABASE_SCHEMA_VERSION}" \
       com.seniorailab.seeon.deepstream.image="nvcr.io/nvidia/deepstream@sha256:f6fa0247da9290979cbb05749e7da9435d089c93db7c4dcfe85ba2488b5f4994" \
       com.seniorailab.seeon.worker.profile="flow"
