@@ -1,5 +1,3 @@
-"""Atomic owner-only persistence-authority file shared with the API root."""
-
 from __future__ import annotations
 
 import json
@@ -13,7 +11,6 @@ from backend.app.edge_db.migration.errors import MigrationError
 
 
 def read_authority_file(path: Path) -> AuthorityToken:
-    """Read the token in the exact format the API root accepts."""
     try:
         text = path.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError) as error:
@@ -33,7 +30,6 @@ def read_authority_file(path: Path) -> AuthorityToken:
 
 
 def stage_authority_file(path: Path, token: AuthorityToken) -> Path:
-    """Write an fsynced 0600 temp beside the destination; publish after commit."""
     body = json.dumps(
         {"generation": token.generation, "writer_token": str(token.writer_token)},
         separators=(",", ":"),
@@ -53,7 +49,6 @@ def stage_authority_file(path: Path, token: AuthorityToken) -> Path:
 
 
 def publish_authority_file(temp: Path, path: Path, *, replace: bool) -> None:
-    """Publish a staged file; provisioning never overwrites, transfer always replaces."""
     if replace:
         os.replace(temp, path)
     else:

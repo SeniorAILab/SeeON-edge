@@ -1,5 +1,3 @@
-"""Bounded in-memory execution-record lanes. Overflow is counted, never hidden."""
-
 from __future__ import annotations
 
 import threading
@@ -16,14 +14,6 @@ RECORD_INVALID_CAUSE = "record-invalid"
 
 @dataclass(frozen=True, slots=True)
 class _LaneKey:
-    """One lane per (camera, boot, producer).
-
-    Boot is part of the key so producer_sequence restarts per boot (the
-    Backend indexes sequences per boot) and so pending loss - overflow and
-    record-invalid gaps - is attributed to the boot that suffered it, never
-    swallowed by a drain for another boot of the same camera.
-    """
-
     camera_id: str
     worker_boot_id: str
     producer: str
@@ -46,8 +36,6 @@ class DrainedLane:
 
 
 class ExecutionRecordLanes:
-    """Per-(camera, boot, producer) deques. ``try_emit`` is a short-lock append-or-drop."""
-
     def __init__(self, *, lane_capacity: int) -> None:
         if lane_capacity < 1:
             raise ValueError("lane_capacity must be a positive integer")
@@ -93,13 +81,6 @@ class ExecutionRecordLanes:
             )
 
     def cameras_with_work(self) -> tuple[tuple[str, str], ...]:
-        """Every (camera, boot) with queued records OR pending loss to report.
-
-        A lane holding only overflow / record-invalid gaps still has work:
-        the loss must reach the Backend even if no further valid record ever
-        arrives for that boot, otherwise the gap is hidden until it happens
-        to ride along with a later batch.
-        """
         with self._lock:
             keys: dict[tuple[str, str], None] = {}
             for key, lane in self._lanes.items():
@@ -114,10 +95,6 @@ class ExecutionRecordLanes:
             return sum(len(lane.records) for lane in self._lanes.values())
 
     def drain_for(self, camera_id: str, worker_boot_id: str, *, limit: int) -> DrainedLane | None:
-        """Pop up to ``limit`` records and this boot's pending gaps.
-
-        Encoding and HTTP stay with the caller, after this lock is released.
-        """
         if limit < 1:
             raise ValueError("drain limit must be a positive integer")
         records: list[WireRecord] = []
@@ -128,7 +105,6 @@ class ExecutionRecordLanes:
                     continue
                 while lane.records and len(records) < limit:
                     records.append(lane.records.popleft())
-                # Pending loss for this boot's lane drains with or without records.
                 gaps.extend(_take_overflow(lane))
                 gaps.extend(_take_invalid(lane))
             if records or gaps:
@@ -140,12 +116,6 @@ class ExecutionRecordLanes:
         return DrainedLane(camera_id, worker_boot_id, tuple(records), tuple(gaps))
 
     def restore_unattempted(self, drained: DrainedLane) -> None:
-        """Return a serialized drain's unsent suffix without assigning identities.
-
-        Each producer's suffix fits its original capacity. Older restored
-        records displace only the newest arrivals, which become lane overflow.
-        Gaps are already normalized loss and retain their objects and counts.
-        """
         by_lane: dict[_LaneKey, list[WireRecord]] = {}
         for record in drained.records:
             key = _LaneKey(record.camera_id, record.worker_boot_id, record.producer)
@@ -160,8 +130,6 @@ class ExecutionRecordLanes:
                 if evicted:
                     if lane.overflow is None:
                         lane.overflow = []
-                    # Tail pops are descending and precede any arrival-time
-                    # overflow, so restore sequence order for gap grouping.
                     lane.overflow[:0] = reversed(evicted)
             if drained.gaps:
                 pending = self._export_failed.setdefault(
@@ -202,12 +170,6 @@ class ExecutionRecordLanes:
 def account_unsendable_records(
     drained: DrainedLane, unsendable: Sequence[WireRecord]
 ) -> DrainedLane:
-    """Drop ``unsendable`` records and append one ``record-invalid`` gap each.
-
-    Neighbor records keep their order and sequences. Existing gaps stay in
-    front, with their ``record_count`` unchanged. One gap per dropped record
-    so a hole is not swallowed by a single span.
-    """
     if not unsendable:
         return drained
     pending = {record.record_id: record for record in unsendable}
@@ -271,12 +233,6 @@ def _gaps_for_records(
         if not runs or runs[-1][-1].producer_sequence + 1 != record.producer_sequence:
             runs.append([])
         runs[-1].append(record)
-    # A separately accounted invalid record can leave holes in a failed batch.
-    # Never describe those holes as part of another exact gap. Timestamps may not
-    # be monotonic across the dropped items (PTS-derived vs process-monotonic
-    # producers, reordered publishes), so the time range must be min/max: a
-    # WireGap with from_ns > to_ns is a contract error that would kill the
-    # exporter thread and silently hide the very loss it is meant to report.
     return [
         WireGap(
             producer=producer,

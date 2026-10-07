@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-"""Score a packaged fall model against recorded live-camera traces.
-
-Clean 300-frame training clips never exercise PTS resampling, track-id churn,
-or reconnect padding -- the exact continuity bugs this bundle exists to catch.
-This script instead replays recorded ``replay-trace-v2`` JSONL captures (real
-NvDCF track lifecycles, real gaps) through ``worker.replay.engine.replay()``,
-the same production compositor the worker boots, so the effective transition
-threshold (receipt vs. policy default) is resolved exactly as it is live.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -26,6 +16,16 @@ from worker.adapters.model.ort_pose_bbox56 import OrtPoseBbox56Runner
 from worker.domains.registry import _effective_transition_threshold
 from worker.replay.engine import ReplayRun, replay
 
+_DESCRIPTION = """Score a packaged fall model against recorded live-camera traces.
+
+Clean 300-frame training clips never exercise PTS resampling, track-id churn,
+or reconnect padding -- the exact continuity bugs this bundle exists to catch.
+This script instead replays recorded ``replay-trace-v2`` JSONL captures (real
+NvDCF track lifecycles, real gaps) through ``worker.replay.engine.replay()``,
+the same production compositor the worker boots, so the effective transition
+threshold (receipt vs. policy default) is resolved exactly as it is live.
+"""
+
 DEFAULT_HIT_WINDOW_SEC = 10.0
 DEFAULT_EXCLUSION_WINDOW_SEC = 20.0
 
@@ -40,13 +40,6 @@ def _read_frame_rows(path: Path) -> tuple[str, tuple[ReplayRow, ...]]:
 
 
 def _duration_hours(rows: tuple[ReplayRow, ...]) -> float:
-    """Sum each stream epoch's own span rather than max-min across all rows.
-
-    A reconnect starts a new epoch; the dead time between the old epoch's
-    last row and the new epoch's first is not camera-exposed time, so a
-    single trace-wide max-min would inflate the false-positive-per-camera-hour
-    denominator by counting it anyway.
-    """
     pts_by_epoch: dict[int, list[int]] = {}
     for row in rows:
         pts_by_epoch.setdefault(row.epoch, []).append(row.pts_ns)
@@ -78,12 +71,6 @@ def _peak_score(run: ReplayRun, t0_ns: int, center_sec: float, window_sec: float
 
 
 def _window_fraction(run: ReplayRun) -> tuple[int, int]:
-    """Count live-track frames the classifier scored vs. still warming up on.
-
-    Only these two reasons are "the classifier was asked to score this live
-    track" -- every other missing reason (stride-not-due, resample-gap,
-    track-no-longer-live, ...) is not a warm-up/full-window distinction.
-    """
     scored = 0
     warmup = 0
     for frame in run.frames:
@@ -127,8 +114,6 @@ def score_traces(
 
     runner = runner_factory(bundle)
     policy = _build_policy()
-    # The same resolution worker.domains.registry._fall() applies live: a
-    # promotion-eligible receipt threshold wins, otherwise the policy default.
     effective = _effective_transition_threshold(runner, policy)
 
     owner_fall_hits: list[dict[str, Any]] = []
@@ -246,7 +231,7 @@ def write_receipt(out: Path, receipt: dict[str, Any]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=_DESCRIPTION)
     parser.add_argument("--bundle", type=Path, default=Path("models/fall/pose-bbox56-gru"))
     parser.add_argument("--traces-dir", type=Path, required=True)
     parser.add_argument(

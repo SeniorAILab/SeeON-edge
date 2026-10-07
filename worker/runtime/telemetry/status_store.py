@@ -1,5 +1,3 @@
-"""Thread-safe camera lifecycle status storage."""
-
 from __future__ import annotations
 
 import threading
@@ -11,8 +9,6 @@ from typing import Protocol, final
 
 
 class CameraStatus(StrEnum):
-    """Operator-visible camera lifecycle state."""
-
     STARTING = "STARTING"
     READY = "READY"
     DEGRADED = "DEGRADED"
@@ -21,8 +17,6 @@ class CameraStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class CameraStatusRecord:
-    """Latest lifecycle state for one camera."""
-
     camera_id: str
     facility_id: str
     status: CameraStatus
@@ -32,8 +26,6 @@ class CameraStatusRecord:
 
 @dataclass(frozen=True, slots=True)
 class OpsEvent:
-    """Bounded operator event without exception or credential content."""
-
     event_type: str
     camera_id: str
     facility_id: str
@@ -44,16 +36,12 @@ class OpsEvent:
 
 @dataclass(frozen=True, slots=True)
 class StatusSnapshot:
-    """Immutable camera lifecycle snapshot."""
-
     cameras: tuple[CameraStatusRecord, ...]
     ops_events: tuple[OpsEvent, ...]
 
 
 @final
 class StatusStore:
-    """Mutable camera state protected for callbacks from ingest threads."""
-
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._statuses: dict[str, CameraStatusRecord] = {}
@@ -169,8 +157,6 @@ class StatusStore:
 
 @final
 class IngestStatusReporter:
-    """Bridge ingest callbacks into the worker-local status store."""
-
     def __init__(
         self,
         store: StatusStore,

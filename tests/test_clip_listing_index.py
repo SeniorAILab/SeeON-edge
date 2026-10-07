@@ -1,5 +1,3 @@
-"""``GET /clips`` answers from the PostgreSQL catalogue without a request-time listing index."""
-
 from __future__ import annotations
 
 from fastapi.testclient import TestClient

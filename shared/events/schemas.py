@@ -1,9 +1,3 @@
-"""Event schemas for ML-emitted events and backend Event API payloads.
-
-ML emits typed events. Backend owns severity/channel/policy/final-dedup;
-ML runtime incident management owns only idempotency and cooldown.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field

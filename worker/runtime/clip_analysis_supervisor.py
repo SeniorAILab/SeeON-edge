@@ -1,5 +1,3 @@
-"""One-at-a-time, bounded subprocess supervision for clip re-analysis."""
-
 from __future__ import annotations
 
 import subprocess
@@ -75,11 +73,9 @@ class ClipAnalysisSupervisor:
     def notify(
         self, clip_id: str, clip_path: Path, clip_sha256: str, *, size_bytes: int, duration_ms: int
     ) -> None:
-        """Publication hook: only bounded, in-memory admission occurs here."""
         self._admit(clip_id, clip_path, clip_sha256, size_bytes, duration_ms, 0, 0, False)
 
     def trigger(self, clip_id: str, clip_path: Path, clip_sha256: str, **facts: int) -> Admission:
-        """Dashboard trigger: manual jobs go to the head of the queue."""
         return self.enqueue(clip_id, clip_path, clip_sha256, front=True, **facts)
 
     def enqueue(
@@ -170,8 +166,6 @@ class ClipAnalysisSupervisor:
             if self._active is not None:
                 self._cancelled.add(self._active.generation)
             self._condition.notify_all()
-        # Prove the child group empty before and after the serve thread exits:
-        # a poisoned slot keeps its process handle until a teardown proof succeeds.
         self._release_after_teardown_proof()
         self._thread.join()
         self._release_after_teardown_proof()

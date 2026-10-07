@@ -1,5 +1,3 @@
-"""Lifetime advisory lock for the shared clip store."""
-
 from __future__ import annotations
 
 import errno
@@ -24,8 +22,6 @@ class ClipStoreLockedError(Exception):
 
 @final
 class ClipStoreLock:
-    """Own one non-blocking flock until explicitly closed."""
-
     def __init__(self, handle: BinaryIO) -> None:
         self._handle: BinaryIO | None = handle
 

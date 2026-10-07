@@ -87,9 +87,6 @@ def _backend_config() -> dict[str, object]:
 def _set_pull_env(monkeypatch: pytest.MonkeyPatch, sandbox: ProductSandbox) -> None:
     monkeypatch.setenv("API_EDGE_RELAY_TOKEN", "relay-token")
     monkeypatch.setenv("API_BACKEND_BASE_URL", "http://backend:3000")
-    # Facility identity is DB-only. Seed a complete enrollment into the same
-    # PostgreSQL schema the real lifespan opens, while endpoints derive from
-    # the one public deployment base URL.
     ConnectionSettingsStore(sandbox.database, sandbox.authority).save(
         {
             "facility_code": "NH-7H2K9M4QXP",
@@ -103,11 +100,6 @@ def _set_pull_env(monkeypatch: pytest.MonkeyPatch, sandbox: ProductSandbox) -> N
 
 
 def _dashboard_camera_registry(sandbox: ProductSandbox) -> CameraRegistryStore:
-    """Register one camera in the PostgreSQL schema that also holds enrollment.
-
-    Production keeps enrollment and the camera registry behind one database
-    authority; a split registry made boot roster sync read an un-enrolled store.
-    """
     store = CameraRegistryStore(sandbox.database, sandbox.authority)
     store.create(
         camera_id="dashboard-camera",
@@ -123,11 +115,6 @@ def test_backend_config_pull_applies_metadata_not_camera_roster(
     monkeypatch: pytest.MonkeyPatch,
     postgres_app_env: ProductSandbox,
 ) -> None:
-    """ml-config pull keeps detection windows/config_version only.
-
-    Pulled cameras must not become a local inventory authority; worker-config
-    stays registry-only (empty when registry is empty).
-    """
     captured: list[tuple[str, str | None, float]] = []
 
     def fake_urlopen(request: urllib.request.Request, timeout: float) -> FakeHTTPResponse:
@@ -176,21 +163,10 @@ def test_backend_detection_windows_present_ignores_legacy_night_window_entirely(
     monkeypatch: pytest.MonkeyPatch,
     postgres_app_env: ProductSandbox,
 ) -> None:
-    """Plan-file payload-level rule: once ``detectionWindows`` is present at
-    all, it is the sole authority for every domain and legacy ``nightWindow``
-    is ignored entirely -- even for domains the map doesn't mention. This is
-    what makes an operator clearing bed_exit's window in the dashboard stick,
-    instead of a stale ``nightWindow`` resurrecting it.
-
-    A dashboard camera is registered so /relay/config (require_available=True)
-    stays available; the pulled camera in the fake backend payload is there
-    only to exercise the pull parser and must not seed the roster (issue #33)."""
-
     def fake_urlopen(request: urllib.request.Request, timeout: float) -> FakeHTTPResponse:
         return FakeHTTPResponse(
             {
                 "configVersion": 7,
-                # Legacy alias present alongside the map: must be ignored.
                 "nightWindow": {"start": "21:00", "end": "06:00", "tz": "Asia/Seoul"},
                 "detectionWindows": {
                     "fall": {"start": "22:00", "end": "05:00", "tz": "UTC"},
@@ -223,12 +199,8 @@ def test_backend_detection_windows_present_ignores_legacy_night_window_entirely(
     assert body["detection_windows"] == {
         "fall": {"start": "22:00", "end": "05:00", "tz": "UTC"},
     }
-    # bed_exit is not in the map, so the map's authority means ALWAYS (24/7)
-    # for bed_exit -- NOT the legacy nightWindow value. The response omits
-    # night_window entirely when it's None (response_model_exclude_none).
     assert "bed_exit" not in body["detection_windows"]
     assert "night_window" not in body
-    # The pulled camera must never seed the roster (issue #33).
     assert body["cameras"] == [
         {
             "camera_id": "dashboard-camera",
@@ -241,13 +213,6 @@ def test_backend_detection_windows_absent_still_uses_legacy_night_window(
     monkeypatch: pytest.MonkeyPatch,
     postgres_app_env: ProductSandbox,
 ) -> None:
-    """When ``detectionWindows`` is absent entirely, the legacy single
-    ``nightWindow`` field still applies to bed_exit (compat fallback).
-
-    A dashboard camera is registered so /relay/config (require_available=True)
-    stays available (see issue #33: the pulled camera in the fake backend
-    payload must not seed the roster)."""
-
     def fake_urlopen(request: urllib.request.Request, timeout: float) -> FakeHTTPResponse:
         return FakeHTTPResponse(_backend_config())
 
@@ -272,12 +237,6 @@ def test_backend_config_pull_survives_invalid_window_and_never_populates_cameras
     monkeypatch: pytest.MonkeyPatch,
     postgres_app_env: ProductSandbox,
 ) -> None:
-    """A malformed window value for one domain (start == end here) must not
-    crash the whole pull: it fails open to ALWAYS for that domain (logged to
-    stderr) while other domains' windows still populate. The pulled camera
-    must never seed the worker-config roster (issue #33) -- a registered
-    dashboard camera is the only thing that appears in ``cameras``."""
-
     def fake_urlopen(request: urllib.request.Request, timeout: float) -> FakeHTTPResponse:
         return FakeHTTPResponse(
             {
@@ -424,11 +383,6 @@ def test_config_returns_503_when_backend_config_unavailable(
     monkeypatch: pytest.MonkeyPatch,
     postgres_app_env: ProductSandbox,
 ) -> None:
-    # Relay auth is configured, but no backend enrollment/config pull is
-    # available, so app.state.pulled_config stays None. /config MUST signal
-    # UNAVAILABLE (503)
-    # rather than emit an empty 200 that the worker would persist as LKG,
-    # clobbering a valid last-known-good config.
     monkeypatch.setenv("API_EDGE_RELAY_TOKEN", "relay-token")
 
     with TestClient(create_app()) as client:
@@ -446,8 +400,8 @@ def test_config_refresh_reflects_backend_change_without_restart(
     postgres_app_env: ProductSandbox,
 ) -> None:
     configs = [
-        _backend_config(),  # boot -> config_version 7
-        {  # first GET re-pull -> changed backend config, no restart
+        _backend_config(),
+        {
             "configVersion": 8,
             "nightWindow": {"start": "22:00", "end": "05:00", "tz": "Asia/Seoul"},
             "cameras": [
@@ -506,8 +460,8 @@ def test_config_refresh_preserves_last_good_on_failure(
     def fake_urlopen(url: str, timeout: float) -> FakeHTTPResponse:
         calls["n"] += 1
         if calls["n"] == 1:
-            return FakeHTTPResponse(_backend_config())  # boot success -> version 7
-        raise urllib.error.URLError("backend down")  # refresh fails
+            return FakeHTTPResponse(_backend_config())
+        raise urllib.error.URLError("backend down")
 
     _set_pull_env(monkeypatch, postgres_app_env)
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
@@ -521,7 +475,6 @@ def test_config_refresh_preserves_last_good_on_failure(
             headers={"X-Edge-Relay-Token": "relay-token"},
         )
 
-    # A transient refresh failure preserves the last-good config (200, not 503/blanked).
     assert response.status_code == 200
     assert response.json()["config_version"] == 7
 
@@ -657,23 +610,6 @@ def test_shutdown_bounds_late_refresh_and_discards_its_result(
 def test_successful_refresh_resumes_roster_sync_without_per_camera_mapping(
     monkeypatch: pytest.MonkeyPatch, postgres_app_env: ProductSandbox
 ) -> None:
-    """A backend connectivity recovery (refresh_backend_config transitioning
-    unreachable -> reachable) resumes pending roster-sync work via
-    ``resume_camera_roster_after_connectivity`` -> ``topology_retry_coordinator
-    .trigger(force=True, refresh=True)`` -- not a per-camera mapping PUT any
-    more (there is no ``_map_backend`` retry path left to exercise; see
-    BLOCKER 2 in the merge notes). That trigger only ever reaches the backend
-    once every registered camera has an explicit floor/room reference; this
-    camera has neither, so the coordinator's readiness check stops the
-    snapshot before any outbound call.
-
-    Pinning the two BLOCKER-2 properties this test actually protects:
-    (2) unmapped camera retained rather than dropped -- refresh leaves the
-    pending record exactly as it was (still local-id-addressed, still
-    unmapped), it does not get spuriously mapped or removed; and (1)
-    canonical id resolution -- the worker-config projection falls back to the
-    record's own local id while it is unmapped.
-    """
     _set_pull_env(monkeypatch, postgres_app_env)
 
     mapping_calls: list[dict[str, object]] = []
@@ -703,13 +639,10 @@ def test_successful_refresh_resumes_roster_sync_without_per_camera_mapping(
 
         record = store.get("local-uuid-9")
         assert record is not None
-        # (2) Retained, not dropped: refresh does not touch this record --
-        # no legacy per-camera mapping endpoint exists any more to call.
         assert record["backend_camera_id"] is None
         assert record["mapping_pending"] is True
         assert mapping_calls == []
 
-        # (1) Canonical id resolution: unmapped falls back to the local id.
         worker_config = client.get(
             "/api/v1/cameras/worker-config",
             headers={"X-Edge-Relay-Token": "relay-token"},
@@ -722,7 +655,6 @@ def test_successful_refresh_resumes_roster_sync_without_per_camera_mapping(
 def test_backend_camera_mapper_surface_is_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Per-camera mapper construction is gone; env tokens cannot seed it."""
     from backend.app.shared import backend_mapping
 
     assert not hasattr(backend_mapping, "BackendCameraMapper")
@@ -743,15 +675,6 @@ def test_backend_detection_windows_populate_per_domain_map_and_bed_exit_alias(
     monkeypatch: pytest.MonkeyPatch,
     postgres_app_env: ProductSandbox,
 ) -> None:
-    """The backend's ``detectionWindows`` (domain -> window|null) becomes
-    ``PulledWorkerConfig.detection_windows``; a null entry for a domain is
-    dropped rather than stored, and "bed_exit" also populates the deprecated
-    ``night_window`` alias for old workers.
-
-    A dashboard camera is registered so /relay/config (require_available=True)
-    stays available; the pulled camera in the fake backend payload must not
-    seed the roster (issue #33)."""
-
     def fake_urlopen(url: str, timeout: float) -> FakeHTTPResponse:
         return FakeHTTPResponse(
             {
@@ -798,7 +721,6 @@ def test_backend_detection_windows_populate_per_domain_map_and_bed_exit_alias(
         "bed_exit": {"start": "21:00", "end": "06:00", "tz": "Asia/Seoul"},
         "fall": {"start": "22:00", "end": "05:00", "tz": "UTC"},
     }
-    # The pulled camera ("cam-1") must never seed the roster (issue #33).
     assert body["cameras"] == [
         {
             "camera_id": "dashboard-camera",
@@ -811,9 +733,6 @@ def test_backend_detection_windows_absent_falls_back_to_legacy_night_window(
     monkeypatch: pytest.MonkeyPatch,
     postgres_app_env: ProductSandbox,
 ) -> None:
-    """When the backend has not rolled out ``detectionWindows`` yet, the
-    legacy single ``nightWindow`` field still maps to "bed_exit"."""
-
     def fake_urlopen(url: str, timeout: float) -> FakeHTTPResponse:
         return FakeHTTPResponse(_backend_config())
 

@@ -1,5 +1,3 @@
-"""Native PostgreSQL audit append and snapshot verification through the database owner."""
-
 from __future__ import annotations
 
 import json
@@ -21,8 +19,6 @@ from backend.app.features.audit.verification import GENESIS_HASH, AuditVerificat
 
 
 def _lock_audit_chain(connection: psycopg.Connection) -> None:
-    """Serialize chain reads within an already active transaction."""
-    # Same transaction lock as the SQL insert trigger.
     connection.execute("SELECT pg_advisory_xact_lock('audit_events'::regclass::oid::bigint)")
 
 
@@ -66,12 +62,6 @@ def append_postgres_audit(connection: psycopg.Connection, event: AuditEvent) -> 
 
 
 class PostgresAuditStore:
-    """Audit component borrowing the lifespan database and writer authority.
-
-    Verification is stateless; readiness and checkpoint publication belong to
-    the caller, not this component.
-    """
-
     def __init__(self, database: PostgresDatabase, authority: AuthorityToken) -> None:
         self.database = database
         self.authority = authority
@@ -79,12 +69,6 @@ class PostgresAuditStore:
     def append(
         self, event: AuditEvent, *, connection: psycopg.Connection | None = None
     ) -> AuditRecord:
-        """Return after owned COMMIT, or a tentative record on the caller's transaction.
-
-        A caller-owned result is not durable until that caller commits. No
-        transaction is committed, retried, or nested on the caller-owned path.
-        """
-
         def append(owned: psycopg.Connection) -> AuditRecord:
             require_authority(owned, self.authority)
             return append_postgres_audit(owned, event)
@@ -98,8 +82,6 @@ class PostgresAuditStore:
         return self.database.transact(append)
 
     def append_batch(self, events: Sequence[AuditEvent]) -> tuple[AuditRecord, ...]:
-        """Commit the complete group atomically; release records only after COMMIT."""
-
         def append(connection: psycopg.Connection) -> tuple[AuditRecord, ...]:
             require_authority(connection, self.authority)
             return tuple(append_postgres_audit(connection, event) for event in events)
@@ -107,12 +89,9 @@ class PostgresAuditStore:
         return self.database.transact(append)
 
     def verify(self, checkpoint: PostgresAuditCheckpoint | None = None) -> PostgresAuditCheckpoint:
-        """Release a full-snapshot continuity anchor only after COMMIT/pool exit."""
         try:
             return self.database.read_snapshot(
                 lambda connection: _verify_snapshot(connection, self.database.schema, checkpoint)
             )
         except (AuditVerificationError, psycopg.Error, OSError):
-            # Include known COMMIT rejection; already-safe typed owner failures,
-            # especially CommitOutcomeUnknown, propagate without replay.
             raise AuditVerificationError("audit verification failed") from None

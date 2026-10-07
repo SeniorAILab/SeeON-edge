@@ -1,5 +1,3 @@
-"""Browser-compatible, view-only renditions of immutable evidence clips."""
-
 from __future__ import annotations
 
 import logging
@@ -23,13 +21,11 @@ _PLAYBACK_EXECUTOR: Final = ThreadPoolExecutor(
 
 
 class PlaybackRenditionError(RuntimeError):
-    """A browser playback rendition could not be created."""
+    ...
 
 
 @dataclass(frozen=True, slots=True)
 class VideoTiming:
-    """Decoded video timing needed to bind a rendition to its source."""
-
     time_base_numerator: int
     time_base_denominator: int
     pts: tuple[int, ...]
@@ -39,7 +35,6 @@ def probe_video_codec(
     path: Path,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> str:
-    """Return the first video stream codec reported by ffprobe."""
     try:
         result = run(
             [
@@ -67,7 +62,6 @@ def probe_video_codec(
 
 
 def read_video_timing(path: Path) -> VideoTiming:
-    """Decode one video stream single-threaded and return its complete PTS sequence."""
     try:
         with av.open(str(path)) as container:
             stream = container.streams.video[0]
@@ -83,7 +77,6 @@ def read_video_timing(path: Path) -> VideoTiming:
 
 
 def schedule_playback_rendition(clip_path: Path, clip_id: str) -> Future[Path | None]:
-    """Queue view-only transcode work outside evidence publication and relay delivery."""
     from worker.pipeline.output.evidence.playback_rendition_publish import (
         write_playback_rendition,
     )

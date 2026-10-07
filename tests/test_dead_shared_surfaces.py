@@ -1,12 +1,3 @@
-"""Reachability, export, package, and image contracts for retired shared event surfaces.
-
-The shared in-memory ``Outbox`` and its logging ``EventPublisher`` were
-production-unreachable: nothing in ``backend``, ``worker``, ``shared``,
-``contracts``, or packaged operator scripts constructed them. They shipped only
-to satisfy a test. These contracts prove they are gone and stay gone, while the
-active ``DeliveryQueue`` and ``build_audit_envelope`` seams remain.
-"""
-
 from __future__ import annotations
 
 import importlib

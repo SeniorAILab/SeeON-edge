@@ -1,5 +1,3 @@
-"""Audit-chain row verification shared by the PostgreSQL audit verifier."""
-
 from __future__ import annotations
 
 import json

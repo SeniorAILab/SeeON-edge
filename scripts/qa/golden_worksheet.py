@@ -1,15 +1,3 @@
-"""Create a stratified human-labelling worksheet of candidate episodes.
-
-An *episode* merges consecutive incidents on one camera and event type whose
-``detected_at`` gaps stay inside the owner-confirmed horizon (fall 120 s,
-bed-exit 60 s). Only episodes whose first incident has a clip are candidates,
-because the labeller judges the clip. Candidates are spread evenly across each
-camera/type bucket's time span (deterministic, no randomness) so the worksheet
-is not the first hour of the corpus.
-
-Run with ``python -m scripts.qa.golden_worksheet``.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -29,7 +17,6 @@ def _time(value: object) -> datetime:
 
 
 def episodes(rows: list[dict[str, object]]) -> list[dict[str, object]]:
-    """Merge one bucket's time-ordered incidents into episodes."""
     merged: list[dict[str, object]] = []
     for row in sorted(rows, key=lambda item: str(item["detected_at"])):
         event_type = str(row["event_type"])
@@ -100,8 +87,6 @@ def build(manifest: Path, output: Path, limit: int, roster: tuple[str, ...]) -> 
     if shortfall:
         raise ValueError(f"roster cameras have fewer than five candidates: {', '.join(shortfall)}")
     selected = []
-    # A golden corpus is only representative when every included camera has
-    # at least five independently reviewable episodes.
     for camera_id in roster:
         selected.extend(_spread(by_camera[camera_id], 5))
     selected_ids = {str(episode["episode_id"]) for episode in selected}

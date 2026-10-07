@@ -1,5 +1,3 @@
-"""Bed-exit domain: assignment, latching and night-window decisions."""
-
 from __future__ import annotations
 
 from worker.domains.bed_exit.detector import BedExitMonitor, BedExitScoringRecorder

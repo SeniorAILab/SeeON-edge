@@ -1,21 +1,3 @@
-"""Clip storage location: usage stats, directory browse, and location selection.
-
-``GET /clips/storage`` -- current disk usage plus the selected subdirectory.
-``GET /clips/storage/browse?path=<rel>`` -- one directory's subdirectories,
-for the dashboard's folder-picker modal.
-``PUT /clips/storage/location`` body ``{"path": ...}`` -- validate and
-persist a new selection (``ClipStorageLocationStore``); propagated to the
-worker as ``clip_store_subdir`` via ``cameras.router.worker_config_snapshot``.
-
-Scope (see ``.omc/plans/redesign-api-contracts.md`` §5): choosing a
-subdirectory *within* the ``CLIP_STORE_DIR`` mount (default
-``/var/lib/clip-store``) only -- changing the host mount itself is out of
-scope. Every client-supplied path is walked with O_NOFOLLOW dir_fd chaining
-(the same pattern ``evidence/router.py``'s ``_verified_media`` uses for the
-worker's clip-media reads) so a crafted ``../../etc`` or a symlink planted
-inside the store can never resolve outside the configured root.
-"""
-
 from __future__ import annotations
 
 import os
@@ -55,8 +37,6 @@ class ClipStorageBrowseResponse(BaseModel):
 class ClipStorageResponse(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
 
-    # Stable operator-facing label for the configured mount — never an absolute
-    # host filesystem path (path disclosure hardening).
     mount_label: str
     selected_path: str
     total_bytes: int | None
@@ -108,9 +88,6 @@ def put_clip_storage_location(
     actor = _authorize(request)
     segments = _validate_relative_path(payload.path)
     try:
-        # Existence + directory-ness check only; the listing itself is
-        # unused here, but walking it is what proves the target is a real,
-        # symlink-free directory inside the store root.
         _list_subdirectories(_configured_root(), segments)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="path not found") from exc
@@ -133,8 +110,6 @@ def put_clip_storage_location(
 def _storage_snapshot(app: FastAPI) -> dict[str, object]:
     root = _configured_root()
     selected = _location_store(app).get()
-    # Capacity is measured against the real mount; the absolute path never leaves
-    # the process boundary toward the authenticated UI.
     mount_label = "clip-store"
     try:
         usage = shutil.disk_usage(root)
@@ -162,14 +137,6 @@ def _configured_root() -> Path:
 
 
 def _validate_relative_path(value: str) -> list[str]:
-    """Split and validate a client-supplied relative path into segments.
-
-    Rejects anything that is not a syntactically safe relative path --
-    absolute paths and ``..`` segments in particular -- with a 400 before it
-    is ever used to construct a filesystem path. ``Path(base) / value``
-    silently discards ``base`` and becomes absolute if ``value`` starts with
-    ``/``, so this check happens on the raw string, not after joining.
-    """
     if "\x00" in value:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid path")
     candidate = PurePosixPath(value)
@@ -185,13 +152,6 @@ def _validate_relative_path(value: str) -> list[str]:
 
 
 def _list_subdirectories(root: Path, segments: list[str]) -> list[str]:
-    """Walk from ``root`` through ``segments`` via O_NOFOLLOW dir_fd
-    chaining, rejecting a symlink at any level, and return the sorted names
-    of the target directory's direct (non-symlink) subdirectories.
-
-    Raises ``FileNotFoundError`` if the root or any segment does not exist,
-    is not a directory, or is a symlink -- callers translate that to 404.
-    """
     fds: list[int] = []
     try:
         fds.append(os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW))

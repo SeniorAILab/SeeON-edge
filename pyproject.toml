@@ -139,7 +139,6 @@ exclude = [".scratch", ".venv"]
 
 # Stability deny-list (docs/rules/code-stability.md, ADR):
 #   B    bugbear — B904 raise-from, B006 mutable defaults
-#   BLE  blind except Exception (boundary catches need `# noqa: BLE001` + reason)
 #   S110/S112  try-except-pass / try-except-continue
 #   TRY  tryceratops — TRY002 vanilla raise, TRY400 logging.exception in handlers
 [tool.ruff.lint]
@@ -195,9 +194,6 @@ ignore = ["TRY003"]
 "tests/test_edge_db_schema18_constraints.py" = ["ISC004"]
 "tests/test_worker_architecture_docs.py" = ["ISC004"]
 "tests/test_edge_db_migrations.py" = ["ISC004"]
-# contracts/event.py is vendored byte-for-byte from fall-ml-v2 and pinned by
-# tests/test_worker_event_payload_boundary.py; its __all__ order is not ours to sort.
-"contracts/event.py" = ["RUF022"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

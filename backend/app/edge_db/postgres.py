@@ -1,10 +1,3 @@
-"""Native PostgreSQL transactions; no schema bootstrap or application ACK policy.
-
-Callbacks receive a borrowed connection and must not retain it, change session
-settings, or manage transactions themselves. A returned value is released only
-after COMMIT and the pool connection context have both exited successfully.
-"""
-
 from __future__ import annotations
 
 import math
@@ -52,39 +45,34 @@ class PoolBudget:
 
 
 class PostgresError(RuntimeError):
-    """A privacy-safe database owner failure."""
+    ...
 
 
 class PostgresStartupError(PostgresError):
-    """The bounded startup did not establish a safe connection."""
+    ...
 
 
 class PostgresShutdownError(PostgresError):
-    """Shutdown did not establish successful finalization and pool disposal."""
+    ...
 
 
 class PostgresShutdownTimeout(PostgresShutdownError):
-    """The shutdown deadline expired; admission remains irreversibly stopped.
-
-    A later close may resume drain/cleanup, but never repeats finalization.
-    """
+    ...
 
 
 class PostgresUnavailable(PostgresError):
-    """No usable database connection is available."""
+    ...
 
 
 class PostgresPoolBusy(PostgresUnavailable):
-    """The bounded acquisition queue or acquisition deadline was exhausted."""
+    ...
 
 
 class PostgresTransactionStateError(PostgresError):
-    """A callback left its transaction aborted or managed it itself."""
+    ...
 
 
 class CommitOutcomeUnknown(PostgresError):
-    """COMMIT lost its connection; neither success nor rollback is established."""
-
     def __init__(self) -> None:
         super().__init__("PostgreSQL commit outcome is unknown; automatic retry is forbidden")
 
@@ -100,8 +88,6 @@ class _ShutdownFailure(Enum):
 
 
 class _PrivateConnection(psycopg.Connection):
-    """Keep pool retry/discard logging from printing libpq connection details."""
-
     def __repr__(self) -> str:
         return "<PostgresConnection redacted>"
 
@@ -110,8 +96,6 @@ class _PrivateConnection(psycopg.Connection):
         try:
             return super().connect(conninfo, **kwargs)
         except (psycopg.Error, OSError, ValueError, TypeError):
-            # psycopg_pool logs connection exceptions during background retries.
-            # In particular, libpq errors can include host/user/database strings.
             raise psycopg.OperationalError("PostgreSQL connection failed") from None
 
 
@@ -170,7 +154,6 @@ class PostgresDatabase:
 
     @property
     def schema(self) -> str:
-        """Return the configured namespace, never connection information."""
         return self._schema
 
     def _configure(self, connection: psycopg.Connection) -> None:
@@ -187,7 +170,6 @@ class PostgresDatabase:
                     str(self._budget.statement_timeout_ms),
                 ),
             )
-            # An omitted pg_temp is implicitly searched before permanent relations.
             connection.execute(
                 sql.SQL("SET search_path TO {}, pg_catalog, pg_temp").format(
                     sql.Identifier(self._schema)
@@ -202,7 +184,6 @@ class PostgresDatabase:
                 "pg_catalog.current_setting('session_replication_role')"
             ).fetchone()
         except (psycopg.Error, OSError, ValueError, TypeError):
-            # This callback also runs on the pool's background worker.
             raise PostgresStartupError("PostgreSQL connection configuration is unsafe") from None
         if row != ("on", "on", "on", self._schema, "UTF8", "origin"):
             raise PostgresStartupError("PostgreSQL durability or namespace configuration is unsafe")
@@ -216,10 +197,6 @@ class PostgresDatabase:
             raise PostgresTransactionStateError("PostgreSQL checkout session is not idle")
 
     def _configure_checkout(self, connection: psycopg.Connection) -> None:
-        # A pool reset callback runs asynchronously after putconn. In the pinned
-        # pool, closing can discard a queued ReturnConnection without closing its
-        # connection. Keep session validation inside the complete owner lease,
-        # and let the pool's callback-free return path run synchronously.
         try:
             self._require_idle_session(connection)
             self._configure(connection)
@@ -258,8 +235,6 @@ class PostgresDatabase:
         primary_error: BaseException | None = None
         try:
             self._pool.open(wait=False)
-            # Pool.wait() closes with its own default timeout on failure.
-            # Keep the real checkout, including context exit, in our reservation.
             with self._pool.connection(timeout=self._budget.startup_timeout_sec) as connection:
                 try:
                     self._configure_checkout(connection)
@@ -285,8 +260,6 @@ class PostgresDatabase:
                 self._condition.notify_all()
             if cleanup:
                 try:
-                    # Cleanup records only a static classification. Never replace
-                    # the startup failure/cancellation with a cleanup exception.
                     with suppress(BaseException):
                         self._close_pool(monotonic() + self._budget.startup_timeout_sec)
                 finally:
@@ -301,7 +274,6 @@ class PostgresDatabase:
             self._started = True
 
     def stop_admission(self) -> None:
-        """Irreversibly reject new work without interrupting admitted scopes."""
         with self._condition:
             self._stopped = True
             self._condition.notify_all()
@@ -314,13 +286,6 @@ class PostgresDatabase:
         return remaining
 
     def close(self, *, timeout_sec: float, finalizer: Callable[[], None] | None = None) -> None:
-        """Stop, drain, optionally finalize once, then dispose the shared pool.
-
-        One monotonic deadline bounds waits and the pool's cleanup budget. A
-        synchronous finalizer cannot be forcibly interrupted: its deadline is
-        checked before and after invocation. An async caller must supervise the
-        actual shutdown worker even after its own timeout or cancellation.
-        """
         try:
             valid_timeout = (
                 type(timeout_sec) in (int, float) and timeout_sec > 0 and math.isfinite(timeout_sec)
@@ -351,16 +316,12 @@ class PostgresDatabase:
             try:
                 self._finalize(finalizer, deadline)
             except BaseException:
-                # Finalizer outcome takes precedence; cleanup cannot erase
-                # it, even when the pool is now disposed.
                 with suppress(BaseException):
                     self._close_pool(deadline)
                 raise
             try:
                 self._close_pool(deadline)
             except Exception:
-                # A cleanup timeout/failure must not hide an earlier finalizer
-                # failure (especially an unknown COMMIT) on a resumed close.
                 self._raise_shutdown_failure()
                 raise
             self._raise_shutdown_failure()
@@ -412,8 +373,6 @@ class PostgresDatabase:
         try:
             finalizer()
             self._remaining(deadline)
-            # A callback cannot swallow a failed privileged transaction and
-            # thereby certify a successful shutdown.
             self._raise_shutdown_failure()
         except BaseException as error:
             self._record_finalizer_failure(error)
@@ -448,8 +407,6 @@ class PostgresDatabase:
         with self._condition:
             self._pool_disposed = True
         try:
-            # psycopg_pool may return with a warning when its join times out.
-            # Disposal is not evidence that the shutdown met its deadline.
             self._remaining(deadline)
         except PostgresShutdownTimeout:
             with self._condition:
@@ -458,7 +415,6 @@ class PostgresDatabase:
             raise
 
     def stats(self) -> dict[str, int]:
-        """Return pool counters and gauges, never connection information."""
         return self._pool.get_stats()
 
     def _admit(self, *, write: bool) -> bool:
@@ -495,8 +451,6 @@ class PostgresDatabase:
         try:
             connection.rollback()
         except (psycopg.Error, OSError):
-            # Preserve the callback's exception, but never reuse an uncertain
-            # connection or allow context exit to commit its partial work.
             connection.close()
 
     @staticmethod
@@ -512,8 +466,6 @@ class PostgresDatabase:
             return cleanup
         if isinstance(primary, CommitOutcomeUnknown) or not isinstance(primary, Exception):
             return primary
-        # Do not turn cancellation first encountered during cleanup into an
-        # ordinary callback failure. Known COMMIT uncertainty still outranks it.
         return cleanup if not isinstance(cleanup, Exception) else primary
 
     def _run(
@@ -550,8 +502,6 @@ class PostgresDatabase:
                             primary_error = self._primary_failure(primary_error, error)
                             raise
             except BaseException as error:
-                # Ordinary cleanup errors retain the original failure; cleanup
-                # cancellation must survive unless uncertainty/cancellation won first.
                 failure = self._primary_failure(primary_error, error)
                 if isinstance(failure, (PoolTimeout, TooManyRequests)):
                     raise PostgresPoolBusy("PostgreSQL acquisition budget exhausted") from None
@@ -563,36 +513,21 @@ class PostgresDatabase:
                     raise error from None
                 raise failure from None
             else:
-                # Never publish a result before the entire pool context exits.
                 return result
         except BaseException as error:
             if privileged:
                 self._record_finalizer_failure(error)
             raise
         finally:
-            # Covers acquisition/BEGIN failures and the *entire* pool exit,
-            # including discard, rollback and BaseException cancellation.
             self._release()
 
     def read(self, callback: Callable[[psycopg.Connection], _Result]) -> _Result:
-        """Run one READ COMMITTED, READ ONLY transaction without replay."""
         return self._run(callback, begin="BEGIN ISOLATION LEVEL READ COMMITTED, READ ONLY")
 
     def read_snapshot(self, callback: Callable[[psycopg.Connection], _Result]) -> _Result:
-        """Run one stable REPEATABLE READ, READ ONLY transaction without replay."""
         return self._run(callback, begin="BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY")
 
     def transact(self, callback: Callable[[psycopg.Connection], _Result]) -> _Result:
-        """Run one READ COMMITTED, READ WRITE transaction without replay.
-
-        Return only after known successful commit and pool release.
-        IntegrityError (including a deferred constraint rejected at COMMIT) is a
-        known failure. CommitOutcomeUnknown must not be interpreted as rollback
-        or retried blindly. Application idempotency/fencing belongs to callers.
-        """
-        # Admission serializes with advisory locks, then reads committed usage.
-        # A deployment's REPEATABLE READ default would retain a pre-lock snapshot
-        # and defeat that serialization. Snapshot reads are explicitly separate.
         return self._run(
             callback, begin="BEGIN ISOLATION LEVEL READ COMMITTED, READ WRITE", write=True
         )

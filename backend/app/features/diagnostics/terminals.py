@@ -1,5 +1,3 @@
-"""Gate R unit terminal rules and segment final-seal."""
-
 from __future__ import annotations
 
 import psycopg
@@ -13,22 +11,6 @@ from backend.app.features.diagnostics.records import (
 
 
 def refresh_unit_terminals(connection: psycopg.Connection, unit_horizon_ns: int) -> None:
-    """Mark units terminal by a lane watermark or by a newer (boot, epoch).
-
-    Horizon closure is scoped to one (camera, boot, generation, epoch) lane.
-    The lane watermark is its maximum ``last_observed_ns``. A unit closes only
-    when that watermark is strictly more than ``unit_horizon_ns`` past the
-    unit's own last observation. The next unit's ``first_observed_ns`` is not
-    evidence: dense neighbours never clear the horizon, and a unit that is
-    still receiving observations would look finished because it started long
-    ago. Another generation's observations are not this lane's watermark.
-
-    A different (boot, epoch) on the same camera closes only when some other
-    (boot, epoch) was observed strictly later. Boot ids are opaque, so they
-    are not ordered as text. Abrupt closure cannot prove completeness beyond
-    already COMPLETE units. Later coverage can only lower a terminal unit's
-    certainty; it never reopens the unit or upgrades forced UNKNOWN.
-    """
     known = str(UnitCausalState.INCOMPLETE_KNOWN)
     connection.execute(
         """
@@ -130,13 +112,6 @@ def refresh_unit_terminals(connection: psycopg.Connection, unit_horizon_ns: int)
 
 
 def seal_final_segments(connection: psycopg.Connection) -> None:
-    """Promote a pending segment only when every member causal unit is terminal.
-
-    An open unit elsewhere on the lane does not hold an older segment pending.
-    A segment that still contains a non-terminal unit stays pending, including
-    when that unit also has rows in another segment. Sealing does not delete
-    rows; a unit that spans segments is removed only as a whole unit.
-    """
     connection.execute(
         """
         UPDATE execution_segments
@@ -156,15 +131,6 @@ def seal_final_segments(connection: psycopg.Connection) -> None:
 
 
 def force_oldest_units_terminal(connection: psycopg.Connection, count: int = 1) -> int:
-    """Pressure fallback: close ``count`` globally oldest non-terminal units.
-
-    Oldest matches ``next_prunable_unit`` once the row is terminal: least
-    ``last_observed_ns``, then ``causal_unit_id``.
-    Camera and boot ids are not a priority. The closed state is
-    INCOMPLETE_UNKNOWN: even a known gap cannot exclude additional unknown
-    loss when pressure forces closure. Existing coverage is retained.
-    This does not raise the count or the byte budget.
-    """
     rows = connection.execute(
         """
         SELECT causal_unit_id FROM execution_units

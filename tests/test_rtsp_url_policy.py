@@ -1,5 +1,3 @@
-"""Unit coverage for the shared RTSP destination policy."""
-
 from __future__ import annotations
 
 import ipaddress
@@ -88,7 +86,6 @@ def test_local_allowance_admits_loopback_link_local_and_private(
     assert reject_rtsp_url_reason("rtsp://localhost/live") is None
     assert reject_rtsp_url_reason("rtsp://10.0.0.9/live") is None
     assert reject_rtsp_url_reason("rtsp://169.254.1.1/live") is None
-    # Metadata remains denied even under local fixture allowance.
     assert reject_rtsp_url_reason("rtsp://169.254.169.254/live") is not None
     assert reject_rtsp_url_reason("rtsp://metadata.google.internal/live") is not None
 
@@ -168,7 +165,6 @@ def test_resolve_rejects_link_local_even_when_private_allowed(
             "rtsp://cam.example/live",
             resolver=lambda _host: ("169.254.169.254",),
         )
-    # Facility LAN still admitted under PRIVATE=1.
     endpoint = resolve_rtsp_endpoint(
         "rtsp://cam.example/live",
         resolver=lambda _host: ("10.0.0.9",),
@@ -177,7 +173,6 @@ def test_resolve_rejects_link_local_even_when_private_allowed(
 
 
 def test_resolve_rejects_if_any_answer_is_blocked_mixed_set() -> None:
-    # Public + metadata must not be admissible: any blocked answer fails closed.
     with pytest.raises(ValueError, match="metadata"):
         resolve_rtsp_endpoint(
             "rtsp://cam.example/live",
@@ -205,7 +200,6 @@ def test_resolve_admits_local_fixture_answers(
         resolver=lambda _host: ("169.254.1.1",),
     )
     assert link_local.pinned_url == "rtsp://169.254.1.1/live"
-    # Metadata still denied under LOCAL=1.
     with pytest.raises(ValueError, match="metadata"):
         resolve_rtsp_endpoint(
             "rtsp://fixture.local/live",
@@ -258,9 +252,6 @@ def test_reject_resolved_addresses_reason_covers_empty_and_mixed() -> None:
 def test_real_getaddrinfo_driver_resolves_localhost_loopback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Call the real platform resolver (not the suite DNS stub)."""
-
-    # Import the live module function after restoring the real implementation.
     import shared.rtsp_url_policy as policy
 
     monkeypatch.setattr(policy, "resolve_host_a_aaaa", _real_resolve_host_a_aaaa)
@@ -276,8 +267,6 @@ def test_real_getaddrinfo_driver_resolves_localhost_loopback(
 
 
 def _real_resolve_host_a_aaaa(hostname: str) -> tuple[str, ...]:
-    """Direct getaddrinfo driver used by the real-resolver characterization test."""
-
     cleaned = hostname.strip()
     if not cleaned:
         return ()

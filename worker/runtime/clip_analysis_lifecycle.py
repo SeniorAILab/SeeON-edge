@@ -1,5 +1,3 @@
-"""Teardown helpers for clip-analysis process ownership."""
-
 from __future__ import annotations
 
 import logging

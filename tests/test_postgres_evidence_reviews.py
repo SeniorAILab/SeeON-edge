@@ -1,5 +1,3 @@
-"""Native incident queries and governed review transactions, not HTTP activation."""
-
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -222,7 +220,6 @@ def test_incident_imported_from_sqlite_lists_without_a_delivery_obligation(setup
         "'NOT_RECORDED',0,1,%s,%s)",
         (_TIME, _TIME, _TIME),
     )
-    # Given: the ledger carries the stamp the SQLite import leaves behind.
     sandbox.admin.execute(
         "INSERT INTO schema_migrations (version,name,checksum,applied_at,"
         "source_schema_version,source_db_sha256,reconciliation_sha256) "
@@ -237,7 +234,6 @@ def test_incident_imported_from_sqlite_lists_without_a_delivery_obligation(setup
     assert {item.incident_id: item.event_delivery_state for item in listed}["legacy"] == (
         LEGACY_DELIVERY_STATE
     )
-    # Incidents accepted through the outbox keep their real delivery state.
     assert query.get("a").event_delivery_state != LEGACY_DELIVERY_STATE
 
 

@@ -1,15 +1,3 @@
-"""Domain-neutral detection-window primitive.
-
-Originally lived only under ``worker.domains.bed_exit`` as ``NightWindow``.
-Generalizing per-domain detection windows (issue #24) needs this class
-available to any domain and to the runtime composition root without
-crossing the ``worker.domains`` -> ``worker.runtime`` import-linter boundary
-(``worker.domains`` must never import ``worker.runtime``), so the canonical
-implementation lives here, domain-neutral, and
-``worker.domains.bed_exit.night_window`` re-exports it as ``NightWindow``
-for backward compatibility.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass

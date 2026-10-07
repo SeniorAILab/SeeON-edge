@@ -13,9 +13,6 @@ def bed_pose_features_for(
     frame_height: int,
     scene_state: SceneState,
 ) -> FrameBedPoseFeatures:
-    """Compute the additive DecisionInput field from a resolved observation."""
-    # Imported here so `import worker.pipeline.perception` stays numpy-free;
-    # only the compute path pays for the producer.
     from worker.pipeline.perception.features.bed_geometry import (
         compute_frame_bed_pose_features,
     )
@@ -41,7 +38,6 @@ def build_decision_input(
     bed_scheduled: bool,
     bed_interval: int,
 ) -> DecisionInput:
-    """Resolve scene provenance and return the image-free decision boundary."""
     resolved_observation, bed_region = scene_state.resolve_bed_regions(
         observation,
         frame_index=frame_index,

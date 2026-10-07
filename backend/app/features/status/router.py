@@ -1,10 +1,3 @@
-"""Runtime status route.
-
-``/status`` merges two API-owned relay snapshots: heartbeat-derived camera
-liveness and worker-published runtime diagnostics. It never reads worker runtime
-state directly (no cross-process shared state).
-"""
-
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -47,13 +40,6 @@ def status(request: Request) -> dict[str, object]:
 def _local_runtime_id_resolver(
     registry: CameraRegistryStore | None,
 ) -> dict[str, str] | None:
-    """Read-only map of registry-local id and backend_camera_id -> local id.
-
-    Dashboard ``runtime.cameras`` is keyed by the registry-local camera id.
-    Workers may publish either alias; this resolver never writes the registry
-    and never changes Hub egress identity. ``None`` means no registry is
-    mounted, so reported ids stay as-is without an unresolved marker.
-    """
     if registry is None:
         return None
     snapshot = registry.snapshot()
@@ -79,23 +65,6 @@ def _flatten_runtime_cameras(
     *,
     alias_to_local: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Merge per-facility camera diagnostics into a single camera_id-keyed dict.
-
-    The front-end status contract (``front/src/shared/api/statusNormalizer.ts``)
-    expects ``runtime.cameras`` as a flat dict, independent of facility
-    grouping. Single-tenant deployments have exactly one facility today, so a
-    later facility's entry for the same camera_id simply wins on collision.
-    When both a local id and its mapped ``backend_camera_id`` appear, they
-    collapse to one local row and the newest accepted snapshot wins.
-
-    Staleness lives on the facility (``facility["stale"]``, derived from
-    ``received_at`` vs ``stale_after_sec``) but the front-end only reads this
-    flat dict (issue #160) — a dead worker's last-known ``measured_fps`` would
-    otherwise keep rendering as if it were live. So each camera's staleness is
-    propagated here rather than dropped, without erasing the last measured
-    value (the front-end needs both to tell "never measured" apart from
-    "measurement stopped").
-    """
     aliases = alias_to_local
     cameras: dict[str, Any] = {}
     newest_received_at: dict[str, float] = {}
@@ -132,13 +101,6 @@ def _flatten_runtime_cameras(
 
 
 def _primary_facility(facilities: dict[str, Any]) -> dict[str, Any] | None:
-    """Pick the facility whose worker/device/clip_recorder diagnostics are
-    exposed at the flat ``runtime.*`` level the front-end contract expects.
-
-    Deployments are single-tenant in practice (one facility), so this is
-    almost always unambiguous. When more than one facility has reported
-    (e.g. a stale test fixture), the most recently received one wins.
-    """
     if not facilities:
         return None
     return max(facilities.values(), key=lambda facility: facility.get("received_at", 0.0))
@@ -165,13 +127,6 @@ def _clip_export_applied(facility: dict[str, Any] | None) -> dict[str, object]:
 
 
 def _to_device_diagnostics(gpu: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Map the GPU telemetry payload onto the front-end's device-adaptive
-    ``RuntimeDeviceDiagnostics`` shape (``front/src/shared/api/types.ts``).
-
-    Only ``device_name``/``captured_at_sec`` carry over directly; ``backend``
-    has no global-scope source today (decode backend is tracked per-camera,
-    see ``runtime.cameras[*].decode``) so it is left null.
-    """
     if not gpu:
         return None
     return {

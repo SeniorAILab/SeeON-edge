@@ -1,5 +1,3 @@
-"""Computed response fields for returned clip items."""
-
 from __future__ import annotations
 
 from typing import assert_never

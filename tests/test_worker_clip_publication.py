@@ -63,7 +63,6 @@ def _metadata() -> ClipPublicationMetadata:
 
 
 def _catalogued(sandbox: ProductSandbox, root: Path) -> ClipCatalogPage:
-    """Index ``root`` into the PostgreSQL clip catalogue and read the first page."""
     store = ClipStore(root)
     outcome = ClipCatalogIndexer(sandbox.database, sandbox.authority).reconcile(store)
     assert (outcome.remaining, outcome.isolated) == (0, 0)
@@ -255,8 +254,6 @@ def test_exact_remux_translation_is_published_verbatim_and_listed(
         on_ready=no_op_ready_hook,
     ).publish_ready(reservation, artifact, metadata)
 
-    # The writer copies source_media without validating it; the rejection of a
-    # nonuniform translation is pinned in tests/test_manifest_media_models.py.
     payload = json.loads(published.manifest_path.read_text(encoding="utf-8"))
     served = read_manifest_file(published.manifest_path)
     page = _catalogued(postgres_product_sandbox, tmp_path)

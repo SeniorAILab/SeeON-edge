@@ -5,10 +5,6 @@ from shared.events.relay_failure_log import RelayFailureClass, classify_relay_fa
 
 
 def test_server_error_hint_is_neutral_and_names_the_status() -> None:
-    # A 5xx from the edge API can originate from its own local contention
-    # (e.g. SQLite write contention, see #579) just as easily as from
-    # something genuinely upstream -- the hint must not presume which, only
-    # name the status the worker actually saw.
     outcome = classify_relay_failure(
         DeliveryFailure(DeliveryDisposition.RETRY, "HTTP_503", status_code=503)
     )

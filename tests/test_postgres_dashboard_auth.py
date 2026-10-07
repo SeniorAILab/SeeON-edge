@@ -1,5 +1,3 @@
-"""Native auth HTTP and cache fencing with explicit owners; no lifespan claim."""
-
 import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
@@ -195,7 +193,6 @@ def test_unreadable_credentials_never_fall_back_to_bootstrap(setup, mode):
         setup.sandbox.admin.execute("ALTER TABLE credentials RENAME TO detached_credentials")
     else:
         setup.store.save(username="persisted-operator", password=_NEW)
-        # Bypass only the CHECK for a negative read-integrity control.
         setup.sandbox.admin.execute(
             "ALTER TABLE credentials DROP CONSTRAINT credentials_algorithm_check"
         )
@@ -252,8 +249,6 @@ def test_failed_rotation_retires_cached_authority_without_claiming_rollback(
 
         monkeypatch.setattr(setup.sandbox.database, "transact", failed_owner)
     if mode in {"ordinary", "cancel"}:
-        # Call the real synchronous handler to retain BaseException identity
-        # without imposing ASGI task-group cancellation semantics on this check.
         request = _request(setup, old_token)
         with pytest.raises(type(error)) as caught:
             update_credentials(

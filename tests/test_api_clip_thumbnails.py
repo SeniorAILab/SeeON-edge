@@ -94,16 +94,13 @@ def test_compact_listing_rebuilds_thumbnail_identity(
     app: FastAPI,
     postgres_product_sandbox: ProductSandbox,
 ) -> None:
-    # Given: a finalized clip with a regular thumbnail.
     _write_clip(clip_env, "clip-with", thumbnail=True)
 
-    # When: the catalogue indexes the store and the keyset listing reads it.
     index_clips(app)
     with TestClient(app) as client:
         _login(client)
         response = client.get("/api/v1/clips", params={"limit": 10})
 
-    # Then: the response and the PostgreSQL catalogue both retain thumbnail identity.
     assert response.status_code == 200
     assert response.json()["clips"][0]["thumbnail_available"] is True
     row = postgres_product_sandbox.admin.execute(
@@ -214,7 +211,6 @@ def test_head_thumbnail_answers_with_the_get_header_section_and_no_body(
     clip_env: Path,
     app: FastAPI,
 ) -> None:
-    """Same #452 gap as the video route: FastAPI does not synthesise HEAD."""
     _write_clip(clip_env, "clip-head", thumbnail=True)
 
     with TestClient(app) as client:

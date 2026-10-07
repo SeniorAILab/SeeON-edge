@@ -1,5 +1,3 @@
-"""JSONL clip audit rotation is absent; PostgreSQL audit_events is the live path."""
-
 from __future__ import annotations
 
 import importlib

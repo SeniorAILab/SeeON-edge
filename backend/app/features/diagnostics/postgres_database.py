@@ -1,12 +1,3 @@
-"""Diagnostics PostgreSQL owner: its own schema and pool beside the product root.
-
-Execution records are observability, not product authority. They live in
-``<product schema>_diagnostics`` on the same cluster so retention pressure and
-diagnostic reads never share the product pool. A configuration error refuses
-startup (ADR-0002); an unreachable server only degrades the diagnostics API to
-503. The DSN is never logged, echoed in an error, or chained into a traceback.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -16,8 +7,6 @@ from pathlib import Path
 
 from backend.app.edge_db.postgres import PoolBudget, PostgresDatabase, PostgresError
 
-# Same deployment variables the product root reads; the diagnostics owner does
-# not import the root so the two pools stay independently composable.
 API_POSTGRES_DSN_FILE_ENV = "API_POSTGRES_DSN_FILE"
 API_POSTGRES_SCHEMA_ENV = "API_POSTGRES_SCHEMA"
 DEFAULT_POSTGRES_SCHEMA = "seeon_edge"
@@ -35,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 class DiagnosticsDatabaseConfigError(RuntimeError):
-    """Startup refusal whose text never carries connection secrets."""
+    ...
 
 
 def diagnostics_schema(environ: Mapping[str, str] | None = None) -> str:
@@ -68,12 +57,6 @@ def _read_conninfo(environ: Mapping[str, str]) -> str:
 def open_diagnostics_database(
     environ: Mapping[str, str] | None = None, *, budget: PoolBudget = DIAGNOSTICS_POOL_BUDGET
 ) -> PostgresDatabase:
-    """Return the diagnostics database, started when the server answers in budget.
-
-    A database that fails to start is still returned: it refuses every
-    transaction with ``PostgresUnavailable``, which the diagnostics API maps
-    to 503 while the rest of the product keeps serving.
-    """
     env = os.environ if environ is None else environ
     conninfo = _read_conninfo(env)
     schema = diagnostics_schema(env)

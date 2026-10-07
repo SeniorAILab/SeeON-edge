@@ -26,8 +26,6 @@ def _pulled(
 
 @final
 class _FakeClock:
-    """Monotonic stand-in whose value only moves when `advance` is called."""
-
     __slots__ = ("_now",)
 
     def __init__(self, start: float = 0.0) -> None:
@@ -42,8 +40,6 @@ class _FakeClock:
 
 @final
 class _RecordingPuller:
-    """Fake `pull_config` that replays scripted results and records calls."""
-
     __slots__ = ("_results", "calls")
 
     def __init__(self, results: list[PulledWorkerConfig | None]) -> None:
@@ -60,9 +56,6 @@ def _raising_puller(error: BaseException) -> Callable[[str, str | None], PulledW
         raise error
 
     return _raise
-
-
-# --- RestartDirective: identity and ordering ---
 
 
 def test_from_pulled_maps_restart_epoch_config_version_and_registry_version() -> None:
@@ -97,9 +90,6 @@ def test_directive_equality_requires_matching_generation_version_and_registry() 
     assert RestartDirective(generation=1, version=5) != RestartDirective(
         generation=1, version=5, registry=1
     )
-
-
-# --- RestartDirectiveTracker: monotonic acceptance ---
 
 
 def test_tracker_current_returns_initial_directive_before_any_observation() -> None:
@@ -177,9 +167,6 @@ def test_tracker_observe_is_thread_safe_under_concurrent_advancing_candidates() 
 
     assert tracker.current == RestartDirective(generation=1, version=50)
     assert any(results)
-
-
-# --- make_restart_check: polling cadence, directive gating, failure handling ---
 
 
 def test_restart_check_polls_immediately_on_first_call() -> None:
@@ -322,9 +309,9 @@ def test_restart_check_tracks_directive_advancement_across_multiple_successful_p
     clock = _FakeClock()
     puller = _RecordingPuller(
         [
-            _pulled(config_version=1, restart_epoch=0),  # advances past boot -> True
-            _pulled(config_version=1, restart_epoch=0),  # unchanged -> False
-            _pulled(config_version=3, restart_epoch=0),  # advances again -> True
+            _pulled(config_version=1, restart_epoch=0),
+            _pulled(config_version=1, restart_epoch=0),
+            _pulled(config_version=3, restart_epoch=0),
         ]
     )
     check = make_restart_check(

@@ -1,5 +1,3 @@
-"""Runtime composition for the optional execution-record export path."""
-
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -146,7 +144,6 @@ class _ImmediateClassifier:
     def __init__(self, fall_transition: float = 0.1) -> None:
         self._last: dict[int, FallProbabilities] = {}
         self._fall_transition = fall_transition
-        # Immediate classifier scores every live track on every call.
         self.current_call_missing_score_reasons: dict[int, str] = {}
 
     def update(
@@ -308,9 +305,7 @@ def test_alert_audit_and_policy_decision_record_share_one_decision_trace_id() ->
     lanes = ExecutionRecordLanes(lane_capacity=32)
     emitted: list[object] = []
     pump = _pump(lanes, identity=identity, emitted=emitted, fall_transition=0.9)
-    # transition_votes=3 within transition_window=5: three scored frames trigger.
     for seq in range(3):
-        # ~15 fps PTS spacing so the resampler sees three distinct rows.
         pump._process(
             _metadata(child=pump._child, seq=seq, pts=100 + seq * 66_666_667)
         )
@@ -327,7 +322,6 @@ def test_alert_audit_and_policy_decision_record_share_one_decision_trace_id() ->
     audit = event.audit  # type: ignore[attr-defined]
     assert audit is not None
     assert audit["decision_trace_id"] == record.payload["decision_trace_id"]
-    # and both equal the single-source function over the triggering snapshot
     snapshot = next(
         s
         for s in pump._decision.last_trace_snapshots
@@ -398,7 +392,6 @@ def test_window_gated_snapshot_without_track_gets_explicit_no_track_unit() -> No
 
 
 def test_model_score_is_not_emitted_for_tracks_the_classifier_skipped_this_call() -> None:
-    """A stride-not-due frame must not re-emit the cached score as a new model call."""
     lanes = ExecutionRecordLanes(lane_capacity=64)
     pump = _pump(lanes, identity=None, fall_transition=0.9)
 
@@ -411,7 +404,6 @@ def test_model_score_is_not_emitted_for_tracks_the_classifier_skipped_this_call(
         def update(self, rows: object, live_track_ids: tuple[int, ...]) -> dict[int, object]:
             self._calls += 1
             if self._calls % 2 == 0:
-                # even calls: stride not due, no score this call
                 self.current_call_missing_score_reasons = dict.fromkeys(
                     live_track_ids, "classifier-stride-not-due"
                 )
@@ -429,7 +421,6 @@ def test_model_score_is_not_emitted_for_tracks_the_classifier_skipped_this_call(
     assert drained is not None
     scores = [r for r in drained.records if r.record_kind == "model.score"]
     decisions = [r for r in drained.records if r.record_kind == "policy.decision"]
-    # 4 frames processed, classifier scored on 2 of them
     assert len(decisions) >= 4
     assert len(scores) == 2, [r.frame_seq for r in scores]
 
@@ -491,12 +482,6 @@ def test_make_record_logs_contract_error_and_returns_none(
 
 
 class _SecondDomainDecider:
-    """A non-fall TraceSnapshotProvider with an authoritative + shadow tail.
-
-    Stands in for the bed-exit monitor: it exposes snapshots for a track and
-    declares that the trailing one is a shadow evaluation.
-    """
-
     def __init__(self) -> None:
         self.last_trace_snapshots: tuple[object, ...] = ()
         self.last_shadow_trace_count = 0
@@ -533,13 +518,6 @@ class _SecondDomainDecider:
 
 
 def test_non_fall_snapshots_are_attributed_to_their_own_module_not_fall() -> None:
-    """Bed-exit-style snapshots must never become fall records.
-
-    They carry their own module id and authority role, get a module-scoped
-    causal unit (never a fall track unit), a decision_trace_id computed with
-    THEIR identity, and never produce a fall model.score even though the
-    fall classifier scored the same track this call.
-    """
     from worker.domains.registry import FALL_MODULE_QUALIFIED_ID
     from worker.types.trace import decision_trace_id
 
@@ -548,7 +526,6 @@ def test_non_fall_snapshots_are_attributed_to_their_own_module_not_fall() -> Non
     bed_identity = DecisionIdentity("bed_exit.v1", "b" * 64)
     pump = _pump(lanes, identity=fall_identity, fall_transition=0.9)
     second = _SecondDomainDecider()
-    # Rebuild the aggregator with a second, identified decider.
     from worker.pipeline.decision import EventAggregator
 
     original = pump._decision
@@ -571,15 +548,13 @@ def test_non_fall_snapshots_are_attributed_to_their_own_module_not_fall() -> Non
         assert ":bed_exit.v1:" in record.causal_unit_id
         assert (
             ":1:" not in record.causal_unit_id.split(":bed_exit.v1:")[0][-4:]
-        )  # not a fall track unit
+        )
         snapshot_reason = record.payload["reason"]
         assert record.payload["decision_trace_id"] != decision_trace_id(
             next(s for s in second.last_trace_snapshots if s.reason == snapshot_reason),  # type: ignore[attr-defined]
             module_qualified_id=FALL_MODULE_QUALIFIED_ID,
             effective_policy_id="a" * 64,
         ), "a bed-exit id must not be computed with the fall identity"
-    # No fall model.score was minted for the bed-exit snapshots' track via the
-    # second decider: model.score count equals the fall decider's own scoring.
     scores = [r for r in drained.records if r.record_kind == "model.score"]
     assert len(scores) == len(
         {s.track_id for s in original.deciders[0].last_trace_snapshots if s.track_id is not None}
@@ -608,15 +583,11 @@ def test_unidentified_decider_snapshots_carry_no_module_claim_and_no_trace_id() 
     for record in decisions:
         assert record.payload["module_qualified_id"] is None
         assert record.payload["decision_trace_id"] is None
-    # The causal unit is keyed by module id, so EVERY unidentified decider -
-    # including the fall decider itself - uses the no-module unit. Structural
-    # attribution only decides model.score, never a unit claim.
     for record in decisions:
         assert f":{NO_MODULE}:" in record.causal_unit_id
 
 
 def test_alert_from_second_decider_is_stamped_with_its_own_identity() -> None:
-    """The alert audit id is computed with the PRODUCING decider's identity."""
     from worker.domains.registry import FALL_MODULE_QUALIFIED_ID
     from worker.pipeline.decision import EventAggregator
     from worker.runtime.flow.policy_pump import _with_decision_trace_id
@@ -661,7 +632,6 @@ def test_alert_from_second_decider_is_stamped_with_its_own_identity() -> None:
         incidents=original.incidents,
         identities=(fall_identity, bed_identity),
     )
-    # Drive one update so the aggregator records the producer of the event.
     from test_flow_policy_pump_preview import _fall_input
 
     del pump
@@ -683,9 +653,6 @@ def test_alert_from_second_decider_is_stamped_with_its_own_identity() -> None:
 
 
 def test_coasted_frame_never_re_emits_previous_snapshots_with_the_new_identity() -> None:
-    """TC3-01: a duplicate-PTS frame yields no resampled row, the fall decider
-    coasts, and its snapshots are left over from the previous frame. Those
-    must not be recorded as this frame's evidence; the coast itself must be."""
     lanes = ExecutionRecordLanes(lane_capacity=64)
     pump = _pump(
         lanes,
@@ -700,7 +667,6 @@ def test_coasted_frame_never_re_emits_previous_snapshots_with_the_new_identity()
     assert first_decisions and all(r.frame_seq == 0 for r in first_decisions)
     assert all(r.outcome != "coasted" for r in first_decisions)
 
-    # Same PTS again: the resampler yields no row and the decider coasts.
     pump._process(_metadata(child=pump._child, seq=1, pts=100))
     second = lanes.drain_for("cam-1", "boot-1", limit=64)
     assert second is not None
@@ -713,14 +679,10 @@ def test_coasted_frame_never_re_emits_previous_snapshots_with_the_new_identity()
         assert record.payload["missing_values"] == {"decision_state": "resample-gap"}
         assert record.payload["module_qualified_id"] == "fall.v2"
         assert record.payload["decision_trace_id"] is None
-    # And no model.score was minted for the coasted frame.
     assert not [r for r in second.records if r.record_kind == "model.score"]
 
 
 def test_window_gate_mirrors_inner_freshness_and_shadow_facts() -> None:
-    """The gate is the snapshot source the aggregator reads, so it must carry
-    the inner decider's freshness/shadow facts in-window and its own
-    (fresh, no shadow) facts outside the window."""
     from datetime import UTC, datetime
 
     from worker.domains.detection_window import DetectionWindow
@@ -748,7 +710,7 @@ def test_window_gate_mirrors_inner_freshness_and_shadow_facts() -> None:
 
     gate.update(_fall_input(time_sec=1.0, frame_index=1))
     assert gate.last_update_evaluated is True
-    assert gate.last_shadow_trace_count == 1  # mirrors the inner's shadow tail
+    assert gate.last_shadow_trace_count == 1
     aggregator = EventAggregator(deciders=(gate,), incidents=IncidentManager())
     roles = [a.authority for a in aggregator.attributed_trace_snapshots()]
     assert roles == ["authoritative", "shadow"]
@@ -757,7 +719,6 @@ def test_window_gate_mirrors_inner_freshness_and_shadow_facts() -> None:
     inner.last_update_evaluated = False
     gate.update(_fall_input(time_sec=2.0, frame_index=2))
     assert gate.last_update_evaluated is False
-    # Outside the window: the gate's own row is fresh regardless of inner state.
     closed = DetectionWindow(start="00:00", end="00:00", tz="UTC")
     gate2 = _WindowGatedDecider(
         decider=inner, window=closed, clock=lambda: datetime(2026, 1, 1, 12, tzinfo=UTC)
@@ -772,10 +733,6 @@ def test_window_gate_mirrors_inner_freshness_and_shadow_facts() -> None:
 
 
 def test_config_digest_survives_a_real_pulled_config_with_detection_windows() -> None:
-    """Live rollout regression: a pulled config carries detection_windows as a
-    MappingProxyType inside a frozen dataclass. pydantic's JSON-mode dump cannot
-    serialize that, and the worker refused to boot with execution records on.
-    The digest must be computed from python-mode values with an explicit shape."""
     from pydantic import SecretStr
 
     from contracts.worker_config import PulledWorkerConfig
@@ -796,13 +753,11 @@ def test_config_digest_survives_a_real_pulled_config_with_detection_windows() ->
     class _Config:
         def model_dump(self, mode: str = "json") -> dict[str, object]:
             if mode == "json":
-                # What pydantic does on the real WorkerConfig: it cannot.
                 raise ValueError("Unable to serialize unknown type: <class 'mappingproxy'>")
             return {"version": 1, "pulled": pulled, "relay": {"token": SecretStr("t-1")}}
 
     digest = _config_digest(_Config())  # type: ignore[arg-type]
     assert len(digest) == 64
-    # Deterministic and content-sensitive.
     assert digest == _config_digest(_Config())  # type: ignore[arg-type]
     other = PulledWorkerConfig.from_dict(
         {
@@ -825,14 +780,10 @@ def test_config_digest_survives_a_real_pulled_config_with_detection_windows() ->
         def model_dump(self, mode: str = "json") -> dict[str, object]:
             return {"version": 1, "pulled": pulled, "relay": {"token": SecretStr("t-2")}}
 
-    # A rotated secret is not a config change and never enters the digest.
     assert _config_digest(_RotatedToken()) == digest  # type: ignore[arg-type]
 
 
 def test_every_producer_stamps_wall_clock_so_the_query_is_answerable_by_epoch_time() -> None:
-    """Live rollout regression: producers stamped monotonic nanoseconds, so a
-    GET /diagnostics/executions with epoch from_ns/to_ns returned nothing and
-    queryable_range mixed clock bases. Every record must be wall-stamped."""
     import time
 
     from worker.pipeline.diagnostics.emit_delivery import (

@@ -1,5 +1,3 @@
-"""CPU-only ONNX Runtime runner for the YOLO26 bed segmentation model."""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
@@ -47,8 +45,6 @@ SessionFactory = Callable[[str, list[str]], _OrtSession]
 
 @final
 class OrtBedSegRunner:
-    """Verified end-to-end YOLO26 segmentation runner pinned to ORT CPU."""
-
     device: Final[str] = "cpu"
 
     def __init__(

@@ -25,8 +25,6 @@ class _Runner:
 def test_default_registry_registers_the_production_task_set() -> None:
     registry = default_registry()
 
-    # "fall" is deliberately absent: it has no registry-backed fallback (see
-    # WorkerRuntime._create_fall_model, which fails closed instead).
     assert registry.tasks() == ("bed", "person", "pose")
     for task in registry.tasks():
         assert callable(registry.get_factory(task))

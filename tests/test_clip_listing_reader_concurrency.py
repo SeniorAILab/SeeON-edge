@@ -1,5 +1,3 @@
-"""Schema-17 listing-reader concurrency fixtures target a removed repository."""
-
 from __future__ import annotations
 
 import importlib

@@ -56,15 +56,11 @@ class CameraRuntimeConfig(BaseModel):
     resident_id: str | None = None
     rtsp_url: str | None = Field(default=None, min_length=1)
     streams: CameraStreamsConfig | None = None
-    # Declared/relay hint only. CapturePolicy.target_fps is owned by the
-    # TemporalProfile passed to compose_camera_ingest_loop, not this field.
     fps: float = Field(default=CURRENT_TEMPORAL_PROFILE.target_fps, gt=0)
     heartbeat_interval_sec: float = Field(default=30.0, gt=0)
     frame_stride: int = Field(default=1, gt=0)
     label: str | None = None
     decode_backend: str | None = None
-    # Persisted operator-approved regions are authoritative for bed-exit.
-    # Recognition only proposes regions for explicit persistence.
     bed_zone_regions: tuple[BedZoneRegionConfig, ...] = Field(default=(), max_length=8)
     bed_zone_image_width: int | None = Field(default=None, gt=0)
     bed_zone_image_height: int | None = Field(default=None, gt=0)
@@ -72,7 +68,6 @@ class CameraRuntimeConfig(BaseModel):
     @field_validator("camera_id")
     @classmethod
     def _require_opaque_camera_id(cls, value: str) -> str:
-        """Reject unresolved/log-unsafe input, but never canonicalize an opaque DB key."""
         if not value.strip():
             raise ConfigValidationError("camera_id must not be blank")
         if any(character in value for character in ("\x00", "\n", "\r")):

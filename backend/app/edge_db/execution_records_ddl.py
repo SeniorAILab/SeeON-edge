@@ -1,17 +1,3 @@
-"""CREATE statements for the schema-19 execution-record (diagnostics) tables.
-
-Schema 19 is schema 18 plus these six STRICT tables. They hold the Backend-owned
-original-run diagnostics: one immutable record per producer observation, the
-physical write segments and logical causal-retention units that bound how those
-records are kept and removed together, the execution provenance every record
-points at, the bounded coverage summary (known gaps, capacity deletions,
-coarsened ranges, late acknowledgements), and the idempotent batch receipts the
-worker relay retries against.
-
-Only ``backend.app.edge_db`` may create these tables; the runtime authorizer
-denies DDL. The API writer owns every row.
-"""
-
 from __future__ import annotations
 
 from typing import Final

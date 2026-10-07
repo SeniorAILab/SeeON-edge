@@ -1,27 +1,3 @@
-"""What the worker actually sends must satisfy what the relay actually declares.
-
-Two production defects this session came from the same blind spot: the worker
-builds a payload, the backend declares a Pydantic schema, and nothing checked
-that they agree.
-
-1. The worker emitted ``audit.runtime_manifest_sha256`` while
-   ``RelayAuditEnvelope`` did not declare it and set ``extra="forbid"``. Because
-   the outbox treats HTTP 422 as non-retryable, 41 live bed-exit events were
-   rejected permanently rather than retried.
-2. ``DurableEvidenceStager`` pops ``audit`` out of the event body into
-   ``EventEntry.decision_trace`` so the decision basis is admitted atomically
-   with the event, but ``EvidenceSender._payload`` transmitted only ``values``.
-   The decision basis -- the thing the never-drop obligation exists to protect --
-   never reached the backend, and the projection recorded ``audit=None``.
-
-Neither was visible to unit tests on either side, because each side was
-internally consistent. Only the seam was broken.
-
-This test drives the real producer path and validates the result against the
-real consumer schema, so the next mismatch of this class fails here instead of
-in a nursing home.
-"""
-
 from __future__ import annotations
 
 import json
@@ -66,7 +42,6 @@ def _event(**overrides: object) -> dict[str, object]:
 
 
 def _sent_payload(tmp_path: Path, event: dict[str, object]) -> dict[str, object]:
-    """Drive the real staging and sending path, returning what goes on the wire."""
     queue_directory = tmp_path / "delivery-queue"
     stager = _stager(queue_directory)
     stager.stage(event)
@@ -82,7 +57,6 @@ def _sent_payload(tmp_path: Path, event: dict[str, object]) -> dict[str, object]
 
 
 def test_the_wire_payload_satisfies_the_relay_schema(tmp_path: Path) -> None:
-    """The whole point: producer output validates against consumer schema."""
     payload = _sent_payload(tmp_path, _event())
 
     request = RelayAlertRequest.model_validate(payload)
@@ -92,12 +66,6 @@ def test_the_wire_payload_satisfies_the_relay_schema(tmp_path: Path) -> None:
 
 
 def test_the_decision_envelope_survives_the_wire(tmp_path: Path) -> None:
-    """Defect 2: the stager splits audit off, so the sender must rejoin it.
-
-    Sending ``values`` alone silently drops the decision basis. This asserts the
-    audit fields the worker set are present after the round trip, not merely that
-    the payload parses.
-    """
     payload = _sent_payload(tmp_path, _event())
 
     request = RelayAlertRequest.model_validate(payload)
@@ -110,7 +78,6 @@ def test_the_decision_envelope_survives_the_wire(tmp_path: Path) -> None:
 
 
 def test_the_runtime_manifest_digest_survives_the_wire(tmp_path: Path) -> None:
-    """Defect 1: the worker sets this and extra=forbid rejected it for months."""
     payload = _sent_payload(tmp_path, _event())
 
     request = RelayAlertRequest.model_validate(payload)
@@ -120,7 +87,6 @@ def test_the_runtime_manifest_digest_survives_the_wire(tmp_path: Path) -> None:
 
 
 def test_the_config_version_the_stager_stamps_survives_the_wire(tmp_path: Path) -> None:
-    """The stager injects config_version itself; it must reach the backend too."""
     payload = _sent_payload(tmp_path, _event())
 
     request = RelayAlertRequest.model_validate(payload)
@@ -130,7 +96,6 @@ def test_the_config_version_the_stager_stamps_survives_the_wire(tmp_path: Path) 
 
 
 def test_an_event_without_audit_still_validates(tmp_path: Path) -> None:
-    """Absent audit is legal; the schema must not require what producers omit."""
     payload = _sent_payload(tmp_path, _event(audit=None))
 
     request = RelayAlertRequest.model_validate(payload)

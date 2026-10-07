@@ -1,5 +1,3 @@
-"""Capacity-one mailbox for Flow perception metadata."""
-
 from __future__ import annotations
 
 import threading
@@ -54,8 +52,6 @@ def _matches(metadata: MetadataFrame, binding: SourceBinding) -> CounterName | N
 
 @final
 class LatestMetadataSlot:
-    """Capacity-one metadata and exact accepted-frame conditions per camera."""
-
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._condition = threading.Condition(self._lock)
@@ -131,12 +127,6 @@ class LatestMetadataSlot:
                 self._counters = _increment(counters, mismatch)
                 return False
             if metadata.identity.source_pts is None:
-                # Production's only publisher (deepstream/metadata.py) always
-                # sets an int source_pts; a None here is a malformed/synthetic
-                # frame that must never reach the high-water logic below --
-                # a fabricated 0.0 downstream reads as a PTS rollback and
-                # wipes dwell/window state that keys off real elapsed PTS.
-                # Named honestly rather than folded into "late".
                 self._counters = _increment(counters, "pts_missing")
                 return False
             identity = (

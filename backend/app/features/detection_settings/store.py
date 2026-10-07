@@ -1,5 +1,3 @@
-"""Local detection overrides on the API-owned PostgreSQL pool."""
-
 from __future__ import annotations
 
 from collections.abc import Callable

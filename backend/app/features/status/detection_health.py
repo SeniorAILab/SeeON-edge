@@ -1,5 +1,3 @@
-"""Pure bounded-state derivation for per-camera detection health."""
-
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -45,7 +43,6 @@ class DetectionHealth:
 
 
 def parse_detection_counters(value: object) -> DetectionCounters | None:
-    """Parse already-validated relay telemetry without accepting bool counters."""
     if not isinstance(value, Mapping):
         return None
     mapping = cast(Mapping[object, object], value)
@@ -75,7 +72,6 @@ def accept_detection_sample(
     *,
     accepted_at: float,
 ) -> DetectionHealth:
-    """Return new bounded health state for one accepted cumulative sample."""
     if not counters.expected:
         return DetectionHealth(state="disabled")
     if previous_health is None or previous_health.previous is None:
@@ -152,7 +148,6 @@ def detection_health_fields(
     stale: bool,
     missing: bool,
 ) -> dict[str, object]:
-    """Project state with snapshot-time stale and no-cycle precedence."""
     if stale:
         state: DetectionState = "unknown"
         reason: DetectionReason | None = "telemetry_stale"

@@ -1,9 +1,3 @@
-"""Worker-internal PerceptionFrameV1 envelopes.
-
-These types stay inside the worker process boundary. They are not a public
-contract and must not be imported from ``contracts``, ``backend``, or ``front``.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -95,9 +89,6 @@ class AssociationResult:
     selected_cue_indexes: tuple[int, ...]
     identity: PerceptionFrameIdentity
     cue_source: str = PERSON_BOX_CUE_SOURCE
-    # Every currently-live durable track id (matched + coasting), in ascending
-    # order. DecisionInput.live_track_ids consumes this; per-cue track_ids
-    # alone cannot reconstruct coasting tracks.
     live_track_ids: tuple[int, ...] = ()
 
 

@@ -1,5 +1,3 @@
-"""Closed runtime-status wire types and projection helpers."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,8 +8,6 @@ from contracts.decode_diagnostics import DecodeSelection
 
 @dataclass(frozen=True, slots=True)
 class ClipRecorderStatus:
-    """Frozen values allowed by the existing clip-recorder wire object."""
-
     available: bool = False
     dropped_frames: int | None = None
     dropped_events: int | None = None
@@ -23,8 +19,6 @@ class ClipRecorderStatus:
 
 
 class RelayDecodePayload(TypedDict):
-    """Existing decode diagnostics wire fields."""
-
     requested: str
     selected: str | None
     fallback_count: int
@@ -33,8 +27,6 @@ class RelayDecodePayload(TypedDict):
 
 
 class RelayDetectionPayload(TypedDict):
-    """Optional per-camera detection counters on the runtime-status wire."""
-
     expected: bool
     inference_admitted: int
     inference_succeeded: int
@@ -43,8 +35,6 @@ class RelayDetectionPayload(TypedDict):
 
 
 class RelayCameraPayload(TypedDict):
-    """Existing per-camera runtime-status wire fields."""
-
     camera_id: str
     decode: RelayDecodePayload
     measured_fps: NotRequired[float]
@@ -52,8 +42,6 @@ class RelayCameraPayload(TypedDict):
 
 
 class RelayClipRecorderPayload(TypedDict):
-    """Existing clip-recorder runtime-status wire fields."""
-
     available: bool
     dropped_frames: int | None
     dropped_events: int | None
@@ -65,15 +53,11 @@ class RelayClipRecorderPayload(TypedDict):
 
 
 class RelayClipExportPayload(TypedDict):
-    """Clip-export setting currently applied by this worker."""
-
     enabled: bool
     version: int
 
 
 class RelayGpuPayload(TypedDict):
-    """Existing optional GPU runtime-status wire fields."""
-
     nvml_available: bool
     cuda_context_ok: bool
     driver_version: str | None
@@ -83,8 +67,6 @@ class RelayGpuPayload(TypedDict):
 
 
 class RelayWorkerPayload(TypedDict):
-    """Existing optional worker runtime-status wire fields."""
-
     alive: bool
     pid: int | None
     started_at_sec: float | None
@@ -92,8 +74,6 @@ class RelayWorkerPayload(TypedDict):
 
 
 class RelayDeliveryQueuePayload(TypedDict):
-    """Filesystem-derived durable-delivery capacity telemetry."""
-
     accepted_count: int
     accepted_bytes: int
     max_accepted_entries: int
@@ -101,15 +81,10 @@ class RelayDeliveryQueuePayload(TypedDict):
     by_kind: dict[str, int]
     dead_lettered_count: int
     dead_lettered_bytes: int
-    #: Oldest live EVENT entry's acceptance time (ISO-8601 UTC), or None when
-    #: no EVENT is queued. Absolute so the reader computes age at read time
-    #: instead of trusting a staleness figure computed when this was sent.
     oldest_event_accepted_at: str | None
 
 
 class RelayRuntimeStatusPayload(TypedDict):
-    """Closed runtime-status request shape accepted by the backend."""
-
     facility_id: str
     generation: int | None
     seq: int

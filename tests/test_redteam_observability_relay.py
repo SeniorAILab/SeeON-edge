@@ -1,5 +1,3 @@
-"""Adversarial ingest/query cases for execution-record HTTP and store surfaces."""
-
 from __future__ import annotations
 
 import hashlib
@@ -95,8 +93,6 @@ def enabled_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 @dataclass(frozen=True, slots=True)
 class _PgStack:
-    """Product root, its audit runtime and the diagnostics schema for one test."""
-
     sandbox: ProductSandbox
     audit_runtime: PostgresAuditRuntime
     diagnostics: DiagnosticsSandbox

@@ -1,5 +1,3 @@
-"""Adversarial retention, prune, coarsening, and query-truth cases."""
-
 from __future__ import annotations
 
 import hashlib
@@ -114,7 +112,6 @@ def test_b1_forced_incomplete_unknown_converges_without_infinite_loop(
     budget = RetentionBudget(total_bytes=DISK_BUDGET, unit_horizon_ns=HORIZON)
     store = _store(diag, budget)
     blob = PAYLOAD_BLOB
-    # 800 single-record batches are ~747 KB of live rows unpruned, past high_water.
     for index in range(800):
         store.ingest_batch(
             _batch(
@@ -143,12 +140,7 @@ def test_b1_forced_incomplete_unknown_converges_without_infinite_loop(
         for row in admin.execute("SELECT coverage_kind FROM execution_coverage").fetchall()
     }
     used = used_bytes(admin)
-    # An exact enforce converges below high_water; between exact checks
-    # usage may exceed high_water by one interval of accrual error but
-    # never the total envelope.
     assert used <= budget.total_bytes
-    # Each exact call prunes whole units and stops near low_water using
-    # the measured ratio; it converges within a bounded number of calls.
     for _ in range(50):
         if used_bytes(admin) <= budget.high_water:
             break

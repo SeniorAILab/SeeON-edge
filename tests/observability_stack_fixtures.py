@@ -1,5 +1,3 @@
-"""Shared helpers for observability E2E and real-stack load measurements."""
-
 from __future__ import annotations
 
 import importlib.util
@@ -48,7 +46,6 @@ def _free_tcp_port() -> int:
 
 
 def wait_until(predicate: Callable[[], bool], *, timeout: float, what: str) -> None:
-    """Poll ``predicate`` until true or raise ``AssertionError`` naming ``what``."""
     deadline = time.monotonic() + timeout
     while not predicate():
         if time.monotonic() >= deadline:
@@ -70,8 +67,6 @@ def deepstream_available() -> bool:
 
 @dataclass
 class BackendUnderTest:
-    """Live uvicorn Backend with execution-record ingest and dashboard query."""
-
     base_url: str
     relay_token: str
     dashboard_username: str
@@ -138,7 +133,6 @@ def serve_backend(
     audit_runtime: PostgresAuditRuntime,
     diagnostics_schema: str,
 ) -> Iterator[BackendUnderTest]:
-    """Serve the no-lifespan app on the PostgreSQL sandbox root on a free loopback port."""
     previous = {
         key: os.environ.get(key)
         for key in (
@@ -165,7 +159,6 @@ def serve_backend(
         app = postgres_api_app(sandbox, audit_runtime)
         app.state.edge_relay_token = relay_token
         app.state.backend_build_revision = _BUILD_REVISION
-        # The caller owns the schema, so a second serve reopens the same rows.
         database = PostgresDatabase(sandbox.dsn, diagnostics_schema, _DIAGNOSTICS_POOL)
         database.start()
         diagnostics.callback(database.close, timeout_sec=3.0)

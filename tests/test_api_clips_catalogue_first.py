@@ -1,5 +1,3 @@
-"""``GET /clips`` serves pages from the PostgreSQL catalogue; only the indexer walks the store."""
-
 from __future__ import annotations
 
 import json
@@ -88,7 +86,6 @@ def _listed(client: TestClient) -> tuple[int, list[str]]:
 def test_listing_walks_the_store_once_and_never_relocates_per_clip(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_app: Callable[[Path], FastAPI]
 ) -> None:
-    """Pages come from the catalogue: a GET neither walks the store nor locates a clip."""
     root = tmp_path / "clip-store"
     count = 500
     for index in range(count):
@@ -233,9 +230,6 @@ def test_parked_row_whose_manifest_reappears_is_restored_not_refused(
     make_app: Callable[[Path], FastAPI],
     postgres_product_sandbox: ProductSandbox,
 ) -> None:
-    """A row parked UNAVAILABLE/MANIFEST_MISSING carries no identity. When the
-    manifest is back on disk the catalogue must restore it, not report a content
-    change: one such row made every ``GET /clips`` answer 503 in production."""
     root = tmp_path / "clip-store"
     for index in range(3):
         _write_clip(root, index)
@@ -245,7 +239,6 @@ def test_parked_row_whose_manifest_reappears_is_restored_not_refused(
     with _client(app) as client:
         assert _listed(client)[0] == 3
 
-        # The state the indexer leaves when a referenced clip's manifest vanishes.
         _ = admin.execute(
             """
             UPDATE clips SET

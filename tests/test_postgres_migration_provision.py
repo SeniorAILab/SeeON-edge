@@ -1,5 +1,3 @@
-"""Provisioning the PostgreSQL schema, runtime role and fenced authority on real PG18."""
-
 from __future__ import annotations
 
 import stat
@@ -172,9 +170,6 @@ def test_set_runtime_password_stores_only_a_scram_verifier_after_provision(
 def test_set_runtime_password_sends_the_verifier_not_the_plaintext(
     migration_names: MigrationNames, tmp_path: Path
 ) -> None:
-    """The server hashes a plaintext PASSWORD with the session's password_encryption
-    and stores a pre-hashed one as sent, so under md5 a SCRAM verifier proves the
-    statement, and any statement log, never carried the plaintext."""
     provision_target(migration_names, _authority_path(tmp_path))
     md5_session = replace(
         migration_names,

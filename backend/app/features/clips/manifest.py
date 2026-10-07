@@ -1,5 +1,3 @@
-"""Filesystem discovery and compatibility parsing for clip manifests."""
-
 from __future__ import annotations
 
 import math
@@ -137,7 +135,6 @@ def read_manifest_file(path: Path) -> ClipManifest | None:
 
 
 def parse_manifest_bytes(content: bytes) -> ClipManifest | None:
-    """Decode exactly the bytes a caller inspected, without a second path read."""
     try:
         parsed = _MANIFEST_PAYLOAD.validate_json(content)
     except ValidationError:

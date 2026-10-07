@@ -11,7 +11,6 @@ BedStatus = TypeVar("BedStatus")
 
 
 def observation_from_detection_result(result: DetectionResult) -> FrameObservation:
-    """Convert an authoritative detection result without changing payload order."""
     return FrameObservation.from_detection_result(result)
 
 
@@ -26,7 +25,6 @@ def build_frame_observation(
     bed_exit_statuses: Iterable[BedStatus] | None = None,
     track_ids: Iterable[int | None] | None = None,
 ) -> FrameObservation:
-    """Build one numeric observation while preserving every iterable's index order."""
     base = (
         FrameObservation.from_detection_result(detections)
         if detections is not None

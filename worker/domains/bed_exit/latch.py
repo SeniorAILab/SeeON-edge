@@ -14,8 +14,6 @@ class BedExitLatchStatus:
 
 
 class BedExitLatch:
-    """Retain only bed-observation freshness across inference gaps."""
-
     def __init__(
         self,
         *,
@@ -39,7 +37,7 @@ class BedExitLatch:
         self._freshness.observe()
 
     def coast(self) -> None:
-        """Retain the last freshness observation during a gap."""
+        ...
 
 
 __all__ = ["BedExitLatch", "BedExitLatchStatus"]

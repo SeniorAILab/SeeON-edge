@@ -1,27 +1,12 @@
-"""Shared `BedPoseFeatures` builders for bed-exit posture-gate tests.
-
-`worker/domains/bed_exit/detector.py` only arms an exit once a track is
-observed lying/sitting in its own bed (`hip_depth >= 0.10`, ported from the
-deleted shadow state machine's measured convention -- see the module
-constants there). These builders keep every bed-exit test's pose fixture
-consistent with that exact convention instead of each file re-deriving its
-own numbers.
-"""
-
 from __future__ import annotations
 
 from worker.types import BedPoseFeatures, FrameBedPoseFeatures
 
-# Measured by the deleted shadow state machine (worker/domains/bed_exit/
-# detector.py's module docstring for `_MIN_IN_BED_HIP_DEPTH`): IN_BED +0.257.
 _LYING_HIP_DEPTH = 0.257
-# OUT_OF_BED -0.289: a standing person's hips sit well below the mattress
-# plane regardless of how much of their bbox overlaps the bed polygon.
 _STANDING_HIP_DEPTH = -0.289
 
 
 def lying_in_bed(track_id: int, bed_id: int | None = 0) -> BedPoseFeatures:
-    """Posture that satisfies the in-bed dwell gate (lying/sitting, observed)."""
     return BedPoseFeatures(
         track_id=track_id,
         bed_id=bed_id,
@@ -39,7 +24,6 @@ def lying_in_bed(track_id: int, bed_id: int | None = 0) -> BedPoseFeatures:
 
 
 def standing(track_id: int, bed_id: int | None = 0) -> BedPoseFeatures:
-    """Posture that must never satisfy the gate (a caregiver leaning/standing)."""
     return BedPoseFeatures(
         track_id=track_id,
         bed_id=bed_id,

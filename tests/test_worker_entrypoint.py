@@ -1,15 +1,3 @@
-"""Tests for the canonical `python -m worker` CLI (`worker/__main__.py`).
-
-Covers the argparse surface, the documented exit-code table
-(docs/architecture.md "Entrypoint"), `--check-config`'s no-side-effect
-contract, `--heartbeat-on-start` passthrough, `restart_check` wiring via
-`make_restart_check`, and SIGINT/SIGTERM clean shutdown. `WorkerRuntime.run`
-is monkeypatched throughout (it would otherwise require real cameras/models);
-one test constructs the real `WorkerRuntime` end to end with fake
-collaborators to prove the historical `WorkerRuntime(config)` positional-call
-TypeError cannot recur.
-"""
-
 from __future__ import annotations
 
 import importlib.util
@@ -58,7 +46,6 @@ class _FakeServingClient:
 
 @pytest.fixture(autouse=True)
 def _isolate_from_default_ingest_composition(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep CLI tests hermetic while using the flow composition contract."""
     real_connect = socket.socket.connect
 
     def _reject_network_connect(client: socket.socket, address: tuple[str, int] | str) -> None:
@@ -88,9 +75,6 @@ def _isolate_from_default_ingest_composition(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(worker_main, "load_worker_config", load_fixture_config)
     monkeypatch.setattr(worker_main, "require_api_release_identity", lambda _relay_url: None)
     monkeypatch.setattr(worker_main, "resolve_startup_config", resolve_fixture_startup_config)
-
-
-# --- argparse surface -------------------------------------------------
 
 
 def test_help_flag_exits_zero_and_documents_all_flags(
@@ -143,9 +127,6 @@ def test_removed_system_test_module_and_environment_gate_are_not_shipped() -> No
         assert "ML_WORKER_SYSTEM_TEST_GATE" not in contract.read_text(encoding="utf-8")
 
 
-# --- config resolution / exit code 2 -----------------------------------
-
-
 def test_missing_config_path_exits_with_config_error_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -164,15 +145,6 @@ def test_invalid_yaml_exits_with_config_error_code(tmp_path: Path) -> None:
 def test_config_missing_required_field_exits_with_config_error_code(
     tmp_path: Path,
 ) -> None:
-    """필수 섹션이 빠진 설정은 계속 config-error(2)로 죽는다.
-
-    이 픽스처는 원래 `relay`만 있고 `cameras`가 없는 YAML이었다. 이슈 #150
-    이후로는 그게 "필수 필드 누락"이 아니라 **유효한 0대 로스터**다 -- 새로
-    설치한 노드가 첫 카메라를 등록하기 전 상태이므로 부팅해야 한다. 그래서
-    실제로 여전히 필수인 `relay`를 빼도록 바꿨다. "설정 없음"은 예전처럼
-    죽고 "카메라 없음"은 뜬다는 구분(이슈 #43 대 #150)이 이 테스트가 지키는
-    선이다.
-    """
     incomplete_path = tmp_path / "incomplete.yaml"
     incomplete_path.write_text(
         yaml.safe_dump({"version": 1}),
@@ -185,21 +157,11 @@ def test_config_missing_required_field_exits_with_config_error_code(
 def test_edge_camera_config_env_has_no_effect(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Regression guard: the camera roster/config path must never be
-    provisionable through the environment (an env var reaches the runtime via
-    compose, and compose is tracked in Git) -- see
-    ``scripts/verify_scope_fidelity.py``'s ``ROSTER_PATTERN``. A static-YAML
-    boot is CLI-flag-only (``--config``); setting ``EDGE_CAMERA_CONFIG`` must
-    be inert, so with no ``--config`` and no ``RELAY_URL`` this still exits
-    config-error(2) exactly as if the env var were never set."""
     config_path = _write_config(tmp_path)
     monkeypatch.setenv("EDGE_CAMERA_CONFIG", str(config_path))
     monkeypatch.delenv("RELAY_URL", raising=False)
 
     assert worker_main.main(["--check-config"]) == 2
-
-
-# --- --check-config has zero model/camera/relay side effects -----------
 
 
 def test_check_config_validates_without_side_effects(
@@ -233,9 +195,6 @@ def test_check_config_ignores_heartbeat_on_start_flag(
     )
 
     assert exit_code == 0
-
-
-# --- real WorkerRuntime construction: proves no TypeError ---------------
 
 
 def test_build_revision_environment_is_resolved_before_runtime_construction(
@@ -276,7 +235,6 @@ def test_build_revision_environment_is_resolved_before_runtime_construction(
 def test_real_workerruntime_constructs_with_fake_collaborators_without_typeerror(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The CLI constructs the flow runtime with its fake serving collaborator."""
     config_path = _write_config(tmp_path)
     constructed: list[WorkerRuntime] = []
     real_init = WorkerRuntime.__init__
@@ -288,8 +246,6 @@ def test_real_workerruntime_constructs_with_fake_collaborators_without_typeerror
 
     monkeypatch.setattr(WorkerRuntime, "__init__", _spy_init)
     monkeypatch.setattr(WorkerRuntime, "run", lambda self: None)
-    # The composition root selects the profile's model registry and passes it
-    # to the serving client (flow -> ORT bed, everything else -> the default).
     monkeypatch.setattr(worker_main, "InProcessServingClient", lambda _registry=None: fake_serving)
 
     exit_code = worker_main.main(["--config", str(config_path)])
@@ -298,9 +254,6 @@ def test_real_workerruntime_constructs_with_fake_collaborators_without_typeerror
     assert len(constructed) == 1
     runtime = constructed[0]
     assert runtime._serving is fake_serving
-
-
-# --- restart_check wiring ------------------------------------------------
 
 
 def test_restart_check_wired_from_config_relay_settings(
@@ -404,9 +357,6 @@ def test_restart_check_rejects_retired_relay_url_override(
     assert calls == []
 
 
-# --- --max-frames-per-camera passthrough ----------------------------------
-
-
 def test_max_frames_per_camera_wired_to_workerruntime_constructor(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -455,9 +405,6 @@ def test_max_frames_per_camera_rejects_non_positive_or_non_integer_values(raw: s
         worker_main.main(["--max-frames-per-camera", raw])
 
     assert exc_info.value.code == 2
-
-
-# --- heartbeat-on-start passthrough ---------------------------------------
 
 
 def test_heartbeat_on_start_sends_canonical_heartbeat_per_camera(
@@ -529,9 +476,6 @@ def test_heartbeat_on_start_failure_is_nonfatal_and_run_continues(
     assert ran == [True]
 
 
-# --- exit codes 0 / 1 / 3 from runtime.run() ------------------------------
-
-
 def test_clean_run_returns_zero_exit_code(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     config_path = _write_config(tmp_path)
     monkeypatch.setattr(WorkerRuntime, "run", lambda self: None)
@@ -542,9 +486,6 @@ def test_clean_run_returns_zero_exit_code(monkeypatch: pytest.MonkeyPatch, tmp_p
 def test_bootstrap_systemexit_translates_to_its_exit_code(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """`bootstrap.bootstrap_or_exit` calls `sys.exit(stage.exit_code)` directly
-    on a global stage failure; `WorkerRuntime.run` never intercepts it, so it
-    reaches `main()` as `SystemExit`, not `BootstrapStageError`."""
     config_path = _write_config(tmp_path)
 
     def _fake_run(self: WorkerRuntime) -> None:
@@ -579,9 +520,6 @@ def test_generic_runtime_error_returns_generic_error_code(
     monkeypatch.setattr(WorkerRuntime, "run", _fake_run)
 
     assert worker_main.main(["--config", str(config_path)]) == 1
-
-
-# --- signal shutdown -------------------------------------------------------
 
 
 def test_sigint_triggers_clean_shutdown_and_restores_previous_handler(

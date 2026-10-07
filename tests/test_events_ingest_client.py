@@ -214,10 +214,6 @@ def test_edge_ingest_client_does_not_emit_detection_lost() -> None:
 
 
 def test_edge_ingest_client_send_alert_receipt_calls_on_accepted_with_wall_clock_time() -> None:
-    # Given: a real worker sends an idempotent alert with edge_event_id set,
-    # which is the send_alert_receipt -> BackendEvidenceClient.send_event_payload
-    # code path (distinct from the edge_event_id-less send_alert path exercised
-    # by the tests above).
     class _ReceiptHandler(_RecordingHandler):
         def do_POST(self) -> None:
             length = int(self.headers.get("Content-Length", "0"))
@@ -247,9 +243,6 @@ def test_edge_ingest_client_send_alert_receipt_calls_on_accepted_with_wall_clock
     )
     accepted_values: list[float] = []
     try:
-        # When: real bounded_request runs end to end against a live HTTP
-        # response (a stub that never calls on_response would hide the
-        # `time` module/`time.time` callable bug this test guards against).
         before = time.time()
         result = client.send_alert_receipt(
             edge_event_id="00000000-0000-4000-8000-000000000099",
@@ -260,8 +253,6 @@ def test_edge_ingest_client_send_alert_receipt_calls_on_accepted_with_wall_clock
         )
         after = time.time()
 
-        # Then: it completes without TypeError, and on_accepted receives a
-        # single wall-clock timestamp bounded by the surrounding calls.
         assert result == EventReceipt("accepted", "00000000-0000-4000-8000-000000000099", "event-1")
         assert len(accepted_values) == 1
         assert isinstance(accepted_values[0], float)
@@ -278,7 +269,6 @@ def _run_server(server: ThreadingHTTPServer) -> Thread:
 
 
 def test_edge_ingest_client_skips_snapshot_put_for_a_local_accept_receipt(monkeypatch) -> None:
-    """accepted_local has no upstream id; there is no `{event_id}/snapshot` to PUT to."""
     from shared.events import edge_ingest_client as module
 
     class _LocalAcceptBackend:

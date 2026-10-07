@@ -1,5 +1,3 @@
-"""CPU-only ONNX person-box inference for stored evidence clips."""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
@@ -33,8 +31,6 @@ SessionFactory = Callable[[str, list[str]], _Session]
 
 
 class OrtClipPoseRunner:
-    """Verified YOLO26 pose model used only to publish person boxes."""
-
     def __init__(
         self, model_path: Path, threshold: float, *, session_factory: SessionFactory | None = None
     ) -> None:

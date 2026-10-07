@@ -10,10 +10,6 @@ from contracts.observation import BoundingBox
 
 LOGGER: Final = logging.getLogger(__name__)
 
-# Rasterized-mask cache for bed polygons (see `_bed_polygon_mask`). Bounded
-# so a long-running worker with many cameras/polygon updates cannot grow
-# this unboundedly; entries are cheap (one small per-row prefix-sum tuple
-# each) so a generous size costs little.
 _MASK_CACHE_SIZE: Final = 64
 
 
@@ -26,18 +22,6 @@ def best_bed_id(containments: tuple[float, ...], min_containment: float) -> int 
 
 
 def containment_ratio(person: BoundingBox, bed: BoundingBox) -> float:
-    """Fraction of `person`'s box area that lies inside `bed`.
-
-    Uses `bed.polygon` (the operator-traced bed outline) when present: the
-    bed's `x1..y2` alone is an axis-aligned bounding box, which measured
-    1.57x-2.07x (mean 1.94x) the true polygon area across this site's 10
-    persisted bed zones (#219), inflating containment for anyone standing
-    just outside the real bed but inside its AABB. Falls back to the exact
-    axis-aligned-rectangle intersection -- bit-for-bit the prior formula --
-    when no polygon is recorded (or the recorded polygon turns out to be
-    unusable, see `_bed_polygon_mask`), so cameras with no drawn bed zone
-    keep working exactly as before.
-    """
     person_area = max(0, person.x2 - person.x1) * max(0, person.y2 - person.y1)
     if person_area <= 0:
         return 0.0
@@ -61,15 +45,6 @@ def _aabb_containment_ratio(person: BoundingBox, bed: BoundingBox, person_area: 
 
 @dataclass(frozen=True, slots=True)
 class _BedMask:
-    """A rasterized bed polygon, local to its own AABB.
-
-    Pure-Python (no ndarray): `row_prefix_sums[y]` is a length-`width + 1`
-    tuple of cumulative filled-pixel counts for rasterized row `y`, so the
-    number of filled pixels in columns `[left, right)` of row `y` is
-    `row_prefix_sums[y][right] - row_prefix_sums[y][left]` -- an O(height)
-    replacement for what used to be a single vectorized ndarray-slice sum.
-    """
-
     origin_x: int
     origin_y: int
     width: int
@@ -79,39 +54,6 @@ class _BedMask:
 
 @lru_cache(maxsize=_MASK_CACHE_SIZE)
 def _bed_polygon_mask(polygon: tuple[tuple[int, int], ...]) -> _BedMask | None:
-    """Rasterize a bed polygon into a binary mask, local to its own AABB.
-
-    Why rasterization and not exact analytic clipping: production polygons
-    on this site are confirmed non-convex -- each one's convex-hull area
-    exceeds its own polygon area by 11-31% (mean ~20%), which a rotated
-    rectangle (hull == polygon) could not produce -- and one persisted
-    camera's trace self-intersects at its closing seam (a ~2.2px
-    trace-closure artifact, not a real self-crossing shape). A convex-only
-    clip (e.g. Sutherland-Hodgman) is silently wrong for the non-convex
-    majority; a general polygon-clipping algorithm correct for both
-    non-convexity and self-intersection (Weiler-Atherton and friends) is a
-    subtle-bug factory nobody here could review with confidence. A plain
-    scanline fill (edge-intersection per row, even-odd rule, pixel-center
-    sampling) handles both cases correctly with no special-casing and no
-    ndarray/OpenCV dependency, which `worker/domains` may not import
-    (architecture-audit H3): the domain layer stays numeric/hardware-
-    agnostic, independent of which inference/vision library an
-    infrastructure profile happens to ship.
-
-    Deliberately permissive: a polygon that self-intersects still gets
-    rasterized (a sane filled region, just not what shoelace-style analytic
-    area would call "valid") -- it is NOT rejected into the AABB fallback.
-    Silently reverting an already-broken camera back to the AABB path while
-    everything else (PR, tests, dashboard) reports the bug fixed is a worse
-    failure than an ambiguous few pixels at a seam. Only genuinely unusable
-    input falls back here: fewer than 3 points, all points collinear, or an
-    empty mask after fill -- each logged once (this function is cached, so
-    the warning does not repeat every frame) so a fallback is never silent.
-
-    Cached (`lru_cache`) because polygons are static per camera between
-    bed-zone re-recognitions; this runs per person per bed per frame at
-    5fps, and re-rasterizing on every call would be wasted, repeated work.
-    """
     if len(polygon) < 3 or _all_collinear(polygon):
         LOGGER.warning(
             "bed polygon has fewer than 3 points or is degenerate (all "
@@ -152,16 +94,6 @@ def _rasterize_rows(
     width: int,
     height: int,
 ) -> tuple[tuple[int, ...], ...]:
-    """Scanline-fill `polygon` (local to its AABB) into per-row prefix sums.
-
-    Standard even-odd scanline polygon fill: for each integer row `y`,
-    intersect every non-horizontal edge against the pixel-center scanline
-    `y + 0.5`, sort the intersection x-coordinates, and fill columns between
-    each consecutive pair. Edge y-intervals are treated half-open
-    (`[low, high)`) so a shared vertex between two edges on the same
-    scanline is counted exactly once, matching the usual scan-conversion
-    convention.
-    """
     shifted = tuple((point[0] - origin_x, point[1] - origin_y) for point in polygon)
     edge_count = len(shifted)
     edges = tuple(
@@ -179,9 +111,6 @@ def _rasterize_rows(
             t = (y - y0) / (y1 - y0)
             intersections.append(x0 + t * (x1 - x0))
         intersections.sort()
-        # `delta` is a difference array over filled columns: +1 at each
-        # fill-run's start, -1 at its end, so a running sum reconstructs
-        # which columns are filled without ever materializing a row buffer.
         delta = [0] * (width + 1)
         for pair_index in range(0, len(intersections) - 1, 2):
             start_column = max(math.ceil(intersections[pair_index] - 0.5), 0)
@@ -206,7 +135,7 @@ def _all_collinear(points: tuple[tuple[int, int], ...]) -> bool:
         if direction_x != 0 or direction_y != 0:
             break
     else:
-        return True  # every point coincides with the first
+        return True
     return all(
         (point_x - origin_x) * direction_y - (point_y - origin_y) * direction_x == 0
         for point_x, point_y in points

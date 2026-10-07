@@ -173,7 +173,7 @@ def test_released_handle_and_packet_reject_stale_host_access() -> None:
         packet.borrow_host_frame()
     with pytest.raises(FrameLeaseReleasedError, match="released"):
         _ = packet.frame
-    assert stale_frame.index == 1  # contracts.Frame stays host-only and unchanged.
+    assert stale_frame.index == 1
 
 
 def test_named_host_materializer_is_the_only_counted_full_frame_copy() -> None:

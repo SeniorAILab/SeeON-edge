@@ -1,5 +1,3 @@
-"""Image-free native perception to the existing CPU policy and evidence plane."""
-
 from __future__ import annotations
 
 import logging
@@ -46,8 +44,6 @@ class NativeEventSink(Protocol):
 
 
 class NativeSnapshotControl(Protocol):
-    """The only media-plane control operation policy processing needs."""
-
     def snapshot(self, camera_id: str) -> bytes: ...
 
 
@@ -74,7 +70,6 @@ class NativePolicyContext:
     diagnostics: NativeDiagnostics
     bed_interval: int
     replay_trace: ReplayTraceWriter | None = None
-    # G7: composition supplies the evaluated bed-exit detection window.
     night_window_active: Callable[[], bool] | None = None
     recreate_decision: Callable[[SourceBinding], EventAggregator] | None = None
     track_id_switch_absorbed_total: Callable[[EventAggregator], int] | None = None
@@ -83,8 +78,6 @@ class NativePolicyContext:
 
 @final
 class NativePolicyPump:
-    """Consume exact accepted metadata without host frames or Python tracking."""
-
     def __init__(self, binding: SourceBinding, context: NativePolicyContext) -> None:
         self._binding = binding
         self._metadata = context.metadata
@@ -99,7 +92,6 @@ class NativePolicyPump:
         self._night_window_active = context.night_window_active
         self._recreate_decision = context.recreate_decision
         if context.track_id_switch_absorbed_total is None:
-            # ADR-0002: a missing seam refuses at wiring time, never mid-stream.
             raise ValueError("native policy pump requires an absorbed-switch reader")
         self._track_id_switch_absorbed_total = context.track_id_switch_absorbed_total
         self._execution_records = context.execution_records
@@ -125,20 +117,6 @@ class NativePolicyPump:
         return self._binding.camera_id
 
     def _rebind_if_source_was_rebuilt(self) -> None:
-        """Adopt the slot's current binding after a source rebuild.
-
-        ``SourceLifecycle.rebuild`` asks the child for a fresh binding and
-        re-registers it on the slot, which advances ``source_generation`` and
-        ``stream_epoch``. The slot then keeps accepting frames against that new
-        binding, but this pump was constructed with the pre-rebuild binding and
-        ``wait_accepted`` matches against whatever binding its token carries --
-        so without this the pump silently starves forever while the slot
-        reports a clean accept tally and every frame is overwritten unread.
-
-        Nothing counts the pump-side refusal (``wait_accepted`` is a predicate,
-        not a publish path), which is why this failure presented as "the child
-        never publishes" for a long time.
-        """
         current = self._metadata.expected_binding(self.camera_id)
         if current is None or current == self._binding:
             return
@@ -146,9 +124,6 @@ class NativePolicyPump:
         self._binding = current
         self._observation_coverage.rebind(current)
         if self._recreate_decision is not None:
-            # A source rebuild starts a distinct native epoch. Recreate the
-            # camera-local window/policy so no partial 30-row state crosses
-            # the boundary and every onset identity names the new generation.
             self._decision = self._recreate_decision(current)
             with self._preview_states_lock:
                 self._preview_states = MappingProxyType({})
@@ -176,8 +151,6 @@ class NativePolicyPump:
             token = AcceptanceToken(self._binding, frame.native_publish_sequence)
             self._observation_coverage.observe(frame)
             self._diagnostics.record_native_detection_attempt(self.camera_id)
-            # Only read slot counters when a sink is wired: the seam default
-            # (None) must leave the hot path byte-for-byte as before.
             sink = self._execution_records
             before = None if sink is None else self._metadata.counters()
             try:
@@ -209,7 +182,6 @@ class NativePolicyPump:
             self._preview_states = MappingProxyType({})
 
     def preview_states(self) -> Mapping[int, FallPreviewState]:
-        """Return the immutable latest fall-policy state for live preview tracks."""
         with self._preview_states_lock:
             return self._preview_states
 
@@ -224,9 +196,6 @@ class NativePolicyPump:
                 DecisionTraceValueName.FALL_TRANSITION_PROBABILITY in snapshot.missing_values
                 and snapshot.current_state != DecisionTraceState.UNKNOWN
             )
-            # A track the classifier has never scored (warmup) carries no fall
-            # state, so it must not be asserted "normal". A previously scored
-            # track keeps its policy state through stride gaps.
             if track_id is None or (probability_value is None and not scored_gap):
                 continue
             states[track_id] = FallPreviewState(
@@ -334,10 +303,7 @@ class NativePolicyPump:
                     self.camera_id,
                     error,
                 )
-            except Exception as error:  # noqa: BLE001 - the alert outranks its thumbnail
-                # A snapshot is optional evidence; an admitted safety event is
-                # not. Admission has already consumed the onset, so a failure
-                # here must degrade to "no snapshot", never drop the alert.
+            except Exception as error:  # noqa: BLE001
                 snapshot = None
                 LOGGER.warning(
                     "snapshot unavailable for camera_id=%s; staging the event without it "
@@ -348,9 +314,6 @@ class NativePolicyPump:
             try:
                 self._sink.emit_for_frame(self._attacher.attach_native(event, snapshot), trigger)
             except Exception:
-                # Admission has already consumed the onset and cooldown. A
-                # durable staging failure must restore this event and every
-                # admitted event that has not yet reached the sink.
                 for pending in events[position:]:
                     self._decision.release(pending)
                 raise
@@ -389,7 +352,6 @@ class NativePolicyPump:
         boxes: tuple[BoundingBox, ...],
         track_ids: tuple[int, ...],
     ) -> None:
-        """Keep best-effort trace persistence outside the frame-loop contract."""
         try:
             self._capture_replay_row_unchecked(metadata, boxes, track_ids)
         except (OSError, ValueError, RuntimeError):
@@ -588,7 +550,6 @@ def _unit_bbox(
 
 
 def _resample_gap_rows_total(decision: EventAggregator) -> int:
-    """Read the fall adapter's cumulative count without coupling domains to telemetry."""
     total = 0
     for decider in decision.deciders:
         count = getattr(unwrap_decider(decider), "resample_gap_rows_total", None)
@@ -598,15 +559,6 @@ def _resample_gap_rows_total(decision: EventAggregator) -> int:
 
 
 def _with_decision_trace_id(event: BusinessEvent, decision: EventAggregator) -> BusinessEvent:
-    """Stamp the triggering snapshot's decision_trace_id into the alert audit.
-
-    The id is computed with the identity of the decider that PRODUCED this
-    event (the aggregator records the producer per event id), so a bed-exit
-    alert is never stamped with the fall module's identity. The same id is
-    stamped on the matching policy.decision record by execution_record_emit.
-    An event whose producer or triggering snapshot cannot be identified keeps
-    its audit untouched; nothing is fabricated.
-    """
     producer = decision.producer_for(str(event.identity))
     if producer is None:
         return event

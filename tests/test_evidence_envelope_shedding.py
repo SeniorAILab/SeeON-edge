@@ -1,5 +1,3 @@
-"""Oversized evidence must survive the complete authenticated relay path."""
-
 from __future__ import annotations
 
 import base64
@@ -40,8 +38,6 @@ _DETECTED_AT = "2026-08-22T03:53:43Z"
 
 @dataclass
 class RelayTransport:
-    """Authenticated in-process relay transport recording the actual response."""
-
     client: TestClient
     statuses: list[int] = field(default_factory=list)
 

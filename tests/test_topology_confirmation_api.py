@@ -124,10 +124,8 @@ def test_local_preview_and_confirmation_require_dashboard_auth(
     postgres_product_sandbox: ProductSandbox,
     postgres_audit_runtime: PostgresAuditRuntime,
 ) -> None:
-    # Given
     client, upstream = _app_client(postgres_product_sandbox, postgres_audit_runtime)
 
-    # When
     preview = client.get("/api/v1/connection/topology-preview")
     confirmation = client.post(
         "/api/v1/connection/topology-preview/confirm",
@@ -139,7 +137,6 @@ def test_local_preview_and_confirmation_require_dashboard_auth(
         },
     )
 
-    # Then
     assert preview.status_code == 401
     assert confirmation.status_code == 401
     assert upstream.confirmation is None
@@ -176,11 +173,9 @@ def test_authenticated_local_routes_confirm_with_server_held_token_hidden(
     postgres_product_sandbox: ProductSandbox,
     postgres_audit_runtime: PostgresAuditRuntime,
 ) -> None:
-    # Given
     client, upstream = _app_client(postgres_product_sandbox, postgres_audit_runtime)
     _login(client)
 
-    # When
     preview = client.get("/api/v1/connection/topology-preview")
     rejected_injection = client.post(
         "/api/v1/connection/topology-preview/confirm",
@@ -202,7 +197,6 @@ def test_authenticated_local_routes_confirm_with_server_held_token_hidden(
         },
     )
 
-    # Then
     assert preview.status_code == 200
     assert preview.json()["preview"]["cameras"] == 1
     assert TOKEN not in preview.text

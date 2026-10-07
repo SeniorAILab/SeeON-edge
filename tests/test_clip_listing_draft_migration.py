@@ -1,5 +1,3 @@
-"""Draft schema-17 listing migration helpers are absent."""
-
 from __future__ import annotations
 
 import importlib

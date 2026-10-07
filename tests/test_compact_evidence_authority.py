@@ -66,11 +66,9 @@ def _snapshot() -> RelaySnapshot:
 def test_alert_and_inline_snapshot_commit_atomically_and_replay_idempotently(
     postgres_product_sandbox: ProductSandbox, postgres_audit_runtime: PostgresAuditRuntime
 ) -> None:
-    # Given: the PostgreSQL authority and one alert with inline snapshot bytes.
     sandbox = postgres_product_sandbox
     outbox = _outbox(sandbox, postgres_audit_runtime)
 
-    # When: the exact alert is delivered twice.
     accepted = tuple(
         outbox.accept(
             _event(),
@@ -82,7 +80,6 @@ def test_alert_and_inline_snapshot_commit_atomically_and_replay_idempotently(
         for _ in range(2)
     )
 
-    # Then: one incident and one available snapshot are committed and the replay is a duplicate.
     assert [receipt.duplicate for receipt in accepted] == [False, True]
     assert sandbox.admin.execute("SELECT count(*) FROM incidents").fetchone() == (1,)
     assert sandbox.admin.execute("SELECT count(*) FROM artifacts").fetchone() == (1,)
@@ -97,8 +94,6 @@ def test_edge_event_id_replay_rejects_changed_identity(
     postgres_audit_runtime: PostgresAuditRuntime,
     committed_by: str,
 ) -> None:
-    # Given: an already committed edge_event_id, either accepted through the outbox
-    # or imported as a bare incident with no outbox row (the migration shape).
     sandbox = postgres_product_sandbox
     outbox = _outbox(sandbox, postgres_audit_runtime)
     if committed_by == "outbox":
@@ -114,11 +109,9 @@ def test_edge_event_id_replay_rejects_changed_identity(
         )
     before = row_counts(sandbox)
 
-    # When/Then: a changed immutable probability cannot reuse that key.
     with pytest.raises(EventIdentityConflict):
         outbox.accept(_event(probability=0.7), backend_camera_id=None, forward=False)
 
-    # Then: the committed fact is unchanged and no delivery obligation was added.
     assert incident_rows(sandbox) == COMMITTED
     assert row_counts(sandbox) == before
 
@@ -126,7 +119,6 @@ def test_edge_event_id_replay_rejects_changed_identity(
 def test_snapshot_database_failure_rolls_back_incident(
     postgres_product_sandbox: ProductSandbox, postgres_audit_runtime: PostgresAuditRuntime
 ) -> None:
-    # Given: an artifact tuple whose MIME exceeds the locked schema boundary.
     sandbox = postgres_product_sandbox
     outbox = _outbox(sandbox, postgres_audit_runtime)
     invalid = RelaySnapshot(
@@ -138,15 +130,12 @@ def test_snapshot_database_failure_rolls_back_incident(
         captured_at=TS,
     )
 
-    # When: the invalid artifact fails after incident insertion in the real transaction.
     with pytest.raises(psycopg.errors.CheckViolation):
         outbox.accept(_event(), backend_camera_id=None, forward=False, snapshot=invalid)
 
-    # Then: neither the incident, its outbox row nor the artifact is partially committed.
     assert row_counts(sandbox) == (0, 0)
     assert artifact_count(sandbox) == 0
 
-    # And: the same key is still new, so a corrected alert is accepted, not a duplicate.
     accepted = outbox.accept(_event(), backend_camera_id=None, forward=False, snapshot=_snapshot())
     assert not accepted.duplicate
     assert incident_rows(sandbox) == COMMITTED
@@ -156,7 +145,6 @@ def test_snapshot_database_failure_rolls_back_incident(
 def test_unmapped_relay_alert_is_locally_accepted_on_real_http_surface(
     postgres_product_sandbox: ProductSandbox, postgres_audit_runtime: PostgresAuditRuntime
 ) -> None:
-    # Given: a registered camera without a Hub mapping on the PostgreSQL authority.
     sandbox = postgres_product_sandbox
     app = relay_postgres_app(sandbox, postgres_audit_runtime, backend_camera_id=None)
     snapshot = _snapshot()
@@ -180,7 +168,6 @@ def test_unmapped_relay_alert_is_locally_accepted_on_real_http_surface(
         },
     }
 
-    # When: the worker POSTs through the authenticated relay route.
     with TestClient(app) as client:
         response = client.post(
             "/api/v1/relay/alerts",
@@ -188,13 +175,6 @@ def test_unmapped_relay_alert_is_locally_accepted_on_real_http_surface(
             headers=RELAY_HEADERS,
         )
 
-    # Then: local atomic acceptance does not require an upstream camera id, and
-    # it says so by name. The bare {"status": "accepted"} this used to pin was
-    # unactionable for the sender: it needs a receipt echoing its edge_event_id,
-    # an absent one is indistinguishable from a mangled response, so it retried
-    # this event forever and every newer event queued behind it never left the
-    # edge (#431). The backend is the only party that knows the push was
-    # deliberately skipped, so the backend is the party that must state it.
     assert response.status_code == 202
     assert response.json() == {"status": "accepted_local", "edge_event_id": EVENT_ID}
     assert CentralEvidenceQuery(sandbox.database).get(EVENT_ID) is not None

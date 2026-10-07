@@ -1,10 +1,3 @@
-"""P0-AC7 reader tolerance: the catalogue reads manifests with and without ``detected_at``.
-
-This lands ahead of the worker writer so that reverting the writer never
-leaves already-written manifests unreadable, and this reader never has to be
-reverted while such manifests exist.
-"""
-
 from __future__ import annotations
 
 import json

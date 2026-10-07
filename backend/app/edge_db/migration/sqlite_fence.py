@@ -1,5 +1,3 @@
-"""Stamp the legacy SQLite file so an old runtime refuses it once PostgreSQL takes over."""
-
 from __future__ import annotations
 
 import hashlib
@@ -27,8 +25,6 @@ from backend.app.edge_db.migration.snapshot import (
 )
 
 FENCE_RECEIPT_FORMAT: Final = "seeon-edge-sqlite-fence/1"
-# Far above every schema an old runtime knows, so it refuses the file as newer;
-# the remainder names the PostgreSQL generation that took over.
 SENTINEL_BASE: Final = 1_000_000
 _MAX_USER_VERSION: Final = 2**31 - 1
 _USER_VERSION_OFFSET: Final = 60
@@ -50,8 +46,6 @@ _RECEIPT_KEYS: Final = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class FenceReceipt:
-    """The bytes the fence proved: the snapshot, the file it stamped, and the result."""
-
     generation: int
     source_present: bool
     snapshot_sha256: str | None
@@ -123,19 +117,12 @@ def read_fence_receipt(path: Path) -> FenceReceipt:
 
 
 def preserved_path(receipt_path: Path) -> Path:
-    """The pre-fence byte copy kept beside the receipt; nothing deletes it."""
     return receipt_path.with_name(f"{receipt_path.stem}.pre-fence.sqlite3")
 
 
 def fence_sqlite(
     source: Path, *, snapshot: Path | None, generation: int, receipt: Path
 ) -> FenceReceipt:
-    """Stamp the source with the sentinel user_version, or create a stamped empty file.
-
-    A present source must still export to the snapshot's bytes. The receipt is
-    durable before the live stamp, so a crash leaves either the untouched file or
-    one the receipt names; rerunning the fence finishes either.
-    """
     user_version = sentinel_user_version(generation)
     if not source.parent.is_dir() or not receipt.parent.is_dir():
         raise MigrationError("fence directory does not exist")
@@ -150,7 +137,6 @@ def fence_sqlite(
 
 
 def inspect_fence(source: Path, fence: FenceReceipt) -> tuple[dict[str, object], list[str]]:
-    """Compare the live file with the receipt by its bytes; SQLite never opens it."""
     wal, shm, journal = sidecar_paths(source)
     reasons: list[str] = []
     live: str | None = None
@@ -186,7 +172,6 @@ def inspect_fence(source: Path, fence: FenceReceipt) -> tuple[dict[str, object],
 
 
 def descriptor_blocks(descriptor: int) -> Iterator[bytes]:
-    """Read a file by offset, so the descriptor stays open for as long as it is needed."""
     offset = 0
     while block := os.pread(descriptor, _CHUNK, offset):
         offset += len(block)
@@ -205,14 +190,11 @@ def _fence_present(
         raise MigrationError("source database is not a regular file")
     if _exists(sidecar_paths(source)[2]):
         raise MigrationError("source database has a rollback journal")
-    # POSIX drops every lock this process holds on a file when any descriptor on it
-    # closes, so the source is read only through this one until SQLite lets go.
     descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
     try:
         with closing(_open_exclusive(source)) as connection:
             live = _descriptor_sha256(descriptor)
             if recorded is not None and recorded.fenced_sha256 == live:
-                # A rerun after the stamp committed: the checkpoint above folded it in.
                 _require_same_fence(recorded, generation, snapshot)
                 discard(sidecar_paths(source)[1])
                 return recorded
@@ -220,7 +202,6 @@ def _fence_present(
                 raise MigrationError("a present SQLite source needs its snapshot")
             expected = snapshot_sha256(snapshot)
             _require_snapshot_bytes(connection, snapshot, expected)
-            # The export left a -shm for its own read; nothing else can hold it now.
             discard(sidecar_paths(source)[1])
             preserved = preserved_path(receipt)
             _preserve(descriptor, preserved, live)
@@ -278,7 +259,6 @@ def _fence_absent(
 
 
 def _open_exclusive(source: Path) -> sqlite3.Connection:
-    """Hold the only connection: no reader or writer can open the file until it closes."""
     connection = sqlite3.connect(
         source.resolve().as_uri() + "?mode=rw", uri=True, isolation_level=None, timeout=0
     )
@@ -291,7 +271,6 @@ def _open_exclusive(source: Path) -> sqlite3.Connection:
 
 
 def _hold_exclusive(connection: sqlite3.Connection) -> None:
-    # Exclusive locking keeps the file lock across transactions until close.
     connection.execute("PRAGMA locking_mode = EXCLUSIVE").fetchone()
     try:
         connection.execute("BEGIN IMMEDIATE")
@@ -310,7 +289,6 @@ def _require_same_fence(recorded: FenceReceipt, generation: int, snapshot: Path 
 
 
 def _require_snapshot_bytes(connection: sqlite3.Connection, snapshot: Path, expected: str) -> None:
-    # The export is not the live file's bytes, but exporting again the same way is.
     copy = temporary_path(snapshot)
     try:
         create_private_file(copy)
@@ -323,7 +301,6 @@ def _require_snapshot_bytes(connection: sqlite3.Connection, snapshot: Path, expe
 
 def _preserve(descriptor: int, preserved: Path, live: str) -> None:
     if _exists(preserved):
-        # Left by an interrupted fence before its receipt was written.
         if preserved.is_symlink() or not preserved.is_file() or snapshot_sha256(preserved) != live:
             raise MigrationError("preserved source copy does not match the live source")
         return
@@ -343,7 +320,6 @@ def _preserve(descriptor: int, preserved: Path, live: str) -> None:
 
 
 def _stamped_sha256(preserved: Path, user_version: int) -> str:
-    """Stamp a scratch copy first: the stamp is deterministic, so the receipt names the result."""
     scratch = temporary_path(preserved)
     try:
         descriptor = os.open(preserved, os.O_RDONLY | os.O_NOFOLLOW)
@@ -367,7 +343,6 @@ def _write_copy(descriptor: int, path: Path) -> None:
 
 
 def _stamp_file(path: Path, user_version: int) -> None:
-    # WAL like the source, so an old runtime's WAL switch changes nothing before it refuses.
     with closing(sqlite3.connect(path, isolation_level=None, timeout=0)) as connection:
         if connection.execute("PRAGMA journal_mode = WAL").fetchone()[0] != "wal":
             raise MigrationError("fence file is not in WAL mode")
@@ -382,7 +357,6 @@ def _stamp(connection: sqlite3.Connection, user_version: int) -> None:
 
 
 def _checkpoint(connection: sqlite3.Connection) -> None:
-    # Fold every committed frame into the main file, whose bytes alone are compared.
     busy, _, _ = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
     if busy:
         raise MigrationError("SQLite checkpoint was blocked")

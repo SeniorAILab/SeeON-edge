@@ -1,5 +1,3 @@
-"""Bed-zone behavior on the isolated, actual PostgreSQL product schema."""
-
 from __future__ import annotations
 
 import json
@@ -111,7 +109,6 @@ def test_round_trip_preserves_regions_origins_canonical_bytes_and_revisions(
     assert reopened.camera_exists("camera-a") is True
     assert reopened.get("camera-a") == saved
     assert reopened.get_all() == {"camera-a": saved}
-    # Repeating a put is still a mutation, not a content-equality no-op.
     assert _put(reopened, regions=regions) == saved
     assert registry.snapshot()["registry_version"] == 3
     assert sandbox.admin.execute(
@@ -624,7 +621,6 @@ def _compete(
                     pause.wait(0.01)
                 else:
                     pytest.fail("both writers must wait on the singleton row lock")
-                # Neither writer may lock a camera before the singleton.
                 sandbox.admin.execute("SELECT camera_id FROM cameras FOR UPDATE NOWAIT")
             return one.result(timeout=5), two.result(timeout=5)
 

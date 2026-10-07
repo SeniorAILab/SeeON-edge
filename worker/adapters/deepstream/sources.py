@@ -1,5 +1,3 @@
-"""Stable camera identities and Flow source names."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -16,8 +14,6 @@ class _Source:
 
 
 class SourceTable:
-    """Owns source lifecycle counters while retaining canonical camera IDs."""
-
     def __init__(self, *, worker_boot_id: str, child_instance_id: str, transform_id: str) -> None:
         self._worker_boot_id = worker_boot_id
         self._child_instance_id = child_instance_id
@@ -66,12 +62,6 @@ class SourceTable:
         )
 
     def camera_id_for_pad(self, pad_index: int) -> str | None:
-        """The camera on this mux pad, or ``None`` when the pad is unknown.
-
-        Returning ``None`` rather than raising is deliberate: the only caller is
-        the SDK probe callback, and an exception there aborts the whole
-        pipeline process.
-        """
         for camera_id, source in self._sources.items():
             if source.pad_index == pad_index:
                 return camera_id

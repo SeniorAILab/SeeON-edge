@@ -1,5 +1,3 @@
-"""Fall domain policy and pose+bbox56 classifier."""
-
 from __future__ import annotations
 
 from shared.detection_policies import FallPolicyV2

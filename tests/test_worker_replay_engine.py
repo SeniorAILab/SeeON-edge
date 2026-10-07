@@ -112,22 +112,13 @@ def test_replay_requires_fall_model_for_fall_module() -> None:
 
 
 def test_replay_bed_exit_containment_change_produces_structured_mismatch() -> None:
-    """A dwell-gated containment change: replay uses the real production
-    `BedExitConfig` defaults (in_bed_dwell_sec=3.0, outside_dwell_sec=2.0) --
-    seconds, not frame counts -- so the fixture must genuinely span that much
-    PTS time. The restrictive baseline (min_containment=0.9) never sees
-    enough containment to arm; the permissive candidate (0.4) arms, then
-    genuinely dwells outside the bed long enough to exit.
-    """
     source = _rows("reconnect-control-v2")
     template = source[0]
-    # own_ratio ~=0.5 against the fixture's bed polygon: cleared only by the
-    # permissive 0.4 policy, not the restrictive 0.9 one.
     near_bed = replace(template.tracks[0], bbox=(0.25, 0.0, 0.75, 0.5, 0.9))
-    outside_bed = source[2].tracks[0]  # this fixture row's bbox is fully outside the bed
+    outside_bed = source[2].tracks[0]
     step_ns = 66_666_667
-    phase1_frames = 48  # > 3.0s / step_ns of dwell-eligible containment
-    phase2_frames = 32  # > 2.0s / step_ns of unambiguous non-containment
+    phase1_frames = 48
+    phase2_frames = 32
     rows = tuple(
         replace(
             template,

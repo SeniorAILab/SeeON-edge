@@ -1,5 +1,3 @@
-"""Typed values and failures for durable evidence delivery."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass

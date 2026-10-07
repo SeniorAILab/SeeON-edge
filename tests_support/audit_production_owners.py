@@ -1,5 +1,3 @@
-"""Test-only catalog of production callables that own each audit action."""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
@@ -15,7 +13,6 @@ class AuditOwnerCatalogError(RuntimeError):
 
 
 def production_action_owners() -> dict[AuditAction, tuple[Callable[..., Any], ...]]:
-    """Return actual handlers/stores that own each shipped audit action."""
     from backend.app.features.audit.postgres_sessions import (
         append_with_recovery,
         close_session,

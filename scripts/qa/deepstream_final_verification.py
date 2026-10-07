@@ -1,5 +1,3 @@
-"""F1/F2/F4 final-verification contracts with byte-bound evidence."""
-
 from __future__ import annotations
 
 import hashlib
@@ -59,7 +57,6 @@ def compliance(
     required_tasks: tuple[int, ...],
     required_prs: int,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Verify either the legacy C8 manifest or complete F1 delivery evidence."""
     if plan is None or ledger is None:
         manifest = json.loads((root / "receipt-manifest.json").read_text(encoding="utf-8"))
         findings: list[str] = []
@@ -107,7 +104,6 @@ def compliance(
 
 
 def quality(root: Path, injection: str | None) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Verify successful command receipts and their immutable output logs."""
     receipt_path = root / "quality-receipt.json"
     if not receipt_path.is_file():
         return ("quality_receipt_missing",), ()
@@ -141,7 +137,6 @@ def scope(
     allowed_plan: Path,
     injected_path: str | None,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Verify the Git range stays within the worker migration's approved scope."""
     plan_digest = _digest(allowed_plan)
     completed = subprocess.run(
         ("git", "diff", "--name-only", base_sha, head_sha),

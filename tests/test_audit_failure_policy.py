@@ -69,7 +69,6 @@ def _reject_audit_inserts(sandbox: ProductSandbox) -> None:
 
 
 def _restore_audit_inserts(sandbox: ProductSandbox, runtime: PostgresAuditRuntime) -> None:
-    # The extra trigger fails the exact trigger contract, so re-verify only after dropping it.
     sandbox.admin.execute("DROP TRIGGER reject_audit_test ON audit_events")
     assert runtime.verify_once()
 
@@ -100,7 +99,6 @@ def test_stored_evidence_audit_failure_has_empty_503_and_live_probe_survives(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Given: authenticated stored evidence and a real PostgreSQL audit INSERT rejection.
     sandbox = postgres_product_sandbox
     root = tmp_path / "clips"
     _write_clip(root, "clip-a")
@@ -119,7 +117,6 @@ def test_stored_evidence_audit_failure_has_empty_503_and_live_probe_survives(
         _login(client)
         _reject_audit_inserts(sandbox)
 
-        # When: JSON and descriptor-backed reads reach the audit commit boundary.
         listed = client.get("/api/v1/clips")
         metadata = client.get("/api/v1/clips/clip-a/metadata")
         artifacts = client.get("/api/v1/clips/clip-a/artifacts")
@@ -128,7 +125,6 @@ def test_stored_evidence_audit_failure_has_empty_503_and_live_probe_survives(
         readiness = client.get("/health/ready")
         liveness = client.get("/health/live")
 
-    # Then: neither response starts product content, the descriptor closes, and liveness stays open.
     assert (listed.status_code, listed.content) == (503, b"")
     assert (metadata.status_code, metadata.content) == (503, b"")
     assert (artifacts.status_code, artifacts.content) == (503, b"")
@@ -149,7 +145,6 @@ def test_valid_video_200_and_206_append_one_success_audit_each(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Given: one authenticated descriptor-backed clip.
     sandbox = postgres_product_sandbox
     root = tmp_path / "clips"
     _write_clip(root, "clip-a")
@@ -159,13 +154,11 @@ def test_valid_video_200_and_206_append_one_success_audit_each(
         _login(client)
         before = _action_count(sandbox, AuditAction.CLIP_PLAY)
 
-        # When: complete and satisfiable-range responses are prepared and served.
         complete = client.get("/api/v1/clips/clip-a/video")
         partial = client.get("/api/v1/clips/clip-a/video", headers={"Range": "bytes=0-7"})
 
         after = _action_count(sandbox, AuditAction.CLIP_PLAY)
 
-    # Then: both valid response classes are audited exactly once.
     assert (complete.status_code, complete.content) == (200, b"verified-video")
     assert (partial.status_code, partial.content) == (206, b"verified")
     assert partial.headers["content-range"] == "bytes 0-7/14"
@@ -176,7 +169,6 @@ def test_credential_rotation_rolls_back_before_cookie_or_session_mutation(
     postgres_product_sandbox: ProductSandbox,
     postgres_audit_runtime: PostgresAuditRuntime,
 ) -> None:
-    # Given: a valid dashboard session and an audit table that refuses the shared transaction.
     sandbox = postgres_product_sandbox
     app = postgres_api_app(sandbox, postgres_audit_runtime)
 
@@ -191,13 +183,11 @@ def test_credential_rotation_rolls_back_before_cookie_or_session_mutation(
         rotations = _action_count(sandbox, AuditAction.CREDENTIAL_ROTATE)
         _reject_audit_inserts(sandbox)
 
-        # When: credential rotation attempts its credentials + audit transaction.
         response = client.put(
             "/api/v1/auth/credentials",
             json={"username": "rotated", "new_password": "new-password"},
         )
 
-    # Then: no response cookie and no durable credential row escaped rollback.
     assert (response.status_code, response.content) == (503, b"")
     assert "set-cookie" not in response.headers
     assert credentials() == before
@@ -208,14 +198,12 @@ def test_camera_and_topology_mutations_roll_back_with_audit_failure(
     postgres_product_sandbox: ProductSandbox,
     postgres_audit_runtime: PostgresAuditRuntime,
 ) -> None:
-    # Given: one camera authority sharing the audit runtime's database and a rejecting audit table.
     sandbox = postgres_product_sandbox
     runtime = postgres_audit_runtime
     store = CameraRegistryStore(sandbox.database, sandbox.authority)
     events = _event_count(sandbox)
     _reject_audit_inserts(sandbox)
 
-    # When: camera and location mutations reach their shared transaction callback.
     with pytest.raises(AuditRuntimeUnavailable):
         AuditMutation(runtime, lambda: _event(AuditAction.CAMERA_CREATE, "camera-a")).apply(
             store,
@@ -238,7 +226,6 @@ def test_camera_and_topology_mutations_roll_back_with_audit_failure(
             ),
         )
 
-    # Then: neither authority changed and no audit row escaped.
     assert store.snapshot()["cameras"] == []
     assert store.topology_snapshot().floors == ()
     assert _event_count(sandbox) == events
@@ -248,7 +235,6 @@ def test_review_cas_rolls_back_with_audit_failure(
     postgres_product_sandbox: ProductSandbox,
     postgres_audit_runtime: PostgresAuditRuntime,
 ) -> None:
-    # Given: one reviewable incident and a rejecting audit table.
     sandbox = postgres_product_sandbox
     sandbox.admin.execute(
         "INSERT INTO incidents(incident_id,edge_event_id,facility_id,camera_id,event_type,"
@@ -261,7 +247,6 @@ def test_review_cas_rolls_back_with_audit_failure(
     store = CentralEvidenceReviewStore(sandbox.database, sandbox.authority)
     _reject_audit_inserts(sandbox)
 
-    # When: the review and audit share a transaction whose append fails.
     with pytest.raises(AuditRuntimeUnavailable):
         AuditMutation(
             postgres_audit_runtime, lambda: _event(AuditAction.INCIDENT_REVIEW, "incident-a")
@@ -278,7 +263,6 @@ def test_review_cas_rolls_back_with_audit_failure(
             ),
         )
 
-    # Then: CAS state remains unchanged.
     version = sandbox.admin.execute(
         "SELECT review_version FROM incidents WHERE incident_id='incident-a'"
     ).fetchone()[0]
@@ -289,7 +273,6 @@ def test_audit_router_uses_unique_descending_keyset_pages(
     postgres_product_sandbox: ProductSandbox,
     postgres_audit_runtime: PostgresAuditRuntime,
 ) -> None:
-    # Given: three existing events plus the authenticated login event.
     app = postgres_api_app(postgres_product_sandbox, postgres_audit_runtime)
     for action in ("clip.list", "clip.detail", "clip.thumbnail"):
         parsed = AuditAction(action)
@@ -305,12 +288,10 @@ def test_audit_router_uses_unique_descending_keyset_pages(
     with TestClient(app) as client:
         _login(client)
 
-        # When: the caller follows the bounded keyset cursor.
         first = client.get("/api/v1/audit", params={"limit": 2})
         cursor = first.json()["next_before_id"]
         second = client.get("/api/v1/audit", params={"limit": 2, "before_id": cursor})
 
-    # Then: ordering is deterministic and pages do not overlap.
     first_ids = [event["audit_id"] for event in first.json()["events"]]
     second_ids = [event["audit_id"] for event in second.json()["events"]]
     assert first_ids == sorted(first_ids, reverse=True)
@@ -322,7 +303,6 @@ def test_recovered_audit_interval_writes_one_fence(
     postgres_product_sandbox: ProductSandbox,
     postgres_audit_runtime: PostgresAuditRuntime,
 ) -> None:
-    # Given: one failed governed read marks a bounded degraded interval.
     sandbox = postgres_product_sandbox
     app = postgres_api_app(sandbox, postgres_audit_runtime)
     with TestClient(app) as client:
@@ -330,13 +310,11 @@ def test_recovered_audit_interval_writes_one_fence(
         _reject_audit_inserts(sandbox)
         assert client.get("/api/v1/audit").status_code == 503
 
-        # When: audit recovers and two governed reads succeed.
         _restore_audit_inserts(sandbox, postgres_audit_runtime)
         first = client.get("/api/v1/audit")
         second = client.get("/api/v1/audit")
         readiness = client.get("/health/ready")
 
-    # Then: recovery is summarized once, without a per-request backlog, and readiness heals.
     assert first.status_code == second.status_code == 200
     assert readiness.status_code == 200
     assert _action_count(sandbox, AuditAction.RECOVERY_FENCE) == 1

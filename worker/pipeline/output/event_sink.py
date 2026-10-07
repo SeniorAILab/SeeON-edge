@@ -59,20 +59,16 @@ class EventClipRecorder(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class EvidenceEventSink:
-    """Stages an admitted event before binding its optional durable clip."""
-
     stager: EvidenceStager
     recorder: EventClipRecorder
     now: Callable[[], datetime] = _utc_now
     snapshot_store: SnapshotStore | None = None
 
     def emit(self, event: BusinessEvent) -> None:
-        """Reject the legacy event-only path because clip identity would be lossy."""
         del event
         raise ValueError("trigger packet is required for evidence emission")
 
     def emit_for_frame(self, event: BusinessEvent, trigger_packet: EvidenceTrigger) -> None:
-        """Persist an event with its authoritative triggering frame packet."""
         if trigger_packet.camera_id != event.camera_id:
             raise ValueError("event camera does not match trigger packet")
         audit = _event_audit(event.audit)
@@ -102,10 +98,6 @@ class EvidenceEventSink:
         }
         if audit is not None:
             payload["audit"] = audit
-        # This is deliberately before every optional media operation. The
-        # detector has no durable replay above this call, so failure to admit
-        # its decision envelope must stop processing rather than leave media
-        # or a missing alert behind.
         self.stager.stage(payload)
         snapshot_id = edge_event_id
         staged_snapshot: StoredSnapshot | None = None

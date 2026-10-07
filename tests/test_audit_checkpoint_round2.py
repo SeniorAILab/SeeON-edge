@@ -6,7 +6,6 @@ from backend.app.features.audit.catalog import AuditAction, AuditDetailError, pa
 
 
 def test_detail_version_is_exact_uncoerced_json_integer() -> None:
-    # Given/When/Then: only JSON int 1 is accepted, never bool/float/string/null.
     assert parse_detail_json(AuditAction.CLIP_LIST, '{"version":1}').json == '{"version":1}'
     for encoded in (
         '{"version":true}',

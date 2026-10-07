@@ -171,12 +171,6 @@ def test_two_alerts_extend_one_clip_and_complete_distinct_incidents(tmp_path: Pa
 
 
 def test_alert_while_stopping_starts_second_clip_without_dropping_it(tmp_path: Path) -> None:
-    """A deployment that cuts clips short can race the stop; nothing is dropped.
-
-    With a shorter extension window than the recording window the actor issues a
-    real early stop, so an alert arriving in that gap cannot join the sealing
-    clip: it must mark the first clip raced and open a second one.
-    """
     plane, now = _Plane(), [0.0]
     actor, binding, stager, _ = _binding(
         plane,
@@ -214,13 +208,6 @@ def test_refused_recording_retries_on_tick(tmp_path: Path) -> None:
 def test_successful_seal_retires_the_sidecar_so_a_restart_does_not_replay_it(
     tmp_path: Path,
 ) -> None:
-    """Regression for #578: a completed clip must not be replayed forever.
-
-    Before the fix, '_publish_recovery' never called 'sidecars.remove', so
-    every sealed clip's recovery record survived on disk and
-    'replay_sealed' (run at every worker boot) republished it, hitting
-    'ClipIdCollisionError' since the clip's directory already existed.
-    """
     plane, now = _Plane(), [0.0]
     actor, binding, stager, publisher = _binding(
         plane, now, [datetime(2026, 1, 1, tzinfo=UTC)], tmp_path
@@ -232,10 +219,8 @@ def test_successful_seal_retires_the_sidecar_so_a_restart_does_not_replay_it(
     assert stager.completed == [("one", "primary-clip")]
     assert publisher.calls == 1
 
-    # The sidecar must be gone once publication succeeds ...
     assert binding.sidecars.pending_for_camera("camera-a") == ()
 
-    # ... so a simulated restart's replay_sealed() has nothing left to redo.
     binding.replay_sealed()
     assert publisher.calls == 1
 
@@ -259,11 +244,6 @@ def test_publication_failure_surfaces_without_completing_the_incident(tmp_path: 
 def _real_flow_publisher(
     store_dir: Path, monkeypatch: pytest.MonkeyPatch, *, now: datetime
 ) -> FlowClipPublisher:
-    """A production FlowClipPublisher + ClipPublisher, ffprobe stubbed out.
-
-    Mirrors the pattern tests/test_worker_clip_publication.py uses for every
-    real-ClipPublisher test: only ffprobe (an external binary) is faked.
-    """
     monkeypatch.setattr(
         "worker.pipeline.output.evidence.evidence_manifest.inspect_finalized_media",
         lambda _path, **_kwargs: MediaFacts("a" * 64, len(b"clip-bytes"), 1000),
@@ -285,11 +265,6 @@ def _write_media(path: Path) -> str:
 def test_replay_resumes_a_clip_whose_sidecar_survived_a_crash_after_publish(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """SHOULD (PR #582 review): a crash between publish() succeeding and the
-    sidecar's removal must resume idempotently on replay. Exercises the real
-    ClipIdAllocator/ClipPublisher, not the _Publisher fake -- reserve_existing()
-    alone treats an already-published final_dir as a permanent collision.
-    """
     flow_publisher = _real_flow_publisher(
         tmp_path / "store", monkeypatch, now=datetime(2026, 1, 1, 0, 2, tzinfo=UTC)
     )
@@ -315,8 +290,6 @@ def test_replay_resumes_a_clip_whose_sidecar_survived_a_crash_after_publish(
     assert stager.completed == [(EVENT_ONE, "clip-1")]
     assert binding.sidecars.pending_for_camera("camera-a") == ()
 
-    # Simulate the crash: the clip already published in full, but the sidecar
-    # that sidecars.remove() would have retired is still on disk.
     binding.sidecars.persist(sealed, {EVENT_ONE: event})
     assert len(binding.sidecars.pending_for_camera("camera-a")) == 1
 
@@ -329,10 +302,6 @@ def test_replay_resumes_a_clip_whose_sidecar_survived_a_crash_after_publish(
 def test_replay_isolates_a_mismatched_sidecar_and_still_replays_its_neighbor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """SHOULD (PR #582 review): one colliding sidecar must not abort replay of
-    the rest, and a manifest identifying a different clip must still be a
-    collision -- never silently resumed or deleted.
-    """
     flow_publisher = _real_flow_publisher(
         tmp_path / "store", monkeypatch, now=datetime(2026, 1, 1, 0, 2, tzinfo=UTC)
     )
@@ -345,7 +314,6 @@ def test_replay_isolates_a_mismatched_sidecar_and_still_replays_its_neighbor(
         publisher=flow_publisher,
     )
 
-    # clip-1 resumes cleanly (its recreated sidecar matches the published manifest).
     good_event = _event(EVENT_ONE)
     good_sealed = ClipSealed(
         "clip-1",
@@ -358,9 +326,6 @@ def test_replay_isolates_a_mismatched_sidecar_and_still_replays_its_neighbor(
     binding.on_sealed(good_sealed)
     binding.sidecars.persist(good_sealed, {EVENT_ONE: good_event})
 
-    # clip-2 publishes once for EVENT_TWO, then a stale sidecar for the *same*
-    # clip_id shows up claiming a different contributor (EVENT_THREE) -- its
-    # identity no longer matches the manifest clip-2 already has on disk.
     two_event = _event(EVENT_TWO)
     two_sealed = ClipSealed(
         "clip-2",
@@ -483,7 +448,6 @@ def test_refusing_queue_emits_refused_with_admission_fault(tmp_path: Path) -> No
 def test_unproven_stage_result_is_recorded_refused_not_admitted(
     tmp_path: Path, stage_result: object, type_name: str
 ) -> None:
-    """A stager that does not return an AdmissionResult proves nothing."""
     plane, now = _Plane(), [0.0]
     _actor, binding, _, _ = _binding(plane, now, [datetime(2026, 1, 1, tzinfo=UTC)], tmp_path)
 
@@ -507,7 +471,6 @@ def test_unproven_stage_result_is_recorded_refused_not_admitted(
 
 
 def test_duck_with_accepted_true_is_not_proof_of_admission(tmp_path: Path) -> None:
-    """Only a real AdmissionResult proves admission; a look-alike does not."""
     plane, now = _Plane(), [0.0]
     _actor, binding, _, _ = _binding(plane, now, [datetime(2026, 1, 1, tzinfo=UTC)], tmp_path)
 

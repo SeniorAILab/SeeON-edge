@@ -1,10 +1,3 @@
-"""Empty-default authority contracts (Wave B: retire env inventory + env facility).
-
-Locks: registry-only cameras, connection DB-only facility_id, worker pull without
-facility stamp, relay without env facility gates, status never_seen from registry,
-and production grep-gates against reintroduced inventory/facility env authority.
-"""
-
 from __future__ import annotations
 
 import ast
@@ -127,7 +120,6 @@ class TestRelayRegistryOnly:
     ) -> None:
         monkeypatch.delenv("API_FACILITY_ID", raising=False)
         client = _client_with_registry(postgres_product_sandbox, postgres_audit_runtime)
-        # No backend client: local accept still OK; binding must not 403.
         response = client.post(
             "/api/v1/relay/alerts",
             headers={"X-Edge-Relay-Token": "relay-token"},
@@ -151,7 +143,6 @@ class TestRelayRegistryOnly:
         monkeypatch.delenv("API_FACILITY_ID", raising=False)
         app = postgres_api_app(postgres_product_sandbox, postgres_audit_runtime)
         app.state.edge_relay_token = "relay-token"
-        # Leftover inventory must not rescue unknown cameras.
         app.state.camera_inventory = {"ghost": {"camera_id": "ghost", "facility_id": "fac"}}
         client = TestClient(app)
         response = client.post(
@@ -250,7 +241,6 @@ class TestLkgEmptyPull:
                 return b'{"config_version": 3, "cameras": []}'
 
         store = WorkerConfigLkgStore(database_path=tmp_path / "worker-state.sqlite3")
-        # Seed a non-empty older LKG so empty pull must replace it as current.
         store.save(
             {
                 "config_version": 2,
@@ -285,8 +275,6 @@ class TestLkgEmptyPull:
 
 
 class TestProductionGrepGates:
-    """Fail if production code reintroduces retired authorities."""
-
     FORBIDDEN_SUBSTRINGS = (
         "camera_inventory",
         "def _facility_id",
@@ -312,7 +300,6 @@ class TestProductionGrepGates:
                 for needle in self.FORBIDDEN_ENV_READ_PATTERNS:
                     if needle in text:
                         offenders.append(f"{rel}: {needle}")
-                # AST pass: catch attribute writes to camera_inventory on app.state
                 try:
                     tree = ast.parse(text, filename=str(path))
                 except SyntaxError:

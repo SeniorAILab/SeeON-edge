@@ -1,18 +1,3 @@
-"""Runtime code never loads sqlite3 or reaches the SQLite source fixture.
-
-Neither runtime entry point loads `sqlite3`; only the one-time migration reads
-the retired SQLite file. Its schema check
-(`backend.app.edge_db.migration.compatibility`) proves the schema-19 structural
-manifest from the current-schema DDL alone and never imports the DDL owner,
-`tests_support.sqlite_source`.
-
-PostgreSQL is the only durable store. The schema-19 SQLite file is recreated
-only by `tests_support.sqlite_source`, for the migration tests, and no runtime
-package may reach it. The syntax-tree scan below backs the import-linter
-contract: it also sees `importlib.import_module("tests_support...")` and imports
-inside function bodies.
-"""
-
 from __future__ import annotations
 
 import ast
@@ -32,7 +17,6 @@ _SOURCE_FIXTURE_PACKAGE = "tests_support"
 def _modules_loaded_by(
     import_target: str, watched: tuple[str, ...] = _DDL_OWNER_MODULES
 ) -> frozenset[str]:
-    """Return the watched modules a fresh interpreter loads importing target."""
     probe = (
         "import sys\n"
         f"import {import_target}\n"
@@ -55,7 +39,6 @@ def test_runtime_entry_points_do_not_load_sqlite3(entry_point: str) -> None:
 
 
 def test_the_migration_snapshot_loads_sqlite3() -> None:
-    # Proves the entry-point probe above is not vacuously green.
     loaded = _modules_loaded_by("backend.app.edge_db.migration.snapshot", watched=("sqlite3",))
     assert loaded == frozenset({"sqlite3"})
 
@@ -69,7 +52,6 @@ def test_schema18_manifest_import_does_not_reach_the_sqlite_ddl_owner() -> None:
 
 
 def test_sqlite_source_fixture_reaches_the_ddl_owner() -> None:
-    # Proves the boundary tests above are not vacuously green.
     assert _modules_loaded_by("tests_support.sqlite_source") == frozenset(_DDL_OWNER_MODULES)
 
 
@@ -80,7 +62,6 @@ def _names_the_fixture(name: str | None) -> bool:
 
 
 def _fixture_references(source: str) -> list[str]:
-    """Every import, and every string an importlib call could use, that names the fixture."""
     found: list[str] = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
@@ -107,7 +88,6 @@ def test_runtime_packages_do_not_reach_the_sqlite_source_fixture() -> None:
 
 
 def test_fixture_scan_sees_static_and_dynamic_imports() -> None:
-    # Proves the scan above is not vacuously green.
     migration_support = (_ROOT / "tests_support" / "postgres_migration.py").read_text(
         encoding="utf-8"
     )

@@ -439,8 +439,8 @@ feature it proves. Developer-convenience harnesses are deferred with the tools.
 | CLI entrypoint and bounded-run cap | `worker/__main__.py` | `tests/test_worker_entrypoint.py`, `tests/test_worker_max_frames_per_camera_composition.py` | ported |
 | Per-frame perception: tracking, scene state, window buffering | `worker/pipeline/perception/`, `worker/pipeline/camera_pipeline.py` | `tests/test_perception_observation_builder.py`, `tests/test_demo_tracking.py`, `tests/test_worker_camera_pipeline_pump.py` | ported |
 | Operator MJPEG live view | `worker/pipeline/output/mjpeg_server.py`, `worker/pipeline/output/live_view.py`, composed in `worker/runtime/worker.py` | `tests/test_worker_live_view_composition.py` | ported |
-| GPU stability preflight installer | — | — | tracked-deferred (`scripts/edge-preflight/gpu-stability-install.sh`, untracked at baseline; [#6](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/6)) |
-| GPU telemetry preflight | — | — | tracked-deferred (`scripts/edge-preflight/gpu-telemetry.sh`, untracked at baseline; [#7](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/7)) |
+| GPU stability preflight installer | — | — | tracked-deferred (`scripts/edge-preflight/gpu-stability-install.sh`, untracked at baseline) |
+| GPU telemetry preflight | — | — | tracked-deferred (`scripts/edge-preflight/gpu-telemetry.sh`, untracked at baseline) |
 
 ### Baseline uncommitted work
 
@@ -479,9 +479,10 @@ This row is genuinely Linux-only, and not by accident:
 `/proc/self/fd/{descriptor}` reference to an already-open inode so the probe
 cannot be TOCTOU-swapped for a different file. That is production code, so the
 capability itself requires `/proc` — the deploy target is a Linux container, so
-this is a deliberate floor rather than a portability bug. `tests/test_clip_recorder.py`
-documents it in its module docstring and keeps these two cases specifically to
-pin that floor.
+this is a deliberate floor rather than a portability bug.
+`tests/test_evidence_trust_boundaries.py::test_media_probe_uses_same_open_inode_when_path_is_swapped`
+pins the same-inode probe: `ffprobe` still reads the original bytes when the
+path is swapped mid-probe.
 
 The row stays `ported`: the evidence exists and CI runs on Ubuntu. What is
 missing is *local* proof, which matters because this branch was developed and
@@ -494,8 +495,7 @@ design decision, not to a missing tool: five in
 one in `tests/test_evidence_trust_boundaries.py`. `ffprobe` **is** installed on
 this machine, so "install ffprobe" does not clear any of them. Note that the
 production error text says otherwise — it reports `ffprobe unavailable` for an
-unresolvable `/proc/self/fd/N` too, which is
-[#11](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/11) and is a
+unresolvable `/proc/self/fd/N` too, which is a
 misreported reason rather than a second cause.
 
 **Snapshot store used to be listed here too, and no longer is.** Three of its
@@ -534,7 +534,6 @@ v2 values at the same time — the fail-closed validation in
 stays unchanged either way; only the pinned values move. The regression is
 covered by
 `tests/test_worker_real_warmup_no_stub.py::test_example_config_fall_contract_matches_the_local_artifact`.
-Tracked in [#8](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/8).
 
 **Operator scripts hang on heredocs larger than `PIPE_BUF`.**
 Bash 5.3.15 writes a heredoc body into a pipe before exec'ing the reader, so a
@@ -552,9 +551,7 @@ body into a file is the durable fix.
 `tests/test_shell_script_heredoc_contract.py` enforces the rule at the 512-byte
 threshold. It is a general contract: it walks every remaining `scripts/**/*.sh`
 rather than naming individual scripts, so it keeps holding as the script surface
-changes. Tracked in
-[#9](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/9), which
-carries the reproduction and the measured size census.
+changes.
 
 **`worker/pipeline/camera_pipeline.py` exists, but does not own what the plan
 said it would.** This entry previously asserted that the file was absent, which

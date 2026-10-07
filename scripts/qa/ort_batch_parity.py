@@ -1,5 +1,3 @@
-"""Diagnostic-only ONNX Runtime batch-parity check for pose exports."""
-
 from __future__ import annotations
 
 import argparse

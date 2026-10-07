@@ -1,5 +1,3 @@
-"""Bounded CPU-only, on-demand bed segmentation for the NVIDIA media plane."""
-
 from __future__ import annotations
 
 import math
@@ -23,16 +21,14 @@ DEFAULT_BED_ZONE_RECOGNITION_TIMEOUT_S = 20.0
 
 
 class BedZoneRecognizerUnavailableError(RuntimeError):
-    """The CPU bed model could not be constructed for an on-demand request."""
+    ...
 
 
 class BedZoneRecognitionTimeoutError(RuntimeError):
-    """An on-demand bed recognition did not complete before its HTTP deadline."""
+    ...
 
 
 class NvidiaBedZoneRecognizer:
-    """Lazily provision and run one CPU bed segmentation outside the media plane."""
-
     def __init__(self, serving_client: ServingClient, *, timeout_s: float) -> None:
         if timeout_s <= 0:
             raise ValueError("bed-zone recognition timeout must be positive")
@@ -88,7 +84,6 @@ def bed_zone_response(
     *,
     confidence: float = 0.25,
 ) -> BedZoneRecognizeResponse:
-    """Build a response from all qualifying, valid bed segmentations."""
     height, width = int(image.shape[0]), int(image.shape[1])
     candidates: list[tuple[float, tuple[tuple[int, int], ...]]] = []
     for box in result.boxes:

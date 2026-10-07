@@ -1,5 +1,3 @@
-"""Schema-v2 manifests for re-encoded derivative evidence clips."""
-
 from __future__ import annotations
 
 import json
@@ -43,7 +41,6 @@ def finalize_ready_manifest(
     ffprobe_bin: str = "ffprobe",
     runtime_manifest_sha256: str | None = None,
 ) -> ReadyClipManifest:
-    """Describe verified derivative bytes without implying source preservation."""
     facts = inspect_finalized_media(video_path, ffprobe_bin=ffprobe_bin)
     return ReadyClipManifest(
         clip_id=clip_id,
@@ -103,7 +100,6 @@ def parse_manifest(path: Path) -> ClipManifest:
 
 
 def parse_manifest_content(path: Path) -> tuple[ClipManifest, bytes, dict[str, object]]:
-    """Parse and retain the exact bounded manifest inode bytes used for validation."""
     try:
         content = read_manifest_bytes(path)
         payload = json.loads(content, object_pairs_hook=_unique_object)
@@ -117,7 +113,7 @@ def parse_manifest_content(path: Path) -> tuple[ClipManifest, bytes, dict[str, o
                 manifest = UnavailableClipManifest.model_validate(payload)
             case _:
                 raise ClipEvidenceError(EvidenceReasonCode.CORRUPT, "manifest state invalid")
-        return manifest, content, payload  # noqa: TRY300 - one guarded parse boundary
+        return manifest, content, payload  # noqa: TRY300
     except (
         OSError,
         UnicodeDecodeError,
@@ -138,7 +134,6 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 
 def read_manifest_bytes(path: Path) -> bytes:
-    """Read one bounded immutable manifest inode without following links."""
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags)
     try:

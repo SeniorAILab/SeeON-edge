@@ -1,5 +1,3 @@
-"""Real PostgreSQL topology state contracts, not coordinator/network qualification."""
-
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, wait

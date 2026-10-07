@@ -172,9 +172,6 @@ def _host_probe(clip_path: Path, expected_clip_sha256: str) -> dict[str, Any]:
         shutil.which("mediamtx"),
         "/usr/local/bin/mediamtx" if Path("/usr/local/bin/mediamtx").is_file() else None,
     )
-    # The approved plan isolates through disposable Compose services on an
-    # internal network with tmpfs mounts, not raw unprivileged user namespaces,
-    # so container-runtime namespace/mount capability is the property to probe.
     namespace_available, _ = _availability_command(
         [
             "docker",
@@ -345,8 +342,6 @@ def _classify(path: Path) -> dict[str, Any]:
                 _text_tuple(item.get("incident_ids")),
                 str(item.get("terminal_state", "")),
                 item.get("clock_order_valid") is True,
-                # Fail closed: absent or false order evidence can never enable
-                # an order-dependent claim from an offline artifact.
                 item.get("order_evidence_valid") is True,
             )
         )
@@ -415,8 +410,6 @@ def _measured_run(
     projection_timestamp_complete = bool(incidents) and all(
         incident.projection_timestamp is not None for incident in incidents
     )
-    # Presence is not ordering: the full attempt -> receipt -> projection
-    # relation must hold within the measured clock uncertainty.
     temporal_order_valid = projection_timestamp_complete and all(
         validate_temporal_order(
             attempt_times=evidence["attempt_times"].get(incident.edge_event_id, ()),
@@ -455,8 +448,6 @@ def _measured_run(
         "clock_gate_passed": clock_gate.passed,
         "projection_timestamp_complete": projection_timestamp_complete,
         "temporal_order_valid": temporal_order_valid,
-        # False blocks every order-dependent claim and is promotion-ineligible,
-        # even when an identity-derived finding remains reportable.
         "order_dependent_claims_eligible": order_evidence_valid,
         "promotion_eligible": order_evidence_valid and result.outcome.value != "판정 불가",
         "frontend_display_tested": False,

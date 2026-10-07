@@ -1,5 +1,3 @@
-"""Packaged fall-model family registry behavior."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -21,14 +19,6 @@ from worker.runtime.config import WorkerConfig
 
 @final
 class _FakeFamilyFallModel:
-    """A test-only fall-model family.
-
-    No production module (``worker.py``, the default registry, or any
-    adapter) references this class. It exists purely to prove requirement
-    (d): the registry can load a brand-new family purely through
-    ``config.models.fall.type``, without any hardcoded branch for it.
-    """
-
     device = "cpu"
 
     def __init__(self) -> None:
@@ -141,10 +131,6 @@ def _fall_module(
 def test_research_bundle_keeps_the_policy_default_threshold_and_audits_the_receipt(
     tmp_path: Path,
 ) -> None:
-    """Threshold precedence (P1a-AC7): the packaged bundle's receipt is
-    research-only (``promotion_eligible`` false), so the owner-fixed 0.5
-    policy default governs the decider and the audit envelope names the
-    source; the receipt value is still recorded for audit."""
     artifact_dir = write_pose_bbox56_bundle(
         tmp_path / "research", receipt_threshold=0.05, promotion_eligible=False
     )

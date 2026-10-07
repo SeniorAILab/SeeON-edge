@@ -1,5 +1,3 @@
-"""Transactional product writer/claimer fence; process/network quiescence is separate."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,7 +10,7 @@ from backend.app.edge_db.postgres import PostgresDatabase
 
 
 class AuthorityFenced(RuntimeError):
-    """The caller no longer owns durable acceptance or delivery admission."""
+    ...
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -33,12 +31,6 @@ class AuthorityToken:
 def require_authority(
     connection: psycopg.Connection, token: AuthorityToken, *, sender: bool = False
 ) -> None:
-    """Hold a shared authority row lock through the caller's actual COMMIT.
-
-    The migration owner takes an exclusive lock, so an old transaction either
-    commits before the fence or observes it and refuses. This does not cancel
-    an HTTP request already sent after an earlier claim commit.
-    """
     if connection.info.transaction_status is not TransactionStatus.INTRANS:
         raise AuthorityFenced("authority checks require an owned transaction")
     row = connection.execute(
@@ -52,13 +44,6 @@ def require_authority(
 
 
 def freeze_authority(database: PostgresDatabase, token: AuthorityToken) -> int:
-    """Block later writers/claimers and wait for earlier DB transactions.
-
-    Does not transfer authority or certify sender quiescence. The deployment
-    owner must stop/drain processes, account for every in-flight delivery, and
-    snapshot/reconcile before issuing a different generation/token.
-    """
-
     def freeze(connection: psycopg.Connection) -> int:
         row = connection.execute(
             "SELECT generation, writer_token FROM deployment_authority "

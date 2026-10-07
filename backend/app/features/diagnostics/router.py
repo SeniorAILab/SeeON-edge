@@ -1,5 +1,3 @@
-"""Execution-record ingest (relay) and engineer query HTTP surface."""
-
 from __future__ import annotations
 
 import json
@@ -23,10 +21,6 @@ from backend.app.shared.dashboard_auth import authorize_dashboard
 from shared.events.execution_records import ExecutionRecordContractError, WireBatch
 
 DISABLED_DETAIL = "execution records disabled"
-# The migration `provision` step creates the diagnostics schema before the
-# runtime ever starts (#579/#580, S1/S2); if a deploy skipped it, or
-# PostgreSQL is down, the store raises a PostgreSQL error on first use rather
-# than creating tables, so that failure must not surface as an opaque 500.
 UNAVAILABLE_DETAIL = "diagnostics store unavailable: check PostgreSQL and run migration provision"
 
 router = APIRouter(tags=["diagnostics"], route_class=BoundedBodyRoute)
@@ -71,8 +65,6 @@ async def ingest_execution_records(
             detail=str(error),
         ) from error
     ingest = ingest_batch_from_wire(batch, backend_build_revision=backend_build_revision(request))
-    # Database work (including bounded capacity pruning) never runs on the
-    # event loop: a busy ingest must not stall /health or the dashboard.
     try:
         receipt = await run_in_threadpool(store.ingest_batch, ingest)
     except (PostgresError, DatabaseDriverError) as error:

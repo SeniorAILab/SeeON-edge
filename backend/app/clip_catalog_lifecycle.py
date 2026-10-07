@@ -1,5 +1,3 @@
-"""Application lifecycle adapters for the clip catalogue indexer."""
-
 from __future__ import annotations
 
 import asyncio
@@ -26,7 +24,6 @@ def _clip_store(app: FastAPI) -> ClipStore:
 
 
 async def start_clip_catalog_indexer(app: FastAPI) -> None:
-    """Index the store once (refusing startup on failure), then keep it indexed."""
     indexer = getattr(app.state, "clip_catalog_indexer", None)
     if indexer is None:
         raise RuntimeError("clip catalog indexer is not injected")

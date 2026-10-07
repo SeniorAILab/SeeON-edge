@@ -1,5 +1,3 @@
-"""Stored clip-analysis supervisor status value."""
-
 from __future__ import annotations
 
 from collections import OrderedDict
@@ -14,8 +12,6 @@ class ClipAnalysisStatus:
 
 
 class StatusLedger:
-    """Bounded status storage retaining all non-terminal work."""
-
     def __init__(self) -> None:
         self._values: OrderedDict[str, ClipAnalysisStatus] = OrderedDict()
 

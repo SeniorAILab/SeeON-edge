@@ -1,5 +1,3 @@
-"""Adversarial worker lane/exporter/composition cases."""
-
 from __future__ import annotations
 
 import json

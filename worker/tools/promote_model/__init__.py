@@ -1,5 +1,3 @@
-"""Out-of-band, stdlib-only promotion contract validation."""
-
 from contracts.model_selection import (
     AppliedModelSelection,
     ContractError,

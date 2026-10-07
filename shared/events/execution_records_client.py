@@ -1,5 +1,3 @@
-"""Relay HTTP client for Worker -> Backend execution-record batches."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -28,8 +26,6 @@ _DEFAULT_TIMEOUT_SEC: Final = 2.0
 
 @dataclass(frozen=True, slots=True)
 class ExecutionRecordsClient:
-    """POST one ``WireBatch`` to the Backend relay ingest path."""
-
     base_url: str
     relay_token: str = field(repr=False)
     timeout_sec: float = _DEFAULT_TIMEOUT_SEC

@@ -1,9 +1,3 @@
-"""The rollback check names one reason per cause; unfence trusts its ALLOW only up to the fence.
-
-Each expected reason follows from one thing the test did, to the fenced file or to
-PostgreSQL. The fenced file's oracle is its own bytes, read without SQLite.
-"""
-
 from __future__ import annotations
 
 import dataclasses
@@ -44,7 +38,6 @@ from tests_support.postgres_migration import (
 
 pytest_plugins = ("tests_support.postgres_migration",)
 
-# The provisioned target is generation 1, so the fence stamps 1_000_000 + 1.
 SENTINEL = 1_000_001
 PROG = "python -m backend.app.edge_db.migration rollback-check"
 
@@ -57,7 +50,6 @@ class _Imported:
 
 
 def _import(target: MigrationTarget, root: Path) -> _Imported:
-    """Import a snapshot of the seeded old database; nothing is fenced yet."""
     source, destination = source_and_destination(root)
     snapshot = export_snapshot(source, destination).path
     import_snapshot(target.database, schema=target.schema, snapshot_path=snapshot)
@@ -92,7 +84,6 @@ def _sha(path: Path) -> str:
 
 
 def _live_diagnostics(target: MigrationTarget) -> dict[str, int]:
-    """One live record through the runtime's own ingest; return the rows it left."""
     diagnostics = diagnostics_schema_name(target.schema)
     with runtime_role_database(
         target.dsn, diagnostics, target.runtime_role, DIAGNOSTICS_POOL_BUDGET
@@ -250,7 +241,6 @@ def test_rollback_check_denies_diagnostics_history_the_snapshot_never_held(
 
 
 def _rewrite_audit_hash(target: MigrationTarget, audit_id: int, record_hash: str) -> None:
-    """Rewrite one audit hash as the schema owner, past the trigger the runtime meets."""
     table = sql.Identifier(target.schema, "audit_events")
     trigger = sql.Identifier("audit_events_immutable_update")
     with target.admin.transaction():
@@ -267,7 +257,6 @@ def test_rollback_check_denies_an_audit_tail_rewritten_without_a_new_event(
 ) -> None:
     target = migration_target
     imported = _fenced(target, tmp_path)
-    # The snapshot is not the fenced file, so SQLite may read it.
     with closing(sqlite3.connect(f"file:{imported.snapshot}?mode=ro", uri=True)) as old:
         audit_id, record_hash = old.execute(
             "SELECT audit_id, record_hash FROM audit_events ORDER BY audit_id DESC LIMIT 1"

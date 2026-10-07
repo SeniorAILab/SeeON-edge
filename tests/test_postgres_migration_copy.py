@@ -1,5 +1,3 @@
-"""Export, import and reconcile of the old SQLite database into a real PG18 target."""
-
 from __future__ import annotations
 
 import sqlite3
@@ -37,7 +35,6 @@ _PROVISIONED_ONLY = {"schema_migrations": 1, "deployment_authority": 1}
 
 
 def _fail_copy_after(patch: pytest.MonkeyPatch, rows: int) -> None:
-    """The COPY stream to the server breaks after `rows` rows were sent."""
     original = psycopg.Copy.write_row
     written = [0]
 
@@ -59,7 +56,6 @@ def _reconcile(target: MigrationTarget, snapshot: Path, **options: object) -> di
 
 
 def _fence(target: MigrationTarget, source: Path, snapshot: Path, root: Path) -> Path:
-    """Fence the old database at the provisioned generation and return its receipt."""
     receipts = root / "receipts"
     receipts.mkdir(mode=0o700)
     receipt = receipts / "fence.json"
@@ -97,7 +93,6 @@ def test_write_committed_before_the_boundary_reaches_postgres(
     with closing(open_source_writer(source)) as writer:
         add_incident(writer, 2)
         append_audit(writer)
-        # The writer is still open, so both commits live only in its WAL.
         snapshot = export_snapshot(source, destination).path
 
     _import(target, snapshot)
@@ -187,7 +182,6 @@ def test_reconcile_detects_target_drift(
 
 
 def _delete_audit_row(target: MigrationTarget, audit_id: int) -> None:
-    """Delete one audit row as the schema owner, past the trigger the runtime meets."""
     table = sql.Identifier(target.schema, "audit_events")
     trigger = sql.Identifier("audit_events_immutable_delete")
     with target.admin.transaction():

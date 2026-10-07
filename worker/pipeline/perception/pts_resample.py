@@ -1,5 +1,3 @@
-"""Pure deterministic PTS resampling for replay and perception inputs."""
-
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
@@ -15,8 +13,6 @@ T = TypeVar("T")
 
 @dataclass(frozen=True, slots=True)
 class ResampledRow(Generic[T]):
-    """A selected source row or a synthetic invalid cadence row."""
-
     pts_ns: int
     value: T | None
     valid: int
@@ -37,12 +33,6 @@ def resample_pts(
     cadence_ns: int = CADENCE_NS,
     max_gap_rows: int = DEFAULT_MAX_GAP_ROWS,
 ) -> Iterator[ResampledRow[T]]:
-    """Select the first row in each cadence bucket and fill missing buckets.
-
-    The first PTS establishes the epoch-local cadence. Non-monotonic and
-    duplicate rows are deterministically dropped; callers reset this function
-    at a stream-epoch boundary.
-    """
     if cadence_ns <= 0 or max_gap_rows < 0:
         raise ValueError("cadence_ns must be positive and max_gap_rows non-negative")
     origin: int | None = None
@@ -72,14 +62,6 @@ def resample_pts(
 
 
 class PtsResampler(Generic[T]):
-    """Streaming form of :func:`resample_pts` with identical bucket semantics.
-
-    One instance owns one stream epoch; construct a new one at an epoch
-    boundary. ``push`` returns the rows the batch function would have yielded
-    for the same source row: zero or more ``valid=0`` gap rows followed by the
-    selected row, or nothing for a duplicate/non-monotonic/same-bucket row.
-    """
-
     __slots__ = ("_cadence_ns", "_last_pts", "_max_gap_rows", "_next_slot", "_origin")
 
     def __init__(

@@ -1,12 +1,3 @@
-"""API-level tests for GET/PUT /api/v1/detection-settings (see
-backend/app/features/detection_settings/router.py).
-
-Covers dashboard-auth enforcement, request-body validation (HH:MM format,
-window-required-when-mode-is-window, start != end), PUT normalizing stray
-start/end away for mode=always, persistence round-tripping through GET, and
-the fallback chain a fresh (never-saved) domain uses: live pulled
-detection_windows/night_window first, then on=true/mode=always."""
-
 from __future__ import annotations
 
 import pytest
@@ -107,7 +98,6 @@ def test_get_falls_back_to_the_deprecated_night_window_alias_for_bed_exit(app: F
         "start": "21:00",
         "end": "05:00",
     }
-    # fall has no pulled window at all -> ambient default.
     assert response.json()["domains"]["fall"] == _DEFAULT_DOMAINS["fall"]
 
 

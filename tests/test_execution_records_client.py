@@ -1,5 +1,3 @@
-"""HTTP client tests for Worker -> Backend execution-record batches."""
-
 from __future__ import annotations
 
 import json

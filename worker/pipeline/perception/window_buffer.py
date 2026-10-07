@@ -10,8 +10,6 @@ Window: TypeAlias = tuple[tuple[float, ...], ...]
 
 @final
 class WindowBuffer:
-    """Collect numeric pose vectors and emit fixed windows at a stable stride."""
-
     def __init__(self, window: int, stride: int) -> None:
         if window < 1:
             message = "window must be >= 1"
@@ -26,7 +24,6 @@ class WindowBuffer:
         self._last_emit_at: int = 0
 
     def append(self, pose: PoseVector) -> tuple[Window, ...]:
-        """Append one vector and return the newly due window, if any."""
         self._poses.append(tuple(float(value) for value in pose))
         self._appended += 1
         if len(self._poses) < self.window:

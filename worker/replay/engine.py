@@ -1,19 +1,3 @@
-"""Deterministic camera-local decider replay over persisted analysis traces.
-
-Replay re-runs exactly one compiled ``DetectionModuleDefinition`` (fall.v2 or
-bed_exit.v1) against a pinned module graph, a chosen numeric policy revision,
-and a fixed time origin, driving it with ``DecisionInput`` values reconstructed
-frame-by-frame from ``AnalysisTrace`` rows already captured by the real
-pipeline (see ``worker.replay.inputs``). No extractor, model runner, GPU, or
-network call happens here -- only the same pure numeric decider code path
-production already runs, executed again against the frozen inputs.
-
-Camera-local decider / live-track state is recreated for every ``(boot
-segment, stream epoch)`` boundary, matching production's per-stream rebuild.
-Truncated or mid-window recoveries are never silently presented as
-deterministic: the run is explicitly marked non-reproducible.
-"""
-
 from __future__ import annotations
 
 import json
@@ -53,24 +37,18 @@ class ReplayConfigurationError(ValueError):
 
 @runtime_checkable
 class ReplayDiagnostics(Protocol):
-    """Counters a replayed decider must expose for fidelity accounting."""
-
     @property
     def track_id_switch_absorbed_total(self) -> int: ...
 
 
 @runtime_checkable
 class FallReplayDiagnostics(ReplayDiagnostics, Protocol):
-    """Additional diagnostics required from the fall resampling owner."""
-
     @property
     def resample_gap_rows_total(self) -> int: ...
 
 
 @dataclass(frozen=True, slots=True)
 class ReplayFrameResult:
-    """One replayed frame: the reconstructed input identity and decider output."""
-
     frame_key: tuple[str, str, int, int]
     analysis_trace_id: str
     events: tuple[BusinessEvent, ...]
@@ -83,8 +61,6 @@ class ReplayFrameResult:
 
 @dataclass(frozen=True, slots=True)
 class ReplayRun:
-    """The full deterministic output of replaying one camera trace once."""
-
     camera_id: str
     module_qualified_id: str
     policy_qualified_id: str
@@ -106,7 +82,6 @@ class ReplayRun:
 def assess_reproducibility(
     analyses: Sequence[AnalysisTrace], truncation: TraceTruncation | None
 ) -> tuple[bool, str | None]:
-    """Mark incomplete legacy recoveries without pretending they are exact."""
     if truncation is None:
         return True, None
     counts = (
@@ -133,7 +108,6 @@ def replay_recovered(
     fall_model: FallModelProtocol | None = None,
     clock: Callable[[], datetime] = _STATIC_CLOCK,
 ) -> ReplayRun:
-    """Legacy HTTP replay retained until that production endpoint is retired."""
     return replay_camera(
         camera_id=camera_id,
         analyses=recovered.frames,
@@ -157,11 +131,7 @@ def replay_camera(
     clock: Callable[[], datetime] = _STATIC_CLOCK,
     truncation: TraceTruncation | None = None,
 ) -> ReplayRun:
-    """Legacy AnalysisTrace replay for the surviving production HTTP endpoint."""
     definition, shared_components = _replay_components(module_id, policy, fall_model)
-    # AnalysisTrace omits association liveness, so it can never reproduce the
-    # camera-local tracker state used by production.  Keep the endpoint, but
-    # make its limitation explicit rather than presenting a deterministic run.
     _, truncation_reason = assess_reproducibility(analyses, truncation)
     reproducible = False
     reason = "legacy-trace-liveness"
@@ -223,8 +193,6 @@ def replay_camera(
 
 
 class _ReplayWindow:
-    """Mutable per-frame window gate matching the runtime's evaluated window."""
-
     def __init__(self) -> None:
         self.active = False
 
@@ -234,8 +202,6 @@ class _ReplayWindow:
 
 @dataclass(frozen=True, slots=True)
 class ReplayTraceFrame:
-    """One raw source frame passed to the production decider."""
-
     stream_epoch: int
     boot_segment: int
     seq: int
@@ -245,12 +211,6 @@ class ReplayTraceFrame:
 
 
 def boot_segments(rows: Sequence[ReplayRow]) -> tuple[int, ...]:
-    """Boot segment ordinal for every row, in file order.
-
-    Every ``open`` control starts a new segment. Rows that precede the first
-    ``open`` (an allowed truncated start) form their own implicit segment 0,
-    so the first explicit boot never merges with a retained tail.
-    """
     segments: list[int] = []
     segment = -1
     for row in rows:
@@ -261,7 +221,6 @@ def boot_segments(rows: Sequence[ReplayRow]) -> tuple[int, ...]:
 
 
 def replay_trace_frames(rows: Sequence[ReplayRow]) -> tuple[ReplayTraceFrame, ...]:
-    """Return raw frame rows in source order without pre-resampling them."""
     output: list[ReplayTraceFrame] = []
     for row, segment in zip(rows, boot_segments(rows), strict=True):
         if row.source_event != "frame":
@@ -280,7 +239,6 @@ def replay(
     fall_model: FallModelProtocol | None = None,
     clock: Callable[[], datetime] = _STATIC_CLOCK,
 ) -> ReplayRun:
-    """Replay frame-level rows through production resampling and admission."""
     if any(row.camera_id != camera_id for row in rows):
         raise ReplayConfigurationError("all replay rows must belong to camera_id")
     definition, shared_components = _replay_components(module_id, policy, fall_model)
@@ -293,8 +251,6 @@ def replay(
     window = _ReplayWindow()
 
     def new_decider(boot_segment: int, stream_epoch: int) -> Decider:
-        # Replay identities name the boot segment and stream epoch exactly as
-        # the runtime names the worker boot and native epoch.
         context = CameraModuleContext(
             camera_id=camera_id,
             facility_id=facility_id,
@@ -316,8 +272,6 @@ def replay(
             if decider is not None:
                 absorbed_total += _absorbed_switches(decider)
                 gap_total += _resample_gap_rows(decider, module_id)
-            # Domain modules are camera- and epoch-local. Incident admission is
-            # boot-scoped: source rebuilds replace deciders but retain cooldown.
             decider = new_decider(frame.boot_segment, frame.stream_epoch)
             previous_live_ids = set()
             if current_identity is None or current_identity[0] != frame.boot_segment:
@@ -372,8 +326,6 @@ def replay(
         boot_ids=tuple(f"boot-{segment}" for segment in sorted(set(boot_segments(rows)))),
         incident_cooldown_suppressed_total=suppressed_total,
         track_id_switch_total=switch_total,
-        # Absorbed switches are the episode authority's own count: churn the
-        # machine held inside one episode instead of raising a second alert.
         track_id_switch_absorbed_total=absorbed_total,
         resample_gap_rows_total=gap_total,
     )
@@ -386,7 +338,6 @@ def _replay_diagnostics(decider: Decider | None) -> ReplayDiagnostics:
 
 
 def _absorbed_switches(decider: Decider | None) -> int:
-    """Read the required replay diagnostic before replacing a decider."""
     return _replay_diagnostics(decider).track_id_switch_absorbed_total
 
 
@@ -401,7 +352,6 @@ def _resample_gap_rows(decider: Decider, module_id: str) -> int:
 def _admit_events(
     incident_manager: IncidentManager, events: tuple[BusinessEvent, ...]
 ) -> tuple[tuple[BusinessEvent, ...], int]:
-    """Apply production cooldown while retaining deterministic source identities."""
     admitted: list[BusinessEvent] = []
     suppressed = 0
     for event in events:
@@ -446,7 +396,6 @@ def _replay_components(
 
 
 def replay_run_json(run: ReplayRun) -> str:
-    """Encode admitted replay alerts and cooldown accounting for metric CLI input."""
     return json.dumps(
         {
             "incident_cooldown_suppressed_total": run.incident_cooldown_suppressed_total,

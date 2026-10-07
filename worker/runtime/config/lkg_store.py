@@ -30,8 +30,6 @@ class StoredConfigPayload:
 
 
 class WorkerConfigLkgStore:
-    """A bounded, verified filesystem cache of the last accepted relay config."""
-
     def __init__(self, database_path: Path | None = None, *, state_dir: Path | None = None) -> None:
         root = resolve_state_dir() if state_dir is None else state_dir
         self.directory = (

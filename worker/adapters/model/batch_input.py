@@ -1,13 +1,3 @@
-"""Fail-closed validation for batched model input (ADR-0002 fail-fast).
-
-A batched forward stacks every frame into one tensor, so a single row with
-the wrong dtype, rank, channel count, or geometry either crashes deep inside
-the backend or -- worse -- is silently letterboxed/coerced into something
-whose result no longer matches what the same frame would have produced
-alone. Both outcomes are defects, so the seam refuses the batch here with a
-typed error naming the offending camera.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -25,8 +15,6 @@ _EXPECTED_CHANNELS = 3
 
 @dataclass(slots=True)
 class BatchInputError(ValueError):
-    """A batch the serving seam refuses to run rather than coerce."""
-
     task: str
     camera_id: str
     detail: str
@@ -40,12 +28,6 @@ def validated_batch_images(
     task: str,
     images: Sequence[tuple[str, Image]],
 ) -> tuple[Image, ...]:
-    """Return the batch images, or raise ``BatchInputError`` naming the camera.
-
-    Every row must be an HxWx3 uint8 array, and all rows must share one
-    geometry: mixed sizes would be letterboxed differently per row, which
-    breaks single/batch parity instead of merely looking untidy.
-    """
     validated: list[Image] = []
     expected_geometry: tuple[int, int] | None = None
     for camera_id, image in images:

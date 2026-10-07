@@ -1,5 +1,3 @@
-"""Read-only contained access to clip-local thumbnail files."""
-
 from __future__ import annotations
 
 import stat

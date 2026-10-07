@@ -1,5 +1,3 @@
-"""Publication adapter for clips sealed by the Flow Smart Record plane."""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
@@ -46,13 +44,11 @@ class FlowClipPublicationStats:
 
 
 class FlowClipPublicationError(RuntimeError):
-    """A sealed Smart Record clip could not become durable evidence."""
+    ...
 
 
 @dataclass(slots=True)
 class FlowClipPublisher:
-    """Adapt plane-owned Smart Record media to the standard clip publisher."""
-
     allocator: ClipIdAllocator
     publisher: FlowClipPublicationPort
     now: Callable[[], datetime] = lambda: datetime.now(UTC)
@@ -133,17 +129,6 @@ class FlowClipPublisher:
     def _resume_if_already_published(
         self, clip_id: str, camera_id: str, event_refs: tuple[str, ...]
     ) -> PublishedClip | None:
-        """Resume a clip whose reservation collided because it already published.
-
-        A crash between ``publisher.publish()`` succeeding and the sidecar's
-        removal replays here on every restart: ``reserve_existing`` collides
-        because ``final_dir`` already exists. If the manifest already there
-        records this exact clip (same camera and contributors), the publish
-        already happened -- return it instead of raising. Anything else (no
-        manifest, an unreadable one, or one that identifies a different clip)
-        cannot be verified as a safe resume, so the caller still raises the
-        collision rather than silently trusting or deleting evidence.
-        """
         manifest_path = self.allocator.final_dir(clip_id) / "manifest.json"
         try:
             manifest = parse_manifest(manifest_path)

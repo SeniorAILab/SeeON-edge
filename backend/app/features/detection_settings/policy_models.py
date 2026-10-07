@@ -1,5 +1,3 @@
-"""Detection policy store values and typed outcomes."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass

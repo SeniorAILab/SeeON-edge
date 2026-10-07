@@ -1,9 +1,3 @@
-"""Exercise native constraints in test-owned PostgreSQL namespaces, not SQLite.
-
-SEEON_TEST_POSTGRES_DSN must target an isolated service. A missing or invalid DSN
-fails before any connection is opened; it never skips.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -97,7 +91,6 @@ def test_schema_fixture_rejects_missing_or_invalid_dsn_before_connect(monkeypatc
         pytest.fail("a missing or invalid DSN must not open an ambient connection")
 
     monkeypatch.setattr(psycopg, "connect", forbidden_connect)
-    # Skipped is caught too, so a regression to skipping fails here instead of hiding.
     with pytest.raises((pytest.fail.Exception, pytest.skip.Exception)) as outcome:
         next(postgres_schemas.__wrapped__())
     assert outcome.type is pytest.fail.Exception
@@ -930,8 +923,6 @@ def test_audit_rejects_changed_payload_wrong_chain_and_invalid_detail(postgres_s
 
 @contextmanager
 def _fresh_audit_connection(schemas):
-    # The schema fixture has validated the explicit opt-in. Open a new backend
-    # only after product shadows commit, before any PL/pgSQL audit bindings exist.
     try:
         connection = psycopg.connect(
             os.environ["SEEON_TEST_POSTGRES_DSN"], autocommit=True, connect_timeout=5
@@ -966,8 +957,6 @@ def _assert_audit_namespace_guards(connection):
     assert connection.execute(select_chain).fetchall() == healthy_chain
 
     successor = _audit(previous_hash=second["record_hash"], request_id="namespace-successor")
-    # This is the exact hash a substituted JSON payload would produce, not a
-    # malformed hash or an existing unique key that could mask a missing guard.
     forged_hash = audit_record_hash(successor["previous_hash"], _AUDIT_SHADOW_PAYLOAD)
     wrong_chain = _audit(previous_hash=_HASH, request_id="namespace-wrong-chain")
     assert (
@@ -1126,8 +1115,6 @@ def _assert_audit_namespace_guards(connection):
     ],
 )
 def test_audit_guards_ignore_product_namespace_shadows(postgres_schemas, ddl, probe, expected):
-    # Only the fixture-owned schema retains these objects; its teardown drops
-    # them. A separate backend cannot see uncommitted product shadows.
     with postgres_schemas.connection.transaction():
         postgres_schemas.connection.execute(
             sql.SQL(ddl).format(payload=sql.Literal(_AUDIT_SHADOW_PAYLOAD)), prepare=False
@@ -1139,8 +1126,6 @@ def test_audit_guards_ignore_product_namespace_shadows(postgres_schemas, ddl, pr
 
 def test_audit_hash_survives_temporary_json_casts(postgres_schemas):
     with _fresh_audit_connection(postgres_schemas) as connection:
-        # Types, functions and casts all roll back with this fresh session's
-        # transaction. Neither audit function has been called in this backend.
         connection.execute(
             sql.SQL(
                 """
@@ -1163,9 +1148,6 @@ def test_audit_hash_survives_temporary_json_casts(postgres_schemas):
             {key: value for key, value in _audit().items() if key != "record_hash"},
             ensure_ascii=False,
         )
-        # PostgreSQL's unquoted JSON type syntax still denotes pg_catalog.json.
-        # Prove the adversarial casts work when explicitly selected, without
-        # claiming that the original unqualified ::json was shadowable.
         with connection.transaction(force_rollback=True):
             connection.execute("SET LOCAL search_path TO pg_catalog")
             assert connection.execute(

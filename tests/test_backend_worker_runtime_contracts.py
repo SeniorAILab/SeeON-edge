@@ -1,19 +1,3 @@
-"""Provider/consumer drift guard for the two backend<->worker runtime seams.
-
-``backend`` and ``worker`` never import each other (import-linter enforces
-it) and each owns its own definition of what crosses the seam: the worker,
-as provider, owns the routes it serves and the ``manifest.json`` it writes
-(``worker/pipeline/output/live_view_api.py``, ``.../evidence/``); the backend,
-as consumer, owns the paths it calls and the parsers it reads with
-(``backend/app/features/cameras/*``, ``backend/app/features/clips/*``). There
-is deliberately no shared edge-internal contract module -- ``contracts/`` is
-the ML vocabulary (ADR-0006), not an interface package.
-
-This file is the sanctioned meeting point: it imports both packages and
-round-trips real provider output through the real consumer parser, so drift
-fails here rather than on an edge node.
-"""
-
 from __future__ import annotations
 
 import json
@@ -68,8 +52,6 @@ def _metadata() -> ClipPublicationMetadata:
         detected_at=START + timedelta(seconds=30),
         duration_s=1.0,
         encoder="libx264",
-        # The real pipeline always sets this (BusinessEvent.domain is required);
-        # the PostgreSQL catalogue must still list a manifest that carries it.
         domain="fall",
     )
 
@@ -91,16 +73,12 @@ def _publish_unavailable(
 
 
 def _catalogued(sandbox: ProductSandbox, root: Path) -> ClipCatalogPage:
-    """Index ``root`` into the PostgreSQL clip catalogue and read the first page."""
     store = ClipStore(root)
     outcome = ClipCatalogIndexer(sandbox.database, sandbox.authority).reconcile(store)
     assert (outcome.remaining, outcome.isolated) == (0, 0)
     return PostgresClipCatalog(sandbox.database).page(
         store, ClipCatalogQuery(camera_id=None, event_type=None, limit=50, cursor=None)
     )
-
-
-# --- worker writes manifest.json, backend reads it ---------------------------
 
 
 def test_worker_manifest_is_served_by_the_backend_lenient_parser(tmp_path: Path) -> None:
@@ -155,9 +133,6 @@ def test_every_unavailable_reason_reaches_the_postgres_catalogue(
     ]
 
 
-# --- backend calls the worker's routes ---------------------------------------
-
-
 def _path(url: str) -> str:
     assert url.startswith(ORIGIN)
     return url[len(ORIGIN) :]
@@ -209,9 +184,6 @@ def test_fixed_routes_headers_and_media_type_agree() -> None:
     assert streams_router._RELAY_TOKEN_HEADER == live_view_api.RELAY_TOKEN_HEADER
     assert bed_zone_router._RELAY_TOKEN_HEADER == live_view_api.RELAY_TOKEN_HEADER
     assert streams_router._DEFAULT_MEDIA_TYPE == live_view_api.MJPEG_MEDIA_TYPE
-
-
-# --- worker response bodies through the backend parsers ---------------------
 
 
 def test_probe_response_round_trips_worker_sanitizer_to_backend_reader() -> None:

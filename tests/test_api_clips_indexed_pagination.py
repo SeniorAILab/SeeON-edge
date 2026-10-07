@@ -1,5 +1,3 @@
-"""Catalogue clip listing walks keyset pages and never re-reads catalogued media."""
-
 from __future__ import annotations
 
 import json
@@ -119,12 +117,6 @@ def test_compact_listing_does_not_rehash_catalogued_media_on_every_page(
     postgres_product_sandbox: ProductSandbox,
     postgres_audit_runtime: PostgresAuditRuntime,
 ) -> None:
-    """A populated store must not re-read every clip's media per ``GET /clips``.
-
-    On the live edge (7.8k clips, 20 GB) the per-request full re-hash took
-    tens of seconds per request and concurrent dashboard polls never finished,
-    so the events page and the room event history showed nothing at all.
-    """
     root = tmp_path / "clip-store"
     count = 12
     _write_media_fixture(root, count)
@@ -161,8 +153,6 @@ def test_compact_listing_does_not_rehash_catalogued_media_on_every_page(
     index_clips(app)
     assert hashed_media == [], "already-catalogued media must not be re-read per pass"
 
-    # A media file that changes size is not trusted from the catalogue: it is
-    # hashed again and the immutable-content conflict is recorded, not served.
     (root / "clips" / "clip-00003" / "clip.mp4").write_bytes(b"replaced-with-other-size")
     index_clips(app)
     assert [path.parent.name for path in hashed_media] == ["clip-00003"]

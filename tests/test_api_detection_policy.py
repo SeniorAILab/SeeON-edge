@@ -58,7 +58,6 @@ def _request(
     module_version: int | None = None,
     schema_version: int | None = None,
 ) -> dict[str, object]:
-    # fall is on module/schema v2 (transition_threshold); bed_exit stays v1.
     default_version = 2 if module_id == "fall" else 1
     body: dict[str, object] = {
         "module_id": module_id,

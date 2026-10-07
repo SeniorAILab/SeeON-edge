@@ -92,7 +92,7 @@ def test_apply_local_detection_overrides_updates_domains_and_windows() -> None:
     assert response["detection_windows"] == {
         "fall": {"start": "09:00", "end": "18:00", "tz": "Asia/Seoul"}
     }
-    assert "night_window" not in response  # bed_exit always-on removes alias
+    assert "night_window" not in response
     assert isinstance(response["config_version"], int) and response["config_version"] > 3
 
 
@@ -193,7 +193,7 @@ def test_assemble_worker_config_keeps_live_pulled_versions() -> None:
         clip_store_subdir=None,
         facility_id=None,
         policy_generation=0,
-        policy_bundle=None,  # generation=0 path ignores bundle
+        policy_bundle=None,
     )
     response = assemble_worker_config(inputs)
     assert response["registry_version"] == 1

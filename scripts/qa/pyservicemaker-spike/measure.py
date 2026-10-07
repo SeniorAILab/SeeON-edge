@@ -1,10 +1,3 @@
-"""Decisive P1b item-2/3/6 measurement: parsed nvinfer -> NvDCF over a Flow.
-
-Counts frames, objects and distinct tracker ids seen through a real Flow probe,
-plus per-callback latency, so the gate question ("can pyservicemaker carry the
-perception path with tracker identity?") is answered with numbers.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -47,9 +40,6 @@ class Counter(BatchMetadataOperator):
                 header, *data = rows or [
                     "",
                 ]
-                # JSON, not CSV: the repository privacy gate refuses tracked
-                # data-asset extensions, and a process count needs its caveat
-                # travelling with it.
                 self.cuda_apps_out.write_text(
                     json.dumps(
                         {
@@ -107,7 +97,7 @@ def main() -> int:
             .attach(what=Probe("counter", counter))
             .render(enable_osd=False, sync=args.sync)()
         )
-    except Exception as exc:  # noqa: BLE001 - the measurement records the failure
+    except Exception as exc:  # noqa: BLE001
         error = f"{type(exc).__name__}: {exc}"
     elapsed = time.perf_counter() - started
 

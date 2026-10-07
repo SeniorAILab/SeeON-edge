@@ -1,18 +1,3 @@
-"""The HTTP surface the worker's live-view server (``ml-worker:8090``) serves.
-
-The worker is the *provider* of this interface; ml-api is its only consumer
-and reaches it server-side (``worker_stream_origin`` / ``worker_probe_origin``).
-The two packages never import each other, so each owns its own definition:
-this module names the routes the worker matches and the JSON bodies it reads
-and writes, ``backend/app/features/cameras/*`` names what the backend sends
-and expects, and ``tests/test_backend_worker_runtime_contracts.py`` round-trips
-one through the other so drift fails a test instead of a deploy.
-
-Only stdlib plus the image-free preview envelope -- ``_mjpeg_http.py`` keeps
-the sockets, the auth gate, and the frame plumbing; nothing here touches a
-frame.
-"""
-
 from __future__ import annotations
 
 import math
@@ -24,18 +9,14 @@ from urllib.parse import unquote
 
 from worker.types.preview import OverlaySelection
 
-# Shared secret header; the token-gated routes fail closed (403) without it.
 RELAY_TOKEN_HEADER: Final = "X-Edge-Relay-Token"
 
-# MJPEG multipart framing of ``GET /stream/{camera_id}``.
 MJPEG_BOUNDARY: Final = b"frame"
 MJPEG_MEDIA_TYPE: Final = f"multipart/x-mixed-replace; boundary={MJPEG_BOUNDARY.decode()}"
 
-# Fixed routes.
 PROBE_PATH: Final = "/probe"
 REPLAY_PATH: Final = "/replay"
 
-# Parameterised routes; every identity segment arrives percent-encoded.
 STREAM_PREFIX: Final = "/stream/"
 SNAPSHOT_PREFIX: Final = "/snapshot/"
 OVERLAY_PREFIX: Final = "/overlay/"
@@ -44,26 +25,22 @@ BED_ZONE_SUFFIX: Final = "/bed-zone/recognize"
 
 
 def stream_camera_id(path: str) -> str | None:
-    """``GET /stream/{camera_id}``; ``""`` for a bare prefix (the handler 404s)."""
     if not path.startswith(STREAM_PREFIX):
         return None
     return unquote(path[len(STREAM_PREFIX) :])
 
 
 def snapshot_camera_id(path: str) -> str | None:
-    """``GET /snapshot/{camera_id}``; ``""`` for a bare prefix (the handler 404s)."""
     if not path.startswith(SNAPSHOT_PREFIX):
         return None
     return unquote(path[len(SNAPSHOT_PREFIX) :])
 
 
 def pose_camera_id(path: str) -> str | None:
-    """``GET|POST /overlay/{camera_id}/pose``; ``None`` for an empty camera id."""
     return _overlay_camera_id(path, POSE_SUFFIX)
 
 
 def bed_zone_camera_id(path: str) -> str | None:
-    """``POST /overlay/{camera_id}/bed-zone/recognize``; ``None`` for an empty id."""
     return _overlay_camera_id(path, BED_ZONE_SUFFIX)
 
 
@@ -74,11 +51,7 @@ def _overlay_camera_id(path: str, suffix: str) -> str | None:
     return camera_id or None
 
 
-# --- /overlay/{camera_id}/pose: ``{"person": bool, "bed": bool}`` both ways -
-
-
 def parse_overlay_selection(payload: object) -> OverlaySelection | None:
-    """Accept exactly the two required boolean overlay-selection fields."""
     if not isinstance(payload, Mapping) or set(payload) != {"person", "bed"}:
         return None
     person = payload["person"]
@@ -92,13 +65,10 @@ def overlay_selection_body(selection: OverlaySelection) -> dict[str, bool]:
     return {"person": selection.person, "bed": selection.bed}
 
 
-# --- POST /probe -----------------------------------------------------------
-
 ProbeErrorClass: TypeAlias = Literal["auth", "timeout", "decode", "unsupported", "unavailable"]
 
 
 def normalize_probe_error_class(value: object) -> ProbeErrorClass:
-    """Collapse any failure category onto the wire vocabulary (``decode`` is the catch-all)."""
     if value == "auth":
         return "auth"
     if value == "timeout":
@@ -111,7 +81,6 @@ def normalize_probe_error_class(value: object) -> ProbeErrorClass:
 
 
 def parse_probe_request(payload: object) -> str | None:
-    """The ``rtsp_url`` of ``{"rtsp_url": ...}``; ``None`` when absent or blank."""
     if not isinstance(payload, Mapping):
         return None
     rtsp_url = payload.get("rtsp_url")
@@ -122,12 +91,6 @@ def parse_probe_request(payload: object) -> str | None:
 
 @dataclass(frozen=True, slots=True)
 class ProbeResponse:
-    """What ``/probe`` writes -- never the URL or a free-text message.
-
-    Failure: ``{"ok": false, "error_class": ...}``. Success: ``{"ok": true}``
-    plus whichever of ``backend``/``width``/``height`` the probe learned.
-    """
-
     ok: bool
     error_class: ProbeErrorClass | None = None
     backend: str | None = None
@@ -136,7 +99,6 @@ class ProbeResponse:
 
     @classmethod
     def sanitized(cls, payload: Mapping[str, object]) -> ProbeResponse:
-        """Reduce the runtime probe's raw result to the wire shape."""
         if payload.get("ok") is not True:
             return cls(
                 ok=False, error_class=normalize_probe_error_class(payload.get("error_class"))
@@ -164,9 +126,6 @@ class ProbeResponse:
         return payload
 
 
-# --- POST /overlay/{camera_id}/bed-zone/recognize --------------------------
-
-# Structured 404 body when recognition ran but found no bed.
 BED_ZONE_NOT_FOUND_BODY: Final = {"error_class": "bed_not_found"}
 DEFAULT_BED_ZONE_CONFIDENCE: Final = 0.25
 MIN_BED_ZONE_CONFIDENCE: Final = 0.05
@@ -174,7 +133,6 @@ MAX_BED_ZONE_CONFIDENCE: Final = 0.95
 
 
 def parse_bed_zone_recognize_request(payload: object) -> float | None:
-    """Return a valid requested confidence, defaulting an empty object."""
     if not isinstance(payload, dict) or not payload.keys() <= {"confidence"}:
         return None
     confidence = payload.get("confidence", DEFAULT_BED_ZONE_CONFIDENCE)
@@ -192,8 +150,6 @@ def parse_bed_zone_recognize_request(payload: object) -> float | None:
 
 @dataclass(frozen=True, slots=True)
 class BedZoneRecognizeRegion:
-    """One model-segmented bed candidate in image pixel coordinates."""
-
     id: str
     polygon: tuple[tuple[int, int], ...]
     origin: Literal["model"] = "model"
@@ -208,8 +164,6 @@ class BedZoneRecognizeRegion:
 
 @dataclass(frozen=True, slots=True)
 class BedZoneRecognizeResponse:
-    """The 200 body: model-segmented beds plus the image they were found in."""
-
     regions: tuple[BedZoneRecognizeRegion, ...]
     image_width: int
     image_height: int

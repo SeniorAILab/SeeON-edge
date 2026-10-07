@@ -1,5 +1,3 @@
-"""Selected bundles replace the packaged fall runner; no dark path exists."""
-
 from __future__ import annotations
 
 from pathlib import Path

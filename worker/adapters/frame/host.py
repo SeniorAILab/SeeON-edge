@@ -7,8 +7,6 @@ from worker.types.frame_memory import FrameLease, MemoryKind
 
 
 class HostFrameMaterializer:
-    """Named host boundary; ``view`` is zero-copy and ``materialize`` is counted."""
-
     __slots__ = ("capabilities", "metrics", "name")
 
     def __init__(self, *, name: str, metrics: CopyMetrics) -> None:

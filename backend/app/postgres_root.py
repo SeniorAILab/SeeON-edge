@@ -1,10 +1,3 @@
-"""PostgreSQL composition root: one pool, one authority, every product store.
-
-ADR-0002: missing wiring refuses startup. The DSN and the persistence
-authority come only from deployment-issued secret files; neither value is
-logged, echoed in an error, or chained into a traceback.
-"""
-
 from __future__ import annotations
 
 import json
@@ -58,7 +51,7 @@ DEFAULT_SHUTDOWN_TIMEOUT_SEC = 10.0
 
 
 class PostgresRootError(RuntimeError):
-    """Startup refusal whose text never carries connection or authority secrets."""
+    ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,7 +98,6 @@ def _parse_authority(text: str) -> AuthorityToken:
 def open_postgres_root(
     environ: Mapping[str, str] | None = None, *, budget: PoolBudget = DEFAULT_POOL_BUDGET
 ) -> PostgresRoot:
-    """Open the pool and prove this process holds the live persistence authority."""
     env = os.environ if environ is None else environ
     conninfo = _required_file(env, API_POSTGRES_DSN_FILE_ENV, "PostgreSQL DSN")
     authority = _parse_authority(
@@ -141,13 +133,11 @@ def open_postgres_root(
 
 
 def _clip_root(app: FastAPI) -> Path:
-    """Receipts verify media under the same clip root the API serves clips from."""
     clip_store = getattr(app.state, "clip_store", None)
     return clip_store.root if isinstance(clip_store, ClipStore) else ClipStore.from_env().root
 
 
 def install_postgres_stores(app: FastAPI, root: PostgresRoot) -> tuple[str, ...]:
-    """Publish every PostgreSQL product store; a pre-injected store wins."""
     database, authority = root.database, root.authority
     installed: list[str] = []
     stores = {
@@ -182,7 +172,6 @@ def install_postgres_stores(app: FastAPI, root: PostgresRoot) -> tuple[str, ...]
 def close_postgres_database(
     database: PostgresDatabase, *, timeout_sec: float = DEFAULT_SHUTDOWN_TIMEOUT_SEC
 ) -> None:
-    """Refuse new work, drain admitted scopes, then dispose the pool."""
     database.stop_admission()
     database.close(timeout_sec=timeout_sec)
 

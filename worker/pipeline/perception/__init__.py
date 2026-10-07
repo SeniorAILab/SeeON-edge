@@ -1,5 +1,3 @@
-"""Perception stage: observation building, tracking, scene cache and windows."""
-
 from __future__ import annotations
 
 from worker.pipeline.perception.decision_input import build_decision_input

@@ -19,23 +19,6 @@ from worker.domains.bed_exit.schema import BedExitConfig, BedExitEvent, BedExitF
 from worker.types import DecisionInput
 from worker.types.bed_pose_features import EMPTY_FRAME_BED_POSE_FEATURES, FrameBedPoseFeatures
 
-# Supersession notes (edge assertions not ported here, behavior verified
-# elsewhere against the current BedExitMonitor(config=..., clock=...) API):
-# - test_own_bed_exit_after_grace_emits_once_and_unassigns ->
-#   tests/test_worker_domains_bed_exit.py:77-133
-#   (test_own_bed_exit_emits_once_after_grace_period)
-# - test_cross_bed_movement_does_not_false_positive_own_bed_exit ->
-#   tests/test_worker_domains_bed_exit.py:136-167
-#   (test_cross_bed_movement_never_emits_or_reassigns)
-# - test_overlapping_beds_choose_best_containment_with_lowest_id_tiebreak ->
-#   tests/test_worker_domains_bed_exit_assignment.py:59-74
-#   (test_hold_and_containment_tie_assign_the_lowest_bed_id); both fixtures
-#   construct a full-containment tie (ratio 1.0 on both beds) and assert the
-#   same lowest-bed-id tiebreak.
-# - test_runtime_observation_update_returns_domain_event_tuple -> the dict
-#   payload shape is retired; the equivalent BusinessEvent-tuple return is
-#   covered by tests/test_worker_domains_bed_exit.py:77-133.
-
 
 def box(x1: int, y1: int, x2: int, y2: int, confidence: float = 0.9) -> BoundingBox:
     return BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2, confidence=confidence)
@@ -100,12 +83,6 @@ def _own_bed_exit_events(
     *,
     exit_time_sec: float | None = None,
 ) -> tuple[object, ...]:
-    """Assign, arm via a posture-confirmed in-bed dwell, then exit.
-
-    Matches `_monitor()`'s default `in_bed_dwell_sec=outside_dwell_sec=1.0`:
-    frame 0 assigns, frame 1 (1s later, lying/sitting posture) arms, frame 2
-    (another 1s later, outside) fires exactly one event.
-    """
     monitor.update(_input(person_boxes=(box(10, 10, 70, 90),), bed_boxes=(bed,), frame_index=0))
     monitor.update(
         _input(
@@ -134,9 +111,6 @@ def test_schema_exports_bed_exit_frame_statuses_and_events() -> None:
 
 
 def test_hold_frames_prevent_jitter_assignment_until_stable() -> None:
-    # Candidate-bed switching between frames must reset the hold-frame
-    # counter (worker/domains/bed_exit/detector.py:_Assignment.update_candidate);
-    # only a stable, repeated candidate reaches hold_frames and gets assigned.
     beds = (box(0, 0, 100, 100), box(120, 0, 220, 100))
     monitor = _monitor(
         clock=lambda: datetime(2026, 1, 1, tzinfo=ZoneInfo("UTC")),
@@ -193,10 +167,10 @@ def test_bed_exit_config_accepts_grace_frames_lower_bound() -> None:
 @pytest.mark.parametrize(
     ("hour", "minute", "second", "expected_count"),
     (
-        (21, 0, 0, 1),  # exactly at the inclusive start boundary -> inside
-        (4, 59, 59, 1),  # one second before the exclusive end -> inside
-        (20, 59, 59, 0),  # one second before the start -> outside
-        (5, 0, 0, 0),  # exactly at the exclusive end boundary -> outside
+        (21, 0, 0, 1),
+        (4, 59, 59, 1),
+        (20, 59, 59, 0),
+        (5, 0, 0, 0),
     ),
 )
 def test_night_window_exact_boundary_seconds_gate_the_runtime_path(
@@ -215,10 +189,6 @@ def test_night_window_exact_boundary_seconds_gate_the_runtime_path(
 
 
 def test_night_window_uses_injected_clock_not_monotonic_time_sec() -> None:
-    # Clock says daytime (13:00, outside the window); time_sec is a large
-    # monotonic value (23*3600s) that would look like 23:00 "time of day" if
-    # ever mistaken for a wall-clock reading. Only the injected clock may
-    # gate the window.
     fixed = datetime(2026, 1, 1, 13, 0, tzinfo=ZoneInfo("Asia/Seoul"))
     monitor = _monitor(clock=lambda: fixed)
     bed = box(0, 0, 80, 100)
@@ -229,12 +199,6 @@ def test_night_window_uses_injected_clock_not_monotonic_time_sec() -> None:
 
 
 def test_night_window_rejects_naive_clock_datetime_through_the_runtime_path() -> None:
-    # Unit-level rejection is covered by
-    # tests/test_worker_domains_bed_exit_time.py:76-82
-    # (test_night_window_rejects_naive_wall_clock), which calls
-    # NightWindow.contains() directly. This ports the production call path
-    # (BedExitMonitor.update() -> self._clock()) as cheap insurance that the
-    # same guarantee holds end to end.
     monitor = _monitor(clock=lambda: datetime(2026, 1, 1, 22, 0, 0))
     bed = box(0, 0, 80, 100)
 
@@ -253,14 +217,6 @@ def test_without_night_window_emits_regardless_of_clock() -> None:
 
 
 def test_bed_exit_rearms_only_after_confirmed_recovery() -> None:
-    """Repeated exits are suppressed until a posture-confirmed recovery dwell.
-
-    Supersedes the frame-count version of this test: an exit now requires an
-    armed track (posture-confirmed in-bed dwell) followed by a live outside
-    dwell, and firing clears the latch (hysteresis, addendum #1) so a bare
-    repeat at the same outside position never re-fires -- only a fresh,
-    positively-observed return to bed re-arms it.
-    """
     fixed = datetime(2026, 1, 1, 13, 0, tzinfo=ZoneInfo("Asia/Seoul"))
     monitor = _monitor(clock=lambda: fixed, night_window=None, grace_frames=0)
     bed = box(0, 0, 80, 100)
@@ -291,15 +247,6 @@ def test_bed_exit_rearms_only_after_confirmed_recovery() -> None:
 
 
 def test_release_reopens_a_failed_bed_exit_for_one_retry() -> None:
-    """`release_onset` reopens episode bookkeeping only -- not the arm latch.
-
-    A downstream storage failure lets the runtime ask for exactly one retry
-    of a bed-exit onset. Under the dwell model that retry still cannot
-    bypass the detector's own hysteresis latch (addendum #1): a bare repeat
-    at the same outside position, with no fresh in-bed dwell, still does not
-    re-fire. A genuine return to bed and a fresh outside dwell does, with a
-    new identity.
-    """
     fixed = datetime(2026, 1, 1, 13, 0, tzinfo=ZoneInfo("Asia/Seoul"))
     monitor = _monitor(clock=lambda: fixed, night_window=None, grace_frames=0)
     bed = box(0, 0, 80, 100)

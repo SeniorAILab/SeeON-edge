@@ -1,13 +1,3 @@
-"""DeepStreamMediaPlane against a fake pyservicemaker seam.
-
-The contract is what the G8a spike measured on a live camera
-(docs/research/pyservicemaker-p1b-spike.md): ``Pipeline.start_recording``
-returns a session id and delivers ``RecordingInfo`` to its callback when the
-clip seals; ``Pipeline.stop_recording`` is defective, so the plane refuses
-early stops with a typed error; a second start while one is in flight is
-absorbed into the same session; a Flow fixes its sources when built.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -166,9 +156,6 @@ def _plane(
 
 def _info(session: int) -> SimpleNamespace:
     return SimpleNamespace(
-        # Field names as the SDK's RecordingInfo actually spells them; the fake
-        # previously used dirpath/filename, which is why a real seal aborted the
-        # process from inside the completion callback.
         session_id=session,
         file_directory="/tmp",
         file_name="clip.mp4",
@@ -236,9 +223,6 @@ def test_start_uses_the_sdk_primitive_and_an_inflight_start_is_absorbed() -> Non
 
 
 def test_a_session_that_never_seals_releases_its_slot_instead_of_silencing_the_camera() -> None:
-    """A Smart Record session whose sealed callback never arrives must not make the
-    camera stop recording forever: production went clip-blind for three days that way
-    (bed-exit alerts kept firing, no evidence was captured, nothing was logged)."""
     now = [1_000.0]
     plane, pipeline = _plane(clock=lambda: now[0])
     plane.add_source("camera", "rtsp://one")
@@ -247,7 +231,6 @@ def test_a_session_that_never_seals_releases_its_slot_instead_of_silencing_the_c
         "camera", lookback_sec=15, duration_sec=45, on_sealed=lambda _: None
     )
 
-    # Still inside the session's own seal window: coalescing is correct here.
     now[0] += 40.0
     assert (
         plane.start_recording("camera", lookback_sec=15, duration_sec=45, on_sealed=lambda _: None)
@@ -256,8 +239,6 @@ def test_a_session_that_never_seals_releases_its_slot_instead_of_silencing_the_c
     assert len(pipeline.started) == 1
     assert plane.abandoned_recordings == 0
 
-    # Past duration + grace with no seal: the slot is abandoned and a new
-    # recording actually starts.
     now[0] += 45.0
     second = plane.start_recording(
         "camera", lookback_sec=15, duration_sec=45, on_sealed=lambda _: None
@@ -312,14 +293,6 @@ def test_sealed_callback_fires_exactly_once_per_session() -> None:
 def test_a_failed_handoff_is_logged_and_never_raises_into_the_sdk_callback(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The completion callback runs on the pipeline thread.
-
-    A live run proved the cost of raising here: a thumbnail failure propagated
-    out of the callback and terminated the worker, taking every camera down.
-    The media and its contributor sidecar are already on disk, so the honest
-    behaviour is to log, keep the media, and let the startup replay finish the
-    publication.
-    """
     plane, pipeline = _plane()
     plane.add_source("camera", "rtsp://one")
     plane._live.add("camera")
@@ -503,7 +476,7 @@ def test_snapshot_waits_for_a_complete_jpeg(
     def capture() -> None:
         try:
             result.append(plane.snapshot("camera"))
-        except BaseException as error:  # noqa: BLE001 - surfaced to the test thread
+        except BaseException as error:  # noqa: BLE001
             errors.append(error)
 
     request = threading.Thread(target=capture)
@@ -579,7 +552,7 @@ def test_snapshots_serialize_the_shared_bridge_across_cameras() -> None:
     def capture(camera_id: str) -> None:
         try:
             results[camera_id] = plane.snapshot(camera_id)
-        except BaseException as error:  # noqa: BLE001 - surfaced to the test thread
+        except BaseException as error:  # noqa: BLE001
             errors.append(error)
 
     first = threading.Thread(target=capture, args=("first",))
@@ -697,12 +670,6 @@ def test_enabled_snapshot_branch_times_out_and_recloses_its_valve() -> None:
 
 
 def test_a_source_failure_rotates_the_stream_identity_and_keeps_the_camera_id() -> None:
-    """P1b-AC2: the sensor id is the canonical camera id across a forced rebuild.
-
-    The Flow's sources are fixed once it runs, so a failure rotates the stream
-    identity rather than rebuilding the element: frames after the outage cannot
-    be mistaken for the old stream, and stale preview state is dropped.
-    """
     plane, _ = _plane()
     first = plane.add_source("room-208", "rtsp://one")
     plane._live.add("room-208")
@@ -719,11 +686,6 @@ def test_a_source_failure_rotates_the_stream_identity_and_keeps_the_camera_id() 
 
 
 def test_an_unmapped_mux_pad_is_dropped_and_never_raises_into_the_probe() -> None:
-    """An exception in an SDK probe callback aborts the whole process.
-
-    A 13-camera run died exactly this way when a frame arrived on a pad the
-    source table did not know. Such a frame must be counted out and dropped.
-    """
     from types import SimpleNamespace
 
     plane, _ = _plane()
@@ -741,12 +703,6 @@ def test_an_unmapped_mux_pad_is_dropped_and_never_raises_into_the_probe() -> Non
 def test_a_frame_without_pose_tensor_is_counted_and_named_once(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A dead pose path must not look like an empty room.
-
-    A mis-bound output layer produced no pose rows for an entire bring-up while
-    the pipeline ran at full frame rate, so the plane counts such frames and
-    names the camera once instead of staying silent.
-    """
     from types import SimpleNamespace
 
     plane, _ = _plane()
@@ -829,12 +785,6 @@ def test_publish_captures_absent_vs_present_empty_tensor_without_changing_percep
 def test_the_probe_stops_converting_once_the_plane_is_stopping(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Teardown empties the source table while the SDK still delivers buffers.
-
-    A 13-camera teardown logged 'dropping frames from unmapped mux pad N; known
-    pads are []' and then core-dumped, so the probe must go quiet the moment
-    stopping begins rather than convert against a table being emptied.
-    """
     from types import SimpleNamespace
 
     plane, _ = _plane()
@@ -852,11 +802,6 @@ def test_the_probe_stops_converting_once_the_plane_is_stopping(
 
 
 def test_an_isolated_conversion_failure_is_dropped_without_tripping_the_plane() -> None:
-    """An exception escaping a probe callback aborts the process inside the SDK.
-
-    A 13-camera run died during an RTSP reconnect, so a frame whose conversion
-    raises must be counted and dropped instead of taking the worker down.
-    """
     from types import SimpleNamespace
 
     plane, _ = _plane()
@@ -880,7 +825,6 @@ def test_an_isolated_conversion_failure_is_dropped_without_tripping_the_plane() 
 
 
 def test_sustained_conversion_failure_trips_only_the_affected_camera() -> None:
-    """A broken SDK conversion contract must reach the lifecycle supervisor."""
     plane, _ = _plane()
     plane.add_source("broken", "rtsp://one")
     plane.add_source("healthy", "rtsp://two")

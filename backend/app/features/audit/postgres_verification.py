@@ -1,12 +1,3 @@
-"""Full, bounded PostgreSQL audit verification as of one repeatable-read snapshot.
-
-An OID/relfilenode anchor is continuity within a database, not authenticated cluster
-identity. Function DDL after the snapshot is detected on the next observation;
-ACCESS SHARE pins the relation, not functions. Cold starts cannot detect a valid
-rehash of history. audit_id is ordered/anchored but is not in the canonical hash.
-No checkpoint here is a freshness claim, persistent state, or incremental cache.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -33,9 +24,6 @@ _FAILURE: Final = "audit verification failed"
 _PAGE_SIZE: Final = 1_000
 _MAX_BUNDLE_BYTES: Final = 131_072
 _MAX_INDEXES: Final = 32
-# UTF-8 byte ceilings cover the product's character limits, without trusting its
-# CHECK constraints to protect client memory. A separate validity bit prevents a
-# truncated/oversized nullable field from being mistaken for a legitimate NULL.
 _TEXT_BYTES: Final = (
     0,
     128,
@@ -57,7 +45,7 @@ _TEXT_BYTES: Final = (
     64,
     512,
 )
-_NULLABLE: Final = frozenset({12, 13, 14, 15, 19})  # one-based attribute numbers
+_NULLABLE: Final = frozenset({12, 13, 14, 15, 19})
 _TRIGGER_CONTRACT: Final = {
     "audit_events_immutable_update": ("seeon_audit_immutable", 19),
     "audit_events_immutable_delete": ("seeon_audit_immutable", 11),
@@ -96,14 +84,6 @@ def _require(condition: bool) -> None:
 
 
 def _trusted_guards(schema_identifier: str) -> tuple[dict[str, _FunctionContract], str]:
-    """Recognize only the bundled DDL's narrow grammar, never parse live SQL.
-
-    Header defaults below are PostgreSQL CREATE FUNCTION defaults. Any new DDL
-    syntax needs an explicit contract update; bodies are compared byte-for-byte,
-    including whitespace inside literals. No deparser/syscache is an authority.
-    schema_identifier is the canonical rendering of the configured namespace,
-    not a value recovered from a live function's settings.
-    """
     with files("backend.app.edge_db").joinpath("postgres_product.sql").open("rb") as resource:
         encoded = resource.read(_MAX_BUNDLE_BYTES + 1)
     _require(len(encoded) <= _MAX_BUNDLE_BYTES)
@@ -130,7 +110,7 @@ def _trusted_guards(schema_identifier: str) -> tuple[dict[str, _FunctionContract
             definition=match.group(0),
             body=body,
             argument_names=("previous_hash", "payload_json") if is_hash else (),
-            return_oid=25 if is_hash else 2279,  # pg_catalog.text / trigger
+            return_oid=25 if is_hash else 2279,
             volatility="i" if is_hash else "v",
             strict=is_hash,
             search_path=(
@@ -155,8 +135,6 @@ def _trusted_guards(schema_identifier: str) -> tuple[dict[str, _FunctionContract
         _require(name not in actual)
         actual[name] = (function, 2 | event_bits[event] | int(level == "ROW"))
     _require(actual == _TRIGGER_CONTRACT)
-    # This digest describes only the validated contract, not a data-version or
-    # change counter. Function OIDs are separately checked at trigger bindings.
     contract = {
         "functions": {
             name: (spec.definition, spec.search_path) for name, spec in functions.items()
@@ -199,7 +177,6 @@ def _relation_identity(connection: psycopg.Connection, schema: str) -> tuple[int
 
 
 def _verify_columns(connection: psycopg.Connection, relation: int) -> None:
-    # Names have PostgreSQL's fixed name width; all remaining results are scalar.
     rows = connection.execute(
         "SELECT attnum, attname, atttypid, attnotnull, attidentity, "
         "NOT attisdropped AND attgenerated = '' AND atttypmod = -1 "
@@ -230,8 +207,6 @@ def _verify_functions(
 ) -> dict[str, int]:
     identities = {}
     for name, spec in functions.items():
-        # Compare raw MVCC fields on the server: hostile prosrc/proconfig/arrays
-        # never cross the wire, even when arbitrarily larger than the bundle.
         rows = connection.execute(
             "SELECT p.oid, p.prosrc = %s AND p.probin IS NULL AND p.prosqlbody IS NULL "
             "AND p.prokind = 'f' AND NOT p.proretset AND p.prorettype = %s "
@@ -352,7 +327,6 @@ def _scan(
     scanned = 0
     last_id = None
     previous = GENESIS_HASH
-    # First page has no lower-ID predicate: BY DEFAULT identity admits <= 0.
     with connection.cursor(
         name="seeon_audit_verification", withhold=False, scrollable=False, row_factory=tuple_row
     ) as cursor:
@@ -381,17 +355,8 @@ def _scan(
 def _verify_snapshot(
     connection: psycopg.Connection, schema: str, checkpoint: PostgresAuditCheckpoint | None
 ) -> PostgresAuditCheckpoint:
-    """Private callback; only the owner may publish its result after pool exit.
-
-    SET LOCAL and SHOW do not acquire a data snapshot. LOCK must precede *every*
-    SELECT so a concurrent rewrite/TRUNCATE cannot leave a pre-lock snapshot of
-    a new heap. ONLY avoids recursively locking hostile inheritance before
-    shape validation.
-    """
     try:
         _require(connection.info.transaction_status is TransactionStatus.INTRANS)
-        # Product/user operators must not decide whether catalog fields match.
-        # This expires at the owner's transaction boundary, not at pool reset.
         connection.execute("SET LOCAL search_path TO pg_catalog, pg_temp")
         _require(
             connection.execute("SHOW transaction_isolation").fetchone() == ("repeatable read",)
@@ -400,8 +365,6 @@ def _verify_snapshot(
         _require(connection.execute("SHOW session_replication_role").fetchone() == ("origin",))
         table = sql.Identifier(schema, "audit_events")
         connection.execute(sql.SQL("LOCK TABLE ONLY {} IN ACCESS SHARE MODE").format(table))
-        # GUC capture uses PostgreSQL's canonical quoting, not Identifier's
-        # always-quoted SQL spelling. Render only the trusted owner namespace.
         row = connection.execute("SELECT pg_catalog.quote_ident(%s)", (schema,)).fetchone()
         _require(row is not None and isinstance(row[0], str))
         functions, fingerprint = _trusted_guards(row[0])
@@ -427,9 +390,6 @@ def _verify_snapshot(
         last_id, record_hash = _scan(connection, table, count, checkpoint)
         return PostgresAuditCheckpoint(identity, fingerprint, count, last_id, record_hash)
     except (AuditVerificationError, psycopg.Error, OSError, ValueError, RecursionError):
-        # SQL diagnostics, enum values and JSON errors may contain protected data.
-        # Interruptions and programming defects (AssertionError/TypeError/etc.)
-        # remain distinct; safe typed owner errors are not caught here.
         raise AuditVerificationError(_FAILURE) from None
 
 

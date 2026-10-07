@@ -1,14 +1,3 @@
-"""WP4 baseline measurement: real relay -> real Hub client -> fixture Hub.
-
-This exercises the actual product delivery path (``POST /api/v1/relay/alerts``
--> ``EdgeIngestClient`` -> ``BackendEvidenceClient`` -> real loopback HTTP) and
-measures exact E/A/B cardinality. The relay commits the incident and its outbox
-row on the PostgreSQL product sandbox before any Hub delivery, so a repeat of a
-delivered edge event is answered from the committed receipt. No browser, no human
-adjudication, no live camera, and no model/policy attribution: repeated
-machine-positive transitions stay ``판정 불가`` by construction.
-"""
-
 from __future__ import annotations
 
 from typing import Any
@@ -41,12 +30,6 @@ _SECOND_EDGE_EVENT_ID = "00000000-0000-4000-8000-0000000000a2"
 
 
 class _FirstReceiptLost:
-    """Real Hub client whose first receipt is lost after the Hub accepted.
-
-    The relay records the attempt as outcome-unknown and answers retryable, so
-    the worker's retry is what reaches the Hub a second time.
-    """
-
     def __init__(self, delivered: EdgeIngestClient) -> None:
         self._delivered = delivered
         self._losses = 1
@@ -111,8 +94,6 @@ def test_repeated_delivery_attempts_converge_to_one_backend_identity(
             clock_order_valid=True,
         )
         assert rows[0].backend_event_ids == (str(first["event_id"]),)
-        # Without the API incident projection the chain is deliberately
-        # incomplete, so the classifier must refuse to conclude.
         assert classify_rows(rows).outcome is DiagnosticOutcome.INCONCLUSIVE
 
 

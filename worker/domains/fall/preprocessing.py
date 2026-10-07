@@ -7,10 +7,6 @@ from typing import Final, TypeAlias
 from contracts.model import DEFAULT_FALL_CONFIDENCE_THRESHOLD
 
 Pose: TypeAlias = tuple[tuple[int, int, float], ...]
-# One normalized COCO-17 keypoint window row: (x, y, confidence), each
-# frame-relative x/y in [0, 1] and confidence carried through unchanged.
-# Plain nested tuples -- no ndarray -- so this stays a pure numeric type
-# usable directly as `worker.types.FallModelInput`'s "sequence" row shape.
 NormalizedPose: TypeAlias = tuple[tuple[float, float, float], ...]
 
 _KEYPOINT_COUNT: Final = 17

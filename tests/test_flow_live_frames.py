@@ -1,5 +1,3 @@
-"""Flow live-preview snapshot and overlay behaviour."""
-
 from __future__ import annotations
 
 import threading

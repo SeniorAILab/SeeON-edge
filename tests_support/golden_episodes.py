@@ -1,5 +1,3 @@
-"""Validation and loading for the versioned golden episode corpus."""
-
 from __future__ import annotations
 
 import json
@@ -29,7 +27,6 @@ class GoldenEpisode:
 
 
 def load_golden_episodes(path: Path) -> tuple[GoldenEpisode, ...]:
-    """Load a complete golden-episodes-v1 JSON fixture or raise ``ValueError``."""
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -65,7 +62,7 @@ def _header(payload: dict[str, Any]) -> tuple[tuple[str, ...], tuple[str, ...]]:
     digest = payload.get("corpus_sha256")
     provisional_header = payload.get("provisional") is True and payload.get("episodes") == []
     if digest is None and provisional_header:
-        pass  # empty provisional placeholder: no corpus has been labelled yet
+        pass
     elif not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
         raise ValueError("invalid corpus_sha256")
     labellers = payload.get("labellers")

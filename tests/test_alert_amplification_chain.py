@@ -1,21 +1,3 @@
-"""WP4 measurement: one real same-E T -> E -> B -> I chain, media-free.
-
-Composes the real product seams end to end for a single synthetic
-``edge_event_id``:
-
-* T -> E through the real ``IncidentManager`` admission and its durable
-  ``EventIdentityStore`` (no frames, no RTSP, no model);
-* E -> B through the real ``/api/v1/relay/alerts`` route, real
-  ``EdgeIngestClient``/``BackendEvidenceClient`` and the contract-exact Hub
-  fixture served over loopback HTTP;
-* E -> I through the real ``DurableEvidenceStager`` payload, the relay's
-  single PostgreSQL admission transaction (incident + outbox row) and the
-  authenticated ``GET /api/v1/incidents`` projection.
-
-B is captured from the actual fixture receipt; nothing in the join is
-hard-coded. Model/policy attribution stays categorically ``판정 불가``.
-"""
-
 from __future__ import annotations
 
 import base64
@@ -55,8 +37,6 @@ def _transition(identity: str | int, *, time_sec: float = 100.0) -> BusinessEven
 
 
 def _admit(identity_path: Path, event: BusinessEvent, *, now_sec: float) -> str:
-    """Return the durable E minted by real product admission for this T."""
-
     manager = IncidentManager(cooldown_sec=0.0, identity_path=identity_path)
     admitted = manager.admit(event, now_sec=now_sec)
     assert admitted is not None
@@ -167,8 +147,6 @@ def test_durable_identity_survives_restart_without_minting_a_second_edge_id(
     identity_path = tmp_path / "identities.jsonl"
 
     first = _admit(identity_path, _transition("onset-1"), now_sec=100.0)
-    # A fresh IncidentManager models a worker restart against the same durable
-    # identity store: the same source transition must not mint a new E.
     after_restart = _admit(identity_path, _transition("onset-1"), now_sec=200.0)
 
     assert first == after_restart
@@ -181,9 +159,6 @@ def test_refire_fault_produces_two_edge_ids_for_one_physical_onset(
 ) -> None:
     identity_path = tmp_path / "identities.jsonl"
 
-    # Test-only refire fault: the same physical onset is admitted under two
-    # distinct source identities, which is exactly what worker refire looks
-    # like to the durable identity store.
     first_edge = _admit(identity_path, _transition("onset-1"), now_sec=100.0)
     second_edge = _admit(identity_path, _transition("onset-1-refire"), now_sec=101.0)
     assert first_edge != second_edge
@@ -228,18 +203,6 @@ def test_cooldown_collapses_a_repeat_within_the_window(tmp_path: Path) -> None:
 
 
 def test_a_failing_identity_journal_still_admits_the_alert(tmp_path: Path) -> None:
-    """Durability must never suppress a resident alert.
-
-    The identity journal exists so a restart reuses the same edge event id and
-    the backend can deduplicate. It is a durability aid, not the decision. It
-    was called unguarded, so any journal I/O failure -- a full disk, a
-    permission change, an fsync error -- propagated out of `admit()` and the
-    event was never admitted, never queued and never delivered.
-
-    A fresh identity risks a duplicate alert after a restart, which the backend
-    already deduplicates. A missing alert is the accident this system exists to
-    prevent.
-    """
     identity_path = tmp_path / "identity.jsonl"
     manager = IncidentManager(cooldown_sec=0.0, identity_path=identity_path)
 
@@ -260,15 +223,6 @@ def test_a_failing_identity_journal_still_admits_the_alert(tmp_path: Path) -> No
 def test_a_malformed_identity_journal_still_lets_the_camera_detect(
     tmp_path: Path,
 ) -> None:
-    """A journal left corrupt by an earlier crash must not disable a camera.
-
-    `EventIdentityStore` loads and validates on construction, and that raised
-    out of `IncidentManager.__post_init__`. A single malformed journal file
-    therefore stopped that camera activating at all: it detected nothing until
-    somebody noticed and deleted the file by hand. Losing the stored identities
-    costs deduplication across this restart; losing the camera costs every fall
-    it would have seen.
-    """
     identity_path = tmp_path / "identity.jsonl"
     corrupt = b"{ this is not valid json\n"
     identity_path.write_bytes(corrupt)
@@ -285,14 +239,6 @@ def test_a_malformed_identity_journal_still_lets_the_camera_detect(
 
 
 def test_the_identity_fallback_survives_a_full_disk(tmp_path: Path) -> None:
-    """The fallback must not fail for the same reason the journal did.
-
-    An earlier version of this fallback created a scratch journal in a temporary
-    directory. That reintroduced the exact defect it was fixing: a full disk is
-    a very likely reason the real journal failed in the first place, and then
-    the fallback's own `mkdtemp` raises too and the camera still never
-    activates. `EventIdentityStore(None)` performs no I/O at all.
-    """
     import tempfile
     from unittest.mock import patch
 

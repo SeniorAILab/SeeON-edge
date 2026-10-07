@@ -1,6 +1,3 @@
-"""Closed decision-trace vocabulary: baseline membership plus the additive bed-exit,
-fall (classifier dispositions, resample-gap) and episode-suppression tokens."""
-
 from __future__ import annotations
 
 from enum import StrEnum
@@ -16,9 +13,6 @@ from worker.types.trace import (
     canonical_trace_number,
 )
 
-# Frozen membership of the four closed vocabularies at the commit this test
-# was introduced against. Live snapshots reference these tokens; they must
-# remain a subset of whatever the enums grow into.
 BASELINE_REASONS: frozenset[str] = frozenset(
     {
         "trace-unavailable",
@@ -144,14 +138,11 @@ FALL_MISSING_REASONS: frozenset[str] = frozenset(
     {
         "classifier-warmup",
         "classifier-stride-not-due",
-        # A frame the resampler yielded no row for: the module coasted.
         "resample-gap",
     }
 )
 EPISODE_REASONS: frozenset[str] = frozenset(
     {
-        # Onset computed but suppressed by the episode authority; the row
-        # keeps triggered=False so a non-event is explained, not silent.
         "episode-already-open",
         "episode-reassociated",
         "episode-resolved-hold",
@@ -176,22 +167,12 @@ BED_EXIT_REASONS: frozenset[str] = frozenset(
         "bed-polygon-invalid",
     }
 )
-# Evidence-driven exit redesign (absence-never-emits, posture-gated arming,
-# dwell measured in PTS seconds instead of frame counts): additive on top of
-# BED_EXIT_REASONS/STATES/VALUE_NAMES/MISSING_REASONS above, which stay as
-# emitted by the deleted shadow state machine's now-dead code paths.
 BED_EXIT_DWELL_REASONS: frozenset[str] = frozenset(
     {
         "contained-posture-unconfirmed",
         "outside-dwell-exit",
         "outside-dwell",
         "outside-not-armed",
-        # Track-ID-churn resilience (NvDCF has no ReID; median track lifetime
-        # is well under a typical in_bed_dwell_sec on several cameras): a
-        # never-before-assigned track that independently re-confirms the
-        # full posture gate inside the same bed a vanishing track owned
-        # inherits that track's armed/in-bed-dwell progress instead of
-        # restarting from zero.
         "identity-handoff",
     }
 )
@@ -379,7 +360,6 @@ def _new_token_snapshots() -> tuple[DecisionTraceSnapshot, ...]:
 
 
 def test_baseline_closed_vocabularies_remain_intact() -> None:
-    """Pin the pre-extension membership so persisted tokens cannot silently vanish."""
     assert _values(DecisionTraceReason) >= BASELINE_REASONS
     assert _values(DecisionTraceState) >= BASELINE_STATES
     assert _values(DecisionTraceValueName) >= BASELINE_VALUE_NAMES
@@ -387,12 +367,6 @@ def test_baseline_closed_vocabularies_remain_intact() -> None:
 
 
 def test_baseline_vocabularies_are_exactly_the_pre_extension_sets() -> None:
-    """Fail if a later change silently drops or renames a persisted token.
-
-    Before the bed-exit extension this is an exact-set pin. After the
-    extension the same names stay a subset (asserted above) and the
-    additive tokens are asserted separately.
-    """
     current_reasons = _values(DecisionTraceReason)
     current_states = _values(DecisionTraceState)
     current_value_names = _values(DecisionTraceValueName)

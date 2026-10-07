@@ -1,12 +1,10 @@
-"""Build WireProvenance from identities already resolved at composition."""
-
 from __future__ import annotations
 
 from shared.events.execution_records import ExecutionRecordContractError, WireProvenance
 
 
 class ExecutionRecordProvenanceError(RuntimeError):
-    """A required execution identity is missing; the worker must refuse to start."""
+    ...
 
 
 def build_wire_provenance(

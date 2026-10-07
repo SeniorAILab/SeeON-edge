@@ -13,8 +13,6 @@ PullWorkerConfig: TypeAlias = Callable[[str, str | None], PulledWorkerConfig | N
 
 @dataclass(frozen=True, order=True, slots=True)
 class RestartDirective:
-    """Monotonic restart identity ordered by generation, config, then registry."""
-
     generation: int
     version: int
     registry: int = 0

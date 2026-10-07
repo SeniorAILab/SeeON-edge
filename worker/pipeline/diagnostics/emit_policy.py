@@ -1,5 +1,3 @@
-"""sdk.frame, policy.consume, model.score, and policy.decision payloads."""
-
 from __future__ import annotations
 
 from shared.events.execution_records import WireRecord
@@ -149,16 +147,6 @@ def policy_decision_record(
     decision_trace_id: str | None = None,
     observed_at_ns: int | None = None,
 ) -> WireRecord | None:
-    """One policy.decision record attributed to the module that produced it.
-
-    ``module_qualified_id`` is the compiled module (``fall.v2``, ``bed_exit.v1``,
-    ...) or None when composition gave the decider no identity; it is written
-    into the payload and selects the causal unit. Only the fall module uses the
-    fall track/generation unit; any other module (or an unattributed snapshot)
-    gets a module-scoped frame unit so it never joins a fall unit.
-    ``authority_role`` is ``authoritative`` or ``shadow``; a shadow snapshot is
-    never a cause.
-    """
     return make_record(
         record_kind="policy.decision",
         camera_id=camera_id,
@@ -187,12 +175,8 @@ def policy_decision_record(
             "bed_id": snapshot.bed_id,
             "values": dict(snapshot.values),
             "missing_values": dict(snapshot.missing_values),
-            # Which compiled module produced this snapshot (None: unattributed)
-            # and whether it is a cause or a shadow evaluation.
             "module_qualified_id": module_qualified_id,
             "authority_role": authority_role,
-            # Same id the relayed alert carries in audit.decision_trace_id;
-            # None when the producing decider had no identity to attribute to.
             "decision_trace_id": decision_trace_id,
         },
         frame_seq=frame_seq,
@@ -224,13 +208,6 @@ def policy_coast_record(
     module_qualified_id: str | None,
     observed_at_ns: int | None = None,
 ) -> WireRecord | None:
-    """One truthful policy.decision for a frame the module did not evaluate.
-
-    Emitted instead of re-stamping the module's previous snapshots when the
-    resampler yielded no row (duplicate / non-monotonic / same-cadence PTS).
-    It carries no track and no score; ``missing_values['decision_state']``
-    names the gap for any module.
-    """
     snapshot = DecisionTraceSnapshot(
         reason=str(DecisionTraceReason.SCORE_MISSING),
         previous_state=str(DecisionTraceState.NOT_EVALUATED),
@@ -238,8 +215,6 @@ def policy_coast_record(
         triggered=False,
         track_id=None,
         bed_id=None,
-        # Module-neutral: the gap is about the decision as a whole, not any
-        # domain's score field, so a coasting non-fall module would not lie.
         missing_values={"decision_state": str(DecisionTraceMissingReason.RESAMPLE_GAP)},
     )
     return make_record(

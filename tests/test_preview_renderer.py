@@ -1,5 +1,3 @@
-"""Pixel-level contracts for the CPU live-preview renderer."""
-
 from __future__ import annotations
 
 import io
@@ -53,10 +51,7 @@ def test_person_box_scales_from_source_pixels_and_cjk_label_has_ink(
         )
     )
 
-    # Source x=25 and y=25 scale independently into a 320x180 JPEG.
     assert rendered[45, 80, 1] > 100
-    # The label background sits above the box; bright text pixels prove the
-    # Korean glyphs were actually rasterized rather than omitted.
     label = rendered[20:45, 80:220]
     assert int(np.count_nonzero(np.all(label > 210, axis=2))) > 8
 
@@ -124,7 +119,6 @@ def test_four_persisted_beds_are_all_drawn(renderer: PreviewRenderer, jpeg: byte
 
     rendered = _pixels(renderer.render(jpeg, OverlaySelection(False, True), (), beds, {}))
 
-    # Each source polygon's top-left outline is independently scaled and drawn.
     for x in (16, 96, 176, 256):
         pixel = rendered[18, x]
         assert pixel[0] > 80

@@ -1,5 +1,3 @@
-"""Flow Smart Record admission and sealed-clip completion binding."""
-
 from __future__ import annotations
 
 import logging
@@ -25,8 +23,6 @@ LOGGER = logging.getLogger(__name__)
 
 
 class FlowEvidenceStager(Protocol):
-    """The durable methods required by the Flow evidence bridge."""
-
     def stage(self, event: dict[str, object]) -> AdmissionResult: ...
 
     def complete(self, edge_event_id: str, clip_id: str | None) -> None: ...
@@ -34,14 +30,6 @@ class FlowEvidenceStager(Protocol):
 
 @dataclass(slots=True)
 class FlowEvidenceBinding:
-    """Stage admitted alerts and complete every Smart Record contributor together.
-
-    Flow cannot claim a clip at admission: the recorder assigns one only after
-    the Smart Record callback seals the shared recording.  Keeping contributor
-    references on the actor-owned clip makes a single sealed receipt complete
-    all incidents that extended that recording.
-    """
-
     actor: SmartRecordActor
     stager: FlowEvidenceStager
     publisher: FlowClipPublisher
@@ -112,7 +100,6 @@ class FlowEvidenceBinding:
         self.actor.admit(event_ref, detected_at)
 
     def on_sealed(self, sealed: ClipSealed) -> None:
-        """Publish before completing every incident bound to the shared clip."""
         sidecar_path = self.sidecars.persist(sealed, self._events)
         recovery = FlowSealedRecovery(sealed, dict(self._events), self.camera_id, sidecar_path)
         self._publish_recovery(recovery)
@@ -120,12 +107,6 @@ class FlowEvidenceBinding:
             del self._events[contributor.event_ref]
 
     def replay_sealed(self) -> None:
-        """Retry sealed clips before Flow activates any camera sources.
-
-        Each sidecar is isolated: a clip this replay cannot safely resume (a
-        genuine identity mismatch, or any other publish failure) is logged and
-        left in place rather than aborting every other sidecar queued behind it.
-        """
         for recovery in self.sidecars.pending_for_camera(self.camera_id):
             media_path = Path(recovery.sealed.path)
             if not media_path.is_file():
@@ -151,22 +132,10 @@ class FlowEvidenceBinding:
         published = self.publisher.publish(recovery.sealed, recovery.events)
         for contributor in recovery.sealed.contributors:
             self.stager.complete(contributor.event_ref, str(published.clip_id))
-        # ponytail: publish is idempotent (FlowClipPublisher resumes from the
-        # existing manifest on a collision) and replay_sealed() isolates each
-        # sidecar, so retiring here is just cleanup -- a crash before this line
-        # leaves a sidecar that the next replay_sealed() resumes and retires.
         self.sidecars.remove(recovery)
 
 
 def _admission_from_stage_result(result: object) -> tuple[bool, str | None]:
-    """Read try_admit proof from a stager return.
-
-    The stager contract is ``stage() -> AdmissionResult``. Only a real
-    ``AdmissionResult`` with ``accepted`` True proves admission; anything else
-    (``None``, a duck with an ``accepted`` attribute, an unrelated object) is an
-    unproven admission and is recorded as refused. An "admitted" record must
-    never be emitted without the queue's own proof.
-    """
     if not isinstance(result, AdmissionResult):
         return False, f"unproven-admission:{type(result).__name__}"
     reason = None if result.fault is None else str(result.fault)

@@ -1,5 +1,3 @@
-"""Crash-resumable publication of re-encoded derivative clips."""
-
 from __future__ import annotations
 
 import hashlib
@@ -95,7 +93,7 @@ class ClipPublisher:
                 reservation.final_dir / "thumbnail.jpg",
                 metadata.duration_s,
             )
-        except Exception as exc:  # noqa: BLE001 - a thumbnail failure must not block the clip
+        except Exception as exc:  # noqa: BLE001
             LOGGER.warning(
                 "thumbnail generation failed stage=thumbnail clip_id=%s exception_class=%s",
                 reservation.clip_id,
@@ -143,7 +141,7 @@ class ClipPublisher:
                     duration_ms=manifest.duration_ms,
                 )
             )
-        except Exception as exc:  # noqa: BLE001 - analysis admission cannot undo publication
+        except Exception as exc:  # noqa: BLE001
             LOGGER.warning(
                 "clip analysis ready hook failed stage=clip_analysis_ready "
                 "clip_id=%s exception_class=%s",
@@ -158,13 +156,6 @@ class ClipPublisher:
         source_path: Path,
         metadata: ClipPublicationMetadata,
     ) -> PublishedClip:
-        """Copy externally-recorded media into store staging before publication.
-
-        Smart Record owns its output path, which can be on another filesystem.
-        Copying and fsyncing under the reserved staging directory makes the
-        subsequent publication rename local and atomic without consuming the
-        plane-owned source until a complete manifest exists.
-        """
         if not source_path.is_file():
             raise ClipPublicationConflictError(reservation.clip_id, "recorded media is missing")
         adopted = reservation.staging_dir / "adopted.mp4"
@@ -391,14 +382,6 @@ def _source_dimension(source_media: dict[str, JsonValue] | None, dimension: str)
 
 
 def _adopt_media(source_path: Path, destination: Path) -> None:
-    """Copy adopted media into staging as a faststart MP4.
-
-    DeepStream's Smart Record writes the moov atom last, but the evidence
-    contract requires faststart so a player can start without the whole file.
-    Remux (stream copy, no re-encode, so no NVENC session) when a remuxer is
-    available and fall back to a plain copy, which the media inspection then
-    rejects as CORRUPT rather than publishing something unplayable.
-    """
     remuxer = shutil.which("ffmpeg")
     if remuxer is not None:
         result = subprocess.run(
@@ -413,8 +396,6 @@ def _adopt_media(source_path: Path, destination: Path) -> None:
                 "copy",
                 "-movflags",
                 "+faststart",
-                # The staging name ends in .tmp, so ffmpeg cannot infer the
-                # container from the extension and must be told.
                 "-f",
                 "mp4",
                 "-y",

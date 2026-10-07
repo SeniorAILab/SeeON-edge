@@ -1,5 +1,3 @@
-"""Load a verified SQLite snapshot into an empty product schema in one transaction."""
-
 from __future__ import annotations
 
 import sqlite3
@@ -31,7 +29,6 @@ from backend.app.edge_db.migration.reconcile import (
 from backend.app.edge_db.migration.snapshot import open_snapshot, snapshot_sha256
 from backend.app.edge_db.postgres import PostgresDatabase
 
-# Tables the import fills; provisioning owns the ledger and the fenced authority row.
 _PROVISIONED: Final = frozenset({"schema_migrations", "deployment_authority"})
 _PYTHON_TYPES: Final = {"bigint": int, "text": str, "bytea": bytes, "double precision": float}
 
@@ -46,7 +43,6 @@ class ImportResult:
 def import_snapshot(
     database: PostgresDatabase, *, schema: str, snapshot_path: Path
 ) -> ImportResult:
-    """Copy every migrated table, verify it and stamp the ledger, or change nothing."""
     require_identifier(schema, "schema")
     source_sha256 = snapshot_sha256(snapshot_path)
     with closing(open_snapshot(snapshot_path)) as snapshot:
@@ -87,7 +83,6 @@ def import_snapshot(
 
 
 def lock_all(connection: psycopg.Connection, schema: str) -> None:
-    # Every product table, so no runtime can read a half-loaded schema.
     connection.execute(
         sql.SQL("LOCK TABLE {} IN ACCESS EXCLUSIVE MODE").format(
             sql.SQL(", ").join(
@@ -154,7 +149,6 @@ def _copy(
         for row in rows:
             for name, kind, value in zip(mapping.column_names, kinds, row, strict=True):
                 if value is not None and type(value) is not kind:
-                    # Name the column only; the value may be resident data.
                     raise MigrationError(f"{mapping.name}.{name} holds a value of another type")
             copy.write_row(row)
             count += 1

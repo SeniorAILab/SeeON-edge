@@ -1,9 +1,3 @@
-"""RED/GREEN contract for worker-internal PerceptionFrameV1.
-
-Imports stay inside helpers so a missing module fails as an assertion, not as
-a collection-time ImportError from a typo.
-"""
-
 from __future__ import annotations
 
 import importlib

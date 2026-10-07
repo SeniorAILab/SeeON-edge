@@ -1,5 +1,3 @@
-"""Controller-owned runtime settings injection."""
-
 from fastapi import FastAPI
 
 from backend.app.features.runtime_settings.store import RuntimeSettingsStore

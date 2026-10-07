@@ -1,4 +1,14 @@
-"""Per-track continuity statistics from a worker replay trace (`/traces/*.jsonl`).
+from __future__ import annotations
+
+import argparse
+import collections
+import json
+import os
+import statistics
+from itertools import pairwise
+from pathlib import Path
+
+_DESCRIPTION = """Per-track continuity statistics from a worker replay trace (`/traces/*.jsonl`).
 
 Diagnostic only. Answers "are tracked people observed on consecutive frames?"
 without touching production: presence ratio per NvDCF id, gap histogram between
@@ -10,16 +20,6 @@ object rows on one seq parity.
 Usage:
     python scripts/qa/trace_continuity.py /tmp/p1b-flow/traces/<trace>.jsonl [--last-rows 27000]
 """
-
-from __future__ import annotations
-
-import argparse
-import collections
-import json
-import os
-import statistics
-from itertools import pairwise
-from pathlib import Path
 
 
 def analyze(path: Path, *, last_rows: int | None, tail_bytes: int) -> dict[str, object]:
@@ -76,7 +76,7 @@ def analyze(path: Path, *, last_rows: int | None, tail_bytes: int) -> dict[str, 
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=_DESCRIPTION)
     parser.add_argument("trace", type=Path, nargs="+")
     parser.add_argument("--last-rows", type=int, default=None, help="analyze only the last N rows")
     parser.add_argument("--tail-bytes", type=int, default=60_000_000)

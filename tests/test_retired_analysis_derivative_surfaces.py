@@ -1,5 +1,3 @@
-"""Task 12: retired analysis/derivative/label surfaces are absent."""
-
 from __future__ import annotations
 
 import ast
@@ -26,8 +24,6 @@ RETIRED_ROUTE_PATHS = frozenset(
         "/api/v1/relay/analysis-traces",
     }
 )
-# These worker-backed routes inject a real supervisor, preserve original clip
-# bytes, and serve an identity-bound artifact; they are not sidecar derivatives.
 CLIP_REANALYSIS_ROUTE_PATHS = frozenset(
     {
         "/api/v1/clips/{clip_id}/analysis",
@@ -69,8 +65,6 @@ RETIRED_PRODUCTION_NAMES = frozenset(
         "derivative_state",
     }
 )
-# The real supervisor writes an identity-bound artifact without changing the
-# original bytes, so these clip-reanalysis symbols are not retired sidecar APIs.
 CLIP_REANALYSIS_PRODUCTION_NAMES = frozenset(
     {
         "ClipAnalysisResponse",

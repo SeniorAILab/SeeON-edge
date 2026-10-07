@@ -1,17 +1,3 @@
-"""Metric sampling and JSON assembly for the recorded-stream fan-out benchmark.
-
-Everything here reads *observable worker state* -- ``WorkerDiagnostics.snapshot()``
-(per-camera bus counters and stage-timing accumulators), ``InferenceWatchdog.in_flight()``
-(deadline margin), and ``nvidia-smi`` (GPU/NVDEC utilization). Nothing is
-synthesized: a field that has no real observation is emitted as ``null`` and the
-run records why, so a bench JSON can never look healthy on defaults.
-
-Pose forward latency percentiles are collected separately, by the harness's
-timing proxy around the serving client's pose runner (``fanout_benchmark_harness``),
-because ``StageTimingAccumulator`` keeps only samples/total/last/max -- no
-distribution -- and this benchmark's #312 gate is p95, not the mean.
-"""
-
 from __future__ import annotations
 
 import json
@@ -29,8 +15,6 @@ from typing import Any, Final, final
 _NVIDIA_SMI_QUERY = "utilization.gpu,utilization.decoder,memory.used"
 _NVIDIA_SMI_TIMEOUT_SEC = 5.0
 _LANES = ("inference", "live", "evidence")
-# A silent latest-only drop that stays under this fraction of admitted frames
-# is treated as jitter, not saturation. Anything above it cannot be ACHIEVABLE.
 _ACHIEVABLE_OVERWRITE_FRACTION: Final = 0.01
 _ACHIEVABLE_FPS_FRACTION: Final = 0.90
 _MARGINAL_FPS_FRACTION: Final = 0.80
@@ -48,8 +32,6 @@ class BusLaneCounters:
 
 @dataclass(slots=True)
 class CameraSample:
-    """One camera's counters at one sampling instant."""
-
     camera_id: str
     at_sec: float
     lanes: dict[str, BusLaneCounters]
@@ -59,9 +41,6 @@ class CameraSample:
     pump_failures: int = 0
     pump_processed: int = 0
     decode_backend: str | None = None
-    # Coordinator latest-only overwrite count for this camera. Distinct from
-    # the bus ``dropped`` counter: the coordinator reads the same field but
-    # this is the value the capacity verdict must cite (todo 13).
     overwritten: int = 0
 
 
@@ -71,10 +50,6 @@ class RunSample:
     cameras: tuple[CameraSample, ...]
     watchdog_margin_sec: float | None
     gpu: dict[str, float] | None
-    # Cross-camera coordinator telemetry (worker/pipeline/inference_coordinator.py):
-    # cumulative batch-size histogram plus the coordinator's own forward
-    # percentiles, both read straight off ``diagnostics.snapshot()``. Empty when
-    # no coordinator is registered (i.e. the pre-Wave-3 serialized topology).
     batch_sizes: dict[int, int] = field(default_factory=dict)
     coordinator_forward_p50_sec: float = 0.0
     coordinator_forward_p95_sec: float = 0.0
@@ -82,7 +57,6 @@ class RunSample:
 
 
 def sample_gpu() -> dict[str, float] | None:
-    """One ``nvidia-smi`` reading, or ``None`` when the tool is unavailable."""
     binary = shutil.which("nvidia-smi")
     if binary is None:
         return None
@@ -114,12 +88,6 @@ def sample_gpu() -> dict[str, float] | None:
 
 
 def watchdog_margin_sec(watchdog: Any) -> float | None:
-    """Smallest remaining budget across in-flight forwards; ``None`` when idle.
-
-    ``None`` is a truthful "no forward was in flight at this instant", not a
-    placeholder -- the run-level margin below reduces over every sample that
-    did observe one.
-    """
     if watchdog is None:
         return None
     in_flight = watchdog.in_flight()
@@ -131,16 +99,6 @@ def watchdog_margin_sec(watchdog: Any) -> float | None:
 
 @final
 class StallWatcher:
-    """Sub-second watcher for gaps in cross-camera inference progress.
-
-    The document's 2s sampling cadence cannot resolve the plan's "zero stalls
-    > 2s" gate -- two adjacent samples straddling a 3s freeze look identical to
-    two adjacent samples with steady progress. This polls the aggregate
-    ``inference.taken`` counter on its own thread at ``interval_sec`` and keeps
-    the longest wall-clock gap between two observed advances. It reads the same
-    live bus counters as the sampler; nothing here is synthesized.
-    """
-
     def __init__(
         self,
         total_taken: Callable[[], int],
@@ -184,7 +142,6 @@ class StallWatcher:
                 if gap > self._stall_threshold_sec:
                     self._stalls.append({"at_sec": now, "gap_sec": gap})
             last_value, last_advance_at = value, now
-        # The tail: a freeze that never resolved before shutdown is still a stall.
         trailing = monotonic() - last_advance_at
         with self._lock:
             self._max_gap_sec = max(self._max_gap_sec, trailing)
@@ -204,12 +161,6 @@ class StallWatcher:
 
 
 def take_sample(diagnostics: Any, watchdog: Any, pumps: Any = ()) -> RunSample:
-    """One instant's reading of every observable counter.
-
-    ``pumps`` are the runtime's per-camera ``CameraPipelinePump`` objects; their
-    ``failure_count`` is sampled so a pipeline that raises on every frame cannot
-    publish a JSON that only shows healthy bus traffic.
-    """
     snapshot = diagnostics.snapshot()
     by_camera = {getattr(pump, "camera_id", ""): pump for pump in pumps}
     cameras = tuple(
@@ -246,11 +197,6 @@ def take_sample(diagnostics: Any, watchdog: Any, pumps: Any = ()) -> RunSample:
 
 
 def _decode_backend_name(camera: Any) -> str | None:
-    """``requested -> resolved (adapter class)`` for one camera, or ``None``.
-
-    Requested and resolved are both kept: the plan's ADR-0002 guardrail is a
-    silent downgrade, which only shows up as a mismatch between the two.
-    """
     backend = getattr(camera, "decode_backend", None)
     if backend is None:
         return None
@@ -263,12 +209,6 @@ def _decode_backend_name(camera: Any) -> str | None:
 
 
 def _coordinator_overwritten(camera: Any) -> int:
-    """Read ``CameraInferenceTelemetry.overwritten`` off one diagnostics camera.
-
-    The coordinator publishes this as the latest-only drop count. A missing
-    ``inference`` object (pre-coordinator topology) is reported as 0, never as
-    a fabricated healthy-looking None that a verdict could misread.
-    """
     inference = getattr(camera, "inference", None)
     if inference is None:
         return 0
@@ -284,12 +224,6 @@ def _sample_loadavg() -> tuple[float, float, float] | None:
 
 
 def _coordinator_fields(snapshot: Any) -> dict[str, Any]:
-    """Read the coordinator's cumulative batch histogram off any camera view.
-
-    ``RuntimeDiagnostics.snapshot()`` copies the single coordinator's telemetry
-    onto every camera entry, so the first camera carrying a non-empty histogram
-    is the coordinator's own state, not a per-camera value.
-    """
     for camera in getattr(snapshot, "cameras", ()):
         sizes = getattr(camera, "batch_sizes", ())
         if sizes:
@@ -315,8 +249,6 @@ def _rate(first: int, last: int, elapsed_sec: float) -> float | None:
 
 @final
 class RunMetrics:
-    """Reduce a series of samples into the bench JSON document."""
-
     def __init__(self) -> None:
         self._samples: list[RunSample] = []
         self.pose_latencies_ms: list[float] = []
@@ -332,11 +264,6 @@ class RunMetrics:
         return tuple(self._samples)
 
     def counter_advanced(self) -> bool:
-        """True when any lane counter moved between the first and last sample.
-
-        The misleading-success guard: a bench JSON whose numbers came from
-        dataclass defaults rather than a live worker cannot satisfy this.
-        """
         if len(self._samples) < 2:
             return False
         first, last = self._samples[0], self._samples[-1]
@@ -406,12 +333,6 @@ class RunMetrics:
         return result
 
     def _batch_size_histogram(self) -> dict[str, int]:
-        """Batch sizes issued inside the measurement window (last minus first).
-
-        The coordinator's counter is cumulative from process start, so warmup
-        forwards (batch size 1, before every camera is publishing) would
-        otherwise be charged to the steady-state window.
-        """
         if len(self._samples) < 2:
             return {}
         first, last = self._samples[0].batch_sizes, self._samples[-1].batch_sizes
@@ -544,7 +465,6 @@ class RunMetrics:
 
 
 def _offered_fps(header: dict[str, Any]) -> float | None:
-    """Prefer the operator-declared offered rate over the recorded-clip fps."""
     for key in ("offered_fps", "camera_fps"):
         value = header.get(key)
         if value is not None:
@@ -560,13 +480,6 @@ def capacity_verdict(
     achievable_fps_fraction: float = _ACHIEVABLE_FPS_FRACTION,
     marginal_fps_fraction: float = _MARGINAL_FPS_FRACTION,
 ) -> dict[str, Any]:
-    """Classify a measured fan-out as ACHIEVABLE, MARGINAL, or NOT.
-
-    The gate that prevents a silent latest-only drop from looking healthy is
-    ``overwritten``: a camera can keep publishing at the offered rate while
-    the coordinator overwrites unread frames. Bus ``dropped`` alone is not
-    enough -- that is why this function reads the coordinator field.
-    """
     if not cameras or target_fps is None or float(target_fps) <= 0:
         return {
             "verdict": "NOT",
@@ -586,9 +499,6 @@ def capacity_verdict(
         int(camera.get("bus", {}).get("inference", {}).get("published", 0))
         for camera in cameras.values()
     )
-    # Coordinator overwritten is the latest-only drop count. Denominator is
-    # frames the ingest path offered (published), not taken+overwritten: the
-    # two counters can overlap and would understate the drop rate.
     offered = published_total if published_total > 0 else overwritten_total
     overwrite_fraction = None if offered <= 0 else overwritten_total / offered
     min_fps = min(admitted) if admitted else 0.0
@@ -631,11 +541,6 @@ def capacity_verdict(
 
 
 def write_document(path: Path, document: dict[str, Any]) -> Path:
-    """Write one bench JSON, replacing any previous content at ``path``.
-
-    Deliberately a whole-file write (never an append): rerunning the same N
-    must publish the new run's numbers, not accumulate stale ones.
-    """
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path

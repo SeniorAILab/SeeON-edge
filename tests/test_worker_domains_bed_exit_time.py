@@ -98,7 +98,6 @@ def test_cross_midnight_and_daytime_gate_use_injected_clock(
     minute: int,
     expected_count: int,
 ) -> None:
-    # Given
     fixed = datetime(2026, 7, 31, hour, minute, tzinfo=ZoneInfo("Asia/Seoul"))
     clock_calls = 0
 
@@ -111,29 +110,23 @@ def test_cross_midnight_and_daytime_gate_use_injected_clock(
     _ = monitor.update(_decision_input(IN_BED, BED, 0))
     _ = monitor.update(_decision_input(IN_BED, BED, 1, bed_pose_features=_lying_pose()))
 
-    # When
     events = monitor.update(_decision_input(OUTSIDE, BED, 2))
 
-    # Then
     assert len(events) == expected_count
     assert clock_calls > 0
 
 
 def test_night_window_rejects_naive_wall_clock() -> None:
-    # Given
     window = bed_exit.NightWindow(start="21:00", end="05:00", tz="Asia/Seoul")
 
-    # When / Then
     with pytest.raises(ValueError, match="timezone-aware"):
         _ = window.contains(datetime(2026, 7, 31, 22, 0))
 
 
 def test_bed_exit_latch_tracks_observation_freshness() -> None:
-    # Given
     now = 0.0
     latch = bed_exit.BedExitLatch(clock=lambda: now, stale_after_sec=3.0)
 
-    # When
     initially = latch.status_snapshot
     latch.update()
     now = 2.0
@@ -142,7 +135,6 @@ def test_bed_exit_latch_tracks_observation_freshness() -> None:
     now = 3.0
     stale = latch.status_snapshot
 
-    # Then
     assert initially.stale is True
     assert fresh.stale is False
     assert fresh.observation_age_sec == 2.0
@@ -151,25 +143,12 @@ def test_bed_exit_latch_tracks_observation_freshness() -> None:
 
 
 def test_night_window_outside_still_populates_debug_snapshot_for_overlay() -> None:
-    """Overlay must keep rendering ``bed:exit`` outside the night window.
-
-    Source of truth is failure class ④ in
-    ``docs/runbooks/post-redeploy-event-readout.md``: ``last_debug_snapshot``
-    is filled *before* the night-window gate, and the overlay draws
-    ``statuses[].occupancy`` with no extra gate, so ``bed:exit`` still
-    flashes when no ``BusinessEvent`` is emitted. ``DESIGN.md`` only says
-    the overlay label is occupancy from the debug snapshot; it does not
-    record this gate-ordering.
-    """
-    # Given
     monitor = _night_monitor(_clock_at(13))
     assert monitor.update(_decision_input(IN_BED, BED, 0)) == ()
     assert monitor.update(_decision_input(IN_BED, BED, 1, bed_pose_features=_lying_pose())) == ()
 
-    # When
     events = monitor.update(_decision_input(OUTSIDE, BED, 2))
 
-    # Then
     assert events == ()
     snapshot = monitor.last_debug_snapshot
     assert snapshot is not None
@@ -178,17 +157,6 @@ def test_night_window_outside_still_populates_debug_snapshot_for_overlay() -> No
 
 
 def test_night_window_does_not_consume_a_daytime_episode_onset() -> None:
-    """A boundary exit must remain available once the clock enters the window.
-
-    Suppression must happen before the episode authority receives the onset.
-    Note: the raw ``triggered`` computation still unconditionally clears the
-    assignment's armed/dwell state inside ``_update_frame`` -- before the
-    night-window gate is even checked -- so the daytime attempt below
-    consumes its own arm latch even though it is suppressed; the in-window
-    attempt needs its own fresh arm cycle (frames 3-4), not a carried-over
-    one.
-    """
-    # Given
     now = datetime(2026, 7, 31, 13, 0, tzinfo=SEOUL)
 
     def clock() -> datetime:
@@ -198,19 +166,15 @@ def test_night_window_does_not_consume_a_daytime_episode_onset() -> None:
     assert monitor.update(_decision_input(IN_BED, BED, 0)) == ()
     assert monitor.update(_decision_input(IN_BED, BED, 1, bed_pose_features=_lying_pose())) == ()
 
-    # When: confirmed (raw) exit outside the window
     daytime_events = monitor.update(_decision_input(OUTSIDE, BED, 2))
 
-    # Then: suppressed, and no episode onset has been emitted
     assert daytime_events == ()
 
-    # When: the same person/bed pair re-arms and exits again inside the window
     now = datetime(2026, 7, 31, 22, 0, tzinfo=SEOUL)
     assert monitor.update(_decision_input(IN_BED, BED, 3)) == ()
     assert monitor.update(_decision_input(IN_BED, BED, 4, bed_pose_features=_lying_pose())) == ()
     night_events = monitor.update(_decision_input(OUTSIDE, BED, 5))
 
-    # Then
     assert night_events == (
         BusinessEvent(
             domain="bed_exit",
@@ -227,13 +191,6 @@ def test_night_window_does_not_consume_a_daytime_episode_onset() -> None:
 
 
 def test_night_window_suppressed_onset_does_not_poison_later_in_window_exit() -> None:
-    """A gated onset must not leave the authority holding the episode open.
-
-    As in the sibling test above, the suppressed daytime trigger still
-    clears the assignment's arm latch internally, so the in-window attempt
-    needs its own fresh arm cycle.
-    """
-    # Given
     now = datetime(2026, 7, 31, 13, 0, tzinfo=SEOUL)
 
     def clock() -> datetime:
@@ -244,13 +201,11 @@ def test_night_window_suppressed_onset_does_not_poison_later_in_window_exit() ->
     assert monitor.update(_decision_input(IN_BED, BED, 1, bed_pose_features=_lying_pose())) == ()
     assert monitor.update(_decision_input(OUTSIDE, BED, 2)) == ()
 
-    # When: re-assign, re-arm, and exit after the window opens
     now = datetime(2026, 7, 31, 22, 0, tzinfo=SEOUL)
     assert monitor.update(_decision_input(IN_BED, BED, 3)) == ()
     assert monitor.update(_decision_input(IN_BED, BED, 4, bed_pose_features=_lying_pose())) == ()
     events = monitor.update(_decision_input(OUTSIDE, BED, 5))
 
-    # Then
     assert len(events) == 1
     assert events[0].event_type == "bed-exit"
     assert events[0].person_id == PERSON_ID
@@ -258,33 +213,17 @@ def test_night_window_suppressed_onset_does_not_poison_later_in_window_exit() ->
 
 
 def test_none_time_sec_frame_neither_advances_dwell_nor_emits() -> None:
-    """A frame with unresolved pts must coast, never fabricate a timestamp.
-
-    Finding #1: ``policy_pump`` previously collapsed a missing ``source_pts``
-    to ``0.0`` before it ever reached the detector's ``time_missing`` guard,
-    corrupting the dwell math below. This proves the guard itself is correct
-    once a real ``None`` reaches it: the gap frame contributes zero elapsed
-    time and does not move the dwell anchor, so the next real frame still
-    spans the true wall-clock gap rather than the corrupted one a fabricated
-    ``0.0`` would have produced.
-    """
-    # Given: armed after two in-bed, lying frames one second apart. Uses a
-    # clock inside the night window so a real exit is not itself suppressed.
     monitor = _night_monitor(_clock_at(22), in_bed_dwell_sec=1.0, outside_dwell_sec=3.0)
     assert monitor.update(_decision_input(IN_BED, BED, 0)) == ()
     assert monitor.update(_decision_input(IN_BED, BED, 1, bed_pose_features=_lying_pose())) == ()
 
-    # When: 1.0s of real outside evidence, well short of the 3.0s threshold.
     assert monitor.update(_decision_input(OUTSIDE, BED, 2)) == ()
     assert monitor._assignments[PERSON_ID].outside_dwell_sec == pytest.approx(1.0)
 
-    # A gap frame with no resolved pts: must not advance dwell or emit.
     gap = replace(_decision_input(OUTSIDE, BED, 3), time_sec=None)
     assert monitor.update(gap) == ()
     assert monitor._assignments[PERSON_ID].outside_dwell_sec == pytest.approx(1.0)
 
-    # Then: the next real frame spans the true 2.0s gap since t=2 (not since
-    # the gap frame), reaching exactly 3.0s and firing once.
     events = monitor.update(_decision_input(OUTSIDE, BED, 4))
     assert len(events) == 1
     assert events[0].event_type == "bed-exit"

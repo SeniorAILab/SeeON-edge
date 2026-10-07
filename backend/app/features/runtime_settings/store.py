@@ -1,9 +1,3 @@
-"""Central/export settings on the API-owned PostgreSQL pool.
-
-The export control does not disable local clip recording. Bootstrap owns the
-site singleton; lifespan owns the pool and injects this store.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -37,8 +31,6 @@ class RuntimeSettingsVersionConflict(RuntimeError):
 
 
 class RuntimeSettingsStore:
-    """Borrow transactions only; pool lifecycle belongs to the API."""
-
     def __init__(self, database: PostgresDatabase, authority: AuthorityToken) -> None:
         self.database = database
         self.authority = authority
@@ -71,7 +63,6 @@ class RuntimeSettingsStore:
                 after_write(connection)
             return setting
 
-        # Release only this transaction's candidate after known COMMIT and pool return.
         return self.database.transact(persist)
 
 

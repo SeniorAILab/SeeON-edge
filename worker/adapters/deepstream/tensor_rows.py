@@ -1,5 +1,3 @@
-"""Host copies of the fixed-shape pose output tensor."""
-
 from __future__ import annotations
 
 import ctypes
@@ -71,7 +69,6 @@ def host_array_from_tensor(
     *,
     cudart: CudaRuntime | None = None,
 ) -> NDArray[Any]:
-    """Copy a DLPack tensor to owned host memory without requiring Torch."""
     if isinstance(tensor, np.ndarray):
         return tensor.copy()
 
@@ -101,9 +98,6 @@ def host_array_from_tensor(
     shape = tuple(int(dl_tensor.shape[index]) for index in range(dl_tensor.ndim))
     strides = _element_strides(dl_tensor, shape)
     source = int(dl_tensor.data) + int(dl_tensor.byte_offset)
-    # A DeepStream frame surface pads each row: a (360, 640, 3) uint8 frame
-    # reports strides (2048, 3, 1) for 1920 used elements per row. Copy the
-    # padded extent flat, then slice the logical row out of each padded row.
     element_count = _padded_element_count(shape, strides)
     flat = np.empty(element_count, dtype=dtype)
     if dl_tensor.device.device_type == _CPU_DEVICE_TYPE:
@@ -118,7 +112,6 @@ def host_array_from_tensor(
 
 
 def _padded_element_count(shape: tuple[int, ...], strides: tuple[int, ...]) -> int:
-    """Elements spanned by the tensor including any inter-row padding."""
     if not shape:
         return 1
     return int(shape[0]) * int(strides[0])
@@ -127,7 +120,6 @@ def _padded_element_count(shape: tuple[int, ...], strides: tuple[int, ...]) -> i
 def _logical_view(
     flat: NDArray[Any], shape: tuple[int, ...], strides: tuple[int, ...]
 ) -> NDArray[Any]:
-    """Drop row padding and return an owned array of the logical shape."""
     row_elements = 1
     for extent in shape[1:]:
         row_elements *= int(extent)
@@ -139,7 +131,6 @@ def _logical_view(
 
 
 def _element_strides(dl_tensor: Any, shape: tuple[int, ...]) -> tuple[int, ...]:
-    """Strides in elements; DLPack may report none, meaning tightly packed."""
     if not dl_tensor.strides:
         packed: list[int] = []
         running = 1
@@ -155,11 +146,6 @@ def rows_from_tensor(
     *,
     cudart: CudaRuntime | None = None,
 ) -> NDArray[np.float32]:
-    """Return the tensor's ``[N,57]`` rows as an owned host float32 array.
-
-    A NumPy input is an intentional host seam for tests.  Vendor tensors expose
-    DLPack and are copied with cudart only when their device is not CPU.
-    """
     if isinstance(tensor, np.ndarray):
         rows = np.asarray(tensor, dtype=np.float32)
         if rows.ndim != 2 or rows.shape[1] != _ROW_WIDTH:

@@ -1,5 +1,3 @@
-"""ExecutionRecordStore semantics against the real diagnostics PostgreSQL schema."""
-
 from __future__ import annotations
 
 import hashlib
@@ -355,16 +353,10 @@ def test_two_late_acks_in_one_batch_share_the_late_unit(
 def test_availability_is_a_span_between_contiguous_records_not_instants(
     postgres_diagnostics_sandbox: DiagnosticsSandbox,
 ) -> None:
-    """Live rollout regression: a 120 s window with ~3,000 records painted
-    10,241 ranges - each record a zero-length AVAILABLE with UNKNOWN between
-    neighbours 3 ms apart. Adjacent producer_sequence in one lane proves nothing
-    was lost between two records, so the interval is AVAILABLE. A sequence
-    discontinuity without a gap row, or a lane boundary, ends the span."""
     store = _store(postgres_diagnostics_sandbox)
     contiguous = tuple(
         _record(label=f"s{index}", seq=index, observed=1_000 + index * 33) for index in range(5)
     )
-    # seq 5 is missing and no gap row was reported: 6 starts a new span.
     resumed = tuple(
         _record(label=f"r{index}", seq=index, observed=1_000 + index * 33) for index in (6, 7)
     )
@@ -373,11 +365,11 @@ def test_availability_is_a_span_between_contiguous_records_not_instants(
     page = store.query(CAMERA, 900, 1_400, limit=10)
     painted = [(item.kind, item.from_ns, item.to_ns) for item in page.availability]
     assert len(painted) <= 5, painted
-    assert painted[0][0] is AvailabilityKind.UNKNOWN  # before the earliest evidence
+    assert painted[0][0] is AvailabilityKind.UNKNOWN
     available = [item for item in page.availability if item.kind is AvailabilityKind.AVAILABLE]
     assert [(item.from_ns, item.to_ns) for item in available] == [
-        (1_000, 1_000 + 4 * 33),  # seq 0..4 as ONE span
-        (1_000 + 6 * 33, 1_000 + 7 * 33),  # seq 6..7
+        (1_000, 1_000 + 4 * 33),
+        (1_000 + 6 * 33, 1_000 + 7 * 33),
     ]
     between = [
         item
@@ -390,9 +382,6 @@ def test_availability_is_a_span_between_contiguous_records_not_instants(
 def test_availability_lane_boundary_ends_a_span(
     postgres_diagnostics_sandbox: DiagnosticsSandbox,
 ) -> None:
-    """A new boot restarts producer_sequence at 0; that boundary is not proof of
-    continuity even when the timestamps abut, so the two boots are two spans
-    (they may still merge if their time ranges touch, which is honest)."""
     store = _store(postgres_diagnostics_sandbox)
     first_boot = tuple(
         _record(label=f"a{index}", seq=index, observed=1_000 + index * 10, boot="boot-a")
@@ -427,9 +416,6 @@ def _unit_states(diag: DiagnosticsSandbox) -> dict[str, tuple[int, str]]:
 def test_issue577_dense_consecutive_units_close_on_observed_watermark(
     postgres_diagnostics_sandbox: DiagnosticsSandbox,
 ) -> None:
-    """Successor gaps of 1 ns must not keep a unit open after the lane watermark
-    is more than a horizon past its last observation. The immediate-successor
-    test leaves dense-0 open; the tail inside the horizon stays open."""
     horizon = 1_000
     diag = postgres_diagnostics_sandbox
     store = _store(diag, horizon_ns=horizon)
@@ -455,9 +441,6 @@ def test_issue577_dense_consecutive_units_close_on_observed_watermark(
 def test_issue577_active_unit_stays_open_until_last_observed_passes_horizon(
     postgres_diagnostics_sandbox: DiagnosticsSandbox,
 ) -> None:
-    """A unit whose first observation is older than the horizon is still in
-    flight when its last observation is the lane watermark. Closing it from
-    first_observed_ns would claim COMPLETE while records are still arriving."""
     horizon = 1_000
     diag = postgres_diagnostics_sandbox
     store = _store(diag, horizon_ns=horizon)
@@ -479,9 +462,6 @@ def test_issue577_active_unit_stays_open_until_last_observed_passes_horizon(
 def test_issue577_opaque_uuid_boot_does_not_decide_terminal_order(
     postgres_diagnostics_sandbox: DiagnosticsSandbox,
 ) -> None:
-    """The live boot id sorts first. It stays open. The dead boot's dense early
-    unit is COMPLETE from that boot's own watermark, and its tail is unknown
-    rather than a fabricated complete claim."""
     horizon = 1_000
     live_boot, dead_boot = "11111111-live", "ffffffff-dead"
     assert live_boot < dead_boot
@@ -516,8 +496,6 @@ def test_issue577_opaque_uuid_boot_does_not_decide_terminal_order(
 def test_issue577_generation_watermark_does_not_close_another_generation(
     postgres_diagnostics_sandbox: DiagnosticsSandbox,
 ) -> None:
-    """Generation 0's watermark completes its own dense units and does not
-    terminal a unit that only exists on generation 9."""
     horizon = 1_000
     diag = postgres_diagnostics_sandbox
     store = _store(diag, horizon_ns=horizon)
@@ -543,9 +521,6 @@ def test_issue577_generation_watermark_does_not_close_another_generation(
 def test_issue577_epoch_watermark_does_not_fabricate_complete(
     postgres_diagnostics_sandbox: DiagnosticsSandbox,
 ) -> None:
-    """A newer epoch closes the previous epoch without calling it complete.
-    Dense units the old epoch itself observed past the horizon are COMPLETE.
-    A lone older epoch with no internal watermark proof stays unknown."""
     horizon = 1_000
     diag = postgres_diagnostics_sandbox
     store = _store(diag, horizon_ns=horizon)

@@ -1,10 +1,3 @@
-"""Shared diagnostic runtime helpers: served Hub fixture + real relay client.
-
-Both live entirely on loopback with no credentials, no RTSP, and no media. The
-relay runs on the PostgreSQL product sandbox; register next to the sandbox
-plugin: ``pytest_plugins = ("tests_support.postgres_sandbox",)``.
-"""
-
 from __future__ import annotations
 
 import socket
@@ -32,8 +25,6 @@ def free_port() -> int:
 
 
 class _StartupSignalServer(uvicorn.Server):
-    """uvicorn server that signals an event once its sockets are listening."""
-
     def __init__(self, config: uvicorn.Config) -> None:
         super().__init__(config)
         self.listening = threading.Event()
@@ -45,8 +36,6 @@ class _StartupSignalServer(uvicorn.Server):
 
 
 class ServedFixture:
-    """Runs the contract-exact Hub fixture over real loopback HTTP."""
-
     def __init__(self, *, faulty_event_identity: bool = False) -> None:
         self.fixture = LocalBackendFixture(faulty_event_identity=faulty_event_identity)
         self.port = free_port()
@@ -77,9 +66,6 @@ class ServedFixture:
 
 
 def hub_client(origin: str) -> EdgeIngestClient:
-    """The real Hub ingest client pointed at ``origin``."""
-
-    # Loopback http needs no insecure opt-in under the product's own hub policy.
     return EdgeIngestClient(
         events_url=f"{origin}/api/v1/events",
         bearer_token="fixture-token",
@@ -95,12 +81,6 @@ def relay_client(
     *,
     ingest_client: Any = None,
 ) -> TestClient:
-    """Real ml-api app on the PostgreSQL product root, delivering to ``origin``.
-
-    ``ingest_client`` replaces the default ``hub_client(origin)``; the relay
-    commits the incident and its outbox row before any Hub delivery.
-    """
-
     app = relay_postgres_app(
         sandbox,
         audit_runtime,
@@ -118,8 +98,6 @@ def deliver_alert(
     *,
     detected_at: str = "2026-08-16T00:00:00.000Z",
 ) -> str:
-    """POST one relay alert and return the accepted backend event id (B)."""
-
     response = client.post(
         "/api/v1/relay/alerts",
         json={

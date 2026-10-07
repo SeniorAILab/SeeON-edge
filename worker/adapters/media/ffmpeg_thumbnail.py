@@ -1,5 +1,3 @@
-"""FFmpeg-backed thumbnails for published evidence clips."""
-
 from __future__ import annotations
 
 import os
@@ -11,12 +9,10 @@ from typing import Final
 
 
 class ThumbnailUnavailable(RuntimeError):
-    """A thumbnail could not be generated from an otherwise publishable clip."""
+    ...
 
 
 class FfmpegThumbnailGenerator:
-    """Generate one atomically-published JPEG thumbnail from a video clip."""
-
     def __init__(
         self,
         *,
@@ -34,8 +30,6 @@ class FfmpegThumbnailGenerator:
         thumbnail_path: Path,
         duration_s: float,
     ) -> Path:
-        # Smart Record includes a 15-second lookback, so this seeks to the
-        # triggering moment while still leaving half a second for short clips.
         offset_s = min(15.0, max(0.0, duration_s - 0.5))
         thumbnail_path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(

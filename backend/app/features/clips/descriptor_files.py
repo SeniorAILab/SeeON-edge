@@ -1,5 +1,3 @@
-"""Descriptor-pinned reads for untrusted clip-store media."""
-
 from __future__ import annotations
 
 import os

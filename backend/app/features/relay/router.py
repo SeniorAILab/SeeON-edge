@@ -1,5 +1,3 @@
-"""Worker-to-api ingest relay routes."""
-
 from __future__ import annotations
 
 import base64
@@ -67,21 +65,14 @@ RELAY_TOKEN_HEADER = "X-Edge-Relay-Token"
 
 logger = logging.getLogger(__name__)
 
-# The relay accepts at most 200 KiB of decoded inline evidence. Limit encoded
-# input before decoding so an oversized Base64 string cannot trigger allocation.
 MAX_INLINE_SNAPSHOT_BYTES = 200 * 1024
 MAX_INLINE_SNAPSHOT_BASE64_CHARS = 4 * ((MAX_INLINE_SNAPSHOT_BYTES + 2) // 3)
-# Bound the entire HTTP body before JSON parse / Pydantic validation. Alerts may
-# carry a ~200 KiB base64 snapshot plus envelope fields; 512 KiB leaves margin
-# without accepting multi-megabyte worker mistakes as DoS amplification.
 MAX_RELAY_REQUEST_BODY_BYTES = 512 * 1024
 MAX_RELAY_HEARTBEAT_BODY_BYTES = 4 * 1024
 MAX_RELAY_RUNTIME_STATUS_BODY_BYTES = 64 * 1024
 MAX_RELAY_SNAPSHOT_ATTACHMENT_BODY_BYTES = 8 * 1024
 MAX_RELAY_SNAPSHOT_DISPOSITION_BODY_BYTES = 8 * 1024
 
-# Per-endpoint hard body caps, keyed by route path suffix. BoundedBodyRoute
-# consults this before any body byte is buffered.
 _MAX_BODY_BYTES_BY_SUFFIX: dict[str, int] = {
     "/alerts": MAX_RELAY_REQUEST_BODY_BYTES,
     "/heartbeat": MAX_RELAY_HEARTBEAT_BODY_BYTES,
@@ -100,15 +91,6 @@ def _oversized_body_error(max_bytes: int) -> HTTPException:
 
 
 def _bounded_receive(receive: Receive, max_bytes: int) -> Receive:
-    """Wrap an ASGI ``receive`` so total body bytes can never exceed ``max_bytes``.
-
-    Counts each ``http.request`` chunk as it arrives and raises 413 the moment
-    the running total crosses the cap -- so a chunked / missing / lying
-    Content-Length body is rejected mid-stream, before Starlette ever finishes
-    buffering it for the Pydantic parse. This is the real bound; the
-    Content-Length header pre-check in the auth dependency is only a fast path
-    for honest oversized declarations.
-    """
     total = 0
 
     async def wrapped() -> Message:
@@ -125,15 +107,6 @@ def _bounded_receive(receive: Receive, max_bytes: int) -> Receive:
 
 
 class BoundedBodyRoute(APIRoute):
-    """Route class that caps request-body reads before FastAPI buffers them.
-
-    FastAPI reads the whole body (``await request.body()``) *before* it solves
-    route dependencies, so a dependency cannot bound the read. Wrapping
-    ``receive`` at the route boundary enforces the cap during that read instead,
-    independent of Content-Length. The auth dependency still runs first for the
-    401/403 decision on within-limit bodies (auth-before-parse is preserved).
-    """
-
     def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
         original = super().get_route_handler()
         max_bytes = next(
@@ -148,7 +121,7 @@ class BoundedBodyRoute(APIRoute):
             return original
 
         async def bounded_handler(request: Request) -> Response:
-            request._receive = _bounded_receive(request.receive, max_bytes)  # noqa: SLF001 - wrap ASGI receive at the route boundary
+            request._receive = _bounded_receive(request.receive, max_bytes)  # noqa: SLF001
             return await original(request)
 
         return bounded_handler
@@ -156,11 +129,6 @@ class BoundedBodyRoute(APIRoute):
 
 _LOGGER = logging.getLogger(__name__)
 
-# Rate-limited/classified logging for ml-api's own outbound call to the Hub's
-# backend ingest API (mirrors the worker-side RelayFailureLog channels in
-# shared.events.evidence_export_client). Never logs the alert payload,
-# facility/relay token, or any Hub response body -- only disposition, reason
-# code, and status (see #579/#580).
 _backend_ingest_alert_failures = RelayFailureLog(
     _LOGGER, channel="backend ingest alerts", method="POST"
 )
@@ -169,12 +137,6 @@ router = APIRouter(prefix="/relay", tags=["relay"], route_class=BoundedBodyRoute
 
 
 def _reject_oversized_body(request: Request, *, max_bytes: int) -> None:
-    """Cheap Content-Length pre-check.
-
-    Rejects an *honest* oversized declaration. A missing or lying Content-Length
-    is caught by the BoundedBodyRoute streaming bound, so this is a fast-path
-    guard, not the authority on body size.
-    """
     raw = request.headers.get("content-length")
     if raw is None:
         return
@@ -196,8 +158,6 @@ def _authorize_relay_body(
     relay_token: str | None,
     authorization: str | None = None,
 ) -> None:
-    """Auth + Content-Length guard before Pydantic parse (FastAPI dep order)."""
-
     _reject_oversized_body(request, max_bytes=max_bytes)
     authorize_relay(request, relay_token or _bearer_token(authorization))
 
@@ -271,28 +231,7 @@ class RelayAuditEnvelope(BaseModel):
     operating_threshold: float | None = None
     clock_source: str | None = None
     runtime_manifest_sha256: str | None = None
-    """Digest of the runtime manifest that produced this event.
-
-    The worker has always emitted this, but the envelope never declared it and
-    ``extra="forbid"`` turned that omission into a permanent HTTP 422. Because
-    the outbox treats 422 as non-retryable, every affected event was rejected
-    for good rather than retried -- 41 bed-exit events were stranded this way in
-    production before the field was declared here.
-    """
     decision_trace_id: str | None = None
-    """Pointer to the decision trace this event was derived from.
-
-    Stamped by ``worker.runtime.flow.policy_pump._with_decision_trace_id`` via
-    ``worker.types.trace.decision_trace_id``. This is the third field found to
-    be emitted by the worker and undeclared here, after ``runtime_manifest_sha256``
-    and a truncation marker, each producing the same permanent 422 and the same
-    silent deletion by the outbox. It is declared rather than stripped because it
-    is the only link from a delivered event back to the basis for the decision.
-
-    The recurrence is the point: the guard against it is no longer a hand-written
-    key list, which is exactly what let this one through, but a test that derives
-    the emitted keys from the producer itself.
-    """
 
 
 class RelaySnapshotMetadata(BaseModel):
@@ -309,9 +248,14 @@ class RelaySnapshotMetadata(BaseModel):
 
 
 class RelaySnapshotAttachmentRequest(BaseModel):
-    """An immutable snapshot reference; snapshot bytes never cross this route."""
-
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "description": (
+                "An immutable snapshot reference; snapshot bytes never cross this route."
+            ),
+        },
+    )
 
     edge_event_id: str = Field(min_length=1, max_length=envelope_limits.EDGE_EVENT_ID_MAX_CHARS)
     snapshot_id: str = Field(min_length=1, max_length=envelope_limits.SNAPSHOT_ID_MAX_CHARS)
@@ -327,9 +271,12 @@ class RelaySnapshotAttachmentRequest(BaseModel):
 
 
 class RelaySnapshotDispositionRequest(BaseModel):
-    """A terminal, explicit statement that a snapshot cannot be delivered."""
-
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "description": "A terminal, explicit statement that a snapshot cannot be delivered.",
+        },
+    )
 
     edge_event_id: str = Field(min_length=1, max_length=envelope_limits.EDGE_EVENT_ID_MAX_CHARS)
     snapshot_id: str = Field(min_length=1, max_length=envelope_limits.SNAPSHOT_ID_MAX_CHARS)
@@ -483,15 +430,8 @@ class RelayDeliveryQueueStatus(BaseModel):
     max_accepted_entries: int = Field(gt=0)
     max_accepted_bytes: int = Field(gt=0)
     by_kind: dict[str, int] = Field()
-    # Evidence the backend refused or that exhausted delivery. Retained on disk,
-    # not delivered, and needing operator action -- a deployment cannot act on
-    # what it never reports. Defaulted so a worker predating this field is not
-    # answered 422, which is how 41 real events were destroyed here.
     dead_lettered_count: int = Field(default=0, ge=0)
     dead_lettered_bytes: int = Field(default=0, ge=0)
-    # Oldest live EVENT entry's acceptance time (ISO-8601 UTC), or None. Defaulted
-    # for the same reason as dead_lettered_count above: a worker predating this
-    # field must not be answered 422.
     oldest_event_accepted_at: str | None = Field(default=None)
 
 
@@ -539,34 +479,28 @@ def bump_restart(
     return {RESTART_EPOCH_KEY: request.app.state.restart_epoch}
 
 
-@router.post("/alerts", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/alerts",
+    status_code=status.HTTP_202_ACCEPTED,
+    description=(
+        "Commit the incident and its delivery obligation, then answer.\n"
+        "\n"
+        "Every response is built after the admission COMMIT, so a failure before it\n"
+        "is never acknowledged. A worker retry after a lost response lands on the\n"
+        "same committed row instead of creating a second incident."
+    ),
+)
 def relay_alert(
     payload: RelayAlertRequest,
     request: Request,
     _: Annotated[None, Depends(require_relay_alert)],
 ) -> dict[str, str]:
-    """Commit the incident and its delivery obligation, then answer.
-
-    Every response is built after the admission COMMIT, so a failure before it
-    is never acknowledged. A worker retry after a lost response lands on the
-    same committed row instead of creating a second incident.
-    """
     binding = _camera_binding(request, payload.camera_id, payload.facility_id)
-    # Only a Hub-issued id may address the upstream ingest API. The previous
-    # `or payload.camera_id` fallback sent the worker's edge-local id, which the
-    # Hub never issued and rejects with FACILITY_BINDING_MISMATCH; on the edge
-    # that surfaced as an opaque relay 502 and was repeatedly misdiagnosed as an
-    # auth failure (issue #308). This mirrors the periodic heartbeat relay, which
-    # already refuses to push under an unmapped id -- see
-    # backend_heartbeat_relay._canonical_backend_camera_id.
     bound_camera_id = binding.get("backend_camera_id")
     backend_camera_id = (
         bound_camera_id if isinstance(bound_camera_id, str) and bound_camera_id.strip() else None
     )
     if backend_camera_id is None:
-        # Coverage is untouched: the camera keeps streaming and the incident is
-        # still recorded locally below. Only the guaranteed-reject upstream push
-        # is skipped, and the reason is named instead of arriving as a 502.
         _LOGGER.warning(
             "relay alert: skipping backend ingest, camera %s has no Hub mapping yet",
             payload.camera_id,
@@ -593,8 +527,6 @@ def relay_alert(
         )
     claim = None
     if client is not None and accepted.delivery_state in {"PENDING", "IN_FLIGHT"}:
-        # The admission transaction is already committed: the Hub request below
-        # runs with no SQL transaction open, under its own committed lease.
         try:
             claim = delivery.claim_event(edge_event_id)
         except AuthorityFenced as error:
@@ -619,8 +551,6 @@ def relay_alert(
     return _central_receipt(payload, edge_event_id, result.event_id)
 
 
-# Id-less alerts (pre-envelope workers) get a content-derived id so a resend of
-# the same alert lands on the same committed row instead of a second incident.
 _IDLESS_ALERT_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "urn:seeon-edge:relay-alert")
 
 
@@ -685,8 +615,6 @@ def _accept_alert(
         ) from error
 
 
-# Constraint failures describe the request, not the database: answering 503
-# would make the worker resend a payload that can never be stored.
 _REJECTED_FACTS = (
     CheckViolation,
     NotNullViolation,
@@ -738,9 +666,6 @@ def _central_receipt(
 def _delivery_failure_error(result: DeliveryFailure) -> HTTPException:
     if result.disposition is DeliveryDisposition.RETRY:
         code = status.HTTP_503_SERVICE_UNAVAILABLE
-        # Names the failing side explicitly: this is the Hub/backend ingest API
-        # declining or timing out, not the local PostgreSQL admission, which
-        # already committed the incident and its delivery obligation.
         detail = f"backend ingest retryable failure: {result.code}"
     elif result.disposition is DeliveryDisposition.COMPATIBILITY:
         code = status.HTTP_404_NOT_FOUND
@@ -757,7 +682,6 @@ def _delivery_failure_error(result: DeliveryFailure) -> HTTPException:
 def _replayed_alert_response(
     payload: RelayAlertRequest, edge_event_id: str, stored: DeliveryStatus | None
 ) -> dict[str, str]:
-    """Answer a resend from the committed delivery state instead of resending."""
     if stored is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -768,7 +692,6 @@ def _replayed_alert_response(
     if stored.state in {"LOCAL_ONLY", "EXHAUSTED"} or (
         stored.state == "REJECTED" and stored.reason == "ACCEPTED_LOCAL"
     ):
-        # The incident is committed here; only the Hub copy is missing.
         return _local_receipt(payload, edge_event_id)
     if stored.state == "REJECTED":
         raise _delivery_failure_error(
@@ -785,14 +708,16 @@ def _replayed_alert_response(
     )
 
 
-@router.post("/snapshot-attachments", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/snapshot-attachments",
+    status_code=status.HTTP_202_ACCEPTED,
+    description="Record one immutable media reference without accepting media bytes.",
+)
 def relay_snapshot_attachment(
     payload: RelaySnapshotAttachmentRequest,
     request: Request,
     _: Annotated[None, Depends(require_relay_snapshot_attachment)],
 ) -> dict[str, str]:
-    """Record one immutable media reference without accepting media bytes."""
-
     projection = _snapshot_projection(request)
     audit = mutation_audit(
         request,
@@ -814,14 +739,16 @@ def relay_snapshot_attachment(
     return {"status": "accepted"}
 
 
-@router.post("/snapshot-dispositions", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/snapshot-dispositions",
+    status_code=status.HTTP_202_ACCEPTED,
+    description="Durably record an unavailable or failed snapshot without touching its event.",
+)
 def relay_snapshot_disposition(
     payload: RelaySnapshotDispositionRequest,
     request: Request,
     _: Annotated[None, Depends(require_relay_snapshot_disposition)],
 ) -> dict[str, str]:
-    """Durably record an unavailable or failed snapshot without touching its event."""
-
     projection = _snapshot_projection(request)
     audit = mutation_audit(
         request,
@@ -891,13 +818,6 @@ def relay_heartbeat(
     request: Request,
     _: Annotated[None, Depends(require_relay_heartbeat)],
 ) -> dict[str, str]:
-    # Stamp local liveness right after auth, BEFORE camera binding, so /status
-    # reflects edge-local truth even when the registry can't yet resolve this
-    # camera -- not just when backend egress later fails (see #183, #202). A
-    # worker holding a valid relay token recording a heartbeat for camera X is
-    # real local truth regardless of whether X is registered yet; registry
-    # binding is for backend-id translation on egress, not admission to
-    # ml-api's own liveness bookkeeping.
     get_heartbeat_store(request.app).record(
         payload.camera_id,
         payload.facility_id,
@@ -910,13 +830,6 @@ def relay_heartbeat(
     )
     _clear_never_connected_on_first_heartbeat(request, payload.camera_id)
     binding = _camera_binding(request, payload.camera_id, payload.facility_id)
-    # Same Hub-boundary rule as relay_alert above: only a Hub-issued id may address
-    # the upstream ingest API. The backend only knows its own camera ids, and an id
-    # it never issued comes back as FACILITY_BINDING_MISMATCH, surfacing on the edge
-    # as an opaque 502 that reads like an auth failure (issue #308). All local
-    # bookkeeping above -- liveness, policy ack, never_connected -- has already run,
-    # so skipping the push costs no local state. This also matches the periodic tick
-    # in backend_heartbeat_relay, which likewise refuses to send under an unmapped id.
     bound_camera_id = binding.get("backend_camera_id")
     if not isinstance(bound_camera_id, str) or not bound_camera_id.strip():
         _LOGGER.warning(
@@ -986,27 +899,12 @@ def _bearer_token(authorization: str | None) -> str | None:
 
 
 def _runtime_status_facility_binding(request: Request, facility_id: str) -> None:
-    """No-op facility gate for local runtime-status recording.
-
-    Runtime-status is purely local dashboard state (no cloud egress). Site
-    facility identity lives in ConnectionSettingsStore and is not compared
-    against the worker payload or any env var here.
-    """
     del request, facility_id
 
 
 def _log_unresolved_runtime_status_cameras(
     request: Request, payload: RelayRuntimeStatusRequest
 ) -> None:
-    """Best-effort observability only -- never blocks the snapshot.
-
-    relay_runtime_status has no backend egress, so an unresolved camera_id
-    here is not a reason to drop the whole snapshot (see #183, #202): this
-    loop used to call the same _camera_binding() that relay_alert/
-    relay_heartbeat use to gate backend egress, whose return value was never
-    even used here. One camera missing from camera_registry could blank the
-    dashboard for every camera in the payload, even the ones that resolved fine.
-    """
     for camera in payload.cameras:
         try:
             _camera_binding(request, camera.camera_id, payload.facility_id)
@@ -1019,11 +917,6 @@ def _log_unresolved_runtime_status_cameras(
 
 
 def _camera_binding(request: Request, camera_id: str, facility_id: str) -> dict[str, str | None]:
-    """Resolve egress camera binding from the dashboard registry only.
-
-    ``facility_id`` is accepted on the worker→ml-api wire (may be the local
-    placeholder ``"local"``) but is not compared to env or used for admission.
-    """
     return _camera_binding_from_registry(request, camera_id, facility_id)
 
 
@@ -1047,15 +940,9 @@ def _camera_binding_from_registry(
         if camera_id in {local_id, backend_id}:
             canonical_id = backend_id or local_id
             return {
-                # Keeps its local-id fallback on purpose: this field gates local
-                # ADMISSION, and a worker may legitimately report under either id.
                 "camera_id": str(canonical_id),
                 "facility_id": facility_id,
                 "resident_id": None,
-                # Hub-issued id only, None when unmapped. EGRESS must use this
-                # field, never camera_id above -- sending an id the Hub never
-                # issued comes back as FACILITY_BINDING_MISMATCH and reaches the
-                # edge as an opaque 502 (issue #308).
                 "backend_camera_id": (
                     backend_id if isinstance(backend_id, str) and backend_id.strip() else None
                 ),
@@ -1064,14 +951,6 @@ def _camera_binding_from_registry(
 
 
 def _clear_never_connected_on_first_heartbeat(request: Request, camera_id: str) -> None:
-    """Flip a registry record's never_connected off on its FIRST heartbeat.
-
-    One-way: never reverts to True once cleared. Looked up by either the
-    registry's local id or its backend_camera_id, matching payload.camera_id
-    against whichever one the worker is currently configured to send (see
-    _camera_binding_from_registry). A no-op once already False, so this stays
-    a single extra write per camera lifetime rather than one per heartbeat.
-    """
     store = getattr(request.app.state, "camera_registry", None)
     if not isinstance(store, CameraRegistryStore):
         return
@@ -1099,10 +978,6 @@ def _find_registry_record(store: CameraRegistryStore, camera_id: str) -> dict[st
 def _optional_backend_ingest_client(
     request: Request, *, camera_id: str
 ) -> BackendIngestClient | None:
-    """Return the cloud ingest client when connection settings built one.
-
-    Missing client means unconfigured cloud path: local accept still OK.
-    """
     client: BackendIngestClient | None = getattr(request.app.state, "backend_ingest_client", None)
     if client is None:
         return None

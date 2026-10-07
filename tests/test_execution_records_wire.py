@@ -1,5 +1,3 @@
-"""Wire-contract tests for worker -> backend execution-record batches."""
-
 from __future__ import annotations
 
 import json
@@ -149,7 +147,6 @@ def test_legacy_unscoped_gap_keeps_observed_old_worker_batch_identity() -> None:
     provenance = WireProvenance("rev", "image", "model", "cal", "pre", "config", "policy")
     gap = WireGap("policy", 0, 0, 10, 10, 1, "export-failed")
     batch = WireBatch("synthetic", "opaque-boot", provenance, (), (gap,))
-    # Captured from the unchanged wire on the onsite pre-scope source.
     assert batch.batch_id == "49129ae21bfb733ca26985477f7c6058a9ce8dabbf8f9e301a4c25cdb2e818f7"
     assert set(gap.to_json()) == {
         "producer",

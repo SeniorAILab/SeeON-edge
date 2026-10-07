@@ -1,5 +1,3 @@
-"""Isolated command-line entrypoint for evidence clip re-analysis."""
-
 from __future__ import annotations
 
 import argparse
@@ -22,7 +20,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     bootstrap_child(
         expected_parent=args.expected_parent, cpu_index=args.cpu, control_fd=args.control_fd
     )
-    # Imports below this line may initialize native decoder/ML thread pools.
     from shared.events.clip_analysis_wire import encode_clip_analysis
     from worker.adapters.model.clip_reanalysis import (
         ClipAnalysisFailed,
@@ -41,14 +38,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ClipAnalysisFailed as exc:
         _error("ClipAnalysisFailed", str(exc))
         return 3
-    except Exception:  # noqa: BLE001 - tool boundary maps every failure to exit 3
+    except Exception:  # noqa: BLE001
         _error("ClipAnalysisFailed", "tool_failed")
         return 3
     return 0
 
 
 def _load_request(path: Path):
-    """Decode the shared supervisor/tool request schema without native imports."""
     from worker.adapters.model.clip_reanalysis import ClipAnalysisProfile, ClipAnalysisRequest
 
     payload = json.loads(path.read_text(encoding="utf-8"))

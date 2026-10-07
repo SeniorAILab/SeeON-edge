@@ -1,21 +1,3 @@
-"""Architecture-audit H3 structural guard: `worker/domains/**` must not import
-or expose NumPy, OpenCV, CUDA, or TensorRT types.
-
-Detection modules interpret numeric observations into business events; the
-domain layer is deliberately numeric/hardware-agnostic and independent of
-which infrastructure profile (CPU/MPS/CUDA) or inference library
-(NumPy/OpenCV/PyTorch/TensorRT) an adapter happens to use underneath. This
-test parses every `worker/domains/**/*.py` module with `ast` (no import,
-since importing would require the banned packages to be installed to even
-fail correctly) and asserts:
-
-1. No module-level `import`/`from ... import ...` statement names a banned
-   package (or a CUDA-flavored submodule of an otherwise-allowed package).
-2. No public function/method signature annotates a parameter or return
-   value with a bare `Any` (or `typing.Any`) -- an escape hatch that would
-   let a hardware/library type slip through unexamined.
-"""
-
 from __future__ import annotations
 
 import ast
@@ -27,11 +9,6 @@ import pytest
 REPO_ROOT: Final = Path(__file__).resolve().parents[1]
 DOMAINS_ROOT: Final = REPO_ROOT / "worker" / "domains"
 
-# Named explicitly by the architecture-audit H3 finding: NumPy, OpenCV,
-# CUDA, TensorRT. `pycuda`/`cupy`/`onnxruntime`/`torch` are included as the
-# concrete packages that would carry those types into Python; any import
-# whose dotted path contains "cuda" is banned regardless of top-level
-# package (covers `torch.cuda`, `numba.cuda`, etc.).
 _BANNED_ROOT_MODULES: Final = frozenset(
     {
         "numpy",

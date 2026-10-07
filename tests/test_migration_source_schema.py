@@ -1,5 +1,3 @@
-"""The schema-19 SQLite source the migration tool reads, and how it is classified."""
-
 from __future__ import annotations
 
 import sqlite3
@@ -53,7 +51,6 @@ def test_forward_backward_compatibility_matrix_is_explicit() -> None:
 
 
 def test_runtime_refuses_absent_and_out_of_range_schemas(tmp_path: Path) -> None:
-    # The migration fence runs verify_runtime_schema on every source it opens.
     with (
         closing(sqlite3.connect(tmp_path / "empty.sqlite3")) as empty,
         pytest.raises(MigrationRequiredError) as refused,

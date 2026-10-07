@@ -1,5 +1,3 @@
-"""Hermetic HTTP tests for execution-record ingest and engineer query."""
-
 from __future__ import annotations
 
 from collections.abc import Iterator
@@ -107,7 +105,6 @@ def enabled_settings(monkeypatch: pytest.MonkeyPatch) -> None:
 def product_app(
     postgres_product_sandbox: ProductSandbox, postgres_audit_runtime: PostgresAuditRuntime
 ) -> FastAPI:
-    """A no-lifespan app on the sandbox root, so ``_login`` reaches a real session."""
     app = postgres_api_app(postgres_product_sandbox, postgres_audit_runtime)
     app.state.edge_relay_token = _RELAY_TOKEN
     return app
@@ -246,9 +243,6 @@ def test_disabled_feature_answers_503(product_app: FastAPI) -> None:
 def test_missing_diagnostics_database_answers_503(
     product_app: FastAPI, postgres_diagnostics_sandbox: DiagnosticsSandbox
 ) -> None:
-    """A diagnostics database that refuses admission (server down at boot, so
-    ``open_diagnostics_database`` could not start its pool) must not leak an
-    opaque 500 -- PostgresUnavailable is mapped to a clear 503 (#579/#580, round 2)."""
     unstarted = PostgresDatabase(
         postgres_diagnostics_sandbox.dsn,
         postgres_diagnostics_sandbox.schema,
@@ -378,12 +372,6 @@ def test_lifespan_diagnostics_query_and_product_write_skip_a_pending_diagnostics
     postgres_audit_runtime: PostgresAuditRuntime,
     postgres_lifespan_diagnostics_schema: str,
 ) -> None:
-    """Through the real lifespan wiring: while another session holds the
-    diagnostics ingest lock (standing in for an in-flight ingest write), a
-    diagnostics query and a product write both complete. The diagnostics store
-    has its own schema and pool, and a snapshot query never takes the ingest
-    lock (#579/#580, S4).
-    """
     monkeypatch.setenv("API_EDGE_RELAY_TOKEN", _RELAY_TOKEN)
     app = create_app(lifespan=lifespan)
     inject_sandbox_root(app, postgres_product_sandbox, postgres_audit_runtime)
@@ -399,7 +387,6 @@ def test_lifespan_diagnostics_query_and_product_write_skip_a_pending_diagnostics
 
         holder = psycopg.connect(postgres_product_sandbox.dsn, connect_timeout=5)
         try:
-            # The first statement of every ingest transaction.
             holder.execute(
                 sql.SQL("LOCK TABLE {}.execution_batches IN SHARE ROW EXCLUSIVE MODE").format(
                     sql.Identifier(postgres_lifespan_diagnostics_schema)
@@ -412,7 +399,6 @@ def test_lifespan_diagnostics_query_and_product_write_skip_a_pending_diagnostics
             assert query.status_code == 200
             assert [row["producer_sequence"] for row in query.json()["records"]] == [0]
 
-            # A governed product write: the session read appends an audit event.
             session = client.get("/api/v1/auth/session")
             assert session.status_code == 204
             committed = admin.execute(

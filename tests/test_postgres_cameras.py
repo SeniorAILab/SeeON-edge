@@ -1,5 +1,3 @@
-"""Camera and topology persistence against the shared isolated PostgreSQL sandbox."""
-
 from __future__ import annotations
 
 import json
@@ -600,7 +598,6 @@ def test_rejected_commit_does_not_publish_status_or_partial_rows(
     sandbox = postgres_product_sandbox
     store = CameraRegistryStore(sandbox.database, sandbox.authority)
     _seed_topology(store)
-    # Test-only deferred FK rejects the real COMMIT, not the mutation statement.
     sandbox.admin.execute(
         "CREATE TABLE camera_commit_guard (camera_id text REFERENCES cameras(camera_id) "
         "DEFERRABLE INITIALLY DEFERRED)"
@@ -1054,7 +1051,6 @@ def test_snapshots_use_one_readonly_statement_snapshot_across_committed_writers(
         if armed and isinstance(query, str) and "FROM edge_site AS s" in query:
             armed = False
             statements.append(query)
-            # The read's result exists, but has not been fetched or projected.
             other.update("camera-a", CameraUpdate.model_validate({"label": "Concurrent label"}))
             other.create_floor(edge_ref="floor-b", name="New floor", order_index=2)
             other.create_room(edge_ref="room-b", floor_edge_ref="floor-b", name="201")

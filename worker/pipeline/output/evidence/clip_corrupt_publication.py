@@ -1,5 +1,3 @@
-"""Terminal corruption publication after partial clip commit."""
-
 from __future__ import annotations
 
 import hashlib

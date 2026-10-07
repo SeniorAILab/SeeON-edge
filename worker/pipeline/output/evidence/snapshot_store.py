@@ -1,5 +1,3 @@
-"""Crash-recoverable bounded local storage for rendered alert snapshots."""
-
 from __future__ import annotations
 
 import fcntl
@@ -95,16 +93,6 @@ class SnapshotCapacityError(Exception):
 
 @final
 class SnapshotStore(SnapshotFiles):
-    """Own the filesystem half of snapshot two-phase publication.
-
-    ``stage`` durably writes immutable metadata and bytes below
-    ``.snapshot-staging``. Only after the event transaction commits may
-    ``publish`` atomically move bytes to their final path. ``commit`` moves the
-    staging metadata into the retained identity directory after the central
-    snapshot relation commits. A crash at every boundary therefore leaves a
-    named transition that startup reconciliation can resume.
-    """
-
     def __init__(
         self,
         store_dir: Path | None = None,
@@ -124,7 +112,6 @@ class SnapshotStore(SnapshotFiles):
         camera_id: str,
         edge_event_id: str | None,
     ) -> StoredSnapshot:
-        """Durably reserve immutable identity and bytes without publishing a final."""
         expected = self._expected(
             jpeg,
             snapshot_id=snapshot_id,
@@ -169,7 +156,6 @@ class SnapshotStore(SnapshotFiles):
             return expected
 
     def publish(self, snapshot: StoredSnapshot) -> None:
-        """Atomically publish validated staged bytes while retaining transition metadata."""
         identity_key = self._identity_key(snapshot.snapshot_id)
         with self._lock(f"{identity_key[:2]}.lock"):
             identity = self._load_identity(identity_key)
@@ -198,7 +184,6 @@ class SnapshotStore(SnapshotFiles):
             self._refresh_pending_stats()
 
     def commit(self, snapshot: StoredSnapshot) -> None:
-        """Complete the filesystem transition after the DB relation commits."""
         identity_key = self._identity_key(snapshot.snapshot_id)
         with self._lock(f"{identity_key[:2]}.lock"):
             existing = self._load_identity(identity_key)
@@ -231,7 +216,6 @@ class SnapshotStore(SnapshotFiles):
         camera_id: str,
         edge_event_id: str | None,
     ) -> StoredSnapshot:
-        """Compatibility helper for callers that need a local-only committed snapshot."""
         snapshot = self.stage(
             jpeg,
             snapshot_id=snapshot_id,
@@ -253,7 +237,6 @@ class SnapshotStore(SnapshotFiles):
         return self._records_in(Path(".snapshot-retention"))
 
     def stage_retention(self, snapshot: StoredSnapshot) -> None:
-        """Persist deletion intent before the central retention transaction."""
         identity_key = self._identity_key(snapshot.snapshot_id)
         with self._lock(f"{identity_key[:2]}.lock"):
             existing = self._load_identity(identity_key)
@@ -282,7 +265,6 @@ class SnapshotStore(SnapshotFiles):
         *,
         now: datetime,
     ) -> SnapshotDiscardReport:
-        """Delete staging absent from the DB, reporting every disposition."""
         del now
         root = self.store_dir / ".snapshot-staging"
         if not root.exists():
@@ -337,7 +319,6 @@ class SnapshotStore(SnapshotFiles):
         return True
 
     def remove_committed(self, snapshot: StoredSnapshot) -> None:
-        """Remove final bytes and identity while durable retention intent remains."""
         identity_key = self._identity_key(snapshot.snapshot_id)
         with self._lock(f"{identity_key[:2]}.lock"):
             identity = self._load_identity(identity_key)

@@ -1,7 +1,3 @@
-"""Runtime relink: apply_connection_settings() rebuilds backend ingest/evidence
-clients from ConnectionSettingsStore without a process restart (story G002).
-"""
-
 from __future__ import annotations
 
 import pytest
@@ -59,12 +55,9 @@ def test_boot_time_fixture_injection_still_survives_boot(
     sentinel = object()
     app = create_app()
     app.state.postgres_root = _root(postgres_product_sandbox)
-    app.state.backend_ingest_client = sentinel  # assigned before lifespan runs
+    app.state.backend_ingest_client = sentinel
 
     with TestClient(app):
-        # The hasattr guard in _configure_backend_ingest() must keep the
-        # pre-assigned fixture client intact at boot, even though a saved
-        # PostgreSQL enrollment is present and would otherwise rebuild it.
         assert app.state.backend_ingest_client is sentinel
 
 
@@ -167,7 +160,7 @@ def test_unenrolled_store_fails_closed_despite_identity_env(
     monkeypatch.setenv("EDGE_FACILITY_TOKEN", "environment-token")
     app = create_app(lifespan=no_lifespan)
     install_postgres_stores(app, _root(postgres_product_sandbox))
-    app.state.backend_client_bundle = object()  # stale bundle from an earlier link
+    app.state.backend_client_bundle = object()
 
     apply_connection_settings(app)
 

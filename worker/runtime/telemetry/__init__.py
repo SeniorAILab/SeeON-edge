@@ -1,5 +1,3 @@
-"""Worker-local runtime telemetry."""
-
 from worker.runtime.telemetry.models import (
     BusSubscriptionSnapshot,
     CameraDiagnosticsSnapshot,

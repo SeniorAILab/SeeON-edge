@@ -1,5 +1,3 @@
-"""Child-process primitives for clip re-analysis."""
-
 from __future__ import annotations
 
 import contextlib
@@ -63,7 +61,6 @@ class ClipAnalysisChild:
 def terminate_group(
     process: subprocess.Popen[bytes], *, failure: Callable[[str], BaseException]
 ) -> None:
-    """Kill, reap, and prove this job's process group is gone."""
     pgid = process.pid
     with contextlib.suppress(ProcessLookupError):
         os.killpg(pgid, signal.SIGKILL)
@@ -184,7 +181,6 @@ def identity_matches(job: ClipAnalysisJob, result: ClipAnalysisResult) -> bool:
 
 
 def probe_media_facts(clip_path: Path) -> ClipMediaFacts:
-    """Probe media using the same single-thread decoder configuration as analysis."""
     import av
 
     with av.open(str(clip_path)) as container:

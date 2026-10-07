@@ -49,8 +49,6 @@ def verify_enrollment(
 ) -> EnrollmentVerificationResult:
     endpoint = enrollment_endpoint(events_url)
     if endpoint is None:
-        # Refuse before building an Authorization header so a rejected cleartext
-        # public origin never observes the facility bearer token.
         raise EnrollmentVerificationFailure("unreachable", 503)
     body = serialize_enrollment_verification(
         EnrollmentVerification(
@@ -69,8 +67,6 @@ def verify_enrollment(
         method="POST",
     )
     try:
-        # Default SSL context (normal certificate validation). Never pass an
-        # unverified context — Hub enrollment must not skip TLS checks.
         with urllib.request.urlopen(request, timeout=timeout_sec) as response:
             parsed = _JSON_RECORD.validate_json(response.read())
         return parse_enrollment_verification_result(parsed)

@@ -16,12 +16,7 @@
 - clip 디스크 회전(rotation)이 여러 사이클에 걸쳐서도 올바르게 동작하는지
 - 장시간 fps 안정성
 
-clip recorder는 부팅 시 **1회** sweep/rotate/admit 순서로 실행되도록
-보장되어 있을 뿐 (`worker/runtime/worker.py:1170-1177`,
-`_compose_evidence_export`의 docstring 및 `ClipRecorder.start()` 경로 — 이
-순서는 `tests/test_evidence_export_startup.py`가 계약으로 고정), 이 로직이
-장시간 실행 중 반복적으로 올바르게 동작하는지는 코드만으로는 보장되지 않는다.
-또한 clip evidence의 핵심 내구성 경로가 `/proc/self/fd/{descriptor}`
+clip evidence의 핵심 내구성 경로가 `/proc/self/fd/{descriptor}`
 (`worker/pipeline/output/evidence/evidence_media.py:75`)에 의존하는 **Linux
 전용** 구현이라, fd 누수 관찰 자체도 Linux 호스트에서만 유효하다.
 

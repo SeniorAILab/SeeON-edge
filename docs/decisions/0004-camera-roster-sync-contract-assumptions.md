@@ -94,7 +94,7 @@ store.
   from every roster push (reads as `pending`, never even attempted) until an
   operator assigns it a space locally. There is currently no way for the
   external backend to assign a room to a camera it has never seen. This ADR
-  does **not** implement a fix (out of scope: eldercare-fall-ml-v2 only, per
+  does **not** implement a fix (out of scope per
   the brief's scope decision) — it records the gap as a proposed follow-up
   for the fall-ai repo: make `spaceId` optional on `EdgeCameraMappingRequestDto`
   (`@IsOptional()`), allowing an edge to register a camera with no space and

@@ -1,5 +1,3 @@
-"""Thread-safe worker policy updated by normal config polling."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -26,7 +24,6 @@ class LiveClipExportPolicy:
             return self._enabled, self._version
 
     def apply(self, *, enabled: bool, version: int) -> bool:
-        """Apply a non-stale snapshot and report whether effective state changed."""
         with self._lock:
             if version < self._version:
                 return False

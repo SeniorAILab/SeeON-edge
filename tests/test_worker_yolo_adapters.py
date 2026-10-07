@@ -219,9 +219,6 @@ def test_missing_yolo_artifact_blocks_readiness(tmp_path: Path) -> None:
 
 
 def test_load_yolo_model_times_out_instead_of_hanging_forever(tmp_path: Path) -> None:
-    """Issue #111: a stalled model construction (e.g. ultralytics' import-time
-    connectivity self-check blocking on unreachable DNS) must fail loud with a
-    bounded, diagnosable error rather than hang the boot thread forever."""
     artifact = tmp_path / "model.pt"
     artifact.write_bytes(b"not a real checkpoint")
     started = threading.Event()
@@ -229,13 +226,13 @@ def test_load_yolo_model_times_out_instead_of_hanging_forever(tmp_path: Path) ->
 
     def _hang_forever(_path: Path) -> YoloModel:
         started.set()
-        release.wait()  # never released within the test -- simulates a stuck import
+        release.wait()
         raise AssertionError("should have timed out before reaching this point")
 
     with pytest.raises(YoloLoadError, match="pose.*model.pt"):
         _ = load_yolo_model(artifact, "pose", timeout_seconds=0.05, construct=_hang_forever)
     assert started.is_set()
-    release.set()  # let the leaked thread exit cleanly instead of leaking past the test
+    release.set()
 
 
 def test_load_yolo_model_returns_promptly_when_construction_is_fast(tmp_path: Path) -> None:
@@ -252,21 +249,6 @@ def test_load_yolo_model_returns_promptly_when_construction_is_fast(tmp_path: Pa
 
 
 def test_load_yolo_model_timeout_does_not_block_process_exit(tmp_path: Path) -> None:
-    """PR #112 review (rv95): the earlier ``ThreadPoolExecutor``-based
-    timeout wrapper used a non-daemon worker thread. CPython's
-    ``concurrent.futures.thread`` module registers an ``atexit`` hook that
-    joins every such thread, with no timeout of its own, at interpreter
-    shutdown -- so even though ``load_yolo_model``'s own timeout correctly
-    raised ``YoloLoadError`` for a stuck ``construct`` call, the *process*
-    would still silently re-hang trying to join that permanently stuck
-    thread on exit, reintroducing #111's defect one layer up.
-
-    Runs in a subprocess (not in-process) because the failure mode is about
-    interpreter shutdown itself, which can only be observed by actually
-    letting a process exit. Mirrors the real fatal-stage exit path
-    (``bootstrap_or_exit`` -> ``sys.exit()``, not ``os._exit()``): with the
-    daemon-thread fix, the process must exit promptly instead of hanging.
-    """
     artifact = tmp_path / "model.pt"
     artifact.write_bytes(b"not a real checkpoint")
     script = Path(__file__).with_name("_yolo_load_timeout_exit_repro.py")
@@ -289,8 +271,6 @@ _REPRO_SUBPROCESS_TIMEOUT_SECONDS = 10.0
 
 
 def _run_offline_guard_repro(*extra_args: str) -> subprocess.CompletedProcess[str]:
-    # cwd + PYTHONPATH mirror pyproject.toml's `pythonpath = ["."]` pytest
-    # setting, since a plain subprocess doesn't pick that up on its own.
     repo_root = Path(__file__).resolve().parent.parent
     return subprocess.run(
         [sys.executable, str(_YOLO_OFFLINE_GUARD_REPRO), *extra_args],
@@ -303,16 +283,6 @@ def _run_offline_guard_repro(*extra_args: str) -> subprocess.CompletedProcess[st
 
 
 def test_yolo_offline_guard_survives_blackholed_dns() -> None:
-    """Issue #111 regression test: reproduces the reported machine condition
-    (DNS to ultralytics' connectivity-probe hosts silently blackholed, not
-    refused) in a fresh subprocess -- required because ultralytics' import-time
-    ``is_online()`` self-check runs at most once per process, so this can't be
-    exercised reliably inside the shared pytest process.
-
-    With the ``YOLO_OFFLINE`` guard in ``yolo_api.py`` (set at module import
-    time, before any ``import ultralytics`` can occur) the blackhole is never
-    even reached, so this must complete quickly rather than hang.
-    """
     result = _run_offline_guard_repro()
 
     assert result.returncode == 0, result.stderr
@@ -320,18 +290,6 @@ def test_yolo_offline_guard_survives_blackholed_dns() -> None:
 
 
 def test_yolo_offline_guard_repro_is_a_real_hang_without_the_guard() -> None:
-    """Negative control for the test above: proves the blackhole condition it
-    simulates is a genuine hang trigger -- not a tautological test that would
-    "pass" regardless of whether the guard does anything -- by bypassing the
-    guard (``--skip-guard``: pop ``YOLO_OFFLINE`` and import ultralytics
-    directly) and confirming that *does* hang.
-
-    Bounded by ``subprocess.run(timeout=...)`` rather than a real infinite
-    wait: a future regression that reintroduces this hang must fail this test
-    fast and diagnosably (``TimeoutExpired``), not hang CI indefinitely --
-    this project has no ``pytest-timeout`` plugin installed, so the bound is
-    implemented directly via the subprocess timeout instead of a marker.
-    """
     with pytest.raises(subprocess.TimeoutExpired):
         _run_offline_guard_repro("--skip-guard")
 

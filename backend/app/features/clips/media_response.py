@@ -1,5 +1,3 @@
-"""HTTP responses that stream one descriptor-pinned media file."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -24,11 +22,11 @@ _MEDIA_TYPES = {
 
 
 class MalformedRangeHeader(ValueError):
-    """The Range header is not one supported byte range."""
+    ...
 
 
 class UnsatisfiableRange(ValueError):
-    """The requested byte range does not overlap the opened file."""
+    ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,11 +70,6 @@ class OpenedFileResponse(Response):
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         del receive
         if scope["type"] == "http" and scope["method"].upper() == "HEAD":
-            # RFC 9110 section 9.3.2: same header section as the GET, no body.
-            # A clip is whole-file evidence, so reading it to throw the bytes
-            # away would make a HEAD as expensive as playback -- exactly what a
-            # player issues one to avoid. Close the pinned descriptor and send
-            # the headers the GET path already computed.
             self._opened.handle.close()
             await send(
                 {

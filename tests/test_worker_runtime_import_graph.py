@@ -1,10 +1,3 @@
-"""The ml-worker image ships no torch/ultralytics; the runtime import graph must not need them.
-
-The CI boot smoke caught ``worker.runtime.worker`` importing ``yolo_pose`` (torch) through a
-constant. This runs the same check hermetically: importing the composition root in a fresh
-interpreter with torch and ultralytics blocked must succeed.
-"""
-
 from __future__ import annotations
 
 import subprocess

@@ -1,5 +1,3 @@
-"""File proof, and native PostgreSQL receipt rollback when a clip file changes mid-receipt."""
-
 from __future__ import annotations
 
 import errno
@@ -89,7 +87,6 @@ def _store(sandbox, root, hooks=None):
 
 
 def _rows(sandbox):
-    """Read durable receipt state on the admin connection, independent of the store's pool."""
     return {
         table: sandbox.admin.execute("SELECT * FROM " + table + " ORDER BY 1").fetchall()
         for table in ("clips", "incidents", "artifacts", "audit_events")
@@ -170,8 +167,6 @@ def test_location_and_hashed_descriptor_cannot_describe_different_manifests(clip
         ReceiptManifest.capture(store, "clip-1")
 
 
-# Rewrite, inode, symlink and missing swaps are covered by
-# test_postgres_receipts::test_file_races_leave_no_partial_native_rows_or_callback.
 @pytest.mark.parametrize("phase", ["after_preflight", "before_final_check"])
 @pytest.mark.parametrize("subject", ["manifest", "media"])
 def test_fifo_swap_aborts_native_receipt_without_audit_or_partial_rows(
@@ -227,10 +222,8 @@ def test_valid_receipt_and_matching_retry_keep_callback_and_hash_contracts(clip,
 
 def test_unavailable_receipt_rechecks_manifest_after_writing(clip, sandbox):
     root, manifest_path, media, _ = clip
-    media.unlink()  # Unavailable receipts must not require a media descriptor.
+    media.unlink()
     admin = sandbox.admin
-    # Test-only pause: the FAILED transition waits on an advisory lock this test holds,
-    # so the manifest changes after the receipt's first check but before it commits.
     admin.execute(
         "CREATE FUNCTION receipt_pause() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
         "PERFORM pg_advisory_xact_lock(1, hashtext(TG_TABLE_SCHEMA)); RETURN NULL; END $$"
@@ -326,8 +319,6 @@ def test_regular_to_fifo_race_finishes_without_waiting_for_a_writer(clip, monkey
             expected = ArtifactReceiptVerificationError if reader == "media" else FileNotFoundError
             assert len(results) == 1 and isinstance(results[0], expected)
     finally:
-        # Also release the old blocking implementation so a regression cannot
-        # strand the test process. This happens only after the bounded assertion.
         if created.is_set() and not finished.is_set():
             try:
                 descriptor = real_open(path, os.O_WRONLY | os.O_NONBLOCK)

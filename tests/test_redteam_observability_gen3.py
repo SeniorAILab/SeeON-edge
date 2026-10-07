@@ -1,5 +1,3 @@
-"""Generation-3 adversarial cases for the observability-11 delta."""
-
 from __future__ import annotations
 
 import threading
@@ -202,14 +200,6 @@ def test_g3_1_interleaved_boots_isolate_overflow_and_restart_sequences(
 def test_g3_2_loss_only_lane_is_exported_without_a_later_valid_record(
     tmp_path, postgres_product_sandbox, postgres_audit_runtime, postgres_lifespan_diagnostics_schema
 ) -> None:
-    """A lane holding only loss (records-empty) still reaches the Backend.
-
-    The public way to a records-empty loss lane is an export failure: the
-    drained batch is handed back via note_export_failure, leaving an
-    export-failed gap with nothing queued. The exporter must then offer and
-    deliver that gap on its own, with no further try_emit for the boot.
-    This proves eventual delivery bounded by wait_until, not a latency bound.
-    """
     lanes = ExecutionRecordLanes(lane_capacity=4)
     assert lanes.try_emit(_lane_record(seq=0, observed=1_000)) is True
     drained = lanes.drain_for(_CAMERA, _BOOT_OVERFLOW, limit=8)
@@ -343,7 +333,7 @@ def test_g3_6_unwrap_decider_self_ref_terminates() -> None:
     def _call() -> None:
         try:
             result.append(unwrap_decider(wrapped))
-        except BaseException as exc:  # noqa: BLE001 - hang guard must surface any failure
+        except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
 
     thread = threading.Thread(target=_call, name="unwrap-self-ref", daemon=True)

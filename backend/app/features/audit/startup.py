@@ -1,5 +1,3 @@
-"""Refresh the audit verification and deferred process session."""
-
 from __future__ import annotations
 
 import logging
@@ -14,7 +12,6 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def verify_audit_runtime(runtime: PostgresAuditRuntime) -> None:
-    """Refresh verification without owning HTTP readiness publication."""
     try:
         runtime.verify_once()
         if not runtime.snapshot().session_established:

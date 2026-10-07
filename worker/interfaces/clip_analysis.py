@@ -1,5 +1,3 @@
-"""Stored-clip analysis control seam used by the relay HTTP server."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -11,7 +9,7 @@ Admission = Literal[
 
 
 class ClipAnalysisDisabledError(RuntimeError):
-    """Stored-clip analysis is deliberately disabled for this deployment."""
+    ...
 
 
 class ClipAnalysisStatus(Protocol):

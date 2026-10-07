@@ -1,5 +1,3 @@
-"""Table mapping derived from the live schema-19 SQLite and PostgreSQL catalogs."""
-
 from __future__ import annotations
 
 import re
@@ -26,11 +24,9 @@ class Disposition(StrEnum):
 class TableSpec:
     name: str
     status_columns: tuple[str, ...] = ()
-    # SQLite ORDER BY prefix that satisfies self-referencing foreign keys on load.
     load_priority: str | None = None
 
 
-# Load order satisfies every non-deferrable foreign key in the PostgreSQL DDL.
 MIGRATED_TABLES: tuple[TableSpec, ...] = (
     TableSpec("credentials"),
     TableSpec("edge_site"),
@@ -53,7 +49,6 @@ MIGRATED_TABLES: tuple[TableSpec, ...] = (
     TableSpec("execution_batches"),
 )
 
-# Every other SQLite table must appear here; an unlisted table refuses the export.
 SOURCE_DECISIONS: dict[str, tuple[Disposition, str]] = {
     "schema_migrations": (
         Disposition.LEDGER_NOT_COPIED,
@@ -67,7 +62,6 @@ SOURCE_DECISIONS: dict[str, tuple[Disposition, str]] = {
     "sqlite_stat4": (Disposition.PLANNER_STATISTICS, "query-planner statistics, not records"),
 }
 
-# PostgreSQL tables with no SQLite source rows.
 TARGET_DECISIONS: dict[str, str] = {
     "schema_migrations": "provision version row plus the import source stamp",
     "deployment_authority": "provisioned fenced at generation 1; transferred exactly once",
@@ -89,7 +83,6 @@ DELIVERY_TABLES: tuple[str, ...] = (
     "event_delivery_results",
     "event_delivery_observations",
 )
-# Live execution writes go to a sibling schema; the product copies hold imported history.
 DIAGNOSTICS_SUFFIX = "_diagnostics"
 DIAGNOSTICS_TABLES = frozenset(
     {
@@ -103,7 +96,6 @@ DIAGNOSTICS_TABLES = frozenset(
 )
 DIAGNOSTICS_TARGET_TABLES = DIAGNOSTICS_TABLES | frozenset({"schema_migrations"})
 
-# PostgreSQL-only columns; each must carry a default so the load omits it.
 PG_ONLY_COLUMNS: dict[str, frozenset[str]] = {"cameras": frozenset({"incarnation"})}
 
 TYPE_MAP: dict[str, str] = {
@@ -114,7 +106,6 @@ TYPE_MAP: dict[str, str] = {
     "REAL": "double precision",
 }
 
-# Binary COPY type names for the mapped PostgreSQL types.
 COPY_TYPES: dict[str, str] = {
     "bigint": "int8",
     "text": "text",
@@ -163,7 +154,6 @@ class TableMapping:
 
 
 def decision_table() -> list[dict[str, str]]:
-    """The explicit per-table decisions, for reports and the runbook."""
     rows = [
         {"table": spec.name, "source": "sqlite", "decision": Disposition.MIGRATE.value}
         for spec in MIGRATED_TABLES
@@ -191,7 +181,6 @@ def require_identifier(value: str, label: str) -> str:
 
 
 def diagnostics_schema_name(schema: str) -> str:
-    """Return the live diagnostics schema the runtime derives from the product schema."""
     return require_identifier(
         require_identifier(schema, "schema") + DIAGNOSTICS_SUFFIX, "diagnostics schema"
     )
@@ -213,7 +202,6 @@ def postgres_table_names(connection: psycopg.Connection, schema: str) -> frozens
 
 
 def verify_source_tables(connection: sqlite3.Connection) -> None:
-    """Refuse any SQLite table that has no recorded decision."""
     tables = sqlite_table_names(connection)
     migrated = {spec.name for spec in MIGRATED_TABLES}
     unmapped = sorted(tables - migrated - set(SOURCE_DECISIONS))
@@ -227,7 +215,6 @@ def verify_source_tables(connection: sqlite3.Connection) -> None:
 def build_mappings(
     source: sqlite3.Connection, target: psycopg.Connection, schema: str
 ) -> tuple[TableMapping, ...]:
-    """Derive column mappings from both catalogs; any drift refuses."""
     verify_source_tables(source)
     target_tables = postgres_table_names(target, schema)
     if target_tables != EXPECTED_TARGET_TABLES:

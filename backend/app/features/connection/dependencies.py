@@ -1,5 +1,3 @@
-"""Controller-owned connection store and topology coordinator injection."""
-
 from fastapi import FastAPI
 
 from backend.app.features.cameras.edge_topology_sync_state import EdgeTopologySyncStateStore

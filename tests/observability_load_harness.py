@@ -1,9 +1,3 @@
-"""Measurement-only observability load harness (Gate M/V).
-
-Numbers written here are the only source for deployment budgets. Product
-code must not invent thresholds from this harness.
-"""
-
 from __future__ import annotations
 
 import json
@@ -43,7 +37,7 @@ def _free_tcp_port() -> int:
 
 
 class ObservabilityLoadSkip(RuntimeError):
-    """Operator-gated tools or the recorded stream path are missing."""
+    ...
 
 
 @dataclass
@@ -358,12 +352,6 @@ def run_measurement(
     audit_runtime: PostgresAuditRuntime,
     diagnostics_schema: str,
 ) -> Path:
-    """Run one N-stream measurement and write ``obs-<N>.json`` under ``output_dir``.
-
-    Missing operator tools skip via ``ObservabilityLoadSkip``. The document
-    records measurements only; callers must not assert numeric thresholds.
-    The backend serves on the caller's PostgreSQL sandbox root.
-    """
     if streams < 1:
         raise ValueError("streams must be a positive integer")
     if duration_sec <= 0:

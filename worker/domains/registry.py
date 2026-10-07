@@ -1,9 +1,3 @@
-"""Compiled, versioned detection-module registry.
-
-The definitions in this module describe detection semantics only. Infrastructure
-profiles decide where the declared components run; they never change this graph.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
@@ -45,10 +39,6 @@ from worker.pipeline.analytics.merge import result_merger_names
 from worker.types import CURRENT_TEMPORAL_PROFILE
 
 AVAILABLE_OBSERVATION_CHANNELS = frozenset({"person_boxes", "poses", "track_ids", "bed_regions"})
-# person/bed identities are the official ultralytics/assets release v8.4.0
-# artifacts `yolo26n.pt` and `yolo26l-seg.pt`; re-derive with sha256sum.
-# Concrete compiled expectations; runtime provisioning resolves and verifies
-# the applied identity before any camera graph can activate.
 _COMPONENT_ARTIFACT_DIGESTS = MappingProxyType(
     {
         "pose": "eb3bb8268828aeaf515cec23a4bfafd793944a86fe9af94ba7823609c14522a9",
@@ -64,7 +54,6 @@ _COMPONENT_PREPROCESSING = MappingProxyType(
     }
 )
 
-# Compatibility aliases are explicit data, not composition-root dispatch.
 EXTERNAL_DOMAIN_MODULE_IDS: Mapping[str, str] = MappingProxyType(
     {
         "fall": "fall",
@@ -75,8 +64,6 @@ EXTERNAL_DOMAIN_MODULE_IDS: Mapping[str, str] = MappingProxyType(
 
 @dataclass(frozen=True, slots=True)
 class DomainRegistration:
-    """Legacy view kept for source compatibility during registry migration."""
-
     domain: str
     input_view: str
     event_types: frozenset[str]
@@ -273,7 +260,6 @@ def _fall(context: CameraModuleContext) -> FallDomainDecider:
 def _effective_transition_threshold(
     model: object, effective_policy: EffectivePolicy
 ) -> _EffectiveFallPolicy:
-    """Resolve receipt operating parameters under one precedence rule."""
     policy = effective_policy.values
     if not isinstance(policy, FallPolicyV2):
         raise TypeError("fall requires a typed fall.policy.v2 effective policy")
@@ -457,10 +443,6 @@ _BED_EXIT_V1 = DetectionModuleDefinition(
     schedule_rules=(
         ScheduleRule("pose", "camera-frame-stride"),
         ScheduleRule("person", "camera-frame-stride"),
-        # The persisted polygon is the only runtime bed truth, so bed
-        # segmentation is never scheduled per frame: the extractor stays
-        # provisioned only for the on-demand recognize route, whose result an
-        # operator persists explicitly.
         ScheduleRule("bed", "on-demand"),
     ),
     policy_schema=PolicySchemaIdentity("bed_exit.policy", 1),
@@ -484,7 +466,6 @@ DETECTION_MODULE_REGISTRY = compile_detection_module_registry(
     output_adapter_ids=result_merger_names(),
     temporal_profile=CURRENT_TEMPORAL_PROFILE,
 )
-# Temporary source-compatible view while external callers move to the compiled registry.
 DOMAIN_REGISTRY: Mapping[str, DomainRegistration] = MappingProxyType(
     {
         definition.module_id: DomainRegistration(
@@ -513,11 +494,6 @@ def enabled_domains() -> tuple[str, ...]:
 
 
 FALL_MODULE_QUALIFIED_ID: Final = "fall.v2"
-"""Qualified id of the compiled fall module (module_id.v{version}).
-
-Stamped on every fall decision's trace id; must equal the registry definition
-below, which a test pins.
-"""
 
 
 __all__ = [

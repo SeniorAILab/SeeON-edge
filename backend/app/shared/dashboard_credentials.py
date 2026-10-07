@@ -1,12 +1,3 @@
-"""Persisted dashboard login credentials (scrypt-hashed).
-
-Separate from the in-memory ``DashboardSessionStore`` in ``dashboard_auth.py``:
-this module only knows how to hash and verify one username/password pair;
-``postgres_dashboard_credentials.py`` stores it durably. ``dashboard_auth.py``
-decides *when* to consult it (persisted row wins over a fully-set env bootstrap
-pair). There is no built-in password default.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -61,11 +52,7 @@ class PersistedDashboardCredentials:
 
 
 class DashboardCredentialsStoreError(RuntimeError):
-    """Persisted credential state exists but cannot be read safely.
-
-    Callers must fail closed: never fall back to env or any default pair after
-    a rotation-capable store has become unreadable or corrupt.
-    """
+    ...
 
 
 __all__ = ["DashboardCredentialsStoreError", "PersistedDashboardCredentials"]

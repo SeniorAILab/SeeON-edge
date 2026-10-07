@@ -1,5 +1,3 @@
-"""Geometry observation and physical-batch histograms for pose inference."""
-
 from __future__ import annotations
 
 import logging
@@ -42,11 +40,6 @@ class InferenceTelemetryCounters:
 
 @final
 class InferenceGeometryTelemetry:
-    """Accumulate last-seen geometries and physical model-call histograms.
-
-    Mutation is the documented purpose: one ledger per coordinator lifetime.
-    """
-
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._observed: dict[str, FrameGeometry] = {}
@@ -55,7 +48,6 @@ class InferenceGeometryTelemetry:
         self._forward_times: deque[float] = deque(maxlen=1024)
 
     def observe_geometry(self, camera_id: str, geometry: FrameGeometry) -> None:
-        """Record one camera's latest frame geometry and warn on a change."""
         with self._lock:
             previous = self._observed.get(camera_id)
             self._observed[camera_id] = geometry
@@ -78,14 +70,12 @@ class InferenceGeometryTelemetry:
     def record_physical_batch(
         self, geometry: FrameGeometry, batch_size: int, elapsed_sec: float
     ) -> None:
-        """Count one successful homogeneous model call."""
         with self._lock:
             self._batch_sizes[batch_size] += 1
             self._geometry_batch_sizes.setdefault(geometry, Counter())[batch_size] += 1
             self._forward_times.append(elapsed_sec)
 
     def counters(self) -> InferenceTelemetryCounters:
-        """Return a frozen copy of accumulated inference telemetry."""
         with self._lock:
             times = tuple(self._forward_times)
             observed = dict(self._observed)

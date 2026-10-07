@@ -27,7 +27,6 @@ def test_confirmation_classifies_upstream_auth_and_conflict_statuses(
     status_code: int,
     reason: TopologyPauseReason,
 ) -> None:
-    # Given
     captured: list[tuple[str, str, dict[str, str], bytes]] = []
 
     def request(
@@ -50,10 +49,8 @@ def test_confirmation_classifies_upstream_auth_and_conflict_statuses(
         1.0,
     )
 
-    # When
     result = client.confirm(SNAPSHOT_ID, TopologyConfirmation(CONFIRMATION_ID, "a" * 64, 7))
 
-    # Then
     assert result == TopologyPaused(reason, status_code)
     assert captured == [
         (

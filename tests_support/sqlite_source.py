@@ -1,12 +1,3 @@
-"""The old schema-19 SQLite database, as a migration source fixture only.
-
-PostgreSQL is the only durable store. A deployed edge may still hold an
-``edge.sqlite3`` written by the retired runtime, and the migration tool reads it
-once. This module recreates that file for the migration tests without the
-retired bootstrap, and holds the lock the old runtime took while it ran. No
-runtime package may import it (import-linter and tests/test_edge_db_ddl_boundary.py).
-"""
-
 from __future__ import annotations
 
 import fcntl
@@ -23,7 +14,6 @@ from shared.release_identity import EDGE_DATABASE_SCHEMA_VERSION
 
 
 def create_schema19_source(path: Path) -> Path:
-    """Create a fresh WAL-mode schema-19 database with ledger row 19 only."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     path.parent.chmod(0o700)
     os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
@@ -53,7 +43,6 @@ def create_schema19_source(path: Path) -> Path:
 
 
 def open_source_writer(source: Path) -> sqlite3.Connection:
-    """A raw writer on the old database; with no auto-checkpoint its commits stay in the WAL."""
     connection = sqlite3.connect(source, isolation_level=None)
     register_edge_db_functions(connection)
     connection.execute("PRAGMA foreign_keys = ON")
@@ -63,7 +52,6 @@ def open_source_writer(source: Path) -> sqlite3.Connection:
 
 @contextmanager
 def hold_runtime_lock(source: Path) -> Iterator[None]:
-    """Hold the deployment lock shared, as the old runtime did while any connection was open."""
     descriptor = os.open(source.parent / "deployment.lock", os.O_CREAT | os.O_RDWR, 0o600)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)

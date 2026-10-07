@@ -1,5 +1,3 @@
-"""Subprocess coverage for the read-only edge diagnostic script."""
-
 from __future__ import annotations
 
 import json

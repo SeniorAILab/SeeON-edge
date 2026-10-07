@@ -1,18 +1,3 @@
-"""The relay acknowledges an alert only after its admission COMMIT.
-
-Real PostgreSQL product sandbox, real ``/api/v1/relay/alerts`` route, real
-``EdgeIngestClient`` and the contract-exact Hub fixture over loopback HTTP.
-Faults are real PostgreSQL errors raised by triggers, the repo's post-COMMIT
-``CommitOutcomeUnknown`` seam, or the product fence (``freeze_authority``).
-Oracles read committed rows through the sandbox admin connection and Hub
-requests through the fixture route ledger, never through the stores under test.
-
-The request-path claim that follows admission (``OutboxDelivery.claim_event``)
-is also checked directly as a component on the same sandbox: each delivery
-state is reached through accept/claim/finish, and only lease expiry is aged by
-a raw UPDATE, because no public API ages a lease without waiting.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -97,7 +82,6 @@ def _central_receipt(fixture: LocalBackendFixture) -> dict[str, str]:
 
 
 def _restarted_audit_runtime(sandbox: ProductSandbox) -> PostgresAuditRuntime:
-    # The same construction as the postgres_audit_runtime fixture: a new process.
     runtime = PostgresAuditRuntime(
         PostgresAuditStore(sandbox.database, sandbox.authority),
         maximum_snapshot_age_sec=10,
@@ -122,28 +106,22 @@ def _unknown_after_admission_commit(
 def test_fault_before_commit_is_not_acknowledged_and_retry_commits_once(
     postgres_product_sandbox: ProductSandbox, postgres_audit_runtime: PostgresAuditRuntime
 ) -> None:
-    # Given: the outbox insert, after the incident insert in the same admission
-    # transaction, fails in PostgreSQL.
     sandbox = postgres_product_sandbox
     with ServedFixture() as served:
         client = relay_client(served.origin, sandbox, postgres_audit_runtime)
         fail_inserts(sandbox, "event_outbox")
 
-        # When: the worker posts the alert.
         refused = _post_alert(client)
 
-        # Then: no ACK, the incident rolled back with it, no audit fact, no Hub send.
         assert (refused.status_code, refused.content) == (503, b"")
         assert row_counts(sandbox) == (0, 0)
         assert _relay_audit_rows(sandbox) == 0
         assert _hub_sends(served.fixture) == 0
 
-        # When: PostgreSQL recovers and the worker retries the same alert.
         clear_insert_fault(sandbox, "event_outbox")
         assert postgres_audit_runtime.verify_once()
         retried = _post_alert(client)
 
-        # Then: one incident, one delivered outbox row, one audit fact, one Hub send.
         assert retried.status_code == 202
         assert retried.json() == _central_receipt(served.fixture)
         assert row_counts(sandbox) == (1, 1)
@@ -155,30 +133,23 @@ def test_fault_before_commit_is_not_acknowledged_and_retry_commits_once(
 def test_fault_after_commit_is_not_acknowledged_and_retry_delivers_the_committed_row(
     postgres_product_sandbox: ProductSandbox, postgres_audit_runtime: PostgresAuditRuntime
 ) -> None:
-    # Given: the admission commits, then the delivery claim that follows it
-    # fails in PostgreSQL before any Hub request or response.
     sandbox = postgres_product_sandbox
     with ServedFixture() as served:
         client = relay_client(served.origin, sandbox, postgres_audit_runtime)
         fail_inserts(sandbox, "event_delivery_attempts")
 
-        # When: the worker posts the alert.
         refused = _post_alert(client)
 
-        # Then: no ACK, yet the incident and its pending delivery obligation stay committed.
         assert (refused.status_code, refused.content) == (503, b"")
         assert row_counts(sandbox) == (1, 1)
         assert outbox_rows(sandbox) == [(EDGE_EVENT_ID, "PENDING", CAMERA_ID, 0)]
         assert _relay_audit_rows(sandbox) == 1
         assert _hub_sends(served.fixture) == 0
 
-        # When: PostgreSQL recovers and the worker retries the same alert.
         clear_insert_fault(sandbox, "event_delivery_attempts")
         assert postgres_audit_runtime.verify_once()
         retried = _post_alert(client)
 
-        # Then: the retry lands on the committed row: no second incident, no
-        # second audit fact, one Hub send, and the audit chain still verifies.
         assert retried.status_code == 202
         assert retried.json() == _central_receipt(served.fixture)
         assert row_counts(sandbox) == (1, 1)
@@ -194,7 +165,6 @@ def test_unknown_commit_outcome_is_not_acknowledged_and_restart_retry_delivers_o
     postgres_audit_runtime: PostgresAuditRuntime,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Given: the admission COMMIT lands in PostgreSQL but its outcome is lost.
     sandbox = postgres_product_sandbox
     with ServedFixture() as served:
         client = relay_client(served.origin, sandbox, postgres_audit_runtime)
@@ -205,11 +175,8 @@ def test_unknown_commit_outcome_is_not_acknowledged_and_restart_retry_delivers_o
                 _unknown_after_admission_commit(sandbox.database.transact),
             )
 
-            # When: the worker posts the alert.
             refused = _post_alert(client)
 
-        # Then: no ACK is invented; the committed rows stay, nothing was sent,
-        # and the audit runtime latches indeterminate until the process restarts.
         assert (refused.status_code, refused.content) == (503, b"")
         assert row_counts(sandbox) == (1, 1)
         assert outbox_rows(sandbox) == [(EDGE_EVENT_ID, "PENDING", CAMERA_ID, 0)]
@@ -218,14 +185,12 @@ def test_unknown_commit_outcome_is_not_acknowledged_and_restart_retry_delivers_o
         assert postgres_audit_runtime.snapshot().indeterminate
         assert not postgres_audit_runtime.verify_once()
 
-        # When: the relay restarts on a fresh audit runtime and the worker retries.
         restarted = _restarted_audit_runtime(sandbox)
         app = relay_postgres_app(
             sandbox, restarted, client=hub_client(served.origin), camera_id=None
         )
         retried = _post_alert(TestClient(app))
 
-        # Then: one incident, one audit fact, one Hub send, and the chain verifies.
         assert retried.status_code == 202
         assert retried.json() == _central_receipt(served.fixture)
         assert row_counts(sandbox) == (1, 1)
@@ -238,16 +203,13 @@ def test_unknown_commit_outcome_is_not_acknowledged_and_restart_retry_delivers_o
 def test_fenced_authority_is_not_acknowledged_and_commits_nothing(
     postgres_product_sandbox: ProductSandbox, postgres_audit_runtime: PostgresAuditRuntime
 ) -> None:
-    # Given: the deployment owner fenced this edge's persistence authority.
     sandbox = postgres_product_sandbox
     with ServedFixture() as served:
         client = relay_client(served.origin, sandbox, postgres_audit_runtime)
         freeze_authority(sandbox.database, sandbox.authority)
 
-        # When: the worker posts the alert.
         refused = _post_alert(client)
 
-        # Then: the refusal is named, nothing is committed and nothing is sent.
         assert refused.status_code == 503
         assert refused.json() == {"detail": "edge authority is fenced"}
         assert row_counts(sandbox) == (0, 0)
@@ -255,8 +217,6 @@ def test_fenced_authority_is_not_acknowledged_and_commits_nothing(
         assert _hub_sends(served.fixture) == 0
 
 
-# The request-path sender: a live lease outlasts the test and a finished retry
-# is scheduled well past it, so no row turns due or stale by waiting.
 _SENDER_BUDGET = DeliveryBudget(
     max_attempts=3, lease_seconds=30.0, request_timeout_seconds=10.0, retry_seconds=600.0
 )
@@ -302,9 +262,6 @@ def _reach_rejected(sandbox: ProductSandbox, outbox: EventOutbox, sender: Outbox
 
 def _reach_exhausted(sandbox: ProductSandbox, outbox: EventOutbox, sender: OutboxDelivery) -> None:
     _admit(outbox)
-    # An earlier sender with a one-attempt budget spent it. With an equal budget
-    # _claim_row's attempt bound would also refuse the row; the claimer's larger
-    # budget leaves only the eligibility filter between it and the terminal row.
     spent = OutboxDelivery(
         sandbox.database, sandbox.authority, replace(_SENDER_BUDGET, max_attempts=1)
     )
@@ -324,8 +281,6 @@ def _reach_expired_lease(
     sandbox: ProductSandbox, outbox: EventOutbox, sender: OutboxDelivery
 ) -> None:
     _reach_live_lease(sandbox, outbox, sender)
-    # Raw UPDATE: no public API ages a lease without waiting, so only the
-    # deadline of the lease claim() just committed moves into the past.
     sandbox.admin.execute(
         "UPDATE event_outbox SET lease_until = clock_timestamp() - interval '1 second' "
         "WHERE edge_event_id = %s",
@@ -341,7 +296,6 @@ def _reach_retry_scheduled(
 
 
 def _delivery_history(sandbox: ProductSandbox) -> tuple[Any, list[tuple[Any, ...]]]:
-    """(state, attempts, lease live, retry due), then each attempt's committed result."""
     row = sandbox.admin.execute(
         "SELECT state, attempt_count, coalesce(lease_until > clock_timestamp(), false), "
         "retry_at <= clock_timestamp() FROM event_outbox WHERE edge_event_id = %s",
@@ -398,12 +352,6 @@ def test_claim_event_claims_only_eligible_rows(
     claimed: tuple[str, int] | None,
     after: tuple[Any, list[tuple[Any, ...]]],
 ) -> None:
-    # Oracle: ADR 0009 "Only eligible pending rows are claimable by the sender",
-    # and the claim_event docstring: a PENDING row is claimable before its retry
-    # time, a live lease belongs to another sender. An expired lease is reclaimed
-    # with the old attempt's durable UNKNOWN/LEASE_EXPIRED result.
-    # Given: the one accepted event reached its delivery state through the
-    # public accept/claim/finish APIs and committed it.
     sandbox = postgres_product_sandbox
     outbox = EventOutbox(
         sandbox.database,
@@ -415,9 +363,7 @@ def test_claim_event_claims_only_eligible_rows(
     reach(sandbox, outbox, sender)
     assert _delivery_history(sandbox) == before
 
-    # When: the request path claims that event by its ID.
     claim = sender.claim_event(EDGE_EVENT_ID)
 
-    # Then: only an eligible row yields a claim, and an ineligible row is untouched.
     assert (None if claim is None else (claim.edge_event_id, claim.ordinal)) == claimed
     assert _delivery_history(sandbox) == after

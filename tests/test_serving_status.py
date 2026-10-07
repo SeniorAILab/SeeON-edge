@@ -54,8 +54,6 @@ def test_status_defaults_to_never_seen_without_heartbeats(app: FastAPI) -> None:
 
 
 def test_status_does_not_read_worker_runtime_state(app: FastAPI) -> None:
-    # /api/v1/status must derive purely from the api-owned heartbeat store, never from a
-    # worker runtime object (zero cross-boundary shared state).
     body = TestClient(app).get("/api/v1/status").json()
     assert body["cameras"] == {}
     assert body["stale_after_sec"] == HeartbeatStore().stale_after_sec

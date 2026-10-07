@@ -1,11 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# ///
-# --- How to run ---
-# CANARY_RELAY_TOKEN=<run-token> CANARY_RECEIPT_DIR=<dir> python relay_stub.py
-
-"""Egress-free canary relay sink that stores exact request bytes."""
-
 from __future__ import annotations
 
 import hashlib

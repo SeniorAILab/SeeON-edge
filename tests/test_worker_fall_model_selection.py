@@ -1,30 +1,3 @@
-"""Issue #43: the fall model has no implicit fallback.
-
-Before this change, ``WorkerRuntime._create_fall_model`` fell through to
-``self._serving.create("fall")`` whenever ``config.models.fall`` was unset --
-silently swapping in whatever the process-wide model registry happened to
-provide (historically a random-forest classifier). "Which model ran that
-night" must never be answered by an unconfigured default, so the fallback is
-gone entirely: an operator who omits ``models.fall`` now gets a refused boot
-(``REFUSE_TO_START_EXIT_CODE``, not the generic runtime code), and the
-configured packaged-bundle path is otherwise unchanged.
-
-This file covers three levels: (1) the unit-level refusal, proving it never
-even reaches the serving client; (2) the unit-level configured path, proving
-``PoseBbox56BundleRunner.from_artifact_dir`` receives exactly the artifact
-the config declares and is always pinned to the CPU; (3) the full
-``WorkerRuntime.run()`` integration path,
-proving the refusal surfaces as ``SystemExit`` with the refuse-to-start code
-and activates zero cameras.
-
-Issue #65 moved the actual family dispatch behind
-``worker.adapters.model.fall_family_registry.DEFAULT_FALL_MODEL_FAMILY_REGISTRY``
-(keyed by ``FallModelConfig.type``). The registry's own plug-in and
-unknown-type-refusal contracts are covered separately in
-``tests/test_fall_model_family_registry.py``; this file's scope stays #43's
-none-config refusal plus the configured packaged-bundle behavior.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -69,10 +42,6 @@ from worker.tools.fetch_models.fetcher import VerificationError, _require_loadab
 
 @final
 class _ForbiddenServingClient:
-    """Fails the test immediately if fall-model construction ever reaches the
-    serving client -- proving the refusal happens before any fallback model
-    could be requested."""
-
     def create(self, task: str, **_options: object) -> object:
         raise AssertionError(f"fall model refusal must not call serving.create({task!r})")
 
@@ -135,10 +104,6 @@ def _rewrite_packaged_json_member(
 
 @final
 class _YoloOnlyServingClient:
-    """Provides pose/person/bed runners (consumed before the fall model is
-    ever constructed) but must never be asked for "fall": the refusal is
-    unconditional, not something that reaches the registry."""
-
     def create(self, task: str, **_options: object) -> _FakeRunner:
         if task == "fall":
             raise AssertionError("fall model refusal must not call serving.create('fall')")
@@ -228,10 +193,6 @@ def _selected_onnx_bundle(
     temporal_rule: object = None,
 ) -> tuple[Path, DesiredModelBundle]:
     source = write_pose_bbox56_bundle(tmp_path / "source", temperature=temperature)
-    # A selection that declares its threshold comes from the receipt must be
-    # backed by the calibration: a real promoted publication states
-    # promotion_eligible and the granted threshold there. Write that in, so
-    # the fixture is what such a publication looks like.
     grants_receipt = threshold_source == "receipt"
     if calibration_grants is None and grants_receipt:
         calibration_grants = (True, transition_threshold)
@@ -753,9 +714,6 @@ def test_flow_composition_uses_the_loaded_bundle_published_weights_digest(tmp_pa
     )
 
     assert fall.artifact_digest == runtime._packaged_fall_member_digest()
-    # The swap proof: this synthetic bundle's digest is NOT the shipped model's,
-    # and the manifest names it anyway, with no identity refusal and no code
-    # change. Changing the model alone changes what the receipts name.
     shipped = "7bb75a2932e1a1250dc900013b2c80b220de5e23f3ea568e05f1db21d0a757e3"
     assert fall.artifact_digest != shipped
     assert len(fall.artifact_digest) == 64
@@ -1012,12 +970,6 @@ def test_selected_preprocessing_contradiction_refuses_construction(tmp_path: Pat
 
 
 def test_selected_default_source_with_a_non_default_threshold_refuses(tmp_path: Path) -> None:
-    """A selection that says 'default' must declare the default.
-
-    Otherwise the policy honours the source word and runs at 0.5 while the
-    declared number the owner read is silently discarded. The contradiction
-    refuses at construction, naming both numbers.
-    """
     models_root, desired = _selected_onnx_bundle(tmp_path)
     selection = desired.selection
     assert selection is not None
@@ -1033,8 +985,6 @@ def test_selected_default_source_with_a_non_default_threshold_refuses(tmp_path: 
 
 
 def test_selected_receipt_claim_refuses_when_the_calibration_grants_none(tmp_path: Path) -> None:
-    """The word 'receipt' in a deployment document cannot grant what the
-    publisher did not: a non-promotable calibration refuses the claim."""
     models_root, desired = _selected_onnx_bundle(
         tmp_path, threshold_source="receipt", calibration_grants=(False, 0.5)
     )
@@ -1055,8 +1005,6 @@ def test_selected_receipt_claim_refuses_when_the_calibration_grants_none(tmp_pat
 def test_selected_receipt_claim_refuses_when_the_granted_threshold_differs(
     tmp_path: Path,
 ) -> None:
-    """The receipt is the calibration, not the selection: a declared receipt
-    threshold the calibration did not grant refuses naming both."""
     models_root, desired = _selected_onnx_bundle(
         tmp_path,
         threshold_source="receipt",
@@ -1078,12 +1026,6 @@ def test_selected_receipt_claim_refuses_when_the_granted_threshold_differs(
 
 
 def test_selected_output_contract_mismatch_refuses_construction(tmp_path: Path) -> None:
-    """A selection declares its output class count; this runner implements one.
-
-    A replacement that emits a different class count is a different structure,
-    and must refuse here rather than have its logit read as if it were this
-    runner's single fall-transition score - a silent wrong answer.
-    """
     models_root, desired = _selected_onnx_bundle(tmp_path)
     selection = desired.selection
     assert selection is not None
@@ -1150,7 +1092,6 @@ def test_selected_bundle_refuses_calibration_class_order_with_wrong_count(tmp_pa
 
 
 def test_bundle_runner_refuses_a_non_cpu_device(tmp_path: Path) -> None:
-    """P1a-AC6b: the packaged fall runner is CPU-only; a GPU request is a boot error."""
     artifact_dir = write_pose_bbox56_bundle(tmp_path / "bundle")
     with pytest.raises(Exception, match="pinned to cpu"):
         PoseBbox56BundleRunner.from_artifact_dir(artifact_dir, device="cuda")

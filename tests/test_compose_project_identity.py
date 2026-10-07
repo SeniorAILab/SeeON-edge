@@ -1,18 +1,3 @@
-"""The stack must never guess which `edge-state` volume it is binding.
-
-Compose derives the project name from the checkout directory unless told
-otherwise, and the volume is named `<project>_edge-state`. This host already
-carries `edge_edge-state`, `seeon-edge-wt-alert-api_edge-state` and
-`seeon-prod-edge-state`, so a default-derived name is not a cosmetic difference:
-running from a checkout named `SeeON-edge` would bind `seeon-edge_edge-state`,
-an empty volume. A cutover would then migrate a fresh database, report success,
-and leave the live one untouched with its 1143 undelivered events.
-
-`compose.edge.yaml` therefore requires `COMPOSE_PROJECT_NAME` rather than
-defaulting it, so the failure is a refusal at config time instead of a silent
-bind to the wrong data.
-"""
-
 from __future__ import annotations
 
 import re
@@ -24,7 +9,6 @@ _PROD_EXAMPLE = _ROOT / ".env.edge.prod.example"
 
 
 def test_the_project_name_is_required_and_never_defaulted() -> None:
-    """`:?` not `:-`. A default is what makes the wrong bind silent."""
     compose = _COMPOSE.read_text(encoding="utf-8")
 
     match = re.search(
@@ -40,7 +24,6 @@ def test_the_project_name_is_required_and_never_defaulted() -> None:
 
 
 def test_the_production_example_declares_the_project_name() -> None:
-    """An operator copying the example must not have to discover this."""
     example = _PROD_EXAMPLE.read_text(encoding="utf-8")
 
     assert "COMPOSE_PROJECT_NAME=" in example, (
@@ -51,12 +34,6 @@ def test_the_production_example_declares_the_project_name() -> None:
 
 
 def test_the_state_volume_is_not_declared_external_or_renamed() -> None:
-    """The volume must stay `<project>_edge-state`, derived from the project.
-
-    Pinning an explicit external name here would decouple the volume from the
-    project and reintroduce exactly the ambiguity the required project name
-    closes.
-    """
     compose = _COMPOSE.read_text(encoding="utf-8")
 
     volumes_section = compose.split("\nvolumes:", 1)

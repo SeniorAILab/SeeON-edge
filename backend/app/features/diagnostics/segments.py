@@ -1,5 +1,3 @@
-"""OPEN segment assignment and byte-threshold sealing for one ingest batch."""
-
 from __future__ import annotations
 
 import psycopg
@@ -14,24 +12,13 @@ _Lane = tuple[str, str, int, int]
 
 
 class SegmentAllocator:
-    """Assign records to their lane's OPEN segment within one ingest transaction.
-
-    The OPEN segment of each lane is read once and then tracked in memory;
-    count and byte increments are buffered until ``flush``. Sealing and
-    opening the next segment are written immediately, so segment ids are
-    allocated in the same order as a per-record assignment would. Only this
-    allocator may write execution_segments while it is live.
-    """
-
     def __init__(
         self, connection: psycopg.Connection, budget: RetentionBudget, now_ns: int
     ) -> None:
         self._connection = connection
         self._budget = budget
         self._now_ns = now_ns
-        # lane -> [segment_id, payload_bytes, segment_ordinal] of its OPEN segment
         self._open: dict[_Lane, list[int] | None] = {}
-        # segment_id -> [record_count, payload_bytes] not yet written
         self._pending: dict[int, list[int]] = {}
 
     def assign(self, record: ExecutionRecordInput, payload_bytes: int) -> int:

@@ -1,5 +1,3 @@
-"""Local-only requested-versus-actual decode observability contracts."""
-
 from __future__ import annotations
 
 import logging

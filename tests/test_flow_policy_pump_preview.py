@@ -31,8 +31,6 @@ def _sync_preview(pump: NativePolicyPump, decider: object) -> None:
 
 
 class _ImmediateClassifier:
-    """Scores every live track on every call, so no track is ever "not scored"."""
-
     def __init__(self) -> None:
         self.current_call_missing_score_reasons: dict[int, str] = {}
 
@@ -43,8 +41,6 @@ class _ImmediateClassifier:
 
 
 class _SilentClassifier:
-    """Never scores: every live track is warming on every call, and says so."""
-
     def __init__(self) -> None:
         self.current_call_missing_score_reasons: dict[int, str] = {}
 
@@ -177,8 +173,6 @@ def test_open_episode_stays_suspected_through_a_score_gap_after_votes_age_out() 
         emitted += decider.update({9: onset}, (9,), frame_index=frame, time_sec=float(frame))
     assert len(emitted) == 1
 
-    # Every vote in the deque ages out with sub-threshold transition scores
-    # while the episode authority still holds the OPEN episode.
     quiet = FallProbabilities(0.9, 0.1, 0.5)
     for frame in range(3, 9):
         _ = decider.update({9: quiet}, (9,), frame_index=frame, time_sec=float(frame))

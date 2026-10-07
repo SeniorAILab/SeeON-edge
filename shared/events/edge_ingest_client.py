@@ -1,5 +1,3 @@
-"""Backend Event API HTTP client shared by the API relay and edge worker."""
-
 from __future__ import annotations
 
 import json
@@ -31,11 +29,6 @@ class _PublishedEvent(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class IngestSendResult:
-    """Classified outcome of a single ingest POST, for callers (story G005's
-    heartbeat relay) that need more than a bare bool to report *why* a send
-    failed, not just that it did.
-    """
-
     ok: bool
     error_class: IngestErrorClass | None
 
@@ -86,9 +79,6 @@ class EdgeIngestClient:
         ).as_dict()
         if clip_id is not None and clip_id.strip() != "":
             payload["clip_id"] = clip_id
-        # dict is invariant in its value type, so RelayAlertPayload
-        # (dict[str, str | int | float]) is not a dict[str, object]. Widen
-        # explicitly at the boundary rather than loosening _post_json.
         response = self._post_json(self.events_url, dict(payload))
         if response is None:
             self._increment_failure()
@@ -134,8 +124,6 @@ class EdgeIngestClient:
         if isinstance(result, EventReceipt):
             if on_accepted is not None and accepted_at is not None:
                 on_accepted(accepted_at)
-            # An accepted_local receipt has no upstream id, so there is no
-            # snapshot resource to PUT to; `{events_url}//snapshot` is not one.
             if snapshot_bytes is not None and result.event_id != "":
                 self._put_snapshot(
                     _join_url(self.events_url, f"{result.event_id}/snapshot"), snapshot_bytes
@@ -194,8 +182,6 @@ class EdgeIngestClient:
                 response.read()
         except urllib.error.HTTPError as exc:
             self._increment_failure()
-            # Annotated so the ternary keeps the Literal type instead of widening
-            # to str, which is what IngestSendResult.error_class requires.
             error_class: Literal["auth", "unreachable"] = (
                 "auth" if exc.code in (401, 403) else "unreachable"
             )
@@ -300,13 +286,6 @@ def _event_clip_id(event: EventPayload) -> str | None:
 
 
 class _AuditPayloadFields(TypedDict, total=False):
-    """The optional EventApiPayload audit fields, typed so ** unpacking checks.
-
-    A plain dict[str, object] cannot be verified against EventApiPayload's
-    int/str/float parameters, which is what mypy was reporting; each value is
-    narrowed here instead of being asserted at the call site.
-    """
-
     config_version: int
     model_version: str
     detector_version: str
@@ -318,11 +297,6 @@ def _audit_payload_fields(audit: dict[str, object] | None) -> _AuditPayloadField
     fields: _AuditPayloadFields = {}
     if audit is None:
         return fields
-    # The Hub stores config_version as a nullable INT4 column. The edge token
-    # is opaque and can exceed the INT4 range once a detection policy is
-    # applied (base_version * 1e9 + policy hash), which made the Hub 500
-    # every alert. Forward it only when it fits; the full value still lives
-    # in the edge audit log, and the Hub column is left null otherwise.
     config_version = audit.get("config_version")
     if isinstance(config_version, int) and 0 <= config_version <= _HUB_INT4_MAX:
         fields["config_version"] = config_version

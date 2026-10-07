@@ -1,5 +1,3 @@
-"""Bounded policy-input coverage observations for one native camera pump."""
-
 from __future__ import annotations
 
 import logging
@@ -46,8 +44,6 @@ class ObservationRecovery:
 
 
 class ObservationCoverage:
-    """Track only the latest actual input and at most one open coverage gap."""
-
     def __init__(
         self,
         binding: SourceBinding,

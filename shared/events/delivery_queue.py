@@ -1,5 +1,3 @@
-"""Filesystem-backed, publish-once delivery queue for edge relay envelopes."""
-
 from __future__ import annotations
 
 import base64
@@ -23,10 +21,6 @@ from shared.events import envelope_limits as limits
 MAX_ACCEPTED_ENTRIES: Final = 4096
 MAX_ACCEPTED_BYTES: Final = 256 * 1024 * 1024
 
-#: Bound on evidence retained after refusal. Unbounded retention is a different
-#: failure with the same cause: the runtime slot filling a disk it shares with
-#: the clip store and the backend database. Sized to the live queue so retention
-#: can never exceed what the queue itself was budgeted for.
 MAX_DEAD_LETTERED_ENTRIES: Final = MAX_ACCEPTED_ENTRIES
 MAX_DEAD_LETTERED_BYTES: Final = MAX_ACCEPTED_BYTES
 _ENTRY_SUFFIX: Final = ".json"
@@ -220,30 +214,17 @@ class DeliveryQueueCapacitySnapshot:
     max_accepted_entries: int
     max_accepted_bytes: int
     by_kind: dict[EntryKind, int]
-    #: Entries the backend refused or that exhausted delivery. They are
-    #: retained on disk, not delivered, and need operator action; a
-    #: deployment cannot act on what it cannot see.
     dead_lettered_count: int = 0
     dead_lettered_bytes: int = 0
-    #: Acceptance time of the oldest live EVENT entry (ISO-8601 UTC), or None
-    #: when no EVENT is queued. This is the stall signal: last_success_at goes
-    #: stale in quiet hours with no events, and CLIP entries wait forever by
-    #: design while clip export is off, so neither can stand in for it.
     oldest_event_accepted_at: str | None = None
 
 
 class DeliveryQueue:
-    """A bounded queue whose published entry files are its only durable state."""
-
     def __init__(self, directory: Path, *, recover: bool = True) -> None:
         self._directory = directory
         created = not directory.exists()
         self._directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         if created:
-            # The directory entry must reach disk before anything is admitted
-            # into it. Without this a power loss can lose the queue directory
-            # name itself, taking every admitted entry with it -- the whole
-            # point of the queue is that those survive.
             _fsync_directory(directory.parent)
         self._thread_lock = threading.Lock()
         self._lock_path = self._directory / ".delivery-queue.lock"
@@ -253,8 +234,6 @@ class DeliveryQueue:
                 self._remove_orphan_temps()
                 self._count, self._bytes = self._scan_totals()
         else:
-            # Capacity is re-derived under the queue lock by admission. Fatal
-            # callers skip blocking recovery so they can use the zero-wait path.
             self._count = 0
             self._bytes = 0
 
@@ -272,7 +251,6 @@ class DeliveryQueue:
 
     @property
     def capacity_snapshot(self) -> DeliveryQueueCapacitySnapshot:
-        """Return one locked, filesystem-derived view of queue capacity."""
         with self._locked():
             paths = tuple(self._published_paths())
             by_kind = dict.fromkeys(EntryKind, 0)
@@ -323,7 +301,6 @@ class DeliveryQueue:
             return self._admit_unlocked(payload, target)
 
     def try_admit_nonblocking(self, entry: DeliveryEntry) -> AdmissionResult:
-        """Attempt one durable admission without waiting for either queue lock."""
         payload = _serialize(entry)
         target = self._entry_path(entry.entry_id)
         with self._try_locked() as acquired:
@@ -355,7 +332,6 @@ class DeliveryQueue:
         return AdmissionResult(True)
 
     def acknowledge(self, entry_id: str) -> bool:
-        """Delete exactly one committed entry; no event cascade is possible."""
         _validate_text(entry_id, limits.ENTRY_ID_MAX_CHARS, "entry_id")
         target = self._entry_path(entry_id)
         with self._locked():
@@ -368,22 +344,9 @@ class DeliveryQueue:
 
     @property
     def dead_letter_directory(self) -> Path:
-        """Where evidence the backend refused is retained for an operator."""
         return self._directory.parent / f"{self._directory.name}-dead-letter"
 
     def dead_letter(self, entry_id: str, status_code: int) -> bool:
-        """Retain a rejected entry outside the live queue instead of deleting it.
-
-        A 422 means the backend refused this payload. Deleting it destroys the
-        evidence and reports success, which is exactly how 41 real bed-exit
-        events were lost in this deployment: the cause was an undeclared field,
-        but the mechanism was this deletion. Fixing one undeclared field does
-        not make the next one safe.
-
-        The entry leaves the live queue so admission bounds still hold, and lands
-        in a sibling directory that survives restart and is visible to an
-        operator. It is never reported as acknowledged.
-        """
         _validate_text(entry_id, limits.ENTRY_ID_MAX_CHARS, "entry_id")
         source = self._entry_path(entry_id)
         with self._locked():
@@ -393,43 +356,19 @@ class DeliveryQueue:
             created = not destination_directory.exists()
             destination_directory.mkdir(parents=True, exist_ok=True)
             if created:
-                # The directory entry itself must survive a crash, or the
-                # retained file has nowhere durable to live.
                 _fsync_directory(destination_directory.parent)
-            # No-clobber. `os.replace` silently overwrites, so re-admitting the
-            # same entry id after an earlier refusal would destroy the first
-            # retained copy -- reintroducing exactly the evidence loss this
-            # directory exists to prevent. A monotonic suffix keeps every
-            # distinct refusal.
             retained = sorted(path for path in destination_directory.iterdir() if path.is_file())
             retained_bytes = sum(path.stat().st_size for path in retained)
             if (
                 len(retained) >= MAX_DEAD_LETTERED_ENTRIES
                 or retained_bytes + source.stat().st_size > MAX_DEAD_LETTERED_BYTES
             ):
-                # Full. Refuse to retain rather than evicting: silently dropping
-                # the oldest refused evidence to make room for the newest is the
-                # deletion this directory exists to prevent, just slower. The
-                # entry stays in the live queue where it is still counted and
-                # still visible, and the operator must drain the retention area.
                 return False
-            # Name as "<status>.<ordinal>.<original>" so the original entry
-            # filename is always recoverable by dropping exactly two leading
-            # components. Appending the disambiguator to the END produced names
-            # like "...json.1", and requeueing one of those wrote a file the
-            # queue's own *.json scan cannot see -- evidence present on disk and
-            # invisible to delivery, which is silent loss wearing a fix's
-            # clothes.
             ordinal = 0
             destination = destination_directory / f"{status_code}.{ordinal}.{source.name}"
             while destination.exists():
                 ordinal += 1
                 destination = destination_directory / f"{status_code}.{ordinal}.{source.name}"
-            # Order matters under power loss. The link must be durable BEFORE
-            # the live copy is removed: unlinking first leaves a window where a
-            # crash loses both names and the evidence is gone for good. Linking
-            # first can at worst leave a duplicate, which the requeue path
-            # already treats as byte-identical and idempotent.
             os.link(source, destination)
             _fsync_directory(destination_directory)
             source.unlink()
@@ -438,20 +377,7 @@ class DeliveryQueue:
             return True
 
     def requeue_dead_lettered(self, retained: Path) -> bool:
-        """Return one retained entry to the live queue under the queue's own lock.
-
-        Writing the file back directly would bypass every property this class
-        provides: the exclusive lock, the capacity bounds, atomic publication,
-        and byte-identical duplicate detection. An operator command repairing an
-        evidence problem must not introduce a worse one.
-
-        Returns False when the live queue cannot accept it, leaving the retained
-        copy untouched so the operation is resumable and nothing is lost.
-        """
         payload = retained.read_bytes()
-        # "<status>.<ordinal>.<original>": drop exactly the two leading
-        # components so the recovered name is the identity the queue admitted
-        # the entry under, and is therefore visible to its own scan.
         _, _, remainder = retained.name.partition(".")
         _, _, original = remainder.partition(".")
         if not original or not original.endswith(_ENTRY_SUFFIX):
@@ -461,11 +387,6 @@ class DeliveryQueue:
             self._count, self._bytes = self._scan_totals()
             if target.exists():
                 if target.read_bytes() == payload:
-                    # The removal happens in the RETENTION directory, so that is
-                    # what must be made durable. Fsyncing the live queue instead
-                    # left the unlink unpersisted: a power loss here resurrects a
-                    # refusal the operator had already cleared, and it blocks the
-                    # cutover gate again.
                     retained.unlink()
                     _fsync_directory(retained.parent)
                     return True
@@ -489,13 +410,6 @@ class DeliveryQueue:
             return True
 
     def acknowledge_backend(self, entry_id: str, status_code: int) -> bool:
-        """Delete entries the backend genuinely holds.
-
-        409 means the backend already has this entry, so removing our copy is
-        correct. 422 is a refusal and is handled by :meth:`dead_letter`; it must
-        never reach here, because deleting refused evidence and calling it
-        acknowledged is indistinguishable from delivering it.
-        """
         if status_code not in {200, 201, 202, 204, 409}:
             return False
         return self.acknowledge(entry_id)

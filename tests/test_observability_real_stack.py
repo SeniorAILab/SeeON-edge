@@ -1,9 +1,3 @@
-"""Operator-gated observability load measurement (Gate M/V).
-
-Skipped, never errored, when mediamtx/ffmpeg/pyservicemaker or OBS_STREAM_PATH
-are missing. Asserts document structure only; never a numeric threshold.
-"""
-
 from __future__ import annotations
 
 import json

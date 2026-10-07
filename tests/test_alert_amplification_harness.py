@@ -181,8 +181,6 @@ def test_temporal_order_requires_a_real_forward_relation() -> None:
         projection_time=3.0,
         uncertainty_ms=10.0,
     )
-    # Reversed projection, reversed attempts, missing timestamp, and malformed
-    # values must all fail closed rather than pass on mere presence.
     assert not validate_temporal_order(
         attempt_times=[1.0],
         receipt_times=[2.0],

@@ -124,13 +124,8 @@ def test_failed_seal_replays_contributors_and_discards_missing_media(tmp_path: P
 
     assert stager.completed == [("one", "clip-1"), ("two", "clip-1")]
     assert restarted.sealed_recovery_missing_media_total == 1
-    # The "clip-1" sidecar is retired once its replay publishes successfully
-    # (issue #578), and "a-missing" was already discarded via the
-    # missing-media path above, so nothing remains pending.
     assert sidecars.pending_for_camera("camera-a") == ()
 
-    # A further restart's replay has nothing left to redo: "clip-1" was
-    # retired above, so it is not republished a second time.
     restarted.replay_sealed()
     assert stager.completed == [("one", "clip-1"), ("two", "clip-1")]
 
@@ -138,12 +133,6 @@ def test_failed_seal_replays_contributors_and_discards_missing_media(tmp_path: P
 def test_a_failing_replay_is_counted_and_never_blocks_activation(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """One stale clip must not cost every camera.
-
-    A live boot refused to activate any camera because a sidecar from the
-    previous run failed to republish. The evidence is already durable, so a
-    failed replay is counted and logged while activation continues.
-    """
     import logging
     from types import SimpleNamespace
 

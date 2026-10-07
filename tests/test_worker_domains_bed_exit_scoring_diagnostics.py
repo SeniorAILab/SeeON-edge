@@ -1,23 +1,12 @@
-"""``BedExitMonitor``'s optional scoring recorder (issue #238).
-
-Mirrors ``test_worker_composite_bed_region_diagnostics.py``'s shape: `update()`
-hands the monitor's own cumulative-since-boot scoring state to an injected
-`scoring_recorder` (a structural match for
-`WorkerDiagnostics.record_bed_exit_scoring`), when one is present. Without one
-(`scoring_recorder=None`, the default) nothing changes. This closes the gap
-#224 left open -- `BedRegionDiagnostics` only says whether the bed region was
-usable, never what `BedExitMonitor` did with it once it was, so a
-zero-bed_exit-events night was indistinguishable between (b) "person never
-scored inside the polygon" and (c) "scored inside, but the exit counter never
-crossed the grace threshold".
-"""
-
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import datetime
 from typing import Final
 from zoneinfo import ZoneInfo
+
+import pytest
 
 from contracts.observation import (
     BedRegionCacheState,
@@ -100,7 +89,6 @@ def _lying_pose() -> FrameBedPoseFeatures:
 
 
 def test_update_without_a_recorder_does_not_crash() -> None:
-    """The default (``scoring_recorder=None``) composition is unchanged."""
     monitor = _monitor()
 
     result = monitor.update(
@@ -116,7 +104,6 @@ def test_update_without_a_recorder_does_not_crash() -> None:
 
 
 def test_never_near_a_bed_reports_near_zero_containment_and_no_assignment() -> None:
-    """Signal (b): max containment stays at 0, nothing is ever assigned."""
     diagnostics = WorkerDiagnostics()
     monitor = _monitor(scoring_recorder=diagnostics)
 
@@ -138,15 +125,6 @@ def test_never_near_a_bed_reports_near_zero_containment_and_no_assignment() -> N
 
 
 def test_assignment_and_exit_are_both_reflected_cumulatively() -> None:
-    """Signal (c): scored inside, assigned, armed, then a genuine exit recorded.
-
-    Mirrors ``test_own_bed_exit_emits_once_after_grace_period`` in
-    tests/test_worker_domains_bed_exit.py's frame sequence, but reads the
-    scoring recorder instead of the returned events. Under the dwell model
-    `grace_positive_transitions` counts posture-confirmed arm transitions
-    (0 -> armed), not raw off-bed frames -- so it needs a lying-pose dwell
-    frame before the exit, not just off-bed frames.
-    """
     diagnostics = WorkerDiagnostics()
     monitor = _monitor(grace_frames=2, scoring_recorder=diagnostics)
 
@@ -164,7 +142,6 @@ def test_assignment_and_exit_are_both_reflected_cumulatively() -> None:
     assert after_assignment.assignments_made == 1
     assert after_assignment.grace_positive_transitions == 0
 
-    # Arm: observed lying in bed for a full in_bed_dwell_sec.
     _ = monitor.update(
         _input(
             person_boxes=(IN_BED_A,),
@@ -190,11 +167,80 @@ def test_assignment_and_exit_are_both_reflected_cumulatively() -> None:
 
     after_exit = diagnostics.bed_exit_scoring_selection(CAMERA_ID)
     assert after_exit is not None
-    # Cumulative-since-boot (matches `BedRegionCacheCounterSnapshot`'s
-    # precedent): the max containment from frame 0 is still visible even
-    # though the person has since left, and `assignments_made` does not
-    # reset just because the assignment was cleared after the exit fired.
     assert after_exit.max_containment_observed == 1.0
     assert after_exit.assignments_made == 1
-    # One 0 -> armed transition, not one per off-bed frame.
     assert after_exit.grace_positive_transitions == 1
+
+
+class _FailingScoringRecorder:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def record_bed_exit_scoring(
+        self,
+        camera_id: str,
+        max_containment_observed: float,
+        grace_positive_transitions: int,
+        assignments_made: int,
+    ) -> None:
+        self.calls += 1
+        raise RuntimeError("scoring telemetry sink is down")
+
+
+def _exit_sequence() -> tuple[DecisionInput, ...]:
+    return (
+        _input(
+            person_boxes=(IN_BED_A,),
+            bed_boxes=(BED_A,),
+            track_ids=(PERSON_ID,),
+            frame_index=0,
+        ),
+        _input(
+            person_boxes=(IN_BED_A,),
+            bed_boxes=(BED_A,),
+            track_ids=(PERSON_ID,),
+            frame_index=1,
+            bed_pose_features=_lying_pose(),
+        ),
+        _input(
+            person_boxes=(OUTSIDE_BEDS,),
+            bed_boxes=(BED_A,),
+            track_ids=(PERSON_ID,),
+            frame_index=2,
+        ),
+        _input(
+            person_boxes=(OUTSIDE_BEDS,),
+            bed_boxes=(BED_A,),
+            track_ids=(PERSON_ID,),
+            frame_index=3,
+        ),
+    )
+
+
+def test_a_failing_scoring_recorder_never_blocks_the_bed_exit_event(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    recorder = _FailingScoringRecorder()
+    failing = _monitor(grace_frames=2, scoring_recorder=recorder)
+    baseline = _monitor(grace_frames=2)
+
+    with caplog.at_level(logging.WARNING):
+        emitted = [failing.update(frame) for frame in _exit_sequence()]
+    expected = [baseline.update(frame) for frame in _exit_sequence()]
+
+    assert recorder.calls == len(_exit_sequence())
+    assert [
+        [(event.event_type, event.person_id, event.bed_id, event.time_sec) for event in events]
+        for events in emitted
+    ] == [
+        [(event.event_type, event.person_id, event.bed_id, event.time_sec) for event in events]
+        for events in expected
+    ]
+    assert [event.event_type for events in emitted for event in events] == ["bed-exit"]
+    warnings = [
+        record
+        for record in caplog.records
+        if f"scoring recorder failed for camera {CAMERA_ID}" in record.getMessage()
+    ]
+    assert len(warnings) == len(_exit_sequence())
+    assert all(record.exc_info is not None for record in warnings)

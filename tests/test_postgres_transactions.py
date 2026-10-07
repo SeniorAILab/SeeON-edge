@@ -1,5 +1,3 @@
-"""Real PostgreSQL checks. A missing SEEON_TEST_POSTGRES_DSN fails; it never skips."""
-
 from __future__ import annotations
 
 import os
@@ -39,12 +37,10 @@ _OPERATIONS = ("read", "read_snapshot", "transact")
 
 
 class _Cancelled(BaseException):
-    """Exercise cancellation without turning it into an ordinary exception."""
+    ...
 
 
 class Call:
-    """Join every test worker with a bound and re-raise its actual outcome."""
-
     def __init__(self, callback):
         self.results = Queue()
 
@@ -145,7 +141,6 @@ def postgres_sandbox():
         connection = None
     if connection is None:
         pytest.fail("the configured PostgreSQL test service is unavailable", pytrace=False)
-    # An embedded quote proves schema selection uses Identifier, not interpolation.
     schema = 'seeon_test_"' + uuid4().hex
     try:
         connection.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
@@ -267,7 +262,6 @@ def test_sandbox_rejects_missing_or_invalid_dsn_without_connecting(monkeypatch, 
     fixture_factory = postgres_sandbox if sandbox_kind == "owner" else postgres_product_sandbox
     fixture = fixture_factory.__wrapped__()
     try:
-        # Skipped is caught too, so a regression to skipping fails here instead of hiding.
         with pytest.raises((pytest.fail.Exception, pytest.skip.Exception)) as failure:
             next(fixture)
         assert failure.type is pytest.fail.Exception
@@ -771,9 +765,6 @@ def test_pool_bounds_waiters_and_acquisition_without_replaying(postgres_sandbox,
     ],
 )
 def test_startup_rejects_unsafe_server_options_and_closes(postgres_sandbox, setting, value, caplog):
-    # PostgreSQL itself rejects startup changes to fsync/full_page_writes.
-    # Session replication modes reach the owner's configuration check instead.
-    # No ALTER SYSTEM or global configuration is touched.
     sentinel = "test-unsafe-settings-sentinel"
     unsafe = make_conninfo(
         postgres_sandbox.dsn,
@@ -828,7 +819,6 @@ def test_owned_return_discards_unsafe_replication_role_instead_of_repairing_it(
     poisoned_pids = []
 
     def poison(connection):
-        # Deliberate callback-contract violation: owned return must refuse it.
         poisoned_pids.append(connection.info.backend_pid)
         connection.execute(sql.SQL("SET session_replication_role TO {}").format(sql.Literal(role)))
         assert connection.execute("SHOW session_replication_role").fetchone() == (role,)
@@ -1156,7 +1146,7 @@ def test_finalizer_has_only_one_same_thread_same_pool_write(database, monkeypatc
             "SELECT current_setting('transaction_isolation'), "
             "current_setting('transaction_read_only')"
         ).fetchone() == ("read committed", "off")
-        _assert_stopped(database)  # Nested operations, including transact, are forbidden.
+        _assert_stopped(database)
         with pytest.raises(PostgresShutdownError, match="own scope"):
             database.close(timeout_sec=3.0)
         connection.execute("INSERT INTO committed_values VALUES (1, 'finalized')")
@@ -1172,7 +1162,7 @@ def test_finalizer_has_only_one_same_thread_same_pool_write(database, monkeypatc
                 getattr(database, method)(forbidden)
         assert Call(lambda: _assert_stopped(database)).result() is None
         assert database.transact(write) == "finalizer committed"
-        _assert_stopped(database)  # The second write cannot reuse the privilege.
+        _assert_stopped(database)
 
     monkeypatch.setattr(pool, "connection", observed_checkout)
     database.close(timeout_sec=3.0, finalizer=finalize)
@@ -1189,7 +1179,6 @@ def test_finalizer_has_only_one_same_thread_same_pool_write(database, monkeypatc
 def test_finalizer_transaction_failure_is_latched_even_when_callback_swallows_it(
     postgres_sandbox, monkeypatch, caplog, outcome, swallowed
 ):
-    # Deliberately poisoned finalizers never belong to the shared owner fixture.
     owner = postgres_sandbox.owner()
     finalizations, callbacks, faults, closes = [], [], [], []
     cancellation = _Cancelled("finalizer cancelled")
@@ -1270,7 +1259,6 @@ def test_finalizer_transaction_failure_is_latched_even_when_callback_swallows_it
             "SELECT count(*) FROM committed_values"
         ).fetchone() == (int(outcome in ("unknown_commit", "exit_error")),)
     finally:
-        # Cleanup cannot erase the deliberately latched finalizer failure.
         with suppress(PostgresShutdownError, CommitOutcomeUnknown):
             owner.close(timeout_sec=3.0)
 
@@ -1602,7 +1590,6 @@ def test_shutdown_keeps_lease_through_real_cleanup_and_paused_pool_exit(
                 if outcome == "begin_cancellation":
                     execute(connection, query, *args, **kwargs)
                     raise cancellation
-                # A real server error before the callback, not a fake transaction.
                 return execute(connection, "SELECT 1 / 0")
         return execute(connection, query, *args, **kwargs)
 
@@ -1826,7 +1813,6 @@ def test_close_waits_for_startup_reservation_without_publishing_running(
     starting = Call(owner.start)
     try:
         assert entered.wait(2)
-        # A second start must not block behind the real startup checkout/I/O.
         with pytest.raises(PostgresStartupError, match="already in progress"):
             Call(owner.start).result()
         closing = Call(lambda: owner.close(timeout_sec=3.0, finalizer=lambda: finalized.append(1)))
@@ -2061,9 +2047,6 @@ def test_close_disposes_checked_out_connection_without_background_reset_gc(
             pending_returns.append(task)
         else:
             if isinstance(task, StopWorker):
-                # Deterministically exercise a return task first scheduled
-                # after close set pool.closed. Keep its connection referenced;
-                # neither successful close nor admission drain may rely on GC.
                 for pending in pending_returns:
                     schedule(pending)
             schedule(task)
@@ -2450,8 +2433,6 @@ def test_live_pool_waiter_cancellation_keeps_other_admitted_work_draining(
         draining, closes = _observe_shutdown(owner, monkeypatch)
         first = Call(lambda: owner.transact(hold))
         assert held.wait(2)
-        # Observe the real enqueued WaitingClient. Cancellation is delivered
-        # through its condition/error path, not converted from a PoolTimeout.
         monkeypatch.setattr(WaitingClient, "wait", observed_wait)
         queued = Call(lambda: getattr(owner, operation)(forbidden))
         client = waiting.get(timeout=2)

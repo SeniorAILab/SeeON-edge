@@ -1,5 +1,3 @@
-"""Export the bed YOLO26 segmentation weights to a digest-pinned ONNX artifact."""
-
 from __future__ import annotations
 
 import argparse
@@ -11,11 +9,12 @@ from pathlib import Path
 from contracts.artifacts import bed_seg_weight_path
 from worker.adapters.model.errors import ModelLoadError
 
+_DESCRIPTION = """Export the bed YOLO26 segmentation weights to a digest-pinned ONNX artifact."""
+
 
 def export_bed_seg_onnx(
     model_path: Path | None = None, *, force: bool = False, imgsz: int = 1280
 ) -> str:
-    """Export the requested-size ONNX model and return its SHA-256 digest."""
     source = (bed_seg_weight_path() if model_path is None else model_path).expanduser().resolve()
     if not source.is_file():
         raise ModelLoadError(f"bed segmentation weights do not exist: {source}")
@@ -50,7 +49,7 @@ def _existing_digest(path: Path) -> str | None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=_DESCRIPTION)
     parser.add_argument("model_path", nargs="?", type=Path, default=bed_seg_weight_path())
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--imgsz", type=int, default=1280)

@@ -1,9 +1,3 @@
-"""Real PostgreSQL publication evidence, not HTTP/lifespan or deployment qualification.
-
-A missing or invalid SEEON_TEST_POSTGRES_DSN fails in postgres_sandbox; it never
-skips. Fault hooks wrap actual native transactions and session helpers.
-"""
-
 from __future__ import annotations
 
 import json
@@ -55,8 +49,6 @@ pytest_plugins = ("tests_support.postgres_sandbox",)
 
 _SECRET = "postgresql://private-user:private-password@private-host/private-db SELECT secret"
 _STAGES = ("before_commit", "pool_exit", "unknown_rollback", "unknown_commit")
-# Families the worker may surface. Anything else is recorded and re-raised in the
-# thread so cancellation and surprises cannot disappear before result() joins.
 _THREAD_EXCEPTIONS = (
     AssertionError,
     AuditRuntimeUnavailable,
@@ -86,8 +78,6 @@ class Clock:
 
 
 class Call:
-    """Bounded thread result, including assertion failures inside fault hooks."""
-
     def __init__(self, callback: Callable[[], object]) -> None:
         self._results: Queue[tuple[bool, object]] = Queue()
 
@@ -275,7 +265,7 @@ def test_start_order_once_and_publication_only_after_owned_return(
     assert len(rows) == 1 and rows[0]["action"] == AuditAction.AUDIT_SESSION_START
     assert runtime.snapshot().ready
     assert not runtime.start_session_once()
-    assert not runtime.close_session_once()  # No stopping admission yet.
+    assert not runtime.close_session_once()
     runtime.stop()
     assert runtime.close_session_once()
     rows = _history(sandbox)
@@ -287,7 +277,6 @@ def test_start_order_once_and_publication_only_after_owned_return(
     assert sandbox.database.read(lambda connection: connection.execute("SELECT 1").fetchone()) == (
         1,
     )
-    # Only the caller closes the shared pool, after the close commit.
     sandbox.database.close(timeout_sec=3.0)
     assert not runtime.close_session_once()
 
@@ -333,7 +322,7 @@ def test_owned_recovery_requires_new_verification_and_committed_fence_once_per_s
     status = runtime.snapshot()
     assert status.eligible_to_attempt and not status.ready
     assert status.failure_code == "database_unavailable"
-    assert _history(sandbox) == before  # Verification did not commit a fence.
+    assert _history(sandbox) == before
     record = runtime.append_owned(_event("first"))
     rows = _history(sandbox)
     assert [row["action"] for row in rows] == [
@@ -388,7 +377,7 @@ def test_recovery_event_failure_rolls_back_the_fence_and_product_write(
     ]
     assert audit_store.verify().row_count == 3
     runtime.stop()
-    assert runtime.close_session_once()  # Failed borrowed calls did not leak pending counts.
+    assert runtime.close_session_once()
 
 
 def test_borrowed_commit_is_tentative_without_checkout_verify_or_session_creation(
@@ -584,7 +573,7 @@ def test_old_foreign_and_consumed_tokens_never_promote_or_drain_other_work(
         runtime.publish_committed(object())
     runtime.record_failure(OSError(_SECRET))
     assert runtime.verify_once()
-    assert not runtime.publish_committed(tokens[0])  # Old revision, but still consumes its count.
+    assert not runtime.publish_committed(tokens[0])
     assert not runtime.snapshot().ready
     with pytest.raises(ValueError, match="^invalid audit publication token$"):
         runtime.publish_failed(tokens[0], CommitOutcomeUnknown())
@@ -593,7 +582,7 @@ def test_old_foreign_and_consumed_tokens_never_promote_or_drain_other_work(
             runtime.publish_committed(alias)
     assert not runtime.snapshot().indeterminate
     runtime.stop()
-    assert not runtime.close_session_once()  # The foreign-token rejection did not consume token 1.
+    assert not runtime.close_session_once()
     assert not runtime.publish_committed(tokens[1])
     assert runtime.close_session_once()
     rows = _history(sandbox)
@@ -704,14 +693,14 @@ def test_serialized_verifier_has_no_queue_and_expiry_is_measured_from_scan_start
         contenders = [Call(contend), Call(contend)]
         barrier.wait(timeout=2)
         assert [contender.result() for contender in contenders] == [False, False]
-        clock.advance(6)  # Original observation at 100 expires while scan at 104 is blocked.
+        clock.advance(6)
         assert not Call(runtime.snapshot).result().verification_current
         with pytest.raises(AuditRuntimeUnavailable):
             runtime.append_owned(_event("expired"))
         assert len(calls) == 1
         release.set()
         assert scan.result() is True
-    assert runtime.snapshot().ready  # New observation is six seconds old, not zero.
+    assert runtime.snapshot().ready
     clock.advance(3)
     if borrowed:
         token = sandbox.database.transact(
@@ -722,7 +711,7 @@ def test_serialized_verifier_has_no_queue_and_expiry_is_measured_from_scan_start
     clock.advance(1)
     if borrowed:
         assert runtime.publish_committed(token)
-    assert not runtime.snapshot().verification_current  # START 104 + policy 10, not end 110 + 10.
+    assert not runtime.snapshot().verification_current
     with pytest.raises(AuditRuntimeUnavailable):
         runtime.append_owned(_event("still-expired"))
     assert [row["target_id"] for row in _history(sandbox)[1:]] == ["does-not-renew"]
@@ -743,7 +732,7 @@ def test_slow_scan_does_not_create_fresh_evidence_or_establish_session(
     assert not runtime.start_session_once()
     assert _history(sandbox) == []
     assert runtime.verify_once()
-    assert runtime.start_session_once()  # Refused admission did not consume the one attempt.
+    assert runtime.start_session_once()
     assert _actions(sandbox) == [AuditAction.AUDIT_SESSION_START]
 
 
@@ -824,7 +813,7 @@ def test_stop_during_append_waits_for_owned_return_and_pending_publication(
         assert len(calls) == 1
     assert _actions(sandbox) == [AuditAction.AUDIT_SESSION_START, AuditAction.AUDIT_LIST]
     if borrowed:
-        assert not runtime.close_session_once()  # DB return alone does not drain publication.
+        assert not runtime.close_session_once()
         assert not runtime.publish_committed(result)
     assert not runtime.snapshot().ready
     assert runtime.close_session_once()
@@ -969,7 +958,7 @@ def test_fail_open_recording_and_immutable_status_are_static_private_and_io_free
 
 
 class _Cancelled(BaseException):
-    """Non-Exception cancellation; admission cleanup must still run."""
+    ...
 
 
 @pytest.mark.parametrize("operation", ["verify", "start", "append", "close"])
@@ -1113,7 +1102,6 @@ def test_failed_borrowed_append_local_drain_does_not_certify_outer_rollback(
             assert len(calls) == 1
             assert operation.thread.is_alive()
             assert not rolled_back.is_set()
-            # The failed callback consumed its token, not its owner's transaction.
             assert not runtime._pending
             assert sandbox.admin.execute(
                 "SELECT state FROM pg_stat_activity WHERE pid=%s", (calls[0],)
@@ -1156,8 +1144,6 @@ def test_failed_borrowed_append_local_drain_does_not_certify_outer_rollback(
     assert rows[0]["target_id"] == rows[1]["target_id"]
     assert not runtime.close_session_once()
     assert _history(sandbox) == rows
-    # Inspect the closed owner's chain through the existing independent test
-    # connection, in a real committed RR/RO snapshot; never reopen admission.
     with sandbox.admin.transaction():
         sandbox.admin.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         checkpoint = _verify_snapshot(sandbox.admin, sandbox.schema, None)
@@ -1371,8 +1357,6 @@ def test_missing_mutation_callback_refuses_success_without_claiming_rollback(
     _ready(runtime)
     before = _history(sandbox)
     with pytest.raises(AuditRuntimeUnavailable, match="was not called"):
-        # Deliberate feature-owner contract violation: a wrapper cannot undo
-        # an already-committed owner that ignored its required callback.
         runtime.apply_mutation(
             mutation_owner,
             _setting_event,

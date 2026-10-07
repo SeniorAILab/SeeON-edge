@@ -1,10 +1,3 @@
-"""BedPoseFeatures contract, perception producer, and DecisionInput wiring.
-
-Characterization of the pre-todo-6 DecisionInput constructor lives at the
-top so it remains meaningful after the new field is added: existing call
-sites must still build with the original seven arguments.
-"""
-
 from __future__ import annotations
 
 import math
@@ -31,10 +24,6 @@ from worker.types.decision_input import DecisionInput
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# Worked geometry in a single 1920x1080 frame. The bed is an axis-aligned
-# rectangle so inside/outside is unambiguous for a human reading the QA
-# numbers. Torso = shoulders 5/6 + hips 11/12; lower = knees 13/14 +
-# ankles 15/16.
 _BED_X1, _BED_Y1, _BED_X2, _BED_Y2 = 400, 300, 1200, 800
 _BED_POLYGON_1080 = (
     (_BED_X1, _BED_Y1),
@@ -43,13 +32,12 @@ _BED_POLYGON_1080 = (
     (_BED_X1, _BED_Y2),
 )
 _FRAME_W, _FRAME_H = 1920, 1080
-_POSE_W, _POSE_H = 3840, 2160  # 2x the bed-zone image, the mismatch case
+_POSE_W, _POSE_H = 3840, 2160
 _CONF = 0.9
 _COCO17 = 17
 
 
 def _seven_arg_decision_input() -> DecisionInput:
-    """The construction shape every existing test builder uses today."""
     return DecisionInput(
         observation=FrameObservation(),
         frame_width=1920,
@@ -62,7 +50,6 @@ def _seven_arg_decision_input() -> DecisionInput:
 
 
 def test_decision_input_still_constructs_with_original_seven_arguments() -> None:
-    """Characterization: pre-existing call sites must keep compiling unchanged."""
     decision_input = _seven_arg_decision_input()
     names = tuple(item.name for item in fields(DecisionInput))
     assert names[:7] == (
@@ -83,7 +70,6 @@ def test_decision_input_still_constructs_with_original_seven_arguments() -> None
 
 
 def test_build_decision_input_does_not_require_a_new_argument() -> None:
-    """Characterization: the perception builder keeps its existing signature."""
     observation = FrameObservation()
     scene = SceneState(camera_id="cam-char")
     decision_input = build_decision_input(
@@ -104,7 +90,6 @@ def test_build_decision_input_does_not_require_a_new_argument() -> None:
 
 
 def test_bed_pose_features_is_a_plain_scalar_contract() -> None:
-    """Domain-facing fields stay stdlib scalars; numpy never crosses this type."""
     names = tuple(item.name for item in fields(BedPoseFeatures))
     assert names == (
         "track_id",
@@ -173,8 +158,6 @@ def _bed_box(
     )
 
 
-# Lying fully inside the bed: shoulders and hips well inside the rectangle,
-# knees and ankles still on the mattress.
 _IN_BED_POINTS: dict[int, tuple[float, float]] = {
     5: (700.0, 420.0),
     6: (900.0, 420.0),
@@ -185,8 +168,6 @@ _IN_BED_POINTS: dict[int, tuple[float, float]] = {
     15: (740.0, 760.0),
     16: (860.0, 760.0),
 }
-# Hips still on the mattress; shoulders above the headboard and legs on the
-# floor. torso_in_frac and lower_in_frac both drop versus IN_BED.
 _EDGE_SITTING_POINTS: dict[int, tuple[float, float]] = {
     5: (700.0, 220.0),
     6: (900.0, 220.0),
@@ -197,7 +178,6 @@ _EDGE_SITTING_POINTS: dict[int, tuple[float, float]] = {
     15: (740.0, 1000.0),
     16: (860.0, 1000.0),
 }
-# Entire body to the right of the bed.
 _OUT_OF_BED_POINTS: dict[int, tuple[float, float]] = {
     5: (1400.0, 360.0),
     6: (1600.0, 360.0),
@@ -265,7 +245,6 @@ def test_in_bed_and_edge_sitting_separate_on_lower_body() -> None:
 
 
 def test_polygon_frame_scale_mismatch_is_corrected() -> None:
-    """1920x1080 polygon + 3840x2160 pose must equal the same geometry in one frame."""
     matched = _features_for(
         _IN_BED_POINTS,
         frame_width=_FRAME_W,
@@ -294,7 +273,6 @@ def test_polygon_frame_scale_mismatch_is_corrected() -> None:
     assert mismatched.centroid_displacement == pytest.approx(
         matched.centroid_displacement, abs=1e-6
     )
-    # Without the scale the 2x pose sits far outside a 1080p polygon.
     assert unscaled.torso_in_frac == pytest.approx(0.0)
     assert unscaled.torso_in_frac != pytest.approx(matched.torso_in_frac)
 
@@ -347,8 +325,6 @@ def test_non_bounding_box_bed_region_is_unusable_not_a_crash() -> None:
 
 
 def test_torso_angle_is_near_zero_when_lying_and_near_pi_over_two_when_upright() -> None:
-    # Ceiling-view person along the bed's long (x) axis: shoulders share an x,
-    # hips share a further-right x. Midpoint-to-midpoint is image-horizontal.
     lying = _features_for(
         {
             5: (600.0, 480.0),
@@ -422,11 +398,6 @@ def test_build_decision_input_populates_bed_pose_features() -> None:
 
 
 def test_domains_have_no_direct_numpy_import() -> None:
-    """The scalar contract exists so domains never import numpy themselves.
-
-    ``import worker.domains.bed_exit`` still pulls numpy transitively through
-    ``contracts.observation``; that is pre-existing and not this boundary.
-    """
     offenders: list[str] = []
     for path in (_REPO_ROOT / "worker" / "domains").rglob("*.py"):
         for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):

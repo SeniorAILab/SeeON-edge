@@ -1,5 +1,3 @@
-"""Persist and publish dashboard credential rotations without HTTP concerns."""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -10,7 +8,7 @@ from backend.app.shared.postgres_dashboard_credentials import PostgresDashboardC
 
 
 class DashboardSessionRequired(Exception):
-    """Credential rotation requires an active dashboard session."""
+    ...
 
 
 def rotate_credentials(
@@ -22,7 +20,6 @@ def rotate_credentials(
     new_password: str,
     persist: Callable[[PostgresDashboardCredentialsStore, str, str], PersistedDashboardCredentials],
 ) -> str:
-    """Persist, swap and mint under the caller-held session initialization lock."""
     if sessions.actor(token) is None:
         raise DashboardSessionRequired
     resolved_username = (new_username or "").strip() or sessions.username
@@ -30,7 +27,6 @@ def rotate_credentials(
         persisted = persist(store, resolved_username, new_password)
         return _mint_rotated_session(sessions, persisted, new_password)
     except BaseException:
-        # A failed complete owner return may already have committed.
         sessions.invalidate()
         raise
 
