@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import logging
 import os
 from collections.abc import AsyncGenerator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
 
 import psycopg
-from fastapi import APIRouter, FastAPI, Request, status
-from fastapi.responses import JSONResponse, Response
+from fastapi import APIRouter, FastAPI, status
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from backend.app.core.config import get_settings
 from backend.app.edge_db.postgres import PostgresError
@@ -42,24 +42,41 @@ from backend.app.lifespan import lifespan as serving_lifespan
 from backend.app.routes import health as health_routes
 from backend.app.routes.models import router as models_router
 from backend.app.shared.dashboard_credentials import DashboardCredentialsStoreError
+from shared.boundary import Boundary, isolate
 
-LOGGER = logging.getLogger(__name__)
 INTERNAL_ERROR_BODY = {"detail": "internal server error"}
 
 LifespanFactory = Callable[[FastAPI], AbstractAsyncContextManager[None]]
 
 
-def unhandled_exception_handler(request: Request, error: Exception) -> Response:
-    LOGGER.error(
-        "unhandled request failure method=%s path=%s exception_class=%s",
-        request.method,
-        request.url.path,
-        type(error).__name__,
-        exc_info=error,
-    )
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content=INTERNAL_ERROR_BODY
-    )
+class UnhandledExceptionMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        started = False
+
+        async def tracking_send(message: Message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        with isolate(
+            Boundary.ROOT,
+            stage="http_request",
+            method=str(scope.get("method", "")),
+            path=str(scope.get("path", "")),
+        ) as outcome:
+            await self.app(scope, receive, tracking_send)
+        if outcome.failed and not started:
+            response = JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content=INTERNAL_ERROR_BODY
+            )
+            await response(scope, receive, send)
 
 
 def create_app(*, lifespan: LifespanFactory | None = serving_lifespan) -> FastAPI:
@@ -75,7 +92,7 @@ def create_app(*, lifespan: LifespanFactory | None = serving_lifespan) -> FastAP
     app.add_exception_handler(PostgresError, audit_unavailable_handler)
     app.add_exception_handler(psycopg.Error, audit_unavailable_handler)
     app.add_exception_handler(DashboardCredentialsStoreError, audit_unavailable_handler)
-    app.add_exception_handler(Exception, unhandled_exception_handler)
+    app.add_middleware(UnhandledExceptionMiddleware)
     app.state.edge_relay_token = os.environ.get("API_EDGE_RELAY_TOKEN")
     app.include_router(health_routes.probe_router)
 
