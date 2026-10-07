@@ -58,6 +58,19 @@ FAILED tests/test_models_layout.py::test_every_model_folder_has_metadata
 FAILED tests/test_vendor_drift.py::test_vendor_package_matches_dataset_ops[contracts]
 ```
 
+The block above is the output recorded at capture time and is kept verbatim.
+Several of its paths no longer exist. `tests/test_clip_recorder.py` was deleted
+in `db09fc1` together with the clip recorder it tested. Clip recording is now
+`worker/pipeline/output/evidence/smart_record_actor.py`, covered by
+`tests/test_smart_record_actor.py`. The five
+`tests/test_clip_export_reconciliation.py` tests listed above,
+`tests/test_models_layout.py` and `tests/test_vendor_drift.py` are gone too.
+`edge/evidence/evidence_media.py` is now
+`worker/pipeline/output/evidence/evidence_media.py`. Since `5e9c485`, its media
+probe (`_probe_media()`) no longer needs `/proc`: it passes `ffprobe`
+`/proc/self/fd/{descriptor}` when `/proc/self/fd` exists and
+`/dev/fd/{descriptor}` otherwise.
+
 ## Protected-path receipt
 
 Before any suite or install command, the five protected paths were recorded in

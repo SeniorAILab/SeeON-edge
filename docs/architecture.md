@@ -240,7 +240,7 @@ guards both halves.
 | Flow runtime descriptor | shared, one per process | `worker/runtime/profile/` |
 | GPU lease | shared, one per process | `worker/runtime/lease.py` |
 | Config / LKG store | shared, one per process | `worker/runtime/config/` |
-| Evidence outbox database | shared, one per process | `worker/pipeline/output/evidence/evidence_outbox_database.py` |
+| Evidence delivery queue | shared, one per process | `shared/events/delivery_queue.py` (`DeliveryQueue`), composed by `worker/pipeline/output/evidence/evidence_runtime.py` and `evidence_stager.py` |
 | Clip store lock | shared, one per host directory | `worker/pipeline/output/evidence/clip_store_lock.py` |
 
 Sharing a per-camera row across cameras is a correctness bug, not an
@@ -318,9 +318,9 @@ Rollback of a bad worker image is image-digest based; see
 
 Every non-`__init__` source file in the legacy tree has exactly one owner below.
 These rows are historical citations of a migration, not operator instructions.
-`tests/test_worker_architecture_docs.py` asserts the map stays complete and
-unambiguous while the legacy tree exists, and stops constraining it once the
-tree is deleted.
+`tests/test_worker_architecture_docs.py`, which asserted that the map was
+complete and unambiguous while the legacy tree existed, has been deleted, so no
+test constrains these rows any more.
 
 | Current source | Final owner |
 | --- | --- |
@@ -337,19 +337,19 @@ tree is deleted.
 | `edge/domains/fall/AGENTS.md` | folded into `worker/domains/AGENTS.md` |
 | `edge/domains/fall/detector.py` | `worker/domains/fall/detector.py` |
 | `edge/domains/fall/schema.py` | `worker/domains/fall/schema.py` |
-| `edge/evidence/clip_recorder.py` | `worker/pipeline/output/evidence/clip_recorder.py` plus the `clip_*` split modules beside it |
+| `edge/evidence/clip_recorder.py` | retired; primary recording is `worker/pipeline/output/evidence/smart_record_actor.py` (`SmartRecordActor`); publication is `flow_clip_publication.py` / `clip_publication.py` |
 | `edge/evidence/clip_store_lock.py` | `worker/pipeline/output/evidence/clip_store_lock.py` |
-| `edge/evidence/event_identity.py` | `worker/pipeline/output/evidence/event_identity.py` |
+| `edge/evidence/event_identity.py` | `worker/pipeline/decision/event_identity.py` (`EventIdentityStore`) |
 | `edge/evidence/evidence_manifest.py` | `worker/pipeline/output/evidence/evidence_manifest.py` |
 | `edge/evidence/evidence_media.py` | `worker/pipeline/output/evidence/evidence_media.py` |
-| `edge/evidence/evidence_outbox.py` | `worker/pipeline/output/evidence/evidence_outbox.py` |
-| `edge/evidence/evidence_outbox_clips.py` | `worker/pipeline/output/evidence/evidence_outbox_clips.py` |
-| `edge/evidence/evidence_outbox_delivery.py` | `worker/pipeline/output/evidence/evidence_outbox_delivery.py` |
-| `edge/evidence/evidence_outbox_schema.py` | `worker/pipeline/output/evidence/evidence_outbox_schema.py` |
-| `edge/evidence/evidence_outbox_stage.py` | `worker/pipeline/output/evidence/evidence_outbox_stage.py` |
+| `edge/evidence/evidence_outbox.py` | retired; durable staging is `worker/pipeline/output/evidence/evidence_stager.py` (`DurableEvidenceStager`) over `shared/events/delivery_queue.py` |
+| `edge/evidence/evidence_outbox_clips.py` | retired with the SQLite outbox cluster; clip publish state lives in `evidence_outbox_types.py` and `evidence_sender.py` |
+| `edge/evidence/evidence_outbox_delivery.py` | retired; delivery is `worker/pipeline/output/evidence/evidence_sender.py` (`EvidenceSender`) |
+| `edge/evidence/evidence_outbox_schema.py` | retired with the SQLite outbox cluster |
+| `edge/evidence/evidence_outbox_stage.py` | retired; staging is `worker/pipeline/output/evidence/evidence_stager.py` |
 | `edge/evidence/evidence_outbox_types.py` | `worker/pipeline/output/evidence/evidence_outbox_types.py` |
-| `edge/evidence/evidence_reconciliation.py` | `worker/pipeline/output/evidence/evidence_reconciliation.py` |
-| `edge/evidence/evidence_retention.py` | `worker/pipeline/output/evidence/evidence_retention.py` |
+| `edge/evidence/evidence_reconciliation.py` | retired (deleted with the outbox cluster); no replacement module |
+| `edge/evidence/evidence_retention.py` | retired; `clip_config.py` still defines unused `configured_retention_days()` / `configured_disk_high_watermark()` (no callers; see [#595](https://github.com/SeniorAILab/SeeON-edge/issues/595)) |
 | `edge/evidence/evidence_runtime.py` | `worker/pipeline/output/evidence/evidence_runtime.py` |
 | `edge/evidence/evidence_sender.py` | `worker/pipeline/output/evidence/evidence_sender.py` |
 | `edge/evidence/evidence_stager.py` | `worker/pipeline/output/evidence/evidence_stager.py` |
@@ -422,22 +422,22 @@ feature it proves. Developer-convenience harnesses are deferred with the tools.
 
 | Capability | v2 owner | Behaviour test | Disposition |
 | --- | --- | --- | --- |
-| RTSP ingest and reconnect policy | `Flow media plane/rtsp.py`, `Flow media plane/lifecycle.py` | `tests/test_worker_ingest_rtsp.py`, `tests/test_worker_ingest_lifecycle.py` | ported |
-| CPU decode adapter and capability probe | `Flow media plane/cpu_av/adapter.py`, `Flow media plane/cpu_av/probe.py` | `tests/test_worker_decode_cpu.py`, `tests/test_worker_opencv_decode_probe.py` | ported |
-| NVDEC decode probe | `Flow media plane/nvdec_cuvid/probe.py` | `tests/test_worker_nvdec_probe.py` | ported |
+| RTSP ingest and reconnect policy | `worker/adapters/deepstream/sources.py` (`SourceTable`), `worker/adapters/deepstream/service_maker.py` (`DeepStreamMediaPlane`), `worker/runtime/flow/media_plane.py` (`FlowMediaPlane`), `worker/runtime/flow/lifecycle_supervisor.py` (`FlowLifecycleSupervisor`) | `tests/test_deepstream_adapter_plane.py`, `tests/test_flow_lifecycle_supervisor.py` | ported |
+| CPU decode adapter and capability probe | retired host `cpu_av` path; decode is owned by the DeepStream Flow media plane (`worker/adapters/deepstream/service_maker.py`, `worker/runtime/flow/media_plane.py`) | `tests/test_deepstream_adapter_plane.py` (plane/source surface); no separate CPU-decode probe remains | ported |
+| NVDEC decode probe | retired host `nvdec_cuvid` path; decode is owned by the DeepStream Flow media plane (`worker/adapters/deepstream/service_maker.py`, `worker/runtime/flow/media_plane.py`) | `tests/test_deepstream_adapter_plane.py`; no separate NVDEC probe remains | ported |
 | CUDA device selection and verification | `worker/adapters/device/cuda/probe.py` | `tests/test_worker_cuda_device_probe.py` | ported |
 | Model registry, warmup, inference | `worker/adapters/model/registry.py`, `worker/interfaces/serving.py` | `tests/test_worker_production_boot_dependencies.py` | ported |
 | Fall interpretation and episode policy | `worker/domains/fall/` | `tests/test_worker_fall_decider.py`, `tests/test_fall_policy.py` | ported |
 | Bed-exit interpretation and latching | `worker/domains/bed_exit/` | `tests/test_domains_bed_exit.py`, `tests/test_worker_domains_bed_exit.py` | ported |
 | Incident cooldown and duplicate suppression | `worker/pipeline/decision/incident_manager.py` | `tests/test_worker_incident_manager.py` | ported |
 | Relay heartbeat and alert egress | `shared/events/edge_ingest_client.py` | `tests/test_e2e_night_bed_exit_relay.py` | ported |
-| Evidence clip recording and finalisation | `worker/pipeline/output/evidence/clip_recorder.py` | `tests/test_clip_recorder.py` | ported |
+| Evidence clip recording and finalisation | `worker/pipeline/output/evidence/smart_record_actor.py` (recording), `worker/pipeline/output/evidence/flow_clip_publication.py` and `worker/pipeline/output/evidence/clip_publication.py` (finalisation and publication) | `tests/test_smart_record_actor.py`, `tests/test_flow_clip_publication.py`, `tests/test_worker_clip_publication.py` | ported |
 | Snapshot store | `worker/pipeline/output/evidence/snapshot_store.py` | `tests/test_snapshot_store.py` | ported |
-| Evidence outbox and export delivery | `worker/pipeline/output/evidence/evidence_runtime.py` | `tests/test_worker_evidence_export_composition.py` | ported |
+| Evidence outbox and export delivery | `worker/pipeline/output/evidence/evidence_runtime.py` (`EvidenceExportRuntime`), `evidence_stager.py` (`DurableEvidenceStager`), `evidence_sender.py` (`EvidenceSender`), `shared/events/delivery_queue.py` (`DeliveryQueue`) | `tests/test_evidence_stager.py`, `tests/test_evidence_sender.py`, `tests/test_evidence_delivery_queue_restart.py` | ported |
 | Worker config load and LKG fallback | `worker/runtime/config/loader.py` | `tests/test_ml_worker_yaml_config.py` | ported |
 | Runtime status and diagnostics | `worker/runtime/telemetry/status_store.py`, `worker/runtime/telemetry/runtime_status_sender.py` | `tests/test_worker_runtime_status_sender_composition.py` | ported |
 | CLI entrypoint and bounded-run cap | `worker/__main__.py` | `tests/test_worker_entrypoint.py`, `tests/test_worker_max_frames_per_camera_composition.py` | ported |
-| Per-frame perception: tracking, scene state, window buffering | `worker/pipeline/perception/`, `worker/pipeline/camera_pipeline.py` | `tests/test_perception_observation_builder.py`, `tests/test_demo_tracking.py`, `tests/test_worker_camera_pipeline_pump.py` | ported |
+| Per-frame perception: tracking, scene state, window buffering | `worker/pipeline/perception/`, `worker/runtime/flow/policy_pump.py` (`NativePolicyPump`) | `tests/test_perception_observation_builder.py`, `tests/test_flow_policy_pump_preview.py` | ported |
 | Operator MJPEG live view | `worker/pipeline/output/mjpeg_server.py`, `worker/pipeline/output/live_view.py`, composed in `worker/runtime/worker.py` | `tests/test_worker_live_view_composition.py` | ported |
 | GPU stability preflight installer | — | — | tracked-deferred (`scripts/edge-preflight/gpu-stability-install.sh`, untracked at baseline) |
 | GPU telemetry preflight | — | — | tracked-deferred (`scripts/edge-preflight/gpu-telemetry.sh`, untracked at baseline) |
@@ -464,39 +464,24 @@ cell is a backticked `edge/` path is reserved for the ownership map above.
 These are known divergences between the plan and the tree. They are recorded
 here so nobody documents an intention as a fact.
 
-**One parity row cannot be fully proven on macOS.** The ledger calls a row
-`ported` when a behaviour test covers it. Running the cited tests for every
-`ported` row on this host gives 214 passed, 2 failed, and both failures belong
-to one row:
-
-| Cited test | Row it is evidence for | Why it cannot run |
-| --- | --- | --- |
-| `tests/test_clip_recorder.py::test_clip_recorder_finalizes_atomic_manifest_with_pre_and_post_window` | Evidence clip recording and finalisation | resolving `/proc/self/fd/N` fails, so no manifest is published |
-| `tests/test_clip_recorder.py::test_clip_recorder_fsyncs_media_and_manifest_before_staging_cleanup` | Evidence clip recording and finalisation | reads `/proc/self/fd`, which macOS does not have |
-
-This row is genuinely Linux-only, and not by accident:
-`worker/pipeline/output/evidence/evidence_media.py` hands `ffprobe` a
-`/proc/self/fd/{descriptor}` reference to an already-open inode so the probe
-cannot be TOCTOU-swapped for a different file. That is production code, so the
-capability itself requires `/proc` — the deploy target is a Linux container, so
-this is a deliberate floor rather than a portability bug.
+**Resolved: the clip recording row used to be unprovable on macOS.** Two of
+its cited tests, in `tests/test_clip_recorder.py`, failed on macOS, and the row
+was recorded as Linux-only because
+`worker/pipeline/output/evidence/evidence_media.py` handed `ffprobe` a
+`/proc/self/fd/{descriptor}` reference. Neither holds any more. The recorder and
+that test file were deleted in `db09fc1`, and the row now cites the Smart Record
+and clip publication tests. Since `5e9c485`, `_probe_media()` in
+`evidence_media.py` passes `/proc/self/fd/{descriptor}` when `/proc/self/fd`
+exists and `/dev/fd/{descriptor}` otherwise. In both cases the path names the
+file that `inspect_finalized_media()` already holds open, so the probe still
+cannot be TOCTOU-swapped for a different file, and it does not require `/proc`.
 `tests/test_evidence_trust_boundaries.py::test_media_probe_uses_same_open_inode_when_path_is_swapped`
 pins the same-inode probe: `ffprobe` still reads the original bytes when the
-path is swapped mid-probe.
+path is swapped mid-probe. The test picks its descriptor root by the same rule.
 
-The row stays `ported`: the evidence exists and CI runs on Ubuntu. What is
-missing is *local* proof, which matters because this branch was developed and
-gated on macOS. Treat it as CI-verified rather than dev-verified, and do not
-read its local failures as a parity gap.
-
-All eight local failures outside the vendor-drift one trace to this single
-design decision, not to a missing tool: five in
-`tests/test_clip_export_reconciliation.py`, two in `tests/test_clip_recorder.py`,
-one in `tests/test_evidence_trust_boundaries.py`. `ffprobe` **is** installed on
-this machine, so "install ffprobe" does not clear any of them. Note that the
-production error text says otherwise — it reports `ffprobe unavailable` for an
-unresolvable `/proc/self/fd/N` too, which is a
-misreported reason rather than a second cause.
+On macOS, `tests/test_clip_export_reconciliation.py` and
+`tests/test_evidence_trust_boundaries.py` now pass locally (19 passed), so the
+row is dev-verified as well as CI-verified.
 
 **Snapshot store used to be listed here too, and no longer is.** Three of its
 cited tests also failed on macOS, but for an entirely different reason: they
@@ -553,27 +538,21 @@ threshold. It is a general contract: it walks every remaining `scripts/**/*.sh`
 rather than naming individual scripts, so it keeps holding as the script surface
 changes.
 
-**`worker/pipeline/camera_pipeline.py` exists, but does not own what the plan
-said it would.** This entry previously asserted that the file was absent, which
-was false: it is tracked, 163 lines, and was added in `6ce0bbc`. It holds
-`CameraPipelinePump`, which drives one camera's frame → extraction → decision
-path.
+**`worker/pipeline/camera_pipeline.py` is gone.** It held `CameraPipelinePump`
+and was deleted in `db09fc1` with the rest of the host media pipeline the
+DeepStream Flow profile made redundant. Per-camera perception and decision
+pumping now live in `worker/pipeline/perception/` and
+`worker/runtime/flow/policy_pump.py` (`NativePolicyPump`). Lifecycle and
+reconnect supervision live in `worker/runtime/flow/lifecycle_supervisor.py`
+(`FlowLifecycleSupervisor`); composition and restart policy stay in
+`worker/runtime/worker.py`. Do not cite `camera_pipeline.py` as a current owner.
 
-What is still true is the ownership claim. The migration plan names this file as
-the owner of `edge/runtime/camera_worker.py`'s orchestration, and that
-orchestration remains split across `Flow media plane/lifecycle.py`
-(supervision and reconnect), `worker/pipeline/analytics/composite.py`
-(extraction fan-out), and `worker/runtime/worker.py` (composition and restart
-policy). The ownership row above describes that split because that is what is on
-disk. Either move the orchestration into the pump, or amend the plan's Scope
-table — do not describe the file as owning something it does not.
-
-**No `worker/runtime/supervisor.py` and no `Flow media plane/latest_frame.py`.**
-The plan named both. Supervision landed in `Flow media plane/lifecycle.py`
-as `IngestSupervisor` with restart policy in `worker/runtime/worker.py`, and the
-latest-frame store landed in `worker/pipeline/output/live_view.py` as
-`LatestFrameStore` (a non-consuming latest-value store, not a queue). The rows
-above reflect the real locations.
+**No `worker/runtime/supervisor.py` and no host `latest_frame.py` under a Flow
+media-plane package.** The plan named both. Supervision landed in
+`worker/runtime/flow/lifecycle_supervisor.py` as `FlowLifecycleSupervisor` with
+restart policy in `worker/runtime/worker.py`, and the latest-frame store landed
+in `worker/pipeline/output/live_view.py` as `LatestFrameStore` (a non-consuming
+latest-value store, not a queue). The rows above reflect the real locations.
 
 **ADR-0001 source-packet preservation is complete for primary clean clips.**
 The worker keeps bounded encoded-packet history per camera and remuxes one

@@ -7,67 +7,86 @@
 
 ## 1. 클립 보관 정책 (retention)
 
-클립 자체(영상 파일 + `manifest.json`)의 보관·회전은 워커 쪽
-`worker/pipeline/output/evidence/evidence_retention.py`와
-`worker/pipeline/output/evidence/clip_config.py`에 이미 구현되어 있다. 이 문서는
-그 동작을 요약하고, API 쪽 감사 로그 정책과의 관계를 명시한다.
+> **현재 상태 (obsolete automatic rotation):** 이 문서가 예전에 설명하던
+> `EvidenceRetention.rotate()` / `worker/pipeline/output/evidence/evidence_retention.py`
+> 경로는 `db09fc1`에서 삭제됐다. 워커에는 보관 일수나 디스크 상한에 따라
+> 클립을 **자동으로 삭제·회전하는 호출 경로가 없다**. 아래 상수·헬퍼는
+> `clip_config.py`에 정의만 남아 있고 호출자가 없다 — [#595](https://github.com/SeniorAILab/SeeON-edge/issues/595),
+> [`docs/operations/soak-test-plan.md`](soak-test-plan.md) metric 5와 동일한
+> 결론이다. 이 절은 **의도된 하한 상수**와 **실제 동작(없음)** 을 구분해 적는다.
 
-### 1-1. 보관 일수 하한 (floor)
+클립 자체(영상 파일 + `manifest.json`)의 생성·봉인·게시는 Smart Record /
+clip publication 경로가 담당한다:
 
-- `worker/pipeline/output/evidence/clip_config.py:17` — `MIN_RETENTION_DAYS = 60`.
-- `configured_retention_days()` (`clip_config.py:32-39`)는 다음 환경변수를
-  순서대로 읽는다: `CLIP_STORE_RETENTION_DAYS` → (없으면) `CLIP_RETENTION_DAYS`.
-  둘 다 비어 있으면 기본값 `DEFAULT_RETENTION_DAYS = 60`을 쓴다.
-- 값이 설정되어 있어도 **60일 미만으로는 절대 내려가지 않는다**:
-  `max(MIN_RETENTION_DAYS, int(raw))`. 즉 운영자가 실수로 `CLIP_RETENTION_DAYS=7`을
-  넣어도 실제 보관 기간은 60일로 강제된다.
+| 역할 | 심볼 | 파일 |
+| --- | --- | --- |
+| 일차 클립 생성 | `SmartRecordActor` | `worker/pipeline/output/evidence/smart_record_actor.py` |
+| Flow 봉인 클립 게시 | `FlowClipPublisher` | `worker/pipeline/output/evidence/flow_clip_publication.py` |
+| 재인코딩 클립 게시 | `ClipPublisher` | `worker/pipeline/output/evidence/clip_publication.py` |
+| 스토어 경로·보관 상수 | `MIN_RETENTION_DAYS`, `configured_retention_days`, `configured_disk_high_watermark` | `worker/pipeline/output/evidence/clip_config.py` |
 
-| 환경변수 | 우선순위 | 기본값 | 하한 |
-| --- | --- | --- | --- |
-| `CLIP_STORE_RETENTION_DAYS` | 1순위 | - | 60일 |
-| `CLIP_RETENTION_DAYS` | 2순위 (fallback) | - | 60일 |
-| (미설정) | - | 60일 | 60일 |
+`configured_store_dir()` / `DEFAULT_CLIP_STORE_DIR`만 실제로 소비된다
+(`snapshot_store.py`, `worker/runtime/worker.py`). 보관·워터마크 헬퍼는
+소비되지 않는다.
 
-### 1-2. 회전/삭제(purge) 메커니즘
+### 1-1. 보관 일수 하한 상수 (floor; unused by any deleter)
 
-`EvidenceRetention.rotate()` (`evidence_retention.py:102-145`)가 후보 클립
-목록을 `finalized_at` 오름차순으로 정렬한 뒤, 다음 순서로 처리한다:
+- `worker/pipeline/output/evidence/clip_config.py` — `MIN_RETENTION_DAYS = 60`,
+  `DEFAULT_RETENTION_DAYS = MIN_RETENTION_DAYS`.
+- `configured_retention_days()`는 환경변수
+  `CLIP_STORE_RETENTION_DAYS` → (없으면) `CLIP_RETENTION_DAYS` 순으로 읽고,
+  둘 다 비어 있으면 `DEFAULT_RETENTION_DAYS`를 반환한다. 값이 있어도
+  `max(MIN_RETENTION_DAYS, int(raw))`로 **60일 미만으로 내려가지 않도록**
+  클램프한다.
+- 이 함수를 호출해 클립을 지우는 코드는 현재 트리에 없다. 하한은
+  “나중에 회전을 다시 붙일 때 지켜야 할 상수”로만 남아 있다.
 
-1. **보류(hold) 확인** — `is_held(clip_id)`가 참이면 삭제하지 않고 `HELD`로 기록한다
-   (예: 사건 조사/법적 보류 중인 클립).
-2. **보관 기한 확인** — `candidate.finalized_at > retention_cutoff`이면(즉 아직
-   보관 기한 내이면) 건너뛴다. `retention_cutoff`는 호출자가
-   `configured_retention_days()` 기반으로 계산해 넘긴다.
-3. **삭제 전 검증** — `_verify_candidate()` (`evidence_retention.py:151-200`)가
-   클립 디렉터리 경로, 심볼릭 링크 여부, `manifest.json`의 무결성/finalized 상태,
-   미디어 파일 경로 일치 여부를 확인한다. 검증에 실패하면 삭제하지 않고
-   `UNVERIFIABLE` 등으로 기록한다 — **불확실하면 지우지 않는다**가 원칙이다.
-4. **삭제 실행** — 검증을 통과해야만 `shutil.rmtree()`로 클립 디렉터리를 삭제하고,
-   삭제 후 경로가 실제로 사라졌는지 다시 확인한다(`PurgeResult.VERIFIED` 아니면
-   `VERIFICATION_FAILED`).
+| 환경변수 | 우선순위 | 기본값 | 하한 | 소비자 |
+| --- | --- | --- | --- | --- |
+| `CLIP_STORE_RETENTION_DAYS` | 1순위 | - | 60일 | 없음 |
+| `CLIP_RETENTION_DAYS` | 2순위 (fallback) | - | 60일 | 없음 |
+| (미설정) | - | 60일 | 60일 | 없음 |
 
-운영자 `DELETE /api/v1/clips/{clip_id}`도 동일한 60일 하한과 검증을 우회하지
-않는다. 백엔드는 먼저 인증된 worker `deletion-preflight` 명령으로 hold와 경로
-포함 관계를 비파괴 확인한다. `HELD`이면 파일과 DB를 모두 그대로 둔다. 삭제
-가능한 경우에만 백엔드가 한 PostgreSQL 트랜잭션에서 `PENDING`과
-`clip.delete.request` 감사를 함께 커밋한 뒤 인증된 worker 삭제 명령을 보낸다.
-worker는 데이터베이스를 열지 않고 검증된 클립 디렉터리만 제거한다. 응답 후 백엔드는
-두 번째 트랜잭션에서 `PURGED`와 `clip.delete.complete` 감사를 함께 커밋한다.
-worker가 중단되면 `PENDING`이 사실대로 남고, 재시작 시 백엔드는 인증된
-비파괴 preflight가 `MISSING`을 확인한 항목만 정확히 한 번 완료한다.
+### 1-2. 회전/삭제(purge) 메커니즘 — 없음
 
-디스크 사용량 상한(`disk_high_watermark`, 기본 `DEFAULT_DISK_HIGH_WATERMARK = 0.80`,
-`CLIP_STORE_MAX_USAGE`/`CLIP_DISK_HIGH_WATERMARK` 환경변수로 조정 가능,
-`clip_config.py:42-52`)을 넘으면 `RotationReport.pressure_blocked = True`로
-보고되어 운영자가 디스크 압박 상황을 인지할 수 있다 — 다만 이 자체가 삭제
-로직을 우회하지는 않는다(60일 하한과 보류 상태는 여전히 지켜진다).
+`EvidenceRetention.rotate()`, `_verify_candidate()`, `PurgeResult`,
+`RotationReport.pressure_blocked`는 `evidence_retention.py`와 함께 삭제됐다.
+디스크 상한 헬퍼 `configured_disk_high_watermark()`(기본
+`DEFAULT_DISK_HIGH_WATERMARK = 0.80`, 환경변수
+`CLIP_STORE_MAX_USAGE` / `CLIP_DISK_HIGH_WATERMARK`)도 정의만 있고 호출자가
+없다.
+
+따라서:
+
+- 오래된 클립이 보관 기한·워터마크에 의해 자동 삭제된다고 가정하지 말 것.
+- soak metric 5(“clip 디스크 회전 정확성”)는 회전 구현이 다시 생긴 뒤에야
+  판정할 수 있다.
+- 운영자가 디스크를 비우려면 수동/외부 절차가 필요하며, 그 절차는 이 문서의
+  범위 밖이다. 자동 삭제를 복구할 때는 [#595](https://github.com/SeniorAILab/SeeON-edge/issues/595)를
+  기준으로 `configured_retention_days()` / `configured_disk_high_watermark()`를
+  실제 소비자에 연결해야 한다.
+
+과거 문서가 말하던 `DELETE /api/v1/clips/{clip_id}` + worker
+`deletion-preflight` 자동 삭제 파이프라인도 현재 `backend/app/features/clips/router.py`
+표면에는 없다(목록·메타데이터·아티팩트·video/thumbnail 조회와 감사 append만
+존재). 카탈로그 쪽 `retention_state` 컬럼은
+`backend/app/features/clips/catalog_indexer.py`가 읽지만, 워커 자동 purge와
+연결된 삭제 API는 없다.
 
 ## 2. 감사 로그 커버리지 (audit log coverage)
 
-감사 로그(`AuditLogStore`, `backend/app/features/clips/audit_log.py`)는 클립
-관련 API 접근을 JSONL로 append-only 기록한다. `#131` 이전에는 재생(play)과
-라벨링(label)만 기록되고, 클립 목록 조회와 감사 로그 열람 자체는 기록되지 않는
-격차가 있었다. 아래 표가 현재(이 변경 이후) 커버리지다.
+> **경로 정정:** 과거 JSONL `AuditLogStore` /
+> `backend/app/features/clips/audit_log.py`는 없다. 감사는
+> `backend/app/features/audit/`(PostgreSQL, `PostgresAuditRuntime` /
+> `append_governed`)가 소유한다. 아래 표의 엔드포인트·액션 이름은 클립
+> 라우터가 실제로 `append_governed(..., action=AuditAction.*)`를 호출하는
+> 현재 표면에 맞춰 읽어야 한다. 표 안의 레거시 JSONL/`label` 행은
+> 역사적 서술로 남기되, 파일 경로를 `audit_log.py`로 인용하지 말 것.
+
+클립 API 접근 감사의 현재 액션 상수는 `backend/app/features/audit/catalog.py`의
+`AuditAction`에 있다(`CLIP_LIST`, `CLIP_DETAIL`, `CLIP_PLAY`, `CLIP_THUMBNAIL`,
+`CLIP_ARTIFACT`, `AUDIT_LIST`, `AUDIT_DETAIL` 등). `#131` 이전 격차(재생/라벨만
+기록)를 다루던 서술의 맥락은 아래 표에 남아 있다.
 
 | 엔드포인트 | 액션(action) | clip_id | 액터 해석 |
 | --- | --- | --- | --- |
@@ -93,9 +112,17 @@ worker가 중단되면 `PENDING`이 사실대로 남고, 재시작 시 백엔드
 
 ## 3. 감사 파일 회전(rotation) 정책
 
-`#131` 이전에는 `audit.jsonl`이 무한정 누적되는 격차가 있었다. 이제
+> **상태:** 아래 JSONL `audit.jsonl` / `AuditLogStore.append()` /
+> `API_AUDIT_LOG_MAX_BYTES` / `API_AUDIT_ARCHIVE_RETENTION_DAYS` 서술은
+> 삭제된 JSONL 감사 구현을 가리킨다. 현재 감사 저장은
+> `backend/app/features/audit/postgres_store.py` 등 PostgreSQL 경로다.
+> JSONL 회전·아카이브 prune을 현행 운영 절차로 따르지 말 것. 하한 60일
+> 언급이 클립 `MIN_RETENTION_DAYS`와 맞추려던 의도였다는 점만 참고용으로 남긴다.
+
+`#131` 이전에는 `audit.jsonl`이 무한정 누적되는 격차가 있었다. 당시
 `AuditLogStore.append()`가 매 기록 전에 현재 파일 크기를 확인하고, 임계값을
-넘으면 타임스탬프가 붙은 아카이브 파일로 회전(rotate)한다.
+넘으면 타임스탬프가 붙은 아카이브 파일로 회전(rotate)했다(아래는 그 역사적
+동작 요약이다).
 
 ### 3-1. 회전 임계값
 
@@ -131,7 +158,7 @@ worker가 중단되면 `PENDING`이 사실대로 남고, 재시작 시 백엔드
   `MIN_AUDIT_ARCHIVE_RETENTION_DAYS = 60일`.
 - 환경변수 `API_AUDIT_ARCHIVE_RETENTION_DAYS`로 재정의 가능하지만, **60일
   미만으로는 내려가지 않는다** (`max(60, value)`) — 클립 자체의 보관 하한
-  (`worker/pipeline/output/evidence/clip_config.py:17`의
+  (`worker/pipeline/output/evidence/clip_config.py`의
   `MIN_RETENTION_DAYS = 60`)과 정확히 동일한 하한을 감사 아카이브에도 걸어서,
   "클립은 사라졌는데 그 클립에 대한 감사 기록(누가 언제 재생/라벨링했는지)도
   같이 사라지는" 상황이 나지 않게 한다. 감사 아카이브는 항상 클립 자체와
@@ -163,8 +190,9 @@ worker가 중단되면 `PENDING`이 사실대로 남고, 재시작 시 백엔드
 ## 관련 문서
 
 - [`docs/architecture.md`](../architecture.md) — 전체 아키텍처, 워커/API 레이어 구성.
-- `worker/pipeline/output/evidence/evidence_retention.py`,
-  `worker/pipeline/output/evidence/clip_config.py` — 클립 보관/회전 구현.
-- `backend/app/features/clips/audit_log.py`,
-  `backend/app/features/clips/router.py` — 감사 로그 구현/엔드포인트 배선.
-- `backend/app/shared/dashboard_auth.py` — 대시보드 세션 인증, 레거시 경로 주석.
+- `worker/pipeline/output/evidence/clip_config.py` — 보관·워터마크 상수/헬퍼(자동 삭제 소비자 없음; [#595](https://github.com/SeniorAILab/SeeON-edge/issues/595)).
+- `worker/pipeline/output/evidence/smart_record_actor.py`,
+  `flow_clip_publication.py`, `clip_publication.py` — 클립 생성·게시.
+- `backend/app/features/clips/router.py` — 클립 조회 API와 `append_governed` 감사 호출.
+- `backend/app/features/audit/` (`catalog.py`, `postgres_store.py`, `router.py`) — 현재 감사 구현(과거 `backend/app/features/clips/audit_log.py` JSONL `AuditLogStore`는 없음).
+- [`docs/operations/soak-test-plan.md`](soak-test-plan.md) — metric 5가 동일하게 “자동 회전 없음”을 기록.
