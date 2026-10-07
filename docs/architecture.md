@@ -439,8 +439,8 @@ feature it proves. Developer-convenience harnesses are deferred with the tools.
 | CLI entrypoint and bounded-run cap | `worker/__main__.py` | `tests/test_worker_entrypoint.py`, `tests/test_worker_max_frames_per_camera_composition.py` | ported |
 | Per-frame perception: tracking, scene state, window buffering | `worker/pipeline/perception/`, `worker/pipeline/camera_pipeline.py` | `tests/test_perception_observation_builder.py`, `tests/test_demo_tracking.py`, `tests/test_worker_camera_pipeline_pump.py` | ported |
 | Operator MJPEG live view | `worker/pipeline/output/mjpeg_server.py`, `worker/pipeline/output/live_view.py`, composed in `worker/runtime/worker.py` | `tests/test_worker_live_view_composition.py` | ported |
-| GPU stability preflight installer | — | — | tracked-deferred (`scripts/edge-preflight/gpu-stability-install.sh`, untracked at baseline; [#6](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/6)) |
-| GPU telemetry preflight | — | — | tracked-deferred (`scripts/edge-preflight/gpu-telemetry.sh`, untracked at baseline; [#7](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/7)) |
+| GPU stability preflight installer | — | — | tracked-deferred (`scripts/edge-preflight/gpu-stability-install.sh`, untracked at baseline) |
+| GPU telemetry preflight | — | — | tracked-deferred (`scripts/edge-preflight/gpu-telemetry.sh`, untracked at baseline) |
 
 ### Baseline uncommitted work
 
@@ -479,6 +479,10 @@ cannot be TOCTOU-swapped for a different file, and it does not require `/proc`.
 pins the same-inode probe: `ffprobe` still reads the original bytes when the
 path is swapped mid-probe. The test picks its descriptor root by the same rule.
 
+On macOS, `tests/test_clip_export_reconciliation.py` and
+`tests/test_evidence_trust_boundaries.py` now pass locally (19 passed), so the
+row is dev-verified as well as CI-verified.
+
 **Snapshot store used to be listed here too, and no longer is.** Three of its
 cited tests also failed on macOS, but for an entirely different reason: they
 read `/proc/self/fd` purely as *test instrumentation* to resolve a descriptor
@@ -515,7 +519,6 @@ v2 values at the same time — the fail-closed validation in
 stays unchanged either way; only the pinned values move. The regression is
 covered by
 `tests/test_worker_real_warmup_no_stub.py::test_example_config_fall_contract_matches_the_local_artifact`.
-Tracked in [#8](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/8).
 
 **Operator scripts hang on heredocs larger than `PIPE_BUF`.**
 Bash 5.3.15 writes a heredoc body into a pipe before exec'ing the reader, so a
@@ -533,9 +536,7 @@ body into a file is the durable fix.
 `tests/test_shell_script_heredoc_contract.py` enforces the rule at the 512-byte
 threshold. It is a general contract: it walks every remaining `scripts/**/*.sh`
 rather than naming individual scripts, so it keeps holding as the script surface
-changes. Tracked in
-[#9](https://github.com/SeniorAILab/eldercare-fall-ml-v2/issues/9), which
-carries the reproduction and the measured size census.
+changes.
 
 **`worker/pipeline/camera_pipeline.py` exists, but does not own what the plan
 said it would.** This entry previously asserted that the file was absent, which

@@ -28,7 +28,7 @@ SHA, then download that explicitly named artifact only.
 
 ```sh
 set -eu
-REPO=SeniorAILab/eldercare-fall-ml-v2
+REPO=SeniorAILab/SeeON-edge
 MAIN_SHA=$(gh api "repos/$REPO/commits/main" --jq .sha)
 RUN=$(gh run list --repo "$REPO" --workflow edge-images.yml \
   --commit "$MAIN_SHA" --limit 1 --json databaseId --jq '.[0].databaseId')

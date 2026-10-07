@@ -56,7 +56,6 @@ RUN if [ "${#SOURCE_REVISION}" -ne 40 ] || printf '%s' "$SOURCE_REVISION" | grep
       exit 1; \
     fi
 LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
-      org.opencontainers.image.source="SeniorAILab/eldercare-fall-ml-v2" \
       seeon.edge.database.schema-version="${EDGE_DATABASE_SCHEMA_VERSION}"
 
 # The execution-record provenance identity (#545). The worker image bakes

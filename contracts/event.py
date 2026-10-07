@@ -1,9 +1,3 @@
-"""L0 event vocabulary aligned to the frontend domain SSoT.
-
-ML emits typed signed events. Backend owns severity/channel/policy/final-dedup;
-ML runtime incident management owns only idempotency and cooldown.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -67,11 +61,11 @@ def front_event_type(event_type: str) -> DetectionEventType:
 
 
 __all__ = [
+    "EVENT_TYPE_REGISTRY",
     "DetectionEventType",
     "EventEvidence",
     "EventPayload",
     "EventScalar",
-    "EVENT_TYPE_REGISTRY",
     "Level",
     "MutableEventPayload",
     "Severity",
