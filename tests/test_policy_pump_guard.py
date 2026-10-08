@@ -92,3 +92,14 @@ def test_guarded_thread_clean_return_is_not_death() -> None:
     died = threading.Event()
     start_guarded_thread("clean", lambda: None, died.set).join(5.0)
     assert not died.is_set()
+
+
+def test_coverage_observe_failure_does_not_kill_pump() -> None:
+    pump, metadata = _failing_pump()
+
+    def bad_observe(frame: object) -> None:
+        raise IndexError("coverage")
+
+    pump._observation_coverage = SimpleNamespace(observe=bad_observe, detect_gap=lambda: None)
+    pump.run()
+    assert pump.failure_count == FRAMES

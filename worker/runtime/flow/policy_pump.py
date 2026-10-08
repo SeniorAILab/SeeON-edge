@@ -157,12 +157,12 @@ class NativePolicyPump:
                 token = AcceptanceToken(self._binding, token.native_publish_sequence)
                 continue
             token = AcceptanceToken(self._binding, frame.native_publish_sequence)
-            self._observation_coverage.observe(frame)
-            self._diagnostics.record_native_detection_attempt(self.camera_id)
-            sink = self._execution_records
-            before = None if sink is None else self._metadata.counters()
             try:
                 with translate(PolicyFrameError, "native policy frame failed"):
+                    self._observation_coverage.observe(frame)
+                    self._diagnostics.record_native_detection_attempt(self.camera_id)
+                    sink = self._execution_records
+                    before = None if sink is None else self._metadata.counters()
                     self._process(frame)
                     if sink is not None and before is not None:
                         emit_policy_consume(
