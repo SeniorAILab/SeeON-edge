@@ -208,7 +208,7 @@ class BedExitMonitor:
                     self._config.camera_id,
                     exc_info=True,
                 )
-        event_time = 0.0 if input_value.time_sec is None else input_value.time_sec
+        event_time = input_value.time_sec
         in_window = self._night_window is None or self._night_window.contains(self._clock())
         self._latch.update()
         freshness = self._latch.status_snapshot
@@ -404,9 +404,7 @@ class BedExitMonitor:
                         track_id=recipient,
                         bed_id=successor.bed_id,
                         frame_index=input_value.frame_index,
-                        time_sec=(
-                            0.0 if input_value.time_sec is None else input_value.time_sec
-                        ),
+                        time_sec=input_value.time_sec,
                         qualifying=False,
                         probability=1.0,
                         domain="bed_exit",
@@ -476,9 +474,7 @@ class BedExitMonitor:
                             track_id=person_id,
                             bed_id=assignment.bed_id,
                             frame_index=input_value.frame_index,
-                            time_sec=(
-                                0.0 if input_value.time_sec is None else input_value.time_sec
-                            ),
+                            time_sec=input_value.time_sec,
                             qualifying=False,
                             probability=1.0,
                             domain="bed_exit",
@@ -514,17 +510,12 @@ class BedExitMonitor:
                 )
                 continue
 
-            time_missing = input_value.time_sec is None
-            if time_missing:
-                dt = 0.0
-            else:
-                assert input_value.time_sec is not None
-                dt = (
-                    0.0
-                    if assignment.last_time_sec is None
-                    else max(0.0, input_value.time_sec - assignment.last_time_sec)
-                )
-                assignment.last_time_sec = input_value.time_sec
+            dt = (
+                0.0
+                if assignment.last_time_sec is None
+                else max(0.0, input_value.time_sec - assignment.last_time_sec)
+            )
+            assignment.last_time_sec = input_value.time_sec
 
             features = by_track.get(person_id)
             posture_confirms_in_bed = (
@@ -554,8 +545,6 @@ class BedExitMonitor:
                 missing_values: dict[str, str] = {}
                 if features is None:
                     missing_values["hip_depth"] = "no-pose-evidence"
-                if time_missing:
-                    missing_values["time_sec"] = "time-not-provided"
                 traces.append(
                     DecisionTraceSnapshot(
                         reason=(

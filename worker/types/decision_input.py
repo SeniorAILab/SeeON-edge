@@ -15,7 +15,7 @@ class DecisionInput:
     frame_width: int
     frame_height: int
     live_track_ids: tuple[int, ...]
-    time_sec: float | None
+    time_sec: float
     frame_index: int
     bed_region: BedRegionDebugSnapshot
     bed_pose_features: FrameBedPoseFeatures = EMPTY_FRAME_BED_POSE_FEATURES
