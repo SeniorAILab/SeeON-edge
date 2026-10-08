@@ -876,6 +876,14 @@ _LINT_STEPS = [
     },
     {"run": "uv run --group lint python scripts/check_no_comments.py"},
     {"run": "uv run --group lint python scripts/check_boundaries.py"},
+    {
+        "name": "Backend feature layers (baseline only shrinks)",
+        "env": {"BASE_REF": "${{ github.base_ref || 'main' }}"},
+        "run": (
+            'git fetch --no-tags --depth=1 origin "$BASE_REF"\n'
+            "uv run --group lint python scripts/check_layers.py --against FETCH_HEAD\n"
+        ),
+    },
 ]
 
 _SHARD_DISCOVERY = (
