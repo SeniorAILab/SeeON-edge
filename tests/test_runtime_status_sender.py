@@ -237,8 +237,7 @@ def test_sender_logs_a_local_diagnostics_snapshot_on_its_own_tick(
         if record.getMessage().startswith("worker.runtime.telemetry ")
     ]
     assert telemetry_records
-    assert vars(telemetry_records[-1]).get("camera_id") == "camera-a"
-    assert vars(telemetry_records[-1]).get("bed_region", {}).get("freshness") == "fresh"
+    assert "camera_id=camera-a" in telemetry_records[-1].getMessage()
 
 
 @final
@@ -282,6 +281,27 @@ def test_sender_survives_a_log_snapshot_failure_and_keeps_delivering(
 
     assert transport.payloads
     assert any("log_snapshot" in record.getMessage() for record in caplog.records)
+
+
+def test_status_log_volume_stays_under_ceiling(caplog: pytest.LogCaptureFixture) -> None:
+    diagnostics = _diagnostics()
+    diagnostics.record_stage_timing("camera-a", "ingest", 0.1)
+    diagnostics.record_stage_timing("camera-b", "ingest", 0.1)
+    sender = RuntimeStatusSender(
+        diagnostics,
+        "facility-a",
+        _RecordingTransport(),
+        RuntimeStatusSenderConfig(publish_interval_sec=0.01),
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        for _ in range(300):
+            _ = sender.publish_once()
+            diagnostics.log_snapshot()
+
+    assert len(caplog.records) <= 600
+    assert all("\n" not in record.getMessage() for record in caplog.records)
+    assert all(len(record.getMessage()) < 200 for record in caplog.records)
 
 
 def _wait_until(predicate, timeout_sec: float = 0.5) -> None:

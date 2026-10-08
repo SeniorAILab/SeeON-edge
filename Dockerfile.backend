@@ -65,4 +65,4 @@ ENV HOST=127.0.0.1 \
     PORT=8000 \
     ML_API_BUILD_REVISION="${SOURCE_REVISION}"
 EXPOSE 8000
-CMD ["sh", "-c", "uvicorn backend.app.main:app --host ${HOST} --port ${PORT}"]
+CMD ["sh", "-c", "uvicorn backend.app.main:app --no-access-log --host ${HOST} --port ${PORT}"]
