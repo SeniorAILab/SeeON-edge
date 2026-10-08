@@ -412,6 +412,8 @@ def test_policy_pump_records_observation_before_processing_failure() -> None:
         record_native_detection_attempt=detection_attempts.append
     )
     pump.failure_count = 0
+    pump._failure_logged_at = None
+    pump._failures_suppressed = 0
     pump.processed_count = 0
     pump._execution_records = None
 

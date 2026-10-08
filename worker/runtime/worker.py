@@ -151,6 +151,7 @@ from worker.runtime.telemetry.wire import (
     RelayGpuPayload,
     RelayWorkerPayload,
 )
+from worker.runtime.threads import start_guarded_thread
 from worker.runtime.watchdog import InferenceWatchdog
 from worker.types import (
     CURRENT_TEMPORAL_PROFILE,
@@ -1095,17 +1096,19 @@ class WorkerRuntime:
         )
         heartbeat = NativeHeartbeatLoop(self.config, self.config.cameras, pumps)
         handler.register_loop(heartbeat)
-        threading.Thread(target=heartbeat.run, name="flow-heartbeat", daemon=True).start()
+        start_guarded_thread(
+            "flow-heartbeat",
+            heartbeat.run,
+            lambda: on_fatal("thread died: name=flow-heartbeat"),
+        )
         self._policy_pump_threads = tuple(
-            threading.Thread(
-                target=pump.run,
-                name=f"flow-policy-{pump.camera_id}",
-                daemon=True,
+            start_guarded_thread(
+                f"flow-policy-{pump.camera_id}",
+                pump.run,
+                partial(on_fatal, f"policy pump died: camera_id={pump.camera_id}"),
             )
             for pump in pumps
         )
-        for thread in self._policy_pump_threads:
-            thread.start()
         return outcomes
 
     def _compose_evidence_export(self) -> None:

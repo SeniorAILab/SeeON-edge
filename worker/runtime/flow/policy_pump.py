@@ -11,6 +11,7 @@ from typing import Protocol, final, runtime_checkable
 
 from contracts.observation import BoundingBox
 from contracts.replay_trace import ReplayRow, ReplaySource, ReplayTrack
+from shared.boundary import translate
 from worker.interfaces.execution_records import ExecutionRecordSink
 from worker.interfaces.media_plane import OnDemandSnapshotUnsupported
 from worker.pipeline.decision import EventAggregator, unwrap_decider
@@ -27,6 +28,7 @@ from worker.types.trace import DecisionTraceState, DecisionTraceValueName, decis
 
 LOGGER = logging.getLogger(__name__)
 _FPS_WINDOW_SEC = 10.0
+_FAILURE_LOG_INTERVAL_SEC = 30.0
 _SUSPECTED_FALL_STATES = frozenset(
     {
         DecisionTraceState.FALL,
@@ -36,6 +38,10 @@ _SUSPECTED_FALL_STATES = frozenset(
         DecisionTraceState.TRIGGERED,
     }
 )
+
+
+class PolicyFrameError(RuntimeError):
+    pass
 
 
 @runtime_checkable
@@ -99,6 +105,8 @@ class NativePolicyPump:
         self._fps: deque[float] = deque()
         self.processed_count = 0
         self.failure_count = 0
+        self._failure_logged_at: float | None = None
+        self._failures_suppressed = 0
         self._trace_epoch: tuple[int, int] | None = None
         self._trace_tracks: dict[int, ReplayTrack] = {}
         self._live_track_misses: dict[int, int] = {}
@@ -154,24 +162,37 @@ class NativePolicyPump:
             sink = self._execution_records
             before = None if sink is None else self._metadata.counters()
             try:
-                self._process(frame)
-                if sink is not None and before is not None:
-                    emit_policy_consume(
-                        sink,
-                        frame,
-                        before=before,
-                        after=self._metadata.counters(),
-                        processed_count=self.processed_count + 1,
-                    )
-            except (OSError, ValueError, RuntimeError):
+                with translate(PolicyFrameError, "native policy frame failed"):
+                    self._process(frame)
+                    if sink is not None and before is not None:
+                        emit_policy_consume(
+                            sink,
+                            frame,
+                            before=before,
+                            after=self._metadata.counters(),
+                            processed_count=self.processed_count + 1,
+                        )
+            except PolicyFrameError as error:
                 self.failure_count += 1
-                LOGGER.warning(
-                    "native policy frame failed: camera_id=%s",
-                    self.camera_id,
-                    exc_info=True,
-                )
+                self._log_frame_failure(error)
             finally:
                 self.processed_count += 1
+
+    def _log_frame_failure(self, error: PolicyFrameError) -> None:
+        now = time.monotonic()
+        first = self._failure_logged_at is None
+        if not first and now - self._failure_logged_at < _FAILURE_LOG_INTERVAL_SEC:
+            self._failures_suppressed += 1
+            return
+        suppressed, self._failures_suppressed = self._failures_suppressed, 0
+        self._failure_logged_at = now
+        LOGGER.warning(
+            "native policy frame failed: camera_id=%s cause=%r suppressed_since_last_log=%d",
+            self.camera_id,
+            error.__cause__,
+            suppressed,
+            exc_info=error if first else None,
+        )
 
     def stop(self) -> None:
         self._stop.set()

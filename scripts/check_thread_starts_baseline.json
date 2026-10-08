@@ -1,0 +1,12 @@
+{
+  "worker/adapters/deepstream/service_maker.py": 2,
+  "worker/adapters/model/yolo_api.py": 1,
+  "worker/pipeline/diagnostics/exporter.py": 1,
+  "worker/pipeline/output/evidence/evidence_runtime.py": 1,
+  "worker/pipeline/output/mjpeg_server.py": 1,
+  "worker/runtime/clip_analysis_catchup.py": 1,
+  "worker/runtime/clip_analysis_subprocess.py": 1,
+  "worker/runtime/clip_analysis_supervisor.py": 1,
+  "worker/runtime/telemetry/runtime_status_sender.py": 1,
+  "worker/runtime/watchdog.py": 1
+}

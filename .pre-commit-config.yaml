@@ -29,6 +29,12 @@ repos:
         files: \.pyi?$
         require_serial: true
         verbose: true
+      - id: thread-starts
+        name: guarded thread starts
+        entry: uv run --group lint python scripts/check_thread_starts.py
+        language: system
+        files: \.py$
+        require_serial: true
       - id: layers
         name: backend feature layers (baseline only shrinks)
         entry: uv run --group lint python scripts/check_layers.py --against HEAD
