@@ -100,6 +100,8 @@ jobs:
 
       - run: uv run --group lint python scripts/check_boundaries.py
 
+      - run: uv run --group lint python scripts/check_module_size.py
+
       # Backend feature layers: folder shape, unmigrated imports and the
       # shrink-only baseline, compared with the exact base commit (the PR base
       # SHA, or the previous main tip on push). Without one, check findings only.
