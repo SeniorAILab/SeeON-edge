@@ -1623,39 +1623,6 @@ class WorkerRuntime:
             definitions=MappingProxyType(definitions),
         )
 
-    def _build_decider(
-        self,
-        name: str,
-        camera: CameraRuntimeConfig,
-        fall_model: FallModelProtocol,
-        tracker: GreedyIouTracker | None = None,
-    ) -> Decider:
-        definition = self._module_registry.get(name, self._module_versions.get(name))
-        window = self._resolved_window(name)
-        context = CameraModuleContext(
-            camera_id=camera.camera_id,
-            facility_id=camera.facility_id,
-            shared_components=MappingProxyType({"fall-classifier": fall_model}),
-            camera_components=MappingProxyType(
-                {
-                    "person-tracker": tracker or GreedyIouTracker(),
-                    "episode-identity": (str(self._worker_boot_uuid), "0", 0),
-                }
-            ),
-            detection_window=window,
-            clock=lambda: datetime.now(UTC),
-            diagnostics=self.diagnostics,
-            policy=self.config.detection_policies.resolve(
-                camera.camera_id,
-                definition.module_id,
-                definition.version,
-            ),
-        )
-        decider = definition.create_camera_module(context).decider
-        if definition.window_mode == "external" and window is not None:
-            return _WindowGatedDecider(decider, window, clock=lambda: datetime.now(UTC))
-        return decider
-
     def _resolved_window(self, name: str) -> DetectionWindow | None:
         configured = self.config.domains.resolved_detection_window(name)
         if configured is None:

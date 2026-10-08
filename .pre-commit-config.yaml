@@ -29,6 +29,12 @@ repos:
         files: \.pyi?$
         require_serial: true
         verbose: true
+      - id: private-test-only
+        name: no private worker function only tests call (baseline only shrinks)
+        entry: uv run --group lint python scripts/check_private_test_only.py --against HEAD
+        language: system
+        pass_filenames: false
+        always_run: true
       - id: layers
         name: backend feature layers (baseline only shrinks)
         entry: uv run --group lint python scripts/check_layers.py --against HEAD
