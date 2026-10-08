@@ -58,6 +58,35 @@ def test_unknown_window_expiry_resolves_and_timeout_does_not_rearm():
     assert authority.propose(proposal(frame=80, time=5.4)) == ()
 
 
+def test_unclaimed_resolved_episode_is_dropped_and_old_track_starts_fresh():
+    authority = EpisodeAuthority(boot_id="boot", stream_epoch="epoch", source_generation=1)
+    first = open_episode(authority)[0]
+    authority.track_lost(camera_id="camera-1", frame_index=3, time_sec=0.2)
+    authority.expire(frame_index=79, time_sec=5.3)
+    authority.expire(frame_index=95, time_sec=6.3)
+    assert (
+        authority.state_for(camera_id="camera-1", event_type="fall", bed_id=None, track_id=7)
+        is EpisodeState.NORMAL
+    )
+    assert not authority.reassociate_fall(proposal(track_id=8, frame=96, time=6.4))
+    again = open_episode(authority, start=100)
+    assert len(again) == 1
+    assert again[0].identity != first.identity
+
+
+def test_resolved_episode_claimed_by_live_track_keeps_hold():
+    authority = EpisodeAuthority(boot_id="boot", stream_epoch="epoch", source_generation=1)
+    assert open_episode(authority)
+    authority.track_lost(camera_id="camera-1", frame_index=3, time_sec=0.2)
+    authority.expire(frame_index=79, time_sec=5.3)
+    assert authority.propose(proposal(frame=79, time=5.3)) == ()
+    authority.expire(frame_index=80, time_sec=5.4)
+    assert (
+        authority.state_for(camera_id="camera-1", event_type="fall", bed_id=None, track_id=7)
+        is EpisodeState.RESOLVED
+    )
+
+
 def test_release_reopens_only_the_exact_failed_episode():
     authority = EpisodeAuthority(boot_id="boot", stream_epoch="epoch", source_generation=1)
     failed = open_episode(authority, track_id=7)[0]

@@ -83,6 +83,8 @@ class EpisodeAuthority:
                 return ()
             episode.state = EpisodeState.RESOLVED
         if episode.state is EpisodeState.RESOLVED:
+            episode.unknown_frame = None
+            episode.unknown_time = None
             if proposal.confirmed_recovery:
                 episode.state = EpisodeState.NORMAL
                 episode.votes.clear()
@@ -210,8 +212,12 @@ class EpisodeAuthority:
         return bool(candidates) and self.reassociate(proposal, candidates[0])
 
     def expire(self, *, frame_index: int, time_sec: float) -> None:
-        for episode in self._episodes.values():
-            if episode.state is EpisodeState.UNKNOWN and not self._within_values(
+        for key, episode in tuple(self._episodes.items()):
+            if episode.state is EpisodeState.NORMAL or (
+                episode.state is EpisodeState.RESOLVED and episode.unknown_frame is not None
+            ):
+                del self._episodes[key]
+            elif episode.state is EpisodeState.UNKNOWN and not self._within_values(
                 episode, frame_index, time_sec
             ):
                 episode.state = EpisodeState.RESOLVED
