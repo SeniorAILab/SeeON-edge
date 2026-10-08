@@ -418,18 +418,6 @@ forbidden_modules = ["backend.app.features.*.repository", "backend.app.edge_db"]
 allow_indirect_imports = true
 
 [[tool.importlinter.contracts]]
-# DTOs are controller-owned Pydantic models, and grimp sees only the top-level
-# package, so this bans all of pydantic, directly or through any other module.
-# Kept apart so an AST rule in scripts/check_layers.py can replace it. The one
-# ignored import is backend.app.core.config, a pydantic-settings model that
-# services may read.
-name = "backend services and repositories do not import pydantic"
-type = "forbidden"
-source_modules = ["backend.app.features.*.service", "backend.app.features.*.repository"]
-forbidden_modules = ["pydantic"]
-ignore_imports = ["backend.app.core.config -> pydantic"]
-
-[[tool.importlinter.contracts]]
 name = "backend services and repositories do not import HTTP frameworks or controllers"
 type = "forbidden"
 source_modules = ["backend.app.features.*.service", "backend.app.features.*.repository"]

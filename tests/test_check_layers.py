@@ -13,7 +13,6 @@ F = "backend.app.features"
 
 LAYERS = "backend feature layers run controller -> service -> repository"
 SKIP = "backend controllers reach repositories only through a service"
-PYDANTIC = "backend services and repositories do not import pydantic"
 HTTP = "backend services and repositories do not import HTTP frameworks or controllers"
 DRIVERS = "backend psycopg stays in repositories"
 INDEPENDENCE = "backend features meet only service to service"
@@ -23,7 +22,6 @@ ACYCLIC = "backend features do not depend on each other in a cycle"
 LAYER_CONTRACTS = (
     LAYERS,
     SKIP,
-    PYDANTIC,
     HTTP,
     DRIVERS,
     INDEPENDENCE,
@@ -131,14 +129,12 @@ def test_clean_layered_features_keep_every_layer_contract(tmp_path: Path) -> Non
     assert "BROKEN" not in output, output
 
 
-def test_service_reading_pydantic_settings_through_core_config_is_kept(tmp_path: Path) -> None:
-    output = lint(tmp_path, {})
-    assert "import pydantic" in clean_tree()["backend/app/core/config.py"]
-    assert f"{PYDANTIC} KEPT" in output, output
-
-
 ALPHA = "backend/app/features/alpha"
 BASE_MODEL = "from pydantic import BaseModel\n\n\nclass Wire(BaseModel):\n    x: int\n"
+DTO_FIX = "move the DTO to the controller and convert it to a value type there"
+CONTROLLER_IMPORT_FIX = (
+    "import a service or a value type instead; the controller converts DTOs to values"
+)
 LEGACY = "backend/app/features/legacy"
 
 MUTATIONS = {
@@ -166,13 +162,11 @@ MUTATIONS = {
         {f"{ALPHA}/controller/api.py": f"from {F}.beta.controller import api\n"},
         INDEPENDENCE,
     ),
-    "pydantic_in_service": ({f"{ALPHA}/service/logic.py": "import pydantic\n"}, PYDANTIC),
     "fastapi_in_service": ({f"{ALPHA}/service/logic.py": "import fastapi\n"}, HTTP),
     "controller_import_in_service": (
         {f"{ALPHA}/service/logic.py": f"from {F}.alpha.controller import api\n"},
         HTTP,
     ),
-    "pydantic_in_repository": ({f"{ALPHA}/repository/rows.py": "import pydantic\n"}, PYDANTIC),
     "starlette_in_repository": ({f"{ALPHA}/repository/rows.py": "import starlette\n"}, HTTP),
     "psycopg_in_service": ({f"{ALPHA}/service/logic.py": "import psycopg\n"}, DRIVERS),
     "psycopg_pool_in_controller": (
@@ -186,27 +180,6 @@ MUTATIONS = {
     "routes_import_a_repository": (
         {"backend/app/routes.py": f"from {F}.alpha.repository import rows\n"},
         ROUTES,
-    ),
-    "pydantic_through_a_backend_shared_model": (
-        {
-            "backend/app/shared/wire_models.py": BASE_MODEL,
-            f"{ALPHA}/service/logic.py": "from backend.app.shared import wire_models\n",
-        },
-        PYDANTIC,
-    ),
-    "pydantic_through_a_contracts_model": (
-        {
-            "contracts/wire.py": BASE_MODEL,
-            f"{ALPHA}/service/logic.py": "from contracts import wire\n",
-        },
-        PYDANTIC,
-    ),
-    "pydantic_through_an_edge_db_model": (
-        {
-            "backend/app/edge_db/models.py": BASE_MODEL,
-            f"{ALPHA}/repository/rows.py": "from backend.app.edge_db import models\n",
-        },
-        PYDANTIC,
     ),
     "fastapi_through_a_shared_http_adapter": (
         {
@@ -245,13 +218,24 @@ INDEPENDENCE_TOML = (
 
 LEGACY_STORE = "import psycopg\nimport pydantic\n"
 LEGACY_WORKER = f"import psycopg\nfrom {F}.alpha.service import logic\n"
-LEGACY_ENTRIES = [
-    "FEATURE_ROOT_FILE store.py",
-    "FEATURE_ROOT_FILE worker.py",
-    "UNMIGRATED_PYDANTIC store -> pydantic",
-    "UNMIGRATED_IMPORT worker -> psycopg",
-    "CROSS_FEATURE_EDGE legacy.worker -> alpha.service.logic",
-]
+LEGACY_COMMAND = (
+    "from pydantic import BaseModel\n\n\n"
+    "class Command(BaseModel):\n"
+    "    x: int\n\n\n"
+    "def handle():\n"
+    f"    from {F}.alpha.controller import api\n"
+    "    return api\n"
+)
+LEGACY_ENTRIES = {
+    "FEATURE_ROOT_FILE command.py": 1,
+    "FEATURE_ROOT_FILE store.py": 1,
+    "FEATURE_ROOT_FILE worker.py": 1,
+    "DTO_OUTSIDE_CONTROLLER command.py": 1,
+    "CONTROLLER_IMPORT_OUTSIDE_CONTROLLER command.py": 1,
+    "UNMIGRATED_IMPORT worker -> psycopg": 1,
+    "CROSS_FEATURE_EDGE legacy.command -> alpha.controller.api": 1,
+    "CROSS_FEATURE_EDGE legacy.worker -> alpha.service.logic": 1,
+}
 
 
 def checker_tree() -> dict[str, str]:
@@ -260,6 +244,7 @@ def checker_tree() -> dict[str, str]:
         {
             "pyproject.toml": INDEPENDENCE_TOML,
             f"{LEGACY}/__init__.py": "",
+            f"{LEGACY}/command.py": LEGACY_COMMAND,
             f"{LEGACY}/store.py": LEGACY_STORE,
             f"{LEGACY}/worker.py": LEGACY_WORKER,
             "scripts/layer_baseline.json": json.dumps({"features": {"legacy": LEGACY_ENTRIES}}),
@@ -338,20 +323,81 @@ CHECKER_MUTATIONS = {
         {f"{LEGACY}/worker.py": LEGACY_WORKER + f"from {F}.beta.service import logic as b\n"},
         "CROSS_FEATURE_EDGE legacy.worker -> beta.service.logic. Fix: call the other feature",
     ),
-    "pydantic_in_unmigrated_service_file": (
-        {f"{LEGACY}/worker.py": LEGACY_WORKER + "import pydantic\n"},
-        "UNMIGRATED_PYDANTIC worker -> pydantic. Fix: keep DTOs in the controller",
-    ),
     "fastapi_in_unmigrated_repository_file": (
         {f"{LEGACY}/store.py": LEGACY_STORE + "import fastapi\n"},
         "UNMIGRATED_IMPORT store -> fastapi. Fix: keep HTTP in the controller",
+    ),
+    "dto_in_unmigrated_service_file": (
+        {f"{LEGACY}/worker.py": LEGACY_WORKER + BASE_MODEL},
+        f"DTO_OUTSIDE_CONTROLLER worker.py. Fix: {DTO_FIX}",
+    ),
+    "dto_in_unmigrated_repository_file": (
+        {f"{LEGACY}/store.py": LEGACY_STORE + "\n\nclass Row(pydantic.BaseModel):\n    x: int\n"},
+        f"DTO_OUTSIDE_CONTROLLER store.py. Fix: {DTO_FIX}",
+    ),
+    "dto_in_service": (
+        {f"{ALPHA}/service/logic.py": BASE_MODEL},
+        f"DTO_OUTSIDE_CONTROLLER service/logic.py. Fix: {DTO_FIX}",
+    ),
+    "dto_with_an_aliased_base": (
+        {
+            f"{ALPHA}/repository/rows.py": (
+                "from pydantic import BaseModel as Base\n\n\nclass Row(Base):\n    x: int\n"
+            )
+        },
+        "DTO_OUTSIDE_CONTROLLER repository/rows.py. Fix:",
+    ),
+    "dto_through_a_dotted_module_alias": (
+        {
+            f"{ALPHA}/service/logic.py": (
+                "import pydantic.main as pm\n\n\nclass Wire(pm.BaseModel):\n    x: int\n"
+            )
+        },
+        "DTO_OUTSIDE_CONTROLLER service/logic.py. Fix:",
+    ),
+    "dto_as_a_root_model": (
+        {
+            f"{ALPHA}/service/logic.py": (
+                "from pydantic import RootModel\n\n\nclass Ids(RootModel[list[int]]):\n    pass\n"
+            )
+        },
+        "DTO_OUTSIDE_CONTROLLER service/logic.py. Fix:",
+    ),
+    "dto_through_a_local_model_base": (
+        {f"{ALPHA}/service/logic.py": BASE_MODEL + "\n\nclass Child(Wire):\n    y: int\n"},
+        "DTO_OUTSIDE_CONTROLLER service/logic.py (2 found, baseline allows 0). Fix:",
     ),
     "controller_import_in_unmigrated_service_file": (
         {
             f"{LEGACY}/router.py": "",
             f"{LEGACY}/worker.py": LEGACY_WORKER + f"from {F}.legacy import router\n",
         },
-        f"UNMIGRATED_IMPORT worker -> {F}.legacy.router. Fix: depend on a service instead",
+        f"CONTROLLER_IMPORT_OUTSIDE_CONTROLLER worker.py. Fix: {CONTROLLER_IMPORT_FIX}",
+    ),
+    "controller_import_in_service": (
+        {f"{ALPHA}/service/logic.py": f"from {F}.alpha.controller.api import thing\n"},
+        f"CONTROLLER_IMPORT_OUTSIDE_CONTROLLER service/logic.py. Fix: {CONTROLLER_IMPORT_FIX}",
+    ),
+    "controller_import_inside_a_function": (
+        {f"{ALPHA}/repository/rows.py": f"def f():\n    import {F}.alpha.controller.api\n"},
+        "CONTROLLER_IMPORT_OUTSIDE_CONTROLLER repository/rows.py. Fix:",
+    ),
+    "controller_import_under_type_checking": (
+        {
+            f"{ALPHA}/service/logic.py": (
+                "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n"
+                f"    from {F}.alpha.controller import api\n"
+            )
+        },
+        "CONTROLLER_IMPORT_OUTSIDE_CONTROLLER service/logic.py. Fix:",
+    ),
+    "baselined_file_gains_a_dto": (
+        {f"{LEGACY}/command.py": LEGACY_COMMAND + "\n\nclass Other(BaseModel):\n    y: int\n"},
+        "DTO_OUTSIDE_CONTROLLER command.py (2 found, baseline allows 1). Fix:",
+    ),
+    "baselined_file_gains_a_controller_import": (
+        {f"{LEGACY}/command.py": LEGACY_COMMAND + f"\n\nfrom {F}.alpha.controller import api\n"},
+        "CONTROLLER_IMPORT_OUTSIDE_CONTROLLER command.py (2 found, baseline allows 1). Fix:",
     ),
     "psycopg_in_unmigrated_controller_file": (
         {f"{LEGACY}/router.py": "import psycopg_pool\n"},
@@ -381,6 +427,40 @@ def test_new_finding_outside_the_baseline_fails_with_a_fix(tmp_path: Path, case:
     assert "Rules: AGENTS.md" in result.stdout
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from pydantic import JsonValue, TypeAdapter\n\nA = TypeAdapter(dict[str, JsonValue])\n",
+        "import pydantic\n\nA = pydantic.TypeAdapter(int)\n",
+        "from pydantic import BaseModel\n\nX = BaseModel\n",
+        "from pydantic_settings import BaseSettings\n",
+        f"from {F}.beta.service import logic\n",
+    ],
+)
+def test_validation_and_service_imports_are_not_dto_findings(tmp_path: Path, source: str) -> None:
+    root = checker_repo(tmp_path, {f"{ALPHA}/service/logic.py": source})
+    result = run_checker(root, "--against", "HEAD")
+    assert result.returncode == 0, result.stdout
+
+
+def test_a_smaller_count_must_be_locked_in_the_baseline(tmp_path: Path) -> None:
+    root = checker_repo(tmp_path, {f"{LEGACY}/command.py": "def handle():\n    return 1\n"})
+    result = run_checker(root, "--against", "HEAD")
+    assert result.returncode == 1, result.stdout
+    assert "  DTO_OUTSIDE_CONTROLLER command.py: 0 left, baseline 1" in result.stdout
+
+
+def test_a_raised_count_in_the_baseline_is_caught_by_against(tmp_path: Path) -> None:
+    root = checker_repo(tmp_path)
+    path = root / "scripts/layer_baseline.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["features"]["legacy"]["DTO_OUTSIDE_CONTROLLER command.py"] = 2
+    path.write_text(json.dumps(data), encoding="utf-8")
+    result = run_checker(root, "--against", "HEAD")
+    assert result.returncode == 1, result.stdout
+    assert "gained DTO_OUTSIDE_CONTROLLER command.py (1 -> 2) compared with HEAD" in result.stdout
+
+
 def test_untracked_ignored_files_are_not_findings(tmp_path: Path) -> None:
     root = checker_repo(tmp_path, {".gitignore": "scratch/\n", f"{ALPHA}/scratch/x.py": ""})
     result = run_checker(root, "--against", "HEAD")
@@ -390,7 +470,7 @@ def test_untracked_ignored_files_are_not_findings(tmp_path: Path) -> None:
 def hide_in_baseline(root: Path, entry: str) -> None:
     path = root / "scripts/layer_baseline.json"
     data = json.loads(path.read_text(encoding="utf-8"))
-    data["features"]["legacy"].append(entry)
+    data["features"]["legacy"][entry] = 1
     path.write_text(json.dumps(data), encoding="utf-8")
 
 
@@ -410,7 +490,7 @@ def test_hiding_a_violation_in_the_baseline_is_caught_by_against(tmp_path: Path)
 def test_a_feature_new_to_the_baseline_is_caught_by_against(tmp_path: Path) -> None:
     root = checker_repo(tmp_path, {f"{ALPHA}/extra.py": ""})
     data = json.loads((root / "scripts/layer_baseline.json").read_text(encoding="utf-8"))
-    data["features"]["alpha"] = ["FEATURE_ROOT_FILE extra.py"]
+    data["features"]["alpha"] = {"FEATURE_ROOT_FILE extra.py": 1}
     (root / "scripts/layer_baseline.json").write_text(json.dumps(data), encoding="utf-8")
     result = run_checker(root, "--against", "HEAD")
     assert result.returncode == 1, result.stdout
@@ -440,7 +520,8 @@ def test_a_fixed_entry_must_leave_the_baseline(tmp_path: Path) -> None:
     apply(root, {f"{LEGACY}/store.py": None})
     result = run_checker(root, "--against", "HEAD")
     assert result.returncode == 1, result.stdout
-    assert "legacy: 2 baseline entries are fixed. Lock the gain" in result.stdout
+    assert "legacy: 1 baseline entries are fixed or smaller. Lock the gain" in result.stdout
+    assert "  FEATURE_ROOT_FILE store.py: 0 left, baseline 1" in result.stdout
 
 
 def test_baseline_and_migration_lines_stay_in_step(tmp_path: Path) -> None:

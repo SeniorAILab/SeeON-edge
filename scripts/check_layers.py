@@ -24,6 +24,11 @@ CONTROLLER_STEMS = frozenset(
 REPOSITORY_STEMS = frozenset({"store", "repository", "records"})
 HTTP = frozenset({"fastapi", "starlette"})
 DRIVERS = frozenset({"psycopg", "psycopg_pool"})
+MODEL_CLASSES = frozenset({"BaseModel", "RootModel"})
+DTO_FIX = "move the DTO to the controller and convert it to a value type there"
+CONTROLLER_IMPORT_FIX = (
+    "import a service or a value type instead; the controller converts DTOs to values"
+)
 OUTBOUND = re.compile(r"^backend\.app\.features\.(\w+)\.\* -> backend\.app\.features\.\*\*$")
 INBOUND = re.compile(r"^backend\.app\.features\.\*\* -> backend\.app\.features\.(\w+)\.\*$")
 
@@ -34,6 +39,7 @@ class Finding:
     rule: str
     subject: str
     fix: str
+    count: int = 1
 
     @property
     def key(self) -> str:
@@ -113,6 +119,74 @@ def reads_app_state(module: Path) -> int | None:
     return None
 
 
+def pydantic_bindings(tree: ast.AST) -> tuple[set[str], set[str]]:
+    names: set[str] = set()
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "pydantic":
+            names.update(a.asname or a.name for a in node.names if a.name in MODEL_CLASSES)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] == "pydantic":
+                    modules.add(alias.asname or "pydantic")
+    return names, modules
+
+
+def names_a_model(base: ast.expr, names: set[str], modules: set[str]) -> bool:
+    if isinstance(base, ast.Subscript):
+        base = base.value
+    if isinstance(base, ast.Name):
+        return base.id in names
+    if not (isinstance(base, ast.Attribute) and base.attr in MODEL_CLASSES):
+        return False
+    root = base.value
+    while isinstance(root, ast.Attribute):
+        root = root.value
+    return isinstance(root, ast.Name) and root.id in modules
+
+
+def model_classes(tree: ast.AST) -> int:
+    names, modules = pydantic_bindings(tree)
+    found = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and any(
+            names_a_model(base, names, modules) for base in node.bases
+        ):
+            names.add(node.name)
+            found += 1
+    return found
+
+
+def is_controller_module(dotted: str) -> bool:
+    parts = dotted.split(".")
+    if not dotted.startswith(FEATURES_PACKAGE + ".") or len(parts) < 5:
+        return False
+    return parts[4] == "controller" or (len(parts) == 5 and root_role(parts[4]) == "controller")
+
+
+def controller_imports(tree: ast.AST) -> int:
+    found = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found += any(is_controller_module(alias.name) for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            targets = [node.module, *(f"{node.module}.{alias.name}" for alias in node.names)]
+            found += any(is_controller_module(target) for target in targets)
+    return found
+
+
+def scan_source(feature: str, module: Path, subject: str) -> Iterable[Finding]:
+    tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
+    models = model_classes(tree)
+    if models:
+        yield Finding(feature, "DTO_OUTSIDE_CONTROLLER", subject, DTO_FIX, models)
+    imports = controller_imports(tree)
+    if imports:
+        yield Finding(
+            feature, "CONTROLLER_IMPORT_OUTSIDE_CONTROLLER", subject, CONTROLLER_IMPORT_FIX, imports
+        )
+
+
 def scan_layer(
     repo: Path, feature: str, layer: Path, exists: Callable[[Path], bool]
 ) -> Iterable[Finding]:
@@ -139,6 +213,7 @@ def scan_layer(
                 "or split a new feature",
             )
         elif child.suffix == ".py" and layer.name != "controller":
+            yield from scan_source(feature, child, f"{layer.name}/{child.name}")
             line = reads_app_state(child)
             if line is not None:
                 yield Finding(
@@ -175,6 +250,8 @@ def scan_feature(
                 else f"move {crel} into a layer folder or delete it"
             )
             yield Finding(feature, "FEATURE_ROOT_FILE", child.name, fix)
+            if child.suffix == ".py" and root_role(child.stem) != "controller":
+                yield from scan_source(feature, child, child.name)
         elif child.name not in LAYERS:
             yield Finding(
                 feature,
@@ -201,25 +278,12 @@ def scan_tree(repo: Path) -> list[Finding]:
     ]
 
 
-def unmigrated_import_rule(role: str, imported: str) -> tuple[str, str] | None:
+def unmigrated_import_fix(role: str, imported: str) -> str | None:
     top = imported.split(".", maxsplit=1)[0]
-    parts = imported.split(".")
-    if role != "controller" and top == "pydantic":
-        return "UNMIGRATED_PYDANTIC", "keep DTOs in the controller; convert to a value type there"
     if role != "controller" and top in HTTP:
-        return "UNMIGRATED_IMPORT", "keep HTTP in the controller; pass plain values to the service"
+        return "keep HTTP in the controller; pass plain values to the service"
     if role != "repository" and top in DRIVERS:
-        return (
-            "UNMIGRATED_IMPORT",
-            "move the SQL and the psycopg types into the feature's repository",
-        )
-    reaches_controller = (
-        imported.startswith(FEATURES_PACKAGE + ".")
-        and len(parts) == 5
-        and root_role(parts[4]) == "controller"
-    )
-    if role != "controller" and reaches_controller:
-        return "UNMIGRATED_IMPORT", "depend on a service instead of a controller module"
+        return "move the SQL and the psycopg types into the feature's repository"
     return None
 
 
@@ -237,9 +301,11 @@ def scan_imports(repo: Path) -> list[Finding]:
         for imported in sorted(graph.find_modules_directly_imported_by(importer)):
             target = imported.split(".")
             if len(source) == 5:
-                hit = unmigrated_import_rule(root_role(source[4]), imported)
-                if hit is not None:
-                    found.append(Finding(source[3], hit[0], f"{source[4]} -> {imported}", hit[1]))
+                fix = unmigrated_import_fix(root_role(source[4]), imported)
+                if fix is not None:
+                    found.append(
+                        Finding(source[3], "UNMIGRATED_IMPORT", f"{source[4]} -> {imported}", fix)
+                    )
             crosses = imported.startswith(prefix) and len(target) >= 5 and target[3] != source[3]
             if crosses and (len(source) == 5 or len(target) == 5):
                 owner = source[3] if len(source) == 5 else target[3]
@@ -255,8 +321,15 @@ def scan_imports(repo: Path) -> list[Finding]:
     return found
 
 
-def load_baseline(text: str) -> dict[str, list[str]]:
-    return json.loads(text)["features"] if text.strip() else {}
+Counts = dict[str, dict[str, int]]
+
+
+def load_baseline(text: str) -> Counts:
+    features = json.loads(text)["features"] if text.strip() else {}
+    return {
+        feature: dict.fromkeys(entries, 1) if isinstance(entries, list) else dict(entries)
+        for feature, entries in features.items()
+    }
 
 
 def commit_exists(repo: Path, ref: str) -> bool:
@@ -269,7 +342,7 @@ def commit_exists(repo: Path, ref: str) -> bool:
     return found.returncode == 0
 
 
-def baseline_at(repo: Path, ref: str, path: Path) -> dict[str, list[str]] | None:
+def baseline_at(repo: Path, ref: str, path: Path) -> Counts | None:
     shown = subprocess.run(
         ["git", "-C", str(repo), "show", f"{ref}:{path.relative_to(repo).as_posix()}"],
         capture_output=True,
@@ -301,13 +374,13 @@ def check(opts: Options) -> list[str]:
         )
         return [missing]
     findings = scan_tree(opts.repo) + scan_imports(opts.repo)
-    current: dict[str, list[str]] = {}
+    current: Counts = {}
     for finding in findings:
-        current.setdefault(finding.feature, []).append(finding.key)
+        entries = current.setdefault(finding.feature, {})
+        entries[finding.key] = entries.get(finding.key, 0) + finding.count
     if opts.write:
-        opts.baseline.write_text(
-            json.dumps({"features": dict(sorted(current.items()))}, indent=2) + "\n"
-        )
+        ordered = {feature: dict(sorted(current[feature].items())) for feature in sorted(current)}
+        opts.baseline.write_text(json.dumps({"features": ordered}, indent=2) + "\n")
         return []
     baseline = (
         load_baseline(opts.baseline.read_text(encoding="utf-8")) if opts.baseline.exists() else {}
@@ -316,8 +389,15 @@ def check(opts: Options) -> list[str]:
     if opts.against is not None:
         before = baseline_at(opts.repo, opts.against, opts.baseline)
         for feature, entries in sorted(baseline.items()):
+            earlier = (before or {}).get(feature, {})
             added = (
-                sorted(set(entries) - set((before or {}).get(feature, [])))
+                [
+                    key
+                    if n == 1 and not earlier.get(key)
+                    else f"{key} ({earlier.get(key, 0)} -> {n})"
+                    for key, n in entries.items()
+                    if n > earlier.get(key, 0)
+                ]
                 if before is not None
                 else []
             )
@@ -327,16 +407,20 @@ def check(opts: Options) -> list[str]:
                     f"compared with {opts.against}. "
                     "The baseline only shrinks. Fix: remove the entry and fix the code instead."
                 )
+    fixes = {(f.feature, f.key): f.fix for f in findings}
     for feature in sorted(set(current) | set(baseline)):
-        have, allowed = current.get(feature, []), baseline.get(feature, [])
-        new = [f for f in findings if f.feature == feature and f.key not in allowed]
-        if new:
+        have, allowed = current.get(feature, {}), baseline.get(feature, {})
+        grown = [(key, n) for key, n in have.items() if n > allowed.get(key, 0)]
+        if grown:
             label = (
                 f"{len(allowed)} in baseline" if feature in baseline else "strict, not in baseline"
             )
-            errors.append(f"{feature}: {len(new)} new layer finding(s), {label}.")
-            errors.extend(f"  {f.rule} {f.subject}. Fix: {f.fix}." for f in new)
-        gone = [key for key in allowed if key not in have]
+            errors.append(f"{feature}: {len(grown)} new layer finding(s), {label}.")
+            for key, n in grown:
+                was = allowed.get(key, 0)
+                count = f" ({n} found, baseline allows {was})" if was or n > 1 else ""
+                errors.append(f"  {key}{count}. Fix: {fixes[(feature, key)]}.")
+        gone = [(key, n) for key, n in allowed.items() if have.get(key, 0) < n]
         if gone and not have:
             errors.append(
                 f"{feature}: no layer findings left. "
@@ -345,10 +429,10 @@ def check(opts: Options) -> list[str]:
             )
         elif gone:
             errors.append(
-                f"{feature}: {len(gone)} baseline entries are fixed. "
-                f"Lock the gain: delete them from {BASELINE}."
+                f"{feature}: {len(gone)} baseline entries are fixed or smaller. "
+                f"Lock the gain: lower or delete them in {BASELINE}."
             )
-            errors.extend(f"  {key}" for key in gone)
+            errors.extend(f"  {key}: {have.get(key, 0)} left, baseline {n}" for key, n in gone)
     outbound, inbound = migration_pairs(opts.repo)
     for feature in sorted(outbound | inbound | set(baseline)):
         wanted = feature in baseline
