@@ -402,22 +402,25 @@ def test_stream_connect_and_disconnect_track_the_viewer_counter() -> None:
 def test_pose_get_and_set_round_trip_and_defaults_enabled() -> None:
     store = LatestFrameStore()
     store.register_camera("camera-a")
-    server = MjpegServer(store, MjpegServerConfig(port=0))
+    server = MjpegServer(store, MjpegServerConfig(port=0, probe_token=_RELAY_TOKEN))
     server.start()
     base = f"http://127.0.0.1:{server.port}"
     try:
-        with urllib.request.urlopen(f"{base}/overlay/camera-a/pose", timeout=1) as response:
+        request = _authed_get(f"{base}/overlay/camera-a/pose")
+        with urllib.request.urlopen(request, timeout=1) as response:
             assert json.loads(response.read()) == {"person": True, "bed": True}
 
         request = urllib.request.Request(
             f"{base}/overlay/camera-a/pose",
             data=json.dumps({"person": False, "bed": True}).encode(),
+            headers=_AUTH_HEADERS,
             method="POST",
         )
         with urllib.request.urlopen(request, timeout=1) as response:
             assert json.loads(response.read()) == {"person": False, "bed": True}
 
-        with urllib.request.urlopen(f"{base}/overlay/camera-a/pose", timeout=1) as response:
+        request = _authed_get(f"{base}/overlay/camera-a/pose")
+        with urllib.request.urlopen(request, timeout=1) as response:
             assert json.loads(response.read()) == {"person": False, "bed": True}
 
         assert store.get_selection("camera-a") == OverlaySelection(person=False, bed=True)
@@ -425,6 +428,7 @@ def test_pose_get_and_set_round_trip_and_defaults_enabled() -> None:
         request = urllib.request.Request(
             f"{base}/overlay/camera-a/pose",
             data=json.dumps({"person": True, "bed": False}).encode(),
+            headers=_AUTH_HEADERS,
             method="POST",
         )
         with urllib.request.urlopen(request, timeout=1) as response:
@@ -434,24 +438,22 @@ def test_pose_get_and_set_round_trip_and_defaults_enabled() -> None:
         server.stop()
 
 
-def test_pose_get_and_set_open_when_no_relay_token_configured() -> None:
+def test_pose_get_and_set_fail_closed_when_no_relay_token_configured() -> None:
     store = LatestFrameStore()
     store.register_camera("camera-a")
     server = MjpegServer(store, MjpegServerConfig(port=0))
     server.start()
     base = f"http://127.0.0.1:{server.port}"
     try:
-        with urllib.request.urlopen(f"{base}/overlay/camera-a/pose", timeout=1) as response:
-            assert response.status == 200
-
-        request = urllib.request.Request(
-            f"{base}/overlay/camera-a/pose",
-            data=json.dumps({"person": False, "bed": False}).encode(),
-            method="POST",
+        _assert_forbidden(urllib.request.Request(f"{base}/overlay/camera-a/pose"))
+        _assert_forbidden(
+            urllib.request.Request(
+                f"{base}/overlay/camera-a/pose",
+                data=json.dumps({"person": False, "bed": False}).encode(),
+                method="POST",
+            )
         )
-        with urllib.request.urlopen(request, timeout=1) as response:
-            assert response.status == 200
-        assert store.get_selection("camera-a") == OverlaySelection(person=False, bed=False)
+        assert store.get_selection("camera-a") == OverlaySelection()
     finally:
         server.stop()
 
@@ -519,12 +521,12 @@ def test_pose_get_and_set_require_token_when_configured() -> None:
 
 def test_pose_unknown_camera_and_malformed_body_are_rejected() -> None:
     store = LatestFrameStore()
-    server = MjpegServer(store, MjpegServerConfig(port=0))
+    server = MjpegServer(store, MjpegServerConfig(port=0, probe_token=_RELAY_TOKEN))
     server.start()
     base = f"http://127.0.0.1:{server.port}"
     try:
         try:
-            urllib.request.urlopen(f"{base}/overlay/missing/pose", timeout=1)
+            urllib.request.urlopen(_authed_get(f"{base}/overlay/missing/pose"), timeout=1)
         except urllib.error.HTTPError as exc:
             assert exc.code == 404
         else:  # pragma: no cover
@@ -534,6 +536,7 @@ def test_pose_unknown_camera_and_malformed_body_are_rejected() -> None:
         request = urllib.request.Request(
             f"{base}/overlay/camera-a/pose",
             data=b"not-json",
+            headers=_AUTH_HEADERS,
             method="POST",
         )
         try:
@@ -1068,13 +1071,14 @@ def test_media_endpoints_fail_closed_when_no_token_configured() -> None:
 def test_pose_rejects_missing_extra_and_non_boolean_fields(payload: object) -> None:
     store = LatestFrameStore()
     store.register_camera("camera-a")
-    server = MjpegServer(store, MjpegServerConfig(port=0))
+    server = MjpegServer(store, MjpegServerConfig(port=0, probe_token=_RELAY_TOKEN))
     server.start()
     base = f"http://127.0.0.1:{server.port}"
     try:
         request = urllib.request.Request(
             f"{base}/overlay/camera-a/pose",
             data=json.dumps(payload).encode(),
+            headers=_AUTH_HEADERS,
             method="POST",
         )
         try:
