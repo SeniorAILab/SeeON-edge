@@ -6,14 +6,12 @@ from pathlib import Path
 
 _DESCRIPTION = """Compose the release notes for a ``seeon-edge-v<semver>`` tag.
 
-The body has three parts:
+The body has two parts:
 
-1. **Highlights** — the hand-written ``docs/releases/<tag>.md``, when one
-   exists. Prose a human wrote about what shipped; nothing derives it.
-2. **Changes** — generated from the commit range since the previous
+1. **Changes** — generated from the commit range since the previous
    ``seeon-edge-v*`` tag. The very first release has no previous tag to diff
    against, so it says so instead of dumping the whole history.
-3. **Images** — where the digest-pinned GHCR references live. They cannot be
+2. **Images** — where the digest-pinned GHCR references live. They cannot be
    inlined here: ``.github/workflows/edge-images.yml`` triggers on
    ``release: published``, so the images are built *after* these notes exist.
 
@@ -52,17 +50,13 @@ def _commit_lines(revision_range: str) -> list[str]:
 def compose(tag: str, head: str) -> str:
     sections: list[str] = []
 
-    highlights = REPO_ROOT / "docs" / "releases" / f"{tag}.md"
-    if highlights.is_file():
-        sections.append(highlights.read_text(encoding="utf-8").strip())
-
     previous = previous_tag(tag)
     if previous is None:
         count = len(_commit_lines(head))
         sections.append(
             f"## Changes\n\nFirst tagged release — there is no previous `{TAG_GLOB}` tag to "
             f"diff against, so the whole history ({count} commits on the first-parent line) "
-            "is what ships. See the highlights above for what is notable."
+            "is what ships."
         )
     else:
         body = "\n".join(f"- {line}" for line in _commit_lines(f"{previous}..{head}"))
@@ -73,8 +67,7 @@ def compose(tag: str, head: str) -> str:
         f"Publishing this release runs `.github/workflows/edge-images.yml` (`release: "
         f"published`), which pushes both images to `{IMAGE_NAMESPACE}` tagged with the full "
         "commit SHA and uploads the `edge-ml-image-refs-<sha>` artifact holding the two "
-        "`@sha256:` digests. Pin deployments to those digests, never to a tag — see "
-        "`docs/runbooks/edge-image-publish.md`."
+        "`@sha256:` digests. Pin deployments to those digests, never to a tag."
     )
 
     return "\n\n".join(sections) + "\n"

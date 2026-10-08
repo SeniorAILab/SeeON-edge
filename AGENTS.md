@@ -56,7 +56,7 @@ the sole composition root. The worker is an RTSP client only.
 
 Read the nearest scoped `AGENTS.md` before changing a package: `worker/`,
 `backend/app/`, `shared/`, `contracts/`, `front/`, `tests/`, `tests_support/`,
-`scripts/`, and `docs/` each have one, most with deeper files beneath them.
+and `scripts/` each have one, most with deeper files beneath them.
 
 ## Commands
 
@@ -158,7 +158,7 @@ Use an issue-driven loop for all repository work:
 4. Plan first for non-trivial work: write the intended change, affected files, verification, and rollback note before editing.
 5. Fan out into small PRs when a change spans unrelated domains, mixes assets with logic, or needs independent review lanes.
 6. Attach review evidence to each PR: tests or checks run, screenshots/transcripts for user-facing behavior, and the issue or planning links that justify the change.
-7. Merge only after review. If the user explicitly asks to record a durable decision, hand off to the `document` skill and use `docs/decisions/` as the destination.
+7. Merge only after review. If the user explicitly asks to record a durable decision, record it in the PR description.
 
 Conventions agents must follow:
 
