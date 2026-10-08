@@ -205,6 +205,14 @@ class RuntimeStatusSender:
         except Exception:
             LOGGER.warning("worker diagnostics log_snapshot failed", exc_info=True)
 
+    def _run_before_publish(self) -> None:
+        if self._before_publish is None:
+            return
+        try:
+            self._before_publish()
+        except Exception:
+            LOGGER.exception("runtime status before_publish failed")
+
     def _take_latest(self) -> list[RelayRuntimeStatusPayload] | None:
         latest: list[RelayRuntimeStatusPayload] | None = None
         while True:
@@ -215,8 +223,7 @@ class RuntimeStatusSender:
             self._snapshots.task_done()
 
     def _snapshots_for_publish(self) -> list[RelayRuntimeStatusPayload]:
-        if self._before_publish is not None:
-            self._before_publish()
+        self._run_before_publish()
         delivery_queue = self._delivery_queue_payload()
         if isinstance(self._facility_id, str):
             snapshots = [self._diagnostics.to_payload(self._facility_id, None, 0)]
