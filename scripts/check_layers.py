@@ -401,6 +401,8 @@ def check(opts: Options) -> list[str]:
                 if before is not None
                 else []
             )
+            if before is not None and feature not in before:
+                added.insert(0, f'the feature "{feature}"')
             if added:
                 errors.append(
                     f"{feature}: {BASELINE} gained {'; '.join(added)} "
@@ -421,7 +423,7 @@ def check(opts: Options) -> list[str]:
                 count = f" ({n} found, baseline allows {was})" if was or n > 1 else ""
                 errors.append(f"  {key}{count}. Fix: {fixes[(feature, key)]}.")
         gone = [(key, n) for key, n in allowed.items() if have.get(key, 0) < n]
-        if gone and not have:
+        if feature in baseline and not have:
             errors.append(
                 f"{feature}: no layer findings left. "
                 f'Lock the gain: delete "{feature}" from {BASELINE} '

@@ -216,6 +216,10 @@ INDEPENDENCE_TOML = (
     "]\n"
 )
 
+ALPHA_PAIR = (
+    '    "backend.app.features.alpha.* -> backend.app.features.**",\n'
+    '    "backend.app.features.** -> backend.app.features.alpha.*",\n'
+)
 LEGACY_STORE = "import psycopg\nimport pydantic\n"
 LEGACY_WORKER = f"import psycopg\nfrom {F}.alpha.service import logic\n"
 LEGACY_COMMAND = (
@@ -494,8 +498,25 @@ def test_a_feature_new_to_the_baseline_is_caught_by_against(tmp_path: Path) -> N
     (root / "scripts/layer_baseline.json").write_text(json.dumps(data), encoding="utf-8")
     result = run_checker(root, "--against", "HEAD")
     assert result.returncode == 1, result.stdout
-    assert "alpha: scripts/layer_baseline.json gained FEATURE_ROOT_FILE extra.py" in result.stdout
+    assert (
+        'alpha: scripts/layer_baseline.json gained the feature "alpha"; FEATURE_ROOT_FILE extra.py'
+        in result.stdout
+    )
     assert "alpha: listed in scripts/layer_baseline.json" in result.stdout
+
+
+def test_an_empty_feature_entry_with_migration_lines_is_caught(tmp_path: Path) -> None:
+    root = checker_repo(
+        tmp_path,
+        {"pyproject.toml": INDEPENDENCE_TOML.removesuffix("]\n") + ALPHA_PAIR + "]\n"},
+    )
+    data = json.loads((root / "scripts/layer_baseline.json").read_text(encoding="utf-8"))
+    data["features"]["alpha"] = {}
+    (root / "scripts/layer_baseline.json").write_text(json.dumps(data), encoding="utf-8")
+    result = run_checker(root, "--against", "HEAD")
+    assert result.returncode == 1, result.stdout
+    assert 'alpha: scripts/layer_baseline.json gained the feature "alpha"' in result.stdout
+    assert 'alpha: no layer findings left. Lock the gain: delete "alpha"' in result.stdout
 
 
 def test_against_a_ref_without_a_baseline_checks_only_the_findings(tmp_path: Path) -> None:
