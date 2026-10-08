@@ -876,6 +876,18 @@ _LINT_STEPS = [
     },
     {"run": "uv run --group lint python scripts/check_no_comments.py"},
     {"run": "uv run --group lint python scripts/check_boundaries.py"},
+    {
+        "name": "Backend feature layers (baseline only shrinks)",
+        "env": {"BASE_SHA": "${{ github.event.pull_request.base.sha || github.event.before }}"},
+        "run": (
+            'if [ -z "${BASE_SHA//0/}" ]; then\n'
+            "  uv run --group lint python scripts/check_layers.py\n"
+            "else\n"
+            '  git fetch --no-tags --depth=1 origin "$BASE_SHA"\n'
+            '  uv run --group lint python scripts/check_layers.py --against "$BASE_SHA"\n'
+            "fi\n"
+        ),
+    },
 ]
 
 _SHARD_DISCOVERY = (

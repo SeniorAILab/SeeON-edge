@@ -398,3 +398,121 @@ source_modules = [
 ]
 forbidden_modules = ["psycopg"]
 allow_indirect_imports = true
+
+# Backend feature layers. Each feature keeps code in controller/, service/ and
+# repository/ only (scripts/check_layers.py owns the folder shape and the
+# shrink-only baseline in scripts/layer_baseline.json). The contracts below
+# apply to a feature as soon as its layer folders exist, so a feature that is
+# not migrated yet passes them with nothing to check.
+[[tool.importlinter.contracts]]
+name = "backend feature layers run controller -> service -> repository"
+type = "layers"
+containers = ["backend.app.features.*"]
+layers = ["(controller)", "(service)", "(repository)"]
+
+[[tool.importlinter.contracts]]
+name = "backend controllers reach repositories only through a service"
+type = "forbidden"
+source_modules = ["backend.app.features.*.controller"]
+forbidden_modules = ["backend.app.features.*.repository", "backend.app.edge_db"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "backend services and repositories do not import HTTP frameworks or controllers"
+type = "forbidden"
+source_modules = ["backend.app.features.*.service", "backend.app.features.*.repository"]
+forbidden_modules = ["fastapi", "starlette", "backend.app.features.*.controller"]
+
+[[tool.importlinter.contracts]]
+name = "backend psycopg stays in repositories"
+type = "forbidden"
+source_modules = ["backend.app.features.*.controller", "backend.app.features.*.service"]
+forbidden_modules = ["psycopg", "psycopg_pool"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+# Features meet only service to service. A feature not migrated yet is carved
+# out by its MIGRATION pair; scripts/check_layers.py keeps the pairs in step
+# with scripts/layer_baseline.json and ratchets the imports they hide.
+name = "backend features meet only service to service"
+type = "independence"
+modules = ["backend.app.features.*"]
+unmatched_ignore_imports_alerting = "warn"
+ignore_imports = [
+    "backend.app.features.*.service.** -> backend.app.features.*.service.**",
+    "backend.app.features.connection.router -> backend.app.lifespan",
+    "backend.app.features.audit.* -> backend.app.features.**",
+    "backend.app.features.** -> backend.app.features.audit.*",
+    "backend.app.features.auth.* -> backend.app.features.**",
+    "backend.app.features.** -> backend.app.features.auth.*",
+    "backend.app.features.cameras.* -> backend.app.features.**",
+    "backend.app.features.** -> backend.app.features.cameras.*",
+    "backend.app.features.clips.* -> backend.app.features.**",
+    "backend.app.features.** -> backend.app.features.clips.*",
+    "backend.app.features.connection.* -> backend.app.features.**",
+    "backend.app.features.** -> backend.app.features.connection.*",
+    "backend.app.features.detection_settings.* -> backend.app.features.**",
+    "backend.app.features.** -> backend.app.features.detection_settings.*",
+    "backend.app.features.diagnostics.* -> backend.app.features.**",
+    "backend.app.features.** -> backend.app.features.diagnostics.*",
+    "backend.app.features.evidence.* -> backend.app.features.**",
+    "backend.app.features.** -> backend.app.features.evidence.*",
+    "backend.app.features.relay.* -> backend.app.features.**",
+    "backend.app.features.** -> backend.app.features.relay.*",
+    "backend.app.features.runtime_settings.* -> backend.app.features.**",
+    "backend.app.features.** -> backend.app.features.runtime_settings.*",
+    "backend.app.features.status.* -> backend.app.features.**",
+    "backend.app.features.** -> backend.app.features.status.*",
+]
+
+[[tool.importlinter.contracts]]
+name = "backend features do not import the composition root"
+type = "forbidden"
+source_modules = ["backend.app.features"]
+forbidden_modules = [
+    "backend.app.main",
+    "backend.app.lifespan",
+    "backend.app.postgres_root",
+    "backend.app.audit_lifecycle",
+    "backend.app.clip_catalog_lifecycle",
+    "backend.app.routes",
+]
+ignore_imports = ["backend.app.features.connection.router -> backend.app.lifespan"]
+
+[[tool.importlinter.contracts]]
+name = "backend routes reach features only through a service"
+type = "forbidden"
+source_modules = ["backend.app.routes"]
+forbidden_modules = ["backend.app.features.*.repository", "psycopg", "psycopg_pool"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+# The ignored imports are the six feature edges that close today's cycles:
+# cameras -> connection, cameras -> status, detection_settings -> cameras,
+# detection_settings -> connection, clips -> evidence, evidence -> relay.
+# Delete a line when its import is gone.
+name = "backend features do not depend on each other in a cycle"
+type = "acyclic_siblings"
+ancestors = ["backend.app.features"]
+ignore_imports = [
+    "backend.app.features.cameras.dependencies -> backend.app.features.connection.dependencies",
+    "backend.app.features.cameras.roster_sync -> backend.app.features.connection.topology_retry_coordinator",
+    "backend.app.features.cameras.router -> backend.app.features.connection.dependencies",
+    "backend.app.features.cameras.topology_client -> backend.app.features.connection.enrollment",
+    "backend.app.features.cameras.router -> backend.app.features.status.heartbeat_store",
+    "backend.app.features.detection_settings.router -> backend.app.features.cameras.store",
+    "backend.app.features.detection_settings.router -> backend.app.features.connection.dependencies",
+    "backend.app.features.clips.router -> backend.app.features.evidence.receipt_store",
+    "backend.app.features.evidence.router -> backend.app.features.relay.auth",
+    "backend.app.features.evidence.router -> backend.app.features.relay.router",
+]
+
+[[tool.importlinter.contracts]]
+# BaseModel lives only in controller DTOs. Shared code and contracts use
+# dataclasses; a controller converts. Direct imports only, so edge_db may
+# later import backend.app.core.config (BaseSettings) without breaking this.
+name = "shared folders and contracts do not import pydantic"
+type = "forbidden"
+source_modules = ["contracts", "shared", "backend.app.shared", "backend.app.edge_db"]
+forbidden_modules = ["pydantic", "pydantic_settings"]
+allow_indirect_imports = true
