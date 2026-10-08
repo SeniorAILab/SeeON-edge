@@ -95,7 +95,7 @@ def test_guarded_thread_clean_return_is_not_death() -> None:
 
 
 def test_coverage_observe_failure_does_not_kill_pump() -> None:
-    pump, metadata = _failing_pump()
+    pump, _metadata = _failing_pump()
 
     def bad_observe(frame: object) -> None:
         raise IndexError("coverage")
