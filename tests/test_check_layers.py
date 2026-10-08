@@ -19,6 +19,7 @@ INDEPENDENCE = "backend features meet only service to service"
 COMPOSITION = "backend features do not import the composition root"
 ROUTES = "backend routes reach features only through a service"
 ACYCLIC = "backend features do not depend on each other in a cycle"
+SHARED_PYDANTIC = "shared folders and contracts do not import pydantic"
 LAYER_CONTRACTS = (
     LAYERS,
     SKIP,
@@ -28,6 +29,7 @@ LAYER_CONTRACTS = (
     COMPOSITION,
     ROUTES,
     ACYCLIC,
+    SHARED_PYDANTIC,
 )
 
 COMPOSITION_ROOT = (
@@ -60,11 +62,12 @@ def clean_tree() -> dict[str, str]:
         "backend/__init__.py": "",
         "backend/app/__init__.py": "",
         "backend/app/core/__init__.py": "",
-        "backend/app/core/config.py": "import pydantic\n",
+        "backend/app/core/config.py": "import pydantic\nimport pydantic_settings\n",
         "backend/app/edge_db/__init__.py": "",
         "backend/app/features/__init__.py": "",
         "backend/app/shared/__init__.py": "",
         "contracts/__init__.py": "",
+        "shared/__init__.py": "",
     }
     files.update({f"backend/app/{name}.py": "" for name in COMPOSITION_ROOT})
     files.update(feature_files("alpha"))
@@ -94,7 +97,7 @@ def real_layer_contracts() -> list[dict[str, object]]:
 def lint_config(root: Path) -> Path:
     lines = [
         "[tool.importlinter]",
-        'root_packages = ["backend", "contracts"]',
+        'root_packages = ["backend", "contracts", "shared"]',
         "include_external_packages = true",
     ]
     for contract in real_layer_contracts():
@@ -188,6 +191,38 @@ MUTATIONS = {
         },
         HTTP,
     ),
+    "basemodel_in_top_level_shared_used_by_a_service": (
+        {
+            "shared/wire_models.py": BASE_MODEL,
+            f"{ALPHA}/service/logic.py": "from shared.wire_models import Wire\n",
+        },
+        SHARED_PYDANTIC,
+    ),
+    "basemodel_in_contracts_used_by_a_service": (
+        {
+            "contracts/wire_models.py": BASE_MODEL,
+            f"{ALPHA}/service/logic.py": "from contracts.wire_models import Wire\n",
+        },
+        SHARED_PYDANTIC,
+    ),
+    "basemodel_in_backend_shared_used_by_a_service": (
+        {
+            "backend/app/shared/wire_models.py": BASE_MODEL,
+            f"{ALPHA}/service/logic.py": "from backend.app.shared.wire_models import Wire\n",
+        },
+        SHARED_PYDANTIC,
+    ),
+    "basemodel_in_edge_db_used_by_a_repository": (
+        {
+            "backend/app/edge_db/rows.py": BASE_MODEL,
+            f"{ALPHA}/repository/rows.py": "from backend.app.edge_db.rows import Wire\n",
+        },
+        SHARED_PYDANTIC,
+    ),
+    "pydantic_settings_in_edge_db": (
+        {"backend/app/edge_db/settings.py": "from pydantic_settings import BaseSettings\n"},
+        SHARED_PYDANTIC,
+    ),
     "service_cycle_between_features": (
         {
             f"{ALPHA}/service/logic.py": f"from {F}.beta.service import logic\n",
@@ -196,6 +231,13 @@ MUTATIONS = {
         ACYCLIC,
     ),
 }
+
+
+def test_edge_db_may_reach_pydantic_through_core_config(tmp_path: Path) -> None:
+    output = lint(
+        tmp_path, {"backend/app/edge_db/pool.py": "from backend.app.core import config\n"}
+    )
+    assert f"{SHARED_PYDANTIC} KEPT" in output, output
 
 
 @pytest.mark.parametrize("case", sorted(MUTATIONS))

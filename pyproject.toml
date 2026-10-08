@@ -506,3 +506,13 @@ ignore_imports = [
     "backend.app.features.evidence.router -> backend.app.features.relay.auth",
     "backend.app.features.evidence.router -> backend.app.features.relay.router",
 ]
+
+[[tool.importlinter.contracts]]
+# BaseModel lives only in controller DTOs. Shared code and contracts use
+# dataclasses; a controller converts. Direct imports only, so edge_db may
+# later import backend.app.core.config (BaseSettings) without breaking this.
+name = "shared folders and contracts do not import pydantic"
+type = "forbidden"
+source_modules = ["contracts", "shared", "backend.app.shared", "backend.app.edge_db"]
+forbidden_modules = ["pydantic", "pydantic_settings"]
+allow_indirect_imports = true
