@@ -25,6 +25,7 @@ REPOSITORY_STEMS = frozenset({"store", "repository", "records"})
 HTTP = frozenset({"fastapi", "starlette"})
 DRIVERS = frozenset({"psycopg", "psycopg_pool"})
 MODEL_CLASSES = frozenset({"BaseModel", "RootModel"})
+PYDANTIC_MODULES = frozenset({"main", "v1", "dataclasses", "root_model"})
 DTO_FIX = "move the DTO to the controller and convert it to a value type there"
 CONTROLLER_IMPORT_FIX = (
     "import a service or a value type instead; the controller converts DTOs to values"
@@ -119,42 +120,122 @@ def reads_app_state(module: Path) -> int | None:
     return None
 
 
-def pydantic_bindings(tree: ast.AST) -> tuple[set[str], set[str]]:
-    names: set[str] = set()
-    modules: set[str] = set()
+@dataclass(frozen=True)
+class Source:
+    feature: str
+    path: Path
+    subject: str
+    module: str
+    tree: ast.Module
+
+
+@dataclass
+class Bindings:
+    models: set[str]
+    modules: set[str]
+    decorators: set[str]
+    imported: dict[str, set[str]]
+    index: dict[str, set[str]]
+
+
+def is_pydantic(module: str) -> bool:
+    return module.split(".", maxsplit=1)[0] == "pydantic"
+
+
+def pydantic_bindings(tree: ast.AST, index: dict[str, set[str]]) -> Bindings:
+    found = Bindings(set(), set(), set(), {}, index)
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "pydantic":
-            names.update(a.asname or a.name for a in node.names if a.name in MODEL_CLASSES)
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            for alias in node.names:
+                bound = alias.asname or alias.name
+                if is_pydantic(node.module) and alias.name in MODEL_CLASSES:
+                    found.models.add(bound)
+                elif is_pydantic(node.module) and alias.name in PYDANTIC_MODULES:
+                    found.modules.add(bound)
+                elif is_pydantic(node.module) and alias.name == "dataclass":
+                    found.decorators.add(bound)
+                elif alias.name in index.get(node.module, set()):
+                    found.models.add(bound)
+                elif f"{node.module}.{alias.name}" in index:
+                    found.imported[bound] = index[f"{node.module}.{alias.name}"]
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name.split(".")[0] == "pydantic":
-                    modules.add(alias.asname or "pydantic")
-    return names, modules
+                if is_pydantic(alias.name):
+                    found.modules.add(alias.asname or "pydantic")
+                elif alias.asname and alias.name in index:
+                    found.imported[alias.asname] = index[alias.name]
+    return found
 
 
-def names_a_model(base: ast.expr, names: set[str], modules: set[str]) -> bool:
+def root_name(node: ast.expr) -> tuple[ast.expr, list[str]]:
+    path: list[str] = []
+    while isinstance(node, ast.Attribute):
+        path.insert(0, node.attr)
+        node = node.value
+    return node, path
+
+
+def names_a_model(base: ast.expr, bound: Bindings) -> bool:
     if isinstance(base, ast.Subscript):
         base = base.value
     if isinstance(base, ast.Name):
-        return base.id in names
-    if not (isinstance(base, ast.Attribute) and base.attr in MODEL_CLASSES):
+        return base.id in bound.models
+    root, path = root_name(base)
+    if not isinstance(root, ast.Name) or not path:
         return False
-    root = base.value
-    while isinstance(root, ast.Attribute):
-        root = root.value
-    return isinstance(root, ast.Name) and root.id in modules
+    if root.id in bound.modules:
+        return path[-1] in MODEL_CLASSES
+    if root.id in bound.imported:
+        return path[-1] in bound.imported[root.id]
+    return path[-1] in bound.index.get(".".join([root.id, *path[:-1]]), set())
 
 
-def model_classes(tree: ast.AST) -> int:
-    names, modules = pydantic_bindings(tree)
-    found = 0
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and any(
-            names_a_model(base, names, modules) for base in node.bases
-        ):
-            names.add(node.name)
-            found += 1
+def is_pydantic_dataclass(decorator: ast.expr, bound: Bindings) -> bool:
+    if isinstance(decorator, ast.Call):
+        decorator = decorator.func
+    if isinstance(decorator, ast.Name):
+        return decorator.id in bound.decorators
+    root, path = root_name(decorator)
+    return isinstance(root, ast.Name) and root.id in bound.modules and path[-1:] == ["dataclass"]
+
+
+def model_classes(tree: ast.AST, index: dict[str, set[str]]) -> list[str]:
+    bound = pydantic_bindings(tree, index)
+    found: list[str] = []
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and names_a_model(node.value, bound):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id not in bound.models:
+                        bound.models.add(target.id)
+                        changed = True
+            elif (
+                isinstance(node, ast.ClassDef)
+                and node.name not in found
+                and (
+                    any(names_a_model(base, bound) for base in node.bases)
+                    or any(is_pydantic_dataclass(d, bound) for d in node.decorator_list)
+                )
+            ):
+                bound.models.add(node.name)
+                found.append(node.name)
+                changed = True
     return found
+
+
+def model_index(sources: list[Source]) -> dict[str, set[str]]:
+    index: dict[str, set[str]] = {}
+    while True:
+        grown = {
+            source.module: set(model_classes(source.tree, index))
+            for source in sources
+            if model_classes(source.tree, index)
+        }
+        if grown == index:
+            return index
+        index = grown
 
 
 def is_controller_module(dotted: str) -> bool:
@@ -168,27 +249,40 @@ def controller_imports(tree: ast.AST) -> int:
     found = 0
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            found += any(is_controller_module(alias.name) for alias in node.names)
+            found += sum(is_controller_module(alias.name) for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            targets = [node.module, *(f"{node.module}.{alias.name}" for alias in node.names)]
-            found += any(is_controller_module(target) for target in targets)
+            whole = is_controller_module(node.module)
+            found += sum(
+                whole or is_controller_module(f"{node.module}.{alias.name}") for alias in node.names
+            )
     return found
 
 
-def scan_source(feature: str, module: Path, subject: str) -> Iterable[Finding]:
-    tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
-    models = model_classes(tree)
-    if models:
-        yield Finding(feature, "DTO_OUTSIDE_CONTROLLER", subject, DTO_FIX, models)
-    imports = controller_imports(tree)
-    if imports:
-        yield Finding(
-            feature, "CONTROLLER_IMPORT_OUTSIDE_CONTROLLER", subject, CONTROLLER_IMPORT_FIX, imports
-        )
+def scan_sources(sources: list[Source]) -> Iterable[Finding]:
+    index = model_index(sources)
+    for source in sources:
+        models = len(model_classes(source.tree, index))
+        if models:
+            yield Finding(source.feature, "DTO_OUTSIDE_CONTROLLER", source.subject, DTO_FIX, models)
+        imports = controller_imports(source.tree)
+        if imports:
+            yield Finding(
+                source.feature,
+                "CONTROLLER_IMPORT_OUTSIDE_CONTROLLER",
+                source.subject,
+                CONTROLLER_IMPORT_FIX,
+                imports,
+            )
+
+
+def source(repo: Path, feature: str, path: Path, subject: str) -> Source:
+    module = ".".join(path.relative_to(repo).with_suffix("").parts)
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return Source(feature, path, subject, module, tree)
 
 
 def scan_layer(
-    repo: Path, feature: str, layer: Path, exists: Callable[[Path], bool]
+    repo: Path, feature: str, layer: Path, exists: Callable[[Path], bool], sources: list[Source]
 ) -> Iterable[Finding]:
     rel = layer.relative_to(repo)
     init = layer / "__init__.py"
@@ -213,7 +307,7 @@ def scan_layer(
                 "or split a new feature",
             )
         elif child.suffix == ".py" and layer.name != "controller":
-            yield from scan_source(feature, child, f"{layer.name}/{child.name}")
+            sources.append(source(repo, feature, child, f"{layer.name}/{child.name}"))
             line = reads_app_state(child)
             if line is not None:
                 yield Finding(
@@ -225,7 +319,7 @@ def scan_layer(
 
 
 def scan_feature(
-    repo: Path, feature_dir: Path, exists: Callable[[Path], bool]
+    repo: Path, feature_dir: Path, exists: Callable[[Path], bool], sources: list[Source]
 ) -> Iterable[Finding]:
     feature = feature_dir.name
     rel = feature_dir.relative_to(repo)
@@ -251,7 +345,7 @@ def scan_feature(
             )
             yield Finding(feature, "FEATURE_ROOT_FILE", child.name, fix)
             if child.suffix == ".py" and root_role(child.stem) != "controller":
-                yield from scan_source(feature, child, child.name)
+                sources.append(source(repo, feature, child, child.name))
         elif child.name not in LAYERS:
             yield Finding(
                 feature,
@@ -261,7 +355,7 @@ def scan_feature(
                 "or into backend/app/shared when several features use them",
             )
         else:
-            yield from scan_layer(repo, feature, child, exists)
+            yield from scan_layer(repo, feature, child, exists, sources)
 
 
 def scan_tree(repo: Path) -> list[Finding]:
@@ -273,9 +367,13 @@ def scan_tree(repo: Path) -> list[Finding]:
         )
 
     features = sorted(p for p in (repo / FEATURES).iterdir() if p.is_dir() and exists(p))
-    return [
-        finding for feature_dir in features for finding in scan_feature(repo, feature_dir, exists)
+    sources: list[Source] = []
+    found = [
+        finding
+        for feature_dir in features
+        for finding in scan_feature(repo, feature_dir, exists, sources)
     ]
+    return found + list(scan_sources(sources))
 
 
 def unmigrated_import_fix(role: str, imported: str) -> str | None:

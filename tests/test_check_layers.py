@@ -371,6 +371,87 @@ CHECKER_MUTATIONS = {
         {f"{ALPHA}/service/logic.py": BASE_MODEL + "\n\nclass Child(Wire):\n    y: int\n"},
         "DTO_OUTSIDE_CONTROLLER service/logic.py (2 found, baseline allows 0). Fix:",
     ),
+    "dto_subclassing_a_model_from_another_file": (
+        {
+            f"{LEGACY}/worker.py": LEGACY_WORKER
+            + f"from {F}.legacy.command import Command\n\n\nclass Patch(Command):\n    y: int\n"
+        },
+        "DTO_OUTSIDE_CONTROLLER worker.py. Fix:",
+    ),
+    "dto_subclassing_a_model_through_its_module": (
+        {
+            f"{LEGACY}/worker.py": LEGACY_WORKER
+            + f"from {F}.legacy import command\n\n\nclass Patch(command.Command):\n    y: int\n"
+        },
+        "DTO_OUTSIDE_CONTROLLER worker.py. Fix:",
+    ),
+    "dto_through_from_pydantic_import_main": (
+        {
+            f"{ALPHA}/service/logic.py": (
+                "from pydantic import main\n\n\nclass Wire(main.BaseModel):\n    x: int\n"
+            )
+        },
+        "DTO_OUTSIDE_CONTROLLER service/logic.py. Fix:",
+    ),
+    "dto_through_import_pydantic_v1": (
+        {
+            f"{ALPHA}/service/logic.py": (
+                "import pydantic.v1\n\n\nclass Wire(pydantic.v1.BaseModel):\n    x: int\n"
+            )
+        },
+        "DTO_OUTSIDE_CONTROLLER service/logic.py. Fix:",
+    ),
+    "dto_through_from_pydantic_v1_import": (
+        {
+            f"{ALPHA}/service/logic.py": (
+                "from pydantic.v1 import BaseModel\n\n\nclass Wire(BaseModel):\n    x: int\n"
+            )
+        },
+        "DTO_OUTSIDE_CONTROLLER service/logic.py. Fix:",
+    ),
+    "dto_through_from_pydantic_import_v1": (
+        {
+            f"{ALPHA}/service/logic.py": (
+                "from pydantic import v1\n\n\nclass Wire(v1.BaseModel):\n    x: int\n"
+            )
+        },
+        "DTO_OUTSIDE_CONTROLLER service/logic.py. Fix:",
+    ),
+    "dto_through_a_base_alias": (
+        {
+            f"{ALPHA}/service/logic.py": (
+                "from pydantic import BaseModel\n\nBase = BaseModel\n\n\n"
+                "class Wire(Base):\n    x: int\n"
+            )
+        },
+        "DTO_OUTSIDE_CONTROLLER service/logic.py. Fix:",
+    ),
+    "dto_as_a_pydantic_dataclass": (
+        {
+            f"{ALPHA}/repository/rows.py": (
+                "from pydantic.dataclasses import dataclass\n\n\n"
+                "@dataclass\nclass Row:\n    x: int\n"
+            )
+        },
+        "DTO_OUTSIDE_CONTROLLER repository/rows.py. Fix:",
+    ),
+    "dto_as_a_dotted_pydantic_dataclass_call": (
+        {
+            f"{ALPHA}/repository/rows.py": (
+                "import pydantic.dataclasses\n\n\n"
+                "@pydantic.dataclasses.dataclass(frozen=True)\nclass Row:\n    x: int\n"
+            )
+        },
+        "DTO_OUTSIDE_CONTROLLER repository/rows.py. Fix:",
+    ),
+    "baselined_file_gains_a_controller_name_on_the_same_line": (
+        {
+            f"{LEGACY}/command.py": LEGACY_COMMAND.replace(
+                "controller import api\n", "controller import api, extra\n"
+            )
+        },
+        "CONTROLLER_IMPORT_OUTSIDE_CONTROLLER command.py (2 found, baseline allows 1). Fix:",
+    ),
     "controller_import_in_unmigrated_service_file": (
         {
             f"{LEGACY}/router.py": "",
@@ -437,12 +518,29 @@ def test_new_finding_outside_the_baseline_fails_with_a_fix(tmp_path: Path, case:
         "from pydantic import JsonValue, TypeAdapter\n\nA = TypeAdapter(dict[str, JsonValue])\n",
         "import pydantic\n\nA = pydantic.TypeAdapter(int)\n",
         "from pydantic import BaseModel\n\nX = BaseModel\n",
-        "from pydantic_settings import BaseSettings\n",
+        "from pydantic_settings import BaseSettings\n\n\nclass S(BaseSettings):\n    x: int = 1\n",
+        "from dataclasses import dataclass\n\n\n@dataclass\nclass V:\n    x: int\n",
+        "import dataclasses\n\n\n@dataclasses.dataclass(frozen=True)\nclass V:\n    x: int\n",
+        (
+            "from pydantic import validate_call\n\n\n@validate_call\ndef f(x: int) -> int:\n"
+            "    return x\n"
+        ),
         f"from {F}.beta.service import logic\n",
     ],
 )
 def test_validation_and_service_imports_are_not_dto_findings(tmp_path: Path, source: str) -> None:
     root = checker_repo(tmp_path, {f"{ALPHA}/service/logic.py": source})
+    result = run_checker(root, "--against", "HEAD")
+    assert result.returncode == 0, result.stdout
+
+
+def test_using_a_model_from_another_file_without_subclassing_is_not_a_finding(
+    tmp_path: Path,
+) -> None:
+    worker = LEGACY_WORKER + (
+        f"from {F}.legacy.command import Command\n\n\ndef f(c: Command) -> int:\n    return 1\n"
+    )
+    root = checker_repo(tmp_path, {f"{LEGACY}/worker.py": worker})
     result = run_checker(root, "--against", "HEAD")
     assert result.returncode == 0, result.stdout
 
