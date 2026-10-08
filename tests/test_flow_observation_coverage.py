@@ -7,9 +7,10 @@ from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
+from worker.runtime.flow.frame_failure_log import ThrottledFailureLog
 from worker.runtime.flow.metadata_slot import AcceptanceToken, LatestMetadataSlot
 from worker.runtime.flow.observation_coverage import ObservationCoverage
-from worker.runtime.flow.policy_pump import NativePolicyPump
+from worker.runtime.flow.policy_pump import LOGGER, NativePolicyPump
 from worker.types.metadata import MetadataFrame, SourceBinding
 from worker.types.perception_frame import (
     BedRegionChannel,
@@ -412,8 +413,7 @@ def test_policy_pump_records_observation_before_processing_failure() -> None:
         record_native_detection_attempt=detection_attempts.append
     )
     pump.failure_count = 0
-    pump._failure_logged_at = None
-    pump._failures_suppressed = 0
+    pump._failure_log = ThrottledFailureLog(LOGGER, "camera-a")
     pump.processed_count = 0
     pump._execution_records = None
 

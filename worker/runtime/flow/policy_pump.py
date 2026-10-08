@@ -19,6 +19,7 @@ from worker.pipeline.output.evidence_attacher import AlertEvidenceAttacher
 from worker.pipeline.perception import SceneState, build_decision_input, build_frame_observation
 from worker.pipeline.trace.replay_trace_writer import ReplayTraceWriter
 from worker.runtime.flow.execution_record_emit import emit_model_and_decision, emit_policy_consume
+from worker.runtime.flow.frame_failure_log import LogOnce, PolicyFrameError, ThrottledFailureLog
 from worker.runtime.flow.metadata_slot import AcceptanceToken, LatestMetadataSlot
 from worker.runtime.flow.observation_coverage import ObservationCoverage
 from worker.types import BusinessEvent, ChannelState, NativeEvidenceTrigger
@@ -28,7 +29,6 @@ from worker.types.trace import DecisionTraceState, DecisionTraceValueName, decis
 
 LOGGER = logging.getLogger(__name__)
 _FPS_WINDOW_SEC = 10.0
-_FAILURE_LOG_INTERVAL_SEC = 30.0
 _SUSPECTED_FALL_STATES = frozenset(
     {
         DecisionTraceState.FALL,
@@ -38,10 +38,6 @@ _SUSPECTED_FALL_STATES = frozenset(
         DecisionTraceState.TRIGGERED,
     }
 )
-
-
-class PolicyFrameError(RuntimeError):
-    pass
 
 
 @runtime_checkable
@@ -105,8 +101,7 @@ class NativePolicyPump:
         self._fps: deque[float] = deque()
         self.processed_count = 0
         self.failure_count = 0
-        self._failure_logged_at: float | None = None
-        self._failures_suppressed = 0
+        self._failure_log = ThrottledFailureLog(LOGGER, binding.camera_id)
         self._trace_epoch: tuple[int, int] | None = None
         self._trace_tracks: dict[int, ReplayTrack] = {}
         self._live_track_misses: dict[int, int] = {}
@@ -115,7 +110,9 @@ class NativePolicyPump:
         self._trace_dims: tuple[int, int] = (1, 1)
         self._trace_last_pts_ns = 0
         self._trace_seq = 0
-        self._trace_write_failure_logged = False
+        self._trace_write_failure_log = LogOnce(
+            LOGGER, "replay trace write failed: camera_id=%s", binding.camera_id
+        )
         self._preview_states_lock = threading.Lock()
         self._preview_states: Mapping[int, FallPreviewState] = MappingProxyType({})
         self._observation_coverage = ObservationCoverage(binding)
@@ -174,25 +171,9 @@ class NativePolicyPump:
                         )
             except PolicyFrameError as error:
                 self.failure_count += 1
-                self._log_frame_failure(error)
+                self._failure_log.record(error)
             finally:
                 self.processed_count += 1
-
-    def _log_frame_failure(self, error: PolicyFrameError) -> None:
-        now = time.monotonic()
-        first = self._failure_logged_at is None
-        if not first and now - self._failure_logged_at < _FAILURE_LOG_INTERVAL_SEC:
-            self._failures_suppressed += 1
-            return
-        suppressed, self._failures_suppressed = self._failures_suppressed, 0
-        self._failure_logged_at = now
-        LOGGER.warning(
-            "native policy frame failed: camera_id=%s cause=%r suppressed_since_last_log=%d",
-            self.camera_id,
-            error.__cause__,
-            suppressed,
-            exc_info=error if first else None,
-        )
 
     def stop(self) -> None:
         self._stop.set()
@@ -377,7 +358,7 @@ class NativePolicyPump:
             self._capture_replay_row_unchecked(metadata, boxes, track_ids)
         except (OSError, ValueError, RuntimeError):
             self._diagnostics.record_replay_trace_write_failure(self.camera_id)
-            self._log_trace_write_failure()
+            self._trace_write_failure_log.record()
 
     def _capture_replay_row_unchecked(
         self,
@@ -503,18 +484,12 @@ class NativePolicyPump:
             )
         except (OSError, ValueError, RuntimeError):
             self._diagnostics.record_replay_trace_write_failure(self.camera_id)
-            self._log_trace_write_failure()
+            self._trace_write_failure_log.record()
 
     def _next_trace_seq(self) -> int:
         seq = self._trace_seq
         self._trace_seq += 1
         return seq
-
-    def _log_trace_write_failure(self) -> None:
-        if self._trace_write_failure_logged:
-            return
-        self._trace_write_failure_logged = True
-        LOGGER.warning("replay trace write failed: camera_id=%s", self.camera_id, exc_info=True)
 
     def _record_bed_polygon_source(self, frame: MetadataFrame) -> None:
         self._diagnostics.record_bed_polygon_source(self.camera_id, self._scene.bed_polygon_source)

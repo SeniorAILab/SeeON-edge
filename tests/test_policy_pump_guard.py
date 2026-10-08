@@ -6,7 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from worker.runtime.flow.policy_pump import NativePolicyPump
+from worker.runtime.flow.frame_failure_log import ThrottledFailureLog
+from worker.runtime.flow.policy_pump import LOGGER, NativePolicyPump
 from worker.runtime.threads import start_guarded_thread
 
 FRAMES = 5
@@ -47,8 +48,7 @@ def _failing_pump() -> tuple[NativePolicyPump, _Metadata]:
     pump._preview_states = {}
     pump.processed_count = 0
     pump.failure_count = 0
-    pump._failure_logged_at = None
-    pump._failures_suppressed = 0
+    pump._failure_log = ThrottledFailureLog(LOGGER, "camera-a")
 
     def boom(frame: object) -> None:
         raise KeyError("missing")
