@@ -11,6 +11,7 @@ from typing import Protocol, final, runtime_checkable
 
 from contracts.observation import BoundingBox
 from contracts.replay_trace import ReplayRow, ReplaySource, ReplayTrack
+from shared.boundary import translate
 from worker.interfaces.execution_records import ExecutionRecordSink
 from worker.interfaces.media_plane import OnDemandSnapshotUnsupported
 from worker.pipeline.decision import EventAggregator, unwrap_decider
@@ -18,6 +19,7 @@ from worker.pipeline.output.evidence_attacher import AlertEvidenceAttacher
 from worker.pipeline.perception import SceneState, build_decision_input, build_frame_observation
 from worker.pipeline.trace.replay_trace_writer import ReplayTraceWriter
 from worker.runtime.flow.execution_record_emit import emit_model_and_decision, emit_policy_consume
+from worker.runtime.flow.frame_failure_log import LogOnce, PolicyFrameError, ThrottledFailureLog
 from worker.runtime.flow.metadata_slot import AcceptanceToken, LatestMetadataSlot
 from worker.runtime.flow.observation_coverage import ObservationCoverage
 from worker.types import BusinessEvent, ChannelState, NativeEvidenceTrigger
@@ -99,6 +101,7 @@ class NativePolicyPump:
         self._fps: deque[float] = deque()
         self.processed_count = 0
         self.failure_count = 0
+        self._failure_log = ThrottledFailureLog(LOGGER, binding.camera_id)
         self._trace_epoch: tuple[int, int] | None = None
         self._trace_tracks: dict[int, ReplayTrack] = {}
         self._live_track_misses: dict[int, int] = {}
@@ -107,7 +110,9 @@ class NativePolicyPump:
         self._trace_dims: tuple[int, int] = (1, 1)
         self._trace_last_pts_ns = 0
         self._trace_seq = 0
-        self._trace_write_failure_logged = False
+        self._trace_write_failure_log = LogOnce(
+            LOGGER, "replay trace write failed: camera_id=%s", binding.camera_id
+        )
         self._preview_states_lock = threading.Lock()
         self._preview_states: Mapping[int, FallPreviewState] = MappingProxyType({})
         self._observation_coverage = ObservationCoverage(binding)
@@ -149,27 +154,24 @@ class NativePolicyPump:
                 token = AcceptanceToken(self._binding, token.native_publish_sequence)
                 continue
             token = AcceptanceToken(self._binding, frame.native_publish_sequence)
-            self._observation_coverage.observe(frame)
-            self._diagnostics.record_native_detection_attempt(self.camera_id)
-            sink = self._execution_records
-            before = None if sink is None else self._metadata.counters()
             try:
-                self._process(frame)
-                if sink is not None and before is not None:
-                    emit_policy_consume(
-                        sink,
-                        frame,
-                        before=before,
-                        after=self._metadata.counters(),
-                        processed_count=self.processed_count + 1,
-                    )
-            except (OSError, ValueError, RuntimeError):
+                with translate(PolicyFrameError, "native policy frame failed"):
+                    self._observation_coverage.observe(frame)
+                    self._diagnostics.record_native_detection_attempt(self.camera_id)
+                    sink = self._execution_records
+                    before = None if sink is None else self._metadata.counters()
+                    self._process(frame)
+                    if sink is not None and before is not None:
+                        emit_policy_consume(
+                            sink,
+                            frame,
+                            before=before,
+                            after=self._metadata.counters(),
+                            processed_count=self.processed_count + 1,
+                        )
+            except PolicyFrameError as error:
                 self.failure_count += 1
-                LOGGER.warning(
-                    "native policy frame failed: camera_id=%s",
-                    self.camera_id,
-                    exc_info=True,
-                )
+                self._failure_log.record(error)
             finally:
                 self.processed_count += 1
 
@@ -356,7 +358,7 @@ class NativePolicyPump:
             self._capture_replay_row_unchecked(metadata, boxes, track_ids)
         except (OSError, ValueError, RuntimeError):
             self._diagnostics.record_replay_trace_write_failure(self.camera_id)
-            self._log_trace_write_failure()
+            self._trace_write_failure_log.record()
 
     def _capture_replay_row_unchecked(
         self,
@@ -482,18 +484,12 @@ class NativePolicyPump:
             )
         except (OSError, ValueError, RuntimeError):
             self._diagnostics.record_replay_trace_write_failure(self.camera_id)
-            self._log_trace_write_failure()
+            self._trace_write_failure_log.record()
 
     def _next_trace_seq(self) -> int:
         seq = self._trace_seq
         self._trace_seq += 1
         return seq
-
-    def _log_trace_write_failure(self) -> None:
-        if self._trace_write_failure_logged:
-            return
-        self._trace_write_failure_logged = True
-        LOGGER.warning("replay trace write failed: camera_id=%s", self.camera_id, exc_info=True)
 
     def _record_bed_polygon_source(self, frame: MetadataFrame) -> None:
         self._diagnostics.record_bed_polygon_source(self.camera_id, self._scene.bed_polygon_source)
