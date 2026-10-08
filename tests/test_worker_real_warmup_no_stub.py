@@ -164,9 +164,6 @@ def test_fall_classifier_is_constructed_and_warmed_on_the_cpu_before_cameras(
 
     monkeypatch.setattr(worker_module.WorkerRuntime, "_create_fall_model", _create_fall_model)
     monkeypatch.setattr(
-        worker_module.WorkerRuntime, "_packaged_fall_member_digest", lambda _self: "fall-digest"
-    )
-    monkeypatch.setattr(
         worker_module, "verify_flow_boot_inputs", lambda _env, **_kwargs: {"engine": "verified"}
     )
 
