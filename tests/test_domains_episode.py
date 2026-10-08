@@ -74,6 +74,25 @@ def test_unclaimed_resolved_episode_is_dropped_and_old_track_starts_fresh():
     assert again[0].identity != first.identity
 
 
+def test_candidate_episode_survives_a_brief_loss_and_is_dropped_after_the_window():
+    authority = EpisodeAuthority(boot_id="boot", stream_epoch="epoch", source_generation=1)
+    assert authority.propose(proposal(frame=0, time=0.0)) == ()
+    assert authority.propose(proposal(frame=1, time=0.1)) == ()
+    authority.track_lost(camera_id="camera-1", frame_index=2, time_sec=0.2, track_id=7)
+    authority.expire(frame_index=3, time_sec=0.3)
+    assert len(authority.propose(proposal(frame=3, time=0.3))) == 1
+
+    assert authority.propose(proposal(track_id=8, frame=4, time=0.4)) == ()
+    authority.track_lost(camera_id="camera-1", frame_index=5, time_sec=0.5, track_id=8)
+    authority.expire(frame_index=80, time_sec=5.4)
+    authority.expire(frame_index=81, time_sec=5.5)
+    assert (
+        authority.state_for(camera_id="camera-1", event_type="fall", bed_id=None, track_id=8)
+        is EpisodeState.NORMAL
+    )
+    assert authority.propose(proposal(track_id=8, frame=82, time=5.6)) == ()
+
+
 def test_resolved_episode_claimed_by_live_track_keeps_hold():
     authority = EpisodeAuthority(boot_id="boot", stream_epoch="epoch", source_generation=1)
     assert open_episode(authority)
