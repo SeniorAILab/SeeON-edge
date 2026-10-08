@@ -23,6 +23,7 @@ from worker.adapters.model import ort_pose_bbox56
 from worker.adapters.model.errors import ModelLoadError
 from worker.adapters.model.ort_pose_bbox56 import OrtPoseBbox56Runner
 from worker.adapters.model.pose_bbox56_bundle import PoseBbox56BundleRunner
+from worker.adapters.model.pose_bbox56_bundle_support import member_digest
 from worker.domains import DETECTION_MODULE_REGISTRY, CameraModuleContext
 from worker.domains.fall import FallPolicyDecider, FallWindowClassifier
 from worker.domains.registry import _audit_snapshot, _effective_transition_threshold
@@ -713,7 +714,8 @@ def test_flow_composition_uses_the_loaded_bundle_published_weights_digest(tmp_pa
         identity for identity in graph.identities if identity.component_id == "fall-classifier"
     )
 
-    assert fall.artifact_digest == runtime._packaged_fall_member_digest()
+    manifest = json.loads((artifact_dir / "bundle-manifest.json").read_text())
+    assert fall.artifact_digest == member_digest(manifest, "model.pt")
     shipped = "7bb75a2932e1a1250dc900013b2c80b220de5e23f3ea568e05f1db21d0a757e3"
     assert fall.artifact_digest != shipped
     assert len(fall.artifact_digest) == 64

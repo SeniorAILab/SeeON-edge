@@ -964,18 +964,6 @@ class WorkerRuntime:
         self._compose_execution_records()
         return graph
 
-    def _packaged_fall_member_digest(self) -> str:
-        models = self._fall_models()
-        configured = models.fall
-        if configured is None:
-            raise RuntimeError("fall model must be explicitly configured; refusing to boot")
-        bundle = self._loaded_fall_bundle
-        if bundle is None:
-            bundle = ort_pose_bbox56.load_packaged_fall_bundle(configured.artifact_dir)
-            _validate_fall_bundle_conformance(bundle.runner.conformance)
-            self._loaded_fall_bundle = bundle
-        return bundle.published_weights_digest
-
     def _create_fall_model(self) -> FallModelProtocol:
         models = self._fall_models()
         selected = models.selected
