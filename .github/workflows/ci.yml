@@ -101,13 +101,18 @@ jobs:
       - run: uv run --group lint python scripts/check_boundaries.py
 
       # Backend feature layers: folder shape, unmigrated imports and the
-      # shrink-only baseline, compared with the PR base branch.
+      # shrink-only baseline, compared with the exact base commit (the PR base
+      # SHA, or the previous main tip on push). Without one, check findings only.
       - name: Backend feature layers (baseline only shrinks)
         env:
-          BASE_REF: ${{ github.base_ref || 'main' }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          git fetch --no-tags --depth=1 origin "$BASE_REF"
-          uv run --group lint python scripts/check_layers.py --against FETCH_HEAD
+          if [ -z "${BASE_SHA//0/}" ]; then
+            uv run --group lint python scripts/check_layers.py
+          else
+            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+            uv run --group lint python scripts/check_layers.py --against "$BASE_SHA"
+          fi
 
   # The whole cost centre: pytest was 18m27s of a 19m37s job. Sharded across
   # SHARD_TOTAL runners by test file, which needs no new dependency in uv.lock.

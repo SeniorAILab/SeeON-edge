@@ -878,10 +878,14 @@ _LINT_STEPS = [
     {"run": "uv run --group lint python scripts/check_boundaries.py"},
     {
         "name": "Backend feature layers (baseline only shrinks)",
-        "env": {"BASE_REF": "${{ github.base_ref || 'main' }}"},
+        "env": {"BASE_SHA": "${{ github.event.pull_request.base.sha || github.event.before }}"},
         "run": (
-            'git fetch --no-tags --depth=1 origin "$BASE_REF"\n'
-            "uv run --group lint python scripts/check_layers.py --against FETCH_HEAD\n"
+            'if [ -z "${BASE_SHA//0/}" ]; then\n'
+            "  uv run --group lint python scripts/check_layers.py\n"
+            "else\n"
+            '  git fetch --no-tags --depth=1 origin "$BASE_SHA"\n'
+            '  uv run --group lint python scripts/check_layers.py --against "$BASE_SHA"\n'
+            "fi\n"
         ),
     },
 ]
