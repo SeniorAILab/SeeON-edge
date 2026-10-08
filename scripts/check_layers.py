@@ -259,6 +259,16 @@ def load_baseline(text: str) -> dict[str, list[str]]:
     return json.loads(text)["features"] if text.strip() else {}
 
 
+def commit_exists(repo: Path, ref: str) -> bool:
+    found = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return found.returncode == 0
+
+
 def baseline_at(repo: Path, ref: str, path: Path) -> dict[str, list[str]] | None:
     shown = subprocess.run(
         ["git", "-C", str(repo), "show", f"{ref}:{path.relative_to(repo).as_posix()}"],
@@ -282,6 +292,14 @@ def migration_pairs(repo: Path) -> tuple[set[str], set[str]]:
 
 
 def check(opts: Options) -> list[str]:
+    if opts.against is not None and not commit_exists(opts.repo, opts.against):
+        missing = (
+            f"--against {opts.against}: no such commit in this clone, so the baseline "
+            "cannot be compared. Fix: fetch it first "
+            f"(git fetch --no-tags --depth=1 origin {opts.against}) or pass a commit "
+            "that exists, e.g. --against HEAD."
+        )
+        return [missing]
     findings = scan_tree(opts.repo) + scan_imports(opts.repo)
     current: dict[str, list[str]] = {}
     for finding in findings:

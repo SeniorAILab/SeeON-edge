@@ -65,6 +65,8 @@ def clean_tree() -> dict[str, str]:
         "backend/app/core/config.py": "import pydantic\n",
         "backend/app/edge_db/__init__.py": "",
         "backend/app/features/__init__.py": "",
+        "backend/app/shared/__init__.py": "",
+        "contracts/__init__.py": "",
     }
     files.update({f"backend/app/{name}.py": "" for name in COMPOSITION_ROOT})
     files.update(feature_files("alpha"))
@@ -94,7 +96,7 @@ def real_layer_contracts() -> list[dict[str, object]]:
 def lint_config(root: Path) -> Path:
     lines = [
         "[tool.importlinter]",
-        'root_packages = ["backend"]',
+        'root_packages = ["backend", "contracts"]',
         "include_external_packages = true",
     ]
     for contract in real_layer_contracts():
@@ -136,6 +138,7 @@ def test_service_reading_pydantic_settings_through_core_config_is_kept(tmp_path:
 
 
 ALPHA = "backend/app/features/alpha"
+BASE_MODEL = "from pydantic import BaseModel\n\n\nclass Wire(BaseModel):\n    x: int\n"
 LEGACY = "backend/app/features/legacy"
 
 MUTATIONS = {
@@ -183,6 +186,34 @@ MUTATIONS = {
     "routes_import_a_repository": (
         {"backend/app/routes.py": f"from {F}.alpha.repository import rows\n"},
         ROUTES,
+    ),
+    "pydantic_through_a_backend_shared_model": (
+        {
+            "backend/app/shared/wire_models.py": BASE_MODEL,
+            f"{ALPHA}/service/logic.py": "from backend.app.shared import wire_models\n",
+        },
+        PYDANTIC,
+    ),
+    "pydantic_through_a_contracts_model": (
+        {
+            "contracts/wire.py": BASE_MODEL,
+            f"{ALPHA}/service/logic.py": "from contracts import wire\n",
+        },
+        PYDANTIC,
+    ),
+    "pydantic_through_an_edge_db_model": (
+        {
+            "backend/app/edge_db/models.py": BASE_MODEL,
+            f"{ALPHA}/repository/rows.py": "from backend.app.edge_db import models\n",
+        },
+        PYDANTIC,
+    ),
+    "fastapi_through_a_shared_http_adapter": (
+        {
+            "backend/app/shared/backend_client_bundle.py": "from fastapi import Request\n",
+            f"{ALPHA}/service/logic.py": "from backend.app.shared import backend_client_bundle\n",
+        },
+        HTTP,
     ),
     "service_cycle_between_features": (
         {
@@ -394,6 +425,14 @@ def test_against_a_ref_without_a_baseline_checks_only_the_findings(tmp_path: Pat
     git(root, "add", "-A")
     result = run_checker(root, "--against", "HEAD")
     assert result.returncode == 0, result.stdout
+
+
+@pytest.mark.parametrize("ref", ["no-such-ref", "0" * 40, "FETCH_HEAD"])
+def test_against_a_missing_ref_fails_with_a_fix(tmp_path: Path, ref: str) -> None:
+    result = run_checker(checker_repo(tmp_path), "--against", ref)
+    assert result.returncode == 1, result.stdout
+    assert f"--against {ref}: no such commit in this clone" in result.stdout
+    assert f"Fix: fetch it first (git fetch --no-tags --depth=1 origin {ref})" in result.stdout
 
 
 def test_a_fixed_entry_must_leave_the_baseline(tmp_path: Path) -> None:
