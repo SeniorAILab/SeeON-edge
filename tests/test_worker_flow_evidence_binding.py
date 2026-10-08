@@ -226,7 +226,7 @@ def test_successful_seal_retires_the_sidecar_so_a_restart_does_not_replay_it(
     assert publisher.calls == 1
 
 
-def test_publication_failure_surfaces_without_completing_the_incident(tmp_path: Path) -> None:
+def test_publication_failure_is_contained_and_left_for_replay(tmp_path: Path) -> None:
     plane, now = _Plane(), [0.0]
     actor, binding, stager, publisher = _binding(
         plane, now, [datetime(2026, 1, 1, tzinfo=UTC)], tmp_path
@@ -234,11 +234,10 @@ def test_publication_failure_surfaces_without_completing_the_incident(tmp_path: 
     binding.emit_for_frame(_event("one"), _trigger())
     publisher.fail = True
 
-    with pytest.raises(FlowClipPublicationError, match="publication failed"):
-        plane.seal(1)
+    plane.seal(1)
 
     assert stager.completed == []
-    assert actor.state.name == "FINALIZING"
+    assert actor.state.name == "IDLE"
     assert len(binding.sidecars.pending_for_camera("camera-a")) == 1
 
 

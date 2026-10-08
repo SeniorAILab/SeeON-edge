@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-import pytest
-
 from worker.interfaces.media_plane import RecordingInfo, RecordingRefused
 from worker.pipeline.output.evidence.smart_record_actor import (
     ClipSealed,
@@ -137,16 +135,15 @@ def test_an_alert_after_the_clip_sealed_opens_the_next_one() -> None:
     assert [contributor.event_ref for contributor in clips[0].contributors] == ["first"]
 
 
-def test_seal_is_not_latched_until_the_sink_accepts_it() -> None:
+def test_a_failing_sink_is_contained_and_the_actor_returns_to_idle() -> None:
     plane, now = FakePlane(), [0.0]
-    accepted: list[ClipSealed] = []
+    accepted: list[object] = []
     failures = [True]
 
     def sink(item: object) -> None:
         if failures[0]:
             failures[0] = False
             raise RuntimeError("publication failed")
-        assert isinstance(item, ClipSealed)
         accepted.append(item)
 
     actor = SmartRecordActor(
@@ -155,13 +152,12 @@ def test_seal_is_not_latched_until_the_sink_accepts_it() -> None:
         clock=lambda: now[0],
         sink=sink,
         lookback_sec=15,
-        clip_id_factory=lambda: "clip-1",
+        clip_id_factory=lambda: f"clip-{len(plane.starts)}",
     )
     actor.admit("event-1", "2026-01-01T00:00:00Z")
-
-    with pytest.raises(RuntimeError, match="publication failed"):
-        plane.seal(1)
-
-    assert actor.state.name == "FINALIZING"
     plane.seal(1)
-    assert [clip.clip_id for clip in accepted] == ["clip-1"]
+
+    assert actor.state.name == "IDLE"
+    actor.admit("event-2", "2026-01-01T00:01:00Z")
+    plane.seal(2)
+    assert [clip.clip_id for clip in accepted if isinstance(clip, ClipSealed)] == ["clip-2"]

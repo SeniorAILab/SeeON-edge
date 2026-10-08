@@ -28,6 +28,7 @@ class Boundary(StrEnum):
     SENDER_TICK = "sender_tick"
     OPTIONAL_FEATURE = "optional_feature"
     VENDOR_PROBE = "vendor_probe"
+    CLIP_SEAL = "clip_seal"
     ROOT = "root"
 
 
