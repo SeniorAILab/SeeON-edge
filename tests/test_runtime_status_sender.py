@@ -294,7 +294,7 @@ def test_status_log_volume_stays_under_ceiling(caplog: pytest.LogCaptureFixture)
         RuntimeStatusSenderConfig(publish_interval_sec=0.01),
     )
 
-    with caplog.at_level(logging.DEBUG):
+    with caplog.at_level(logging.INFO):
         for _ in range(300):
             _ = sender.publish_once()
             diagnostics.log_snapshot()
@@ -311,3 +311,24 @@ def _wait_until(predicate, timeout_sec: float = 0.5) -> None:
             return
         time.sleep(0.005)
     raise AssertionError("timed out waiting for runtime status sender")
+
+
+def test_debug_level_keeps_the_full_snapshot_detail_on_one_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    diagnostics = _diagnostics()
+    diagnostics.record_stage_timing("camera-a", "ingest", 0.1)
+
+    with caplog.at_level(logging.DEBUG):
+        diagnostics.log_snapshot()
+
+    detail = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("worker.runtime.telemetry.detail ")
+    ]
+    assert len(detail) == 1
+    assert "camera_id=camera-a" in detail[0]
+    assert "'stage': 'ingest'" in detail[0]
+    assert "'bed_region'" in detail[0]
+    assert "\n" not in detail[0]

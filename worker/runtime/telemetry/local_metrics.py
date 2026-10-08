@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import logging
 from typing import final
 
@@ -74,6 +75,12 @@ def log_snapshot(snapshot: RuntimeDiagnosticsSnapshot) -> None:
                 f"fall_unapplied_policy_threshold={camera.fall_unapplied_policy_threshold}"
             )
         LOGGER.info("worker.runtime.telemetry %s", " ".join(fields))
+        if LOGGER.isEnabledFor(logging.DEBUG):
+            LOGGER.debug(
+                "worker.runtime.telemetry.detail camera_id=%s %s",
+                camera.camera_id,
+                dataclasses.asdict(camera),
+            )
 
 
 __all__ = ["StageTimingAccumulator", "bus_snapshot", "log_snapshot"]
