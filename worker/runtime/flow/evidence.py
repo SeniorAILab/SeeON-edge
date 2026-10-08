@@ -105,7 +105,7 @@ class FlowEvidenceBinding:
     def on_sealed(self, sealed: ClipSealed) -> None:
         with self._lock:
             events = dict(self._events)
-        if not all(c.event_ref in events for c in sealed.contributors):
+        if sealed.contributors and all(c.event_ref not in events for c in sealed.contributors):
             return
         sidecar_path = self.sidecars.persist(sealed, events)
         recovery = FlowSealedRecovery(sealed, events, self.camera_id, sidecar_path)
