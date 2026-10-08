@@ -65,4 +65,4 @@ Read the nearest `AGENTS.md` before changing that package.
 | `replay/` | `replay_recovered`, `replay_camera`, `compare_runs`, `assess_reproducibility` |
 
 New seam: Protocol plus two implementations, or one plus a test double.
-Keep new pure-code modules at or below 250 logical LOC. Split by port or stage.
+Keep new pure-code modules at or below 250 logical LOC. Split by port or stage. Enforced by `scripts/check_module_size.py`; baselined offenders may only shrink.
