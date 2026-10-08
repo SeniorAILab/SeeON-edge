@@ -1,0 +1,5 @@
+{
+  "offenders": [
+    "worker/runtime/worker.py::_packaged_fall_member_digest"
+  ]
+}

@@ -100,6 +100,17 @@ jobs:
 
       - run: uv run --group lint python scripts/check_boundaries.py
 
+      - name: No private worker function only tests call (baseline only shrinks)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "${BASE_SHA//0/}" ]; then
+            uv run --group lint python scripts/check_private_test_only.py
+          else
+            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+            uv run --group lint python scripts/check_private_test_only.py --against "$BASE_SHA"
+          fi
+
       # Backend feature layers: folder shape, unmigrated imports and the
       # shrink-only baseline, compared with the exact base commit (the PR base
       # SHA, or the previous main tip on push). Without one, check findings only.
