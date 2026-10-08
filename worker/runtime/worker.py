@@ -44,6 +44,7 @@ from worker.domains import (
     DOMAIN_REGISTRY,
     CameraModuleContext,
     CompiledDetectionModuleRegistry,
+    DetectionModuleActivation,
     DetectionModuleDefinition,
     SharedComponentIdentity,
 )
@@ -1043,10 +1044,10 @@ class WorkerRuntime:
         if media_plane is None:
             raise RuntimeError("flow media plane is not initialized")
         self._compose_evidence_export()
-        plans = {
-            camera.camera_id: self._preflight_camera_graph(camera) for camera in self.config.cameras
+        activations = {
+            camera.camera_id: self._camera_activation(camera) for camera in self.config.cameras
         }
-        self._apply_runtime_manifest(boot, plans)
+        self._apply_runtime_manifest(boot, activations)
         pumps: list[NativePolicyPump] = []
         self._native_policy_pumps_by_camera.clear()
         sealed_bindings: list[FlowEvidenceBinding] = []
@@ -1388,7 +1389,7 @@ class WorkerRuntime:
     def _apply_runtime_manifest(
         self,
         boot: BootContext,
-        plans: Mapping[str, CameraDetectionPlan],
+        activations: Mapping[str, DetectionModuleActivation],
     ) -> None:
         graph = self._shared_graph
         if graph is None:
@@ -1401,16 +1402,16 @@ class WorkerRuntime:
                     ingest_target_fps=self.temporal_profile.target_fps,
                     module_qualified_ids=tuple(
                         definition.qualified_id
-                        for definition in plans[camera.camera_id].definitions.values()
+                        for definition in activations[camera.camera_id].definitions
                     ),
-                    schedule=plans[camera.camera_id].schedule,
+                    schedule=activations[camera.camera_id].schedule,
                     detection_windows={
-                        module_id: (
+                        definition.module_id: (
                             None
-                            if window is None
+                            if (window := self._resolved_window(definition.module_id)) is None
                             else AppliedDetectionWindow(window.start, window.end, window.tz)
                         )
-                        for module_id, window in plans[camera.camera_id].detection_windows.items()
+                        for definition in activations[camera.camera_id].definitions
                     },
                     policies=MappingProxyType(
                         {
@@ -1419,7 +1420,7 @@ class WorkerRuntime:
                                 definition.module_id,
                                 definition.version,
                             )
-                            for definition in plans[camera.camera_id].definitions.values()
+                            for definition in activations[camera.camera_id].definitions
                         }
                     ),
                     bed_zone_regions=camera.bed_zone_regions,
@@ -1497,13 +1498,7 @@ class WorkerRuntime:
     def _active_domain_names(self) -> tuple[str, ...]:
         return tuple(self._module_versions)
 
-    def _preflight_camera_graph(
-        self,
-        camera: CameraRuntimeConfig,
-        tracker: GreedyIouTracker | None = None,
-        episode_source_identity: tuple[str, str, int] | None = None,
-        incidents: IncidentManager | None = None,
-    ) -> CameraDetectionPlan:
+    def _camera_activation(self, camera: CameraRuntimeConfig) -> DetectionModuleActivation:
         graph = self._shared_graph
         if graph is None:
             raise RuntimeError("detection graph preflight requires initialized components")
@@ -1512,7 +1507,7 @@ class WorkerRuntime:
             "person-box-source": self._fall_models().box_source == "person",
             "persisted-bed-region": bool(persisted_bed_regions),
         }
-        activation = self._module_registry.activation(
+        return self._module_registry.activation(
             module_versions=self._module_versions,
             available_observation_channels=AVAILABLE_OBSERVATION_CHANNELS,
             available_component_ids=graph.components,
@@ -1522,8 +1517,18 @@ class WorkerRuntime:
             flags=flags,
             temporal_profile=self.temporal_profile,
         )
-        if episode_source_identity is None:
-            episode_source_identity = (str(self._worker_boot_uuid), "0", 0)
+
+    def _preflight_camera_graph(
+        self,
+        camera: CameraRuntimeConfig,
+        episode_source_identity: tuple[str, str, int],
+        tracker: GreedyIouTracker | None = None,
+        incidents: IncidentManager | None = None,
+    ) -> CameraDetectionPlan:
+        graph = self._shared_graph
+        if graph is None:
+            raise RuntimeError("detection graph preflight requires initialized components")
+        activation = self._camera_activation(camera)
         camera_component_values: dict[str, object] = {
             "episode-identity": episode_source_identity,
         }
