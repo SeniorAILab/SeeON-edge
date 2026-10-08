@@ -633,10 +633,11 @@ def _detection_for_camera(
             decision_completed=decision_completed,
         )
     if native_producer:
+        inferred = max(native_attempts, decision_completed)
         return detection_payload(
             expected=True,
-            inference_admitted=max(native_attempts, decision_completed),
-            inference_succeeded=decision_completed,
+            inference_admitted=inferred,
+            inference_succeeded=inferred,
             inference_overwritten=0,
             decision_completed=decision_completed,
         )
