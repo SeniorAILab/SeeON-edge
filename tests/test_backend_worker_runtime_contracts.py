@@ -77,7 +77,7 @@ def _catalogued(sandbox: ProductSandbox, root: Path) -> ClipCatalogPage:
     outcome = ClipCatalogIndexer(sandbox.database, sandbox.authority).reconcile(store)
     assert (outcome.remaining, outcome.isolated) == (0, 0)
     return PostgresClipCatalog(sandbox.database).page(
-        store, ClipCatalogQuery(camera_id=None, event_type=None, limit=50, cursor=None)
+        store, ClipCatalogQuery(camera_ids=None, event_type=None, limit=50, cursor=None)
     )
 
 
