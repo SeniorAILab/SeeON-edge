@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -493,3 +494,45 @@ def test_duck_with_accepted_true_is_not_proof_of_admission(tmp_path: Path) -> No
         binding.emit_for_frame(_event("one"), _trigger())
     (record,) = sink.records
     assert record.outcome == "refused"  # type: ignore[attr-defined]
+
+
+def _sealed(*refs: str) -> ClipSealed:
+    contributors = tuple(ClipContributor(ref, "2026-01-01T00:00:00Z") for ref in refs)
+    return ClipSealed("clip", "/clips/x.mp4", 12_000, contributors, "none")
+
+
+def test_double_seal_is_a_noop(tmp_path: Path) -> None:
+    plane, now = _Plane(), [0.0]
+    _, binding, stager, _ = _binding(plane, now, [datetime(2026, 1, 1, tzinfo=UTC)], tmp_path)
+    binding.emit_for_frame(_event("one"), _trigger())
+    binding.on_sealed(_sealed("one"))
+    binding.on_sealed(_sealed("one"))
+    assert stager.completed == [("one", "clip")]
+
+
+def test_concurrent_emit_and_seal_do_not_raise(tmp_path: Path) -> None:
+    plane, now = _Plane(), [0.0]
+    dates = [datetime(2026, 1, 1, tzinfo=UTC)] * 1000
+    _, binding, _, _ = _binding(plane, now, dates, tmp_path)
+    errors: list[BaseException] = []
+
+    def emit() -> None:
+        try:
+            for index in range(1000):
+                binding.emit_for_frame(_event(f"e{index}"), _trigger())
+        except Exception as error:  # noqa: BLE001
+            errors.append(error)
+
+    def seal() -> None:
+        try:
+            for index in range(1000):
+                binding.on_sealed(_sealed(f"e{index}"))
+        except Exception as error:  # noqa: BLE001
+            errors.append(error)
+
+    threads = [threading.Thread(target=emit), threading.Thread(target=seal)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
