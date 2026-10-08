@@ -29,6 +29,12 @@ repos:
         files: \.pyi?$
         require_serial: true
         verbose: true
+      - id: model-swap-surface
+        name: model-swap surface (no receipt or green ceremony)
+        entry: uv run --group lint python scripts/check_model_swap_surface.py
+        language: system
+        files: ^(contracts/model_selection\.py|worker/runtime/provenance/.*\.py|scripts/check_model_swap_surface\.py)$
+        require_serial: true
       - id: layers
         name: backend feature layers (baseline only shrinks)
         entry: uv run --group lint python scripts/check_layers.py --against HEAD

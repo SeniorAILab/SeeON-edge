@@ -7,27 +7,17 @@ from pathlib import Path
 from types import TracebackType
 from typing import Self, final
 
-import pytest
-
 from tests_support.pose_bbox56_bundle_artifact import write_pose_bbox56_bundle
 from worker.runtime.config import (
     ClipRecordingConfig,
     ConfigSource,
     JsonObject,
     WorkerConfig,
-    WorkerConfigError,
     WorkerConfigLkgStore,
     load_worker_config_from_relay,
     resolve_local_overrides,
 )
-from worker.runtime.config.local_env import (
-    ML_WORKER_CLIP_RECORDING_ENABLED_ENV,
-    ML_WORKER_FALL_MODEL_ARTIFACT_DIR_ENV,
-    ML_WORKER_FALL_MODEL_OPERATING_THRESHOLD_ENV,
-    ML_WORKER_FALL_MODEL_STRIDE_ENV,
-    ML_WORKER_FALL_MODEL_WINDOW_ENV,
-    fall_model_config_from_environment,
-)
+from worker.runtime.config.local_env import ML_WORKER_CLIP_RECORDING_ENABLED_ENV
 
 
 @final
@@ -55,15 +45,6 @@ def _write_fall_artifact(path: Path) -> Path:
     return write_pose_bbox56_bundle(path)
 
 
-def _fall_env(artifact_dir: Path) -> dict[str, str]:
-    return {
-        ML_WORKER_FALL_MODEL_ARTIFACT_DIR_ENV: str(artifact_dir),
-        ML_WORKER_FALL_MODEL_WINDOW_ENV: "3",
-        ML_WORKER_FALL_MODEL_STRIDE_ENV: "1",
-        ML_WORKER_FALL_MODEL_OPERATING_THRESHOLD_ENV: "0.5",
-    }
-
-
 def _payload(*, registry_version: int, config_version: int, restart_epoch: int) -> JsonObject:
     return {
         "registry_version": registry_version,
@@ -81,11 +62,11 @@ def _payload(*, registry_version: int, config_version: int, restart_epoch: int) 
     }
 
 
-def test_pull_with_fall_env_vars_set_configures_models_fall_and_clip_enabled(
-    tmp_path: Path,
+def test_pull_with_clip_env_set_configures_packaged_fall_and_clip_enabled(
+    tmp_path: Path, packaged_fall_bundle: Path
 ) -> None:
-    artifact_dir = _write_fall_artifact(tmp_path / "models" / "fall" / "pose-bbox56-gru")
-    environ = {**_fall_env(artifact_dir), ML_WORKER_CLIP_RECORDING_ENABLED_ENV: "true"}
+    artifact_dir = packaged_fall_bundle
+    environ = {ML_WORKER_CLIP_RECORDING_ENABLED_ENV: "true"}
     models, clip, dev_mjpeg = resolve_local_overrides(None, environ)
 
     snapshot = load_worker_config_from_relay(
@@ -137,9 +118,8 @@ def test_pull_with_no_fall_config_resolves_the_packaged_default_bundle(
     assert snapshot.config.dev_mjpeg.port == 8090
 
 
-def test_local_yaml_fall_config_wins_over_env_when_both_are_set(tmp_path: Path) -> None:
+def test_local_yaml_fall_config_is_kept_when_clip_env_is_set(tmp_path: Path) -> None:
     yaml_artifact_dir = _write_fall_artifact(tmp_path / "yaml-fall")
-    env_artifact_dir = _write_fall_artifact(tmp_path / "env-fall")
     yaml_config = WorkerConfig.model_validate(
         {
             "relay": {"url": "http://ml-api:8000", "token": "relay-secret"},
@@ -165,7 +145,7 @@ def test_local_yaml_fall_config_wins_over_env_when_both_are_set(tmp_path: Path) 
             "clip": {"enabled": True},
         }
     )
-    environ = {**_fall_env(env_artifact_dir), ML_WORKER_CLIP_RECORDING_ENABLED_ENV: "false"}
+    environ = {ML_WORKER_CLIP_RECORDING_ENABLED_ENV: "false"}
 
     models, clip, dev_mjpeg = resolve_local_overrides(yaml_config, environ)
 
@@ -175,21 +155,11 @@ def test_local_yaml_fall_config_wins_over_env_when_both_are_set(tmp_path: Path) 
     assert dev_mjpeg is None
 
 
-def test_malformed_fall_env_value_raises_loudly_instead_of_silently_defaulting() -> None:
-    environ = {
-        ML_WORKER_FALL_MODEL_ARTIFACT_DIR_ENV: "/nonexistent/artifact/dir",
-        ML_WORKER_FALL_MODEL_WINDOW_ENV: "not-a-number",
-        ML_WORKER_FALL_MODEL_STRIDE_ENV: "1",
-        ML_WORKER_FALL_MODEL_OPERATING_THRESHOLD_ENV: "0.5",
-    }
-
-    with pytest.raises(WorkerConfigError, match=ML_WORKER_FALL_MODEL_WINDOW_ENV):
-        fall_model_config_from_environment(environ)
-
-
-def test_lkg_restore_path_preserves_locally_sourced_models_and_clip(tmp_path: Path) -> None:
-    artifact_dir = _write_fall_artifact(tmp_path / "models" / "fall" / "pose-bbox56-gru")
-    environ = {**_fall_env(artifact_dir), ML_WORKER_CLIP_RECORDING_ENABLED_ENV: "true"}
+def test_lkg_restore_path_preserves_locally_sourced_models_and_clip(
+    tmp_path: Path, packaged_fall_bundle: Path
+) -> None:
+    artifact_dir = packaged_fall_bundle
+    environ = {ML_WORKER_CLIP_RECORDING_ENABLED_ENV: "true"}
     models, clip, dev_mjpeg = resolve_local_overrides(None, environ)
     store = WorkerConfigLkgStore(tmp_path / "worker-state.sqlite3")
 

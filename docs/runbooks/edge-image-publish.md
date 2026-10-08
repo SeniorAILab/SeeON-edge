@@ -113,6 +113,27 @@ verified the bundle. Removing that mount is the only normal path back to the
 packaged fallback. Replacing a model requires only the bundle and selection
 file, not an image rebuild.
 
+The selection document is five keys and nothing else:
+
+```json
+{
+  "schema_version": 3,
+  "model_publication": {
+    "source_locator": "<where the bundle is fetched from>",
+    "revision": "<publisher revision>",
+    "bundle_sha256": "<sha256 of the bundle manifest>"
+  },
+  "runtime_format": "onnxruntime",
+  "transition_threshold": 0.5,
+  "threshold_source": "default"
+}
+```
+
+Admission checks bytes only: the bundle manifest digest equals
+`bundle_sha256`, every member matches its recorded sha256 and size, and the
+tree and runtime format are exact. There is no receipt, status, or "green"
+step. Swapping the model means swapping the bundle and this file.
+
 Publish only through `.github/workflows/edge-images.yml` for the sealed SHA.
 Download the exact-SHA artifact and compare both digests with the seal before
 updating the deployment receipt.
