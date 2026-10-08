@@ -876,6 +876,7 @@ _LINT_STEPS = [
     },
     {"run": "uv run --group lint python scripts/check_no_comments.py"},
     {"run": "uv run --group lint python scripts/check_boundaries.py"},
+    {"run": "uv run --group lint python scripts/check_thread_starts.py"},
     {
         "name": "Backend feature layers (baseline only shrinks)",
         "env": {"BASE_SHA": "${{ github.event.pull_request.base.sha || github.event.before }}"},
