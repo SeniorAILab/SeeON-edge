@@ -154,7 +154,7 @@ def test_a3_unknown_record_kind_is_422(pg_stack: _PgStack, enabled_settings: Non
     del body["records"][0]["record_id"]
     response = client.post(_PATH, json=body, headers={RELAY_TOKEN_HEADER: _RELAY_TOKEN})
     assert response.status_code == 422
-    assert "record_kind" in response.json()["detail"]
+    assert "record_kind" in str(response.json()["detail"])
 
 
 def test_a4_process_scoped_kind_with_stream_epoch_is_422(

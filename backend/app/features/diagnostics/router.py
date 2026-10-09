@@ -11,6 +11,7 @@ from backend.app.edge_db.postgres import PostgresError
 from backend.app.features.diagnostics.schemas import (
     ExecutionQueryParams,
     ExecutionQueryResponse,
+    ExecutionRecordBatchRequest,
     ExecutionRecordReceiptResponse,
     query_response_from_result,
 )
@@ -30,11 +31,6 @@ from shared.events.execution_records import (
 
 DISABLED_DETAIL = "execution records disabled"
 UNAVAILABLE_DETAIL = "diagnostics store unavailable: check PostgreSQL and run migration provision"
-
-router = APIRouter(
-    tags=["diagnostics"],
-    route_class=bounded_body_route({"/execution-records": MAX_EXECUTION_RECORD_BODY_BYTES}),
-)
 
 
 def require_relay_execution_records(
@@ -60,6 +56,25 @@ def execution_record_store(request: Request) -> ExecutionRecordStore:
     return store
 
 
+def gate_execution_records_before_body(request: Request) -> None:
+    require_relay_execution_records(
+        request,
+        relay_token=request.headers.get(RELAY_TOKEN_HEADER),
+        authorization=request.headers.get("authorization"),
+    )
+    execution_record_store(request)
+
+
+router = APIRouter(
+    tags=["diagnostics"],
+    route_class=bounded_body_route(
+        {"/execution-records": MAX_EXECUTION_RECORD_BODY_BYTES},
+        before_body=gate_execution_records_before_body,
+    ),
+    strict_content_type=False,
+)
+
+
 def backend_build_revision(request: Request) -> str:
     value = getattr(request.app.state, "backend_build_revision", None)
     if not isinstance(value, str) or not value:
@@ -74,8 +89,9 @@ def backend_build_revision(request: Request) -> str:
 async def ingest_execution_records(
     request: Request,
     _: Annotated[None, Depends(require_relay_execution_records)],
+    store: Annotated[ExecutionRecordStore, Depends(execution_record_store)],
+    _body: ExecutionRecordBatchRequest,
 ) -> dict[str, object]:
-    store = execution_record_store(request)
     try:
         batch = WireBatch.from_json(await request.json())
     except ExecutionRecordContractError as error:
