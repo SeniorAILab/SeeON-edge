@@ -213,31 +213,53 @@ def _everywhere(field: str) -> object:
     return edit
 
 
-@pytest.mark.parametrize(
-    ("edit", "locs"),
-    [
-        (_everywhere("camera_id"), [("camera_id",), ("records", 0, "camera_id")]),
-        (_everywhere("worker_boot_id"), [("worker_boot_id",), ("records", 0, "worker_boot_id")]),
-        (
-            lambda body: body["records"][0].update(camera_id=_SURROGATE),
-            [("records", 0, "camera_id")],
-        ),
-        (lambda body: body["records"][0].update(producer=_SURROGATE), [("records", 0, "producer")]),
-        (
-            lambda body: body["provenance"].update(model_digest=_SURROGATE),
-            [("provenance", "model_digest")],
-        ),
-        (lambda body: body["gaps"][0].update(cause=_SURROGATE), [("gaps", 0, "cause")]),
-    ],
-    ids=[
-        "batch-and-record-camera",
-        "batch-and-record-boot",
-        "record-camera",
-        "record-producer",
-        "provenance-model-digest",
-        "gap-cause",
-    ],
+def _at(*path: str | int) -> object:
+    def edit(body: dict[str, object]) -> None:
+        target: object = body
+        for step in path[:-1]:
+            target = target[step]
+        target[path[-1]] = _SURROGATE
+
+    return edit
+
+
+_RECORD_STRINGS = (
+    "camera_id",
+    "producer",
+    "record_kind",
+    "time_quality",
+    "outcome",
+    "reason",
+    "causal_unit_id",
+    "parent_record_id",
 )
+_SURROGATE_CASES = [
+    pytest.param(
+        _everywhere("camera_id"),
+        [("camera_id",), ("records", 0, "camera_id")],
+        id="batch-and-record-camera_id",
+    ),
+    pytest.param(
+        _everywhere("worker_boot_id"),
+        [("worker_boot_id",), ("records", 0, "worker_boot_id")],
+        id="batch-and-record-worker_boot_id",
+    ),
+    *[
+        pytest.param(_at("records", 0, name), [("records", 0, name)], id=f"record-{name}")
+        for name in _RECORD_STRINGS
+    ],
+    *[
+        pytest.param(_at("gaps", 0, name), [("gaps", 0, name)], id=f"gap-{name}")
+        for name in ("cause", "producer")
+    ],
+    *[
+        pytest.param(_at("provenance", name), [("provenance", name)], id=f"provenance-{name}")
+        for name in WireProvenance.__slots__
+    ],
+]
+
+
+@pytest.mark.parametrize(("edit", "locs"), _SURROGATE_CASES)
 def test_execution_record_string_fields_with_a_surrogate_are_a_422(
     client: TestClient, edit: object, locs: list[tuple[object, ...]]
 ) -> None:
