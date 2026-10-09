@@ -18,19 +18,19 @@ with the worker.
 One capability per `features/<slice>/`. The slice owns its router and store. Extra routers stay in the same slice.
 
 - `audit`: hash-chained audit log + closed `AuditAction` catalog. Owns `AuditStore`; every governed mutation appends through `audit.http`.
-- `auth`: dashboard session + credential rotation (`shared/dashboard_auth.py`, `shared/dashboard_credentials.py`). The `admin`/`admin` constants there are a known-insecure pair to reject, never a runtime fallback.
+- `auth`: dashboard session + credential rotation (`shared/http/dashboard_auth.py`, `shared/dashboard_credentials.py`). The `admin`/`admin` constants there are a known-insecure pair to reject, never a runtime fallback.
 - `cameras`: registry, topology, bed zones, worker-config, MJPEG proxy. Owns `camera_registry`, `bed_zone_store`.
 - `clips`: listing, media, storage, catalog. Owns compact `clips` / `artifacts` access, `catalog_store`, and `clip_storage_location_store`.
 - `connection`: enrollment, Hub URL, roster sync, topology confirm. Owns `ConnectionSettingsStore`.
 - `detection_settings`: settings + policy apply/rollback. Owns `detection_settings_store`, `detection_policy_store`.
 - `diagnostics`: original-run execution records. Owns `execution_record_store`. Routes: `POST /relay/execution-records`, `GET /diagnostics/executions`.
 - `evidence`: worker clip ingest under `/relay` plus operator incidents.
-- `relay`: `/relay/{config,restart,alerts,heartbeat,runtime-status,execution-records}`. No store; consumes cameras / status / clips via deps. Execution-record body cap is registered here (`BoundedBodyRoute`); the handler lives in `diagnostics`.
+- `relay`: `/relay/{config,restart,alerts,heartbeat,runtime-status,execution-records}`. No store; consumes cameras / status / clips via deps. The execution-records handler and its body cap live in `diagnostics`.
 - `runtime_settings`: operator knobs. Owns `RuntimeSettingsStore`.
 - `status`: `/status` and `/system` from relay-derived liveness. Owns `heartbeat_store`, `runtime_status_store`.
 - `qa`: retired. No QA/replay table is a runtime owner.
 - `routes/`: app-level health + models. See `routes/AGENTS.md`.
-- `core/` is `Settings` (`ML_API_`). `shared/` is infra (mapping, sessions, state dir), never feature state.
+- `core/` is `Settings` (`ML_API_`). `shared/` is infra (mapping, sessions, state dir), never feature state. `shared/http/` holds the only FastAPI and Starlette code in `shared/`; controllers import it, services and repositories do not.
 
 ## Wire models
 
@@ -73,4 +73,4 @@ Connection and runtime settings load through their slice `from_env()` helpers. A
 - `core/` and `shared/` cannot import `features`, `routes`, `main`, or `lifespan`. `worker` is import-forbidden. Relay HTTP only.
 - Retired env keys fail boot via `reject_retired_backend_environment`.
 - Config-refresh and heartbeat-relay keep separate executors.
-- Relay bodies stay inside the per-route caps on `BoundedBodyRoute`.
+- Relay bodies stay inside the per-route caps each router passes to `shared/http/relay_http.bounded_body_route`.

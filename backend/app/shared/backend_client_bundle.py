@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from fastapi import FastAPI
-
 from shared.events.edge_ingest_client import EdgeIngestClient
 from shared.events.evidence_export_client import BackendEvidenceClient
 
@@ -26,10 +24,4 @@ class BackendClientBundle:
         return self.edge_installation_id, self.enrollment_generation
 
 
-def backend_client_bundle(app: FastAPI) -> BackendClientBundle | None:
-    state = getattr(app, "state", None)
-    candidate = getattr(state, "backend_client_bundle", None)
-    return candidate if isinstance(candidate, BackendClientBundle) else None
-
-
-__all__ = ["BackendClientBundle", "backend_client_bundle"]
+__all__ = ["BackendClientBundle"]

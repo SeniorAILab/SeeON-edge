@@ -10,8 +10,8 @@ from backend.app.features.connection.enrollment import (
     EnrollmentVerificationFailure,
     verify_enrollment,
 )
-from backend.app.features.relay.auth import authorize_relay
 from backend.app.main import create_app, no_lifespan
+from backend.app.shared.http.relay_http import authorize_relay
 from worker.types.trace import DecisionTraceSnapshot
 
 CREDENTIALS = EnrollmentCredentials(

@@ -132,6 +132,14 @@ strict = true
 module = ["backend.app.features.cameras.camera_crud_service"]
 strict = true
 
+[[tool.mypy.overrides]]
+module = [
+    "backend.app.shared.http.*",
+    "backend.app.shared.backend_client_bundle",
+    "backend.app.shared.dashboard_credential_rotation",
+]
+strict = true
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
@@ -351,7 +359,7 @@ allow_indirect_imports = true
 # match ignore_imports; add new controller modules outside these patterns there.
 name = "backend repositories and services do not import HTTP frameworks"
 type = "forbidden"
-source_modules = ["backend.app.features", "backend.app.shared"]
+source_modules = ["backend.app.features"]
 forbidden_modules = ["fastapi", "starlette"]
 allow_indirect_imports = true
 # Grimp collapses external submodule imports to their root package in this graph.
@@ -359,7 +367,6 @@ ignore_imports = [
     "backend.app.features.*.router -> fastapi",
     "backend.app.features.*.dependencies -> fastapi",
     "backend.app.features.diagnostics.router -> starlette",
-    "backend.app.features.relay.router -> starlette",
     "backend.app.features.cameras.bed_zone_router -> fastapi",
     "backend.app.features.cameras.streams_router -> fastapi",
     "backend.app.features.cameras.streams_router -> starlette",
@@ -369,13 +376,28 @@ ignore_imports = [
     "backend.app.features.evidence.operator_router -> fastapi",
     "backend.app.features.status.system_router -> fastapi",
     "backend.app.features.audit.http -> fastapi",
-    "backend.app.features.relay.auth -> fastapi",
     "backend.app.features.clips.media_response -> starlette",
-    "backend.app.shared.dashboard_auth -> fastapi",
-    # INF-I3: HEAD response adapter remains controller support.
-    "backend.app.shared.head_response -> starlette",
-    # INF-I4: app-state bundle accessor remains a controller adapter.
-    "backend.app.shared.backend_client_bundle -> fastapi",
+]
+
+[[tool.importlinter.contracts]]
+name = "backend base code reaches HTTP frameworks only inside backend.app.shared.http"
+type = "forbidden"
+source_modules = ["backend.app.core", "backend.app.edge_db", "backend.app.shared"]
+forbidden_modules = ["fastapi", "starlette"]
+ignore_imports = [
+    "backend.app.shared.http.** -> fastapi",
+    "backend.app.shared.http.** -> starlette",
+]
+
+[[tool.importlinter.contracts]]
+name = "backend.app.shared.http is imported only by features, routes and the app entry"
+type = "protected"
+protected_modules = ["backend.app.shared.http"]
+allowed_importers = [
+    "backend.app.features",
+    "backend.app.routes",
+    "backend.app.main",
+    "backend.app.lifespan",
 ]
 
 [[tool.importlinter.contracts]]
@@ -503,8 +525,6 @@ ignore_imports = [
     "backend.app.features.detection_settings.router -> backend.app.features.cameras.store",
     "backend.app.features.detection_settings.router -> backend.app.features.connection.dependencies",
     "backend.app.features.clips.router -> backend.app.features.evidence.receipt_store",
-    "backend.app.features.evidence.router -> backend.app.features.relay.auth",
-    "backend.app.features.evidence.router -> backend.app.features.relay.router",
 ]
 
 [[tool.importlinter.contracts]]
