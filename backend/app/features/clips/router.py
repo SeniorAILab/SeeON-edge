@@ -25,7 +25,7 @@ from backend.app.features.clips.store import (
     DuplicateClipIdError,
     LocatedClip,
 )
-from backend.app.features.evidence.receipt_store import (
+from backend.app.shared.artifact_verification import (
     ArtifactReceiptVerificationError,
     verify_artifact,
 )

@@ -534,9 +534,7 @@ allow_indirect_imports = true
 name = "backend features do not depend on each other in a cycle"
 type = "acyclic_siblings"
 ancestors = ["backend.app.features"]
-ignore_imports = [
-    "backend.app.features.clips.router -> backend.app.features.evidence.receipt_store",
-]
+ignore_imports = []
 
 [[tool.importlinter.contracts]]
 # BaseModel lives only in controller DTOs. Shared code and contracts use
