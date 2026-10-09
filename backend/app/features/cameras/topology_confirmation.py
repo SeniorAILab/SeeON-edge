@@ -6,8 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol, TypeAlias, assert_never
 
-import psycopg
-
+from backend.app.edge_db import DatabaseConnection
 from backend.app.features.audit.postgres_runtime import AuditMutation
 from backend.app.features.cameras.edge_topology_sync_state import EdgeTopologySyncStateStore
 from backend.app.features.cameras.store import CameraRegistryStore
@@ -83,7 +82,7 @@ class TopologyConfirmationService:
         principal: MachinePrincipal,
         registry_version: int,
         *,
-        connection: psycopg.Connection | None = None,
+        connection: DatabaseConnection | None = None,
     ) -> None:
         self._store.save(response, principal, registry_version, connection=connection)
 
@@ -142,7 +141,7 @@ class TopologyConfirmationService:
                     assert_never(unreachable)
 
     def _pending_is_stale(self, preview: TopologyConfirmationPreview) -> bool:
-        def read(connection: psycopg.Connection) -> bool:
+        def read(connection: DatabaseConnection) -> bool:
             state = self._state_store.load(connection=connection)
             topology = self._registry.topology_snapshot(connection=connection)
             return (

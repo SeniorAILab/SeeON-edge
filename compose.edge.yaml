@@ -98,7 +98,7 @@ services:
       - --authority-file
       - /run/seeon-authority/authority.json
 
-  # SQLite -> PostgreSQL cutover (docs/runbooks/postgresql-cutover.md). Never
+  # SQLite -> PostgreSQL cutover. Never
   # started by the stack; each step is
   # `docker compose run --rm edge-db-cutover <subcommand> ...`. edge-state is
   # read-write because export takes the deployment lock beside the database.

@@ -11,7 +11,6 @@ from backend.app.features.audit.catalog import AuditAction, empty_detail
 from backend.app.features.audit.http import mutation_audit
 from backend.app.features.audit.store import AuditEvent, utc_now
 from backend.app.features.cameras.dependencies import sync_camera_roster
-from backend.app.features.cameras.router import _authorize
 from backend.app.features.connection.dependencies import get_connection_settings_store
 from backend.app.features.connection.enrollment import (
     EnrollmentCredentials,
@@ -25,6 +24,7 @@ from backend.app.features.connection.topology_retry_coordinator import (
 )
 from backend.app.features.status.backend_heartbeat_relay import HeartbeatRelayState
 from backend.app.lifespan import apply_connection_settings, refresh_backend_config
+from backend.app.shared.http.dashboard_auth import authorize_dashboard as _authorize
 
 router = APIRouter(prefix="/connection", tags=["connection"])
 

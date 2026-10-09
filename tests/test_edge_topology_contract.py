@@ -502,8 +502,7 @@ def test_edge_image_release_workflow_publishes_digest_env_artifact() -> None:
     outputs = workflow["jobs"]["publish"]["outputs"]
     assert outputs["ml-api-digest"] == "${{ steps.digests.outputs.ml-api }}"
     assert outputs["ml-worker-digest"] == "${{ steps.digests.outputs.ml-worker }}"
-    assert outputs["ml-api-origin"] == "${{ steps.digests.outputs.ml-api-origin }}"
-    assert outputs["ml-worker-origin"] == "${{ steps.digests.outputs.ml-worker-origin }}"
+    assert not [name for name in outputs if name.endswith("-origin")], sorted(outputs)
 
 
 def test_edge_image_workflow_never_pushes_from_pull_requests() -> None:
@@ -544,7 +543,8 @@ def test_edge_worker_boot_smoke_runs_on_the_single_build() -> None:
     )
 
     assert source.count("file: Dockerfile.edge") == 1
-    assert local_smoke["if"] == "env.BUILD_ML_WORKER == 'true' && env.RELEASE_BUILD != 'true'"
+    assert local_smoke["if"] == "env.RELEASE_BUILD != 'true'"
+    assert pull_smoke["if"] == "env.RELEASE_BUILD == 'true'"
     assert "docker run --pull never --rm --network none" in str(local_smoke["run"])
     assert "docker image inspect" in str(local_smoke["run"])
     assert 'test "$revision" = "$DEPLOY_SHA"' in str(local_smoke["run"])
@@ -573,21 +573,18 @@ def test_edge_worker_boot_smoke_runs_on_the_single_build() -> None:
         assert retired not in dockerfile, retired
     dev_compose = (REPO_ROOT / "compose.edge.dev.yaml").read_text(encoding="utf-8")
     assert "target:" not in dev_compose
-    for doc in ("AGENTS.md", "docs/runbooks/edge-image-publish.md"):
-        text = (REPO_ROOT / doc).read_text(encoding="utf-8")
-        for line in text.splitlines():
-            if "docker build" in line and "Dockerfile.edge" in line:
-                assert "--target" not in line, (doc, line)
+    for line in (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8").splitlines():
+        if "docker build" in line and "Dockerfile.edge" in line:
+            assert "--target" not in line, line
 
 
 def test_a_publishing_run_never_records_an_empty_digest() -> None:
     source = (REPO_ROOT / EDGE_IMAGES_WORKFLOW).read_text(encoding="utf-8")
-    assert 'raise SystemExit(f"{image} was built but exported no digest")' in source
-    assert 'if os.environ.get("PUSH_IMAGES") == "true":' in source
-    assert 'raise SystemExit(f"{image} was reused but no published digest was recorded")' in source
+    assert "printf '%s was built but exported no digest\\n' \"$var\" >&2" in source
+    assert 'if [ "$PUSH_IMAGES" = "true" ]; then' in source
 
 
-def test_release_isolation_keys_on_the_dispatch_not_only_the_release_event() -> None:
+def test_release_build_keys_on_the_dispatch_not_only_the_release_event() -> None:
     workflow = _workflow(EDGE_IMAGES_WORKFLOW)
     release_build = workflow["jobs"]["publish"]["env"]["RELEASE_BUILD"]
     assert "github.event_name == 'release'" in release_build, release_build

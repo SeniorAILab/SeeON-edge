@@ -1,30 +1,32 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from typing import Protocol
 
 from backend.app.shared.dashboard_credentials import PersistedDashboardCredentials
 from backend.app.shared.dashboard_sessions import DashboardSessionStore
-from backend.app.shared.postgres_dashboard_credentials import PostgresDashboardCredentialsStore
 
 
 class DashboardSessionRequired(Exception):
     ...
 
 
+class PersistCredentials(Protocol):
+    def __call__(self, username: str, password: str) -> PersistedDashboardCredentials: ...
+
+
 def rotate_credentials(
     sessions: DashboardSessionStore,
-    store: PostgresDashboardCredentialsStore,
+    persist: PersistCredentials,
     *,
     token: str | None,
     new_username: str | None,
     new_password: str,
-    persist: Callable[[PostgresDashboardCredentialsStore, str, str], PersistedDashboardCredentials],
 ) -> str:
     if sessions.actor(token) is None:
         raise DashboardSessionRequired
     resolved_username = (new_username or "").strip() or sessions.username
     try:
-        persisted = persist(store, resolved_username, new_password)
+        persisted = persist(resolved_username, new_password)
         return _mint_rotated_session(sessions, persisted, new_password)
     except BaseException:
         sessions.invalidate()
@@ -41,4 +43,4 @@ def _mint_rotated_session(
     return token
 
 
-__all__ = ["DashboardSessionRequired", "rotate_credentials"]
+__all__ = ["DashboardSessionRequired", "PersistCredentials", "rotate_credentials"]

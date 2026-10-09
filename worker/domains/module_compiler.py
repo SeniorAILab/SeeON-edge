@@ -191,7 +191,6 @@ def compile_detection_module_registry(
     by_qualified: dict[tuple[str, int], DetectionModuleDefinition] = {}
     latest_versions: dict[str, int] = {}
     event_owner: dict[str, str] = {}
-    shared_bindings: dict[tuple[str, str], ComponentBinding] = {}
     for definition in frozen:
         _validate_definition(definition, channels, outputs, temporal_profile)
         qualified = (definition.module_id, definition.version)
@@ -211,11 +210,6 @@ def compile_detection_module_registry(
                     f"event type {event_type!r} conflicts between {owner!r} "
                     f"and {definition.module_id!r}"
                 )
-        for binding in definition.shared_bindings:
-            key = (definition.module_id, binding.component_id)
-            previous = shared_bindings.setdefault(key, binding)
-            if previous != binding and definition.version == latest_versions[definition.module_id]:
-                shared_bindings[key] = binding
     latest_by_id = {
         module_id: by_qualified[(module_id, version)]
         for module_id, version in latest_versions.items()

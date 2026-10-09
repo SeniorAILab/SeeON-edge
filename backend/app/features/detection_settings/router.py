@@ -24,7 +24,7 @@ from backend.app.features.detection_settings.store import (
     DetectionSettingsStore,
     DomainDetectionSetting,
 )
-from backend.app.shared.dashboard_auth import authorize_dashboard
+from backend.app.shared.http.dashboard_auth import authorize_dashboard
 from contracts.worker_config import PulledWorkerConfig
 from shared.detection_policies import POLICY_DEFINITIONS
 

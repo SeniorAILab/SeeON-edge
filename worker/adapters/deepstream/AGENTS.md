@@ -23,8 +23,7 @@ only `worker.interfaces` and `worker.types`.
   `BatchMetadataOperator` subclass is built lazily for the same reason.
 - A Flow fixes its sources when it is built. The port carries that limit as
   `SourceRosterFixed`.
-- The SDK cannot stop a Smart Record session early
-  (`docs/research/pyservicemaker-p1b-spike.md`); `stop_recording` says so
+- The SDK cannot stop a Smart Record session early; `stop_recording` says so
   instead of pretending.
 - Tracker config and library paths arrive through `DeepStreamMediaPlaneConfig`.
   nvinfer paths (`/app/models/pose/...`, `/var/cache/seeon/tensorrt/...`,

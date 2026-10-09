@@ -66,8 +66,7 @@ relay tokens.
 
 The backend stores durable state only in PostgreSQL. A local run needs a
 PostgreSQL 18 server whose schemas were created by
-`python -m backend.app.edge_db.migration provision`
-(`docs/runbooks/postgresql-cutover.md`), and three environment values
+`python -m backend.app.edge_db.migration provision`, and three environment values
 (`backend/app/postgres_root.py`):
 
 | Env var | Meaning |
@@ -122,8 +121,7 @@ ML_API_PROXY_TARGET=http://127.0.0.1:8000 pnpm --dir front dev
 Copy `.env.edge.prod.example` to `.env.edge.prod`, then replace the real
 per-site values: the `.example` backend URL, relay token, dashboard
 credentials, Flow batch size, the host clip-store directory, and the
-digest-pinned GHCR image references
-(`docs/runbooks/edge-image-publish.md`). Every other variable
+digest-pinned GHCR image references. Every other variable
 `compose.edge.yaml` requires already ships with a working default, so a
 single `.env.edge.prod` is enough — no second env file needed.
 Event delivery is always active once relay credentials are valid. Clip export
@@ -147,18 +145,6 @@ The images are published as
 `ghcr.io/seniorailab/eldercare-fall-ml/{ml-api,ml-worker}` (deployment identity;
 these map to `Dockerfile.backend` / `Dockerfile.edge`). `compose.edge.yaml`
 uses `models/` as the default host model-artifact path.
-
-## Operations
-
-- [`docs/operations/config-pitfalls.md`](docs/operations/config-pitfalls.md) —
-  settings that are silently ineffective when set on the wrong process or in
-  the wrong place (backend vs. worker env, YAML-vs-env precedence).
-- [`docs/operations/soak-test-plan.md`](docs/operations/soak-test-plan.md) —
-  24h+ continuous-run soak test scenario, metrics, and pass/fail thresholds.
-- [`docs/operations/clip-retention-policy.md`](docs/operations/clip-retention-policy.md) —
-  clip storage and retention policy.
-- [`docs/runbooks/`](docs/runbooks/) — incident runbooks (worker rollback,
-  driver/CUDA alignment, local e2e RTSP source, Intel iGPU/VAAPI decode).
 
 ## License notice
 

@@ -861,6 +861,13 @@ _LINT_STEPS = [
         )
     },
     {
+        "run": (
+            "uv run --group lint mypy --follow-imports=silent "
+            "backend/app/shared/http backend/app/shared/backend_client_bundle.py "
+            "backend/app/shared/dashboard_credential_rotation.py"
+        )
+    },
+    {
         "name": ("Scope fidelity (no env-provisioned identity or camera roster)"),
         "run": (
             "uv run python scripts/verify_scope_fidelity.py --fixture\n"
@@ -1212,12 +1219,12 @@ _CACHE_GATE_SUFFIX = " || '' }}"
 _NOT_A_PULL_REQUEST = "${{ github.event_name != 'pull_request' }}"
 _NOT_A_PULL_REQUEST_IF = "github.event_name != 'pull_request'"
 
-_REGISTRY_WRITE_MARKERS = ("imagetools create", "edge_image_plan.py retag", "docker push")
+_REGISTRY_WRITE_MARKERS = ("imagetools create", "docker push")
 
 _EDGE_DOCKERFILE = "Dockerfile.edge"
 
-_SMOKE_STAGE_IF = "env.BUILD_ML_WORKER == 'true' && env.RELEASE_BUILD != 'true'"
-_SMOKE_PULL_IF = "env.BUILD_ML_WORKER != 'true' || env.RELEASE_BUILD == 'true'"
+_SMOKE_STAGE_IF = "env.RELEASE_BUILD != 'true'"
+_SMOKE_PULL_IF = "env.RELEASE_BUILD == 'true'"
 _LOCAL_SMOKE_REF = 'SMOKE_REF="$IMAGE_NAMESPACE/ml-worker:$DEPLOY_SHA"'
 
 _WRITE_PERMISSION_HOLDERS: dict[tuple[str, str], set[str]] = {
@@ -1297,7 +1304,7 @@ def _assert_token_consumers_are_gated(name: str, job_name: str, job: dict[str, o
     assert isinstance(env, dict), (name, job_name)
     assert env.get("PUSH_IMAGES") == _NOT_A_PULL_REQUEST, (name, job_name, env)
 
-    logins = uploads = pushes = exports = retags = smokes = 0
+    logins = uploads = pushes = exports = smokes = 0
     for step in _steps(job):
         uses = str(step.get("uses", ""))
         with_ = step.get("with") or {}
@@ -1322,17 +1329,16 @@ def _assert_token_consumers_are_gated(name: str, job_name: str, job: dict[str, o
             assert cache_to.startswith(_CACHE_GATE_PREFIX), (name, step.get("name"), cache_to)
             assert cache_to.endswith(_CACHE_GATE_SUFFIX), (name, step.get("name"), cache_to)
         if any(marker in str(step.get("run", "")) for marker in _REGISTRY_WRITE_MARKERS):
-            retags += 1
             assert _PUSH_GATE in str(step.get("if", "")), (
                 name,
                 step.get("name"),
                 step.get("if"),
             )
 
-    assert (logins, uploads, pushes, exports, retags, smokes) == (1, 1, 2, 2, 2, 1), (
+    assert (logins, uploads, pushes, exports, smokes) == (1, 1, 2, 2, 1), (
         name,
         job_name,
-        (logins, uploads, pushes, exports, retags, smokes),
+        (logins, uploads, pushes, exports, smokes),
     )
 
 
@@ -1385,12 +1391,9 @@ _PUBLISH_STEP_SEQUENCE: tuple[tuple[str, str | None], ...] = (
     ("Share Docker image storage", None),
     ("Set up Docker Buildx", "docker/setup-buildx-action@"),
     ("Login to GitHub Container Registry", "docker/login-action@"),
-    ("Decide, per image", None),
     ("Build and push ml-api", "docker/build-push-action@"),
     ("Build and push ml-worker", "docker/build-push-action@"),
     ("Boot smoke test", None),
-    ("Re-tag the published ml-api", None),
-    ("Re-tag the published ml-worker", None),
     ("Resolve the digests", None),
     ("Boot smoke test", None),
     ("Write edge image env artifact", None),
@@ -1650,9 +1653,9 @@ def test_edge_image_workflow_is_reachable_from_pull_request() -> None:
         ("edge-images.yml", "publish", 0, "actions/checkout@v4"),
         ("edge-images.yml", "publish", 4, "docker/setup-buildx-action@v3"),
         ("edge-images.yml", "publish", 5, "docker/login-action@v3"),
+        ("edge-images.yml", "publish", 6, "docker/build-push-action@v6"),
         ("edge-images.yml", "publish", 7, "docker/build-push-action@v6"),
-        ("edge-images.yml", "publish", 8, "docker/build-push-action@v6"),
-        ("edge-images.yml", "publish", 15, "actions/upload-artifact@v4"),
+        ("edge-images.yml", "publish", 12, "actions/upload-artifact@v4"),
         ("edge-images.yml", "publish", 0, "actions/checkout@main"),
         ("edge-images.yml", "publish", 0, "actions/checkout@" + "z" * 40),
         ("ci.yml", "lint", 0, "actions/checkout@v4"),
@@ -1671,10 +1674,10 @@ def test_pull_request_pin_policy_rejects_an_unpinned_action(
 @pytest.mark.parametrize(
     ("step_index", "cache_to"),
     [
-        (7, "type=gha,scope=edge-ml-api,mode=max"),
-        (8, "type=gha,scope=edge-ml-worker,mode=max"),
-        (8, "${{ env.PUSH_IMAGES == 'false' && 'type=gha,mode=max' || '' }}"),
-        (8, "${{ env.PUSH_IMAGES == 'true' && 'type=gha,mode=max' || 'type=gha' }}"),
+        (6, "type=gha,scope=edge-ml-api,mode=max"),
+        (7, "type=gha,scope=edge-ml-worker,mode=max"),
+        (7, "${{ env.PUSH_IMAGES == 'false' && 'type=gha,mode=max' || '' }}"),
+        (7, "${{ env.PUSH_IMAGES == 'true' && 'type=gha,mode=max' || 'type=gha' }}"),
     ],
 )
 def test_edge_image_policy_rejects_an_ungated_cache_export(step_index: int, cache_to: str) -> None:
@@ -1723,11 +1726,10 @@ def test_edge_image_policy_rejects_a_write_scope_on_a_second_job() -> None:
     ("step_index", "field", "value"),
     [
         (5, "if", "always()"),
+        (6, "push", "true"),
         (7, "push", "true"),
-        (8, "push", "true"),
-        (10, "if", "always()"),
-        (11, "if", "env.BUILD_ML_WORKER != 'true'"),
-        (15, "if", "always()"),
+        (8, "if", "always()"),
+        (12, "if", "always()"),
     ],
 )
 def test_edge_image_policy_rejects_an_ungated_token_consumer(
@@ -1748,7 +1750,7 @@ def test_edge_image_policy_rejects_an_ungated_token_consumer(
     ("step_index", "why"),
     [
         (5, "registry login"),
-        (9, "boot smoke"),
+        (8, "boot smoke"),
     ],
 )
 def test_edge_image_policy_rejects_dropping_a_gated_step(step_index: int, why: str) -> None:

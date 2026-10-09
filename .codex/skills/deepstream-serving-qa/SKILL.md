@@ -119,4 +119,4 @@ curl -s -b /tmp/c -o /tmp/snap.jpg "http://127.0.0.1:8000/api/v1/streams/<camera
   `scripts/qa/batch_probe.py`, `scripts/qa/batch_probe_compare.py`
 - `worker/tools/export_pose_onnx.py`, `worker/tools/edge_engine_build.py`,
   `worker/runtime/flow/onnx_shape.py`, `worker/runtime/flow/cold_start.py`
-- 근거: GitHub #503, PR #504, `docs/runbooks/edge-image-publish.md`
+- 근거: GitHub #503, PR #504

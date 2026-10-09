@@ -29,8 +29,8 @@ from backend.app.features.evidence.receipt_store import (
     ArtifactReceiptVerificationError,
     verify_artifact,
 )
-from backend.app.shared.dashboard_auth import authorize_dashboard
-from backend.app.shared.head_response import drop_body_for_head
+from backend.app.shared.http.dashboard_auth import authorize_dashboard
+from backend.app.shared.http.head_response import drop_body_for_head
 
 router = APIRouter(tags=["clips"])
 
