@@ -32,7 +32,6 @@
       "CROSS_FEATURE_EDGE cameras.router -> detection_settings.policy_store": 1,
       "CROSS_FEATURE_EDGE cameras.router -> detection_settings.store": 1,
       "CROSS_FEATURE_EDGE cameras.router -> runtime_settings.dependencies": 1,
-      "CROSS_FEATURE_EDGE cameras.router -> status.heartbeat_store": 1,
       "CROSS_FEATURE_EDGE cameras.topology_confirmation -> audit.postgres_runtime": 1,
       "CROSS_FEATURE_EDGE cameras.worker_config_service -> detection_settings.policy_models": 1,
       "CROSS_FEATURE_EDGE cameras.worker_config_service -> detection_settings.store": 1,

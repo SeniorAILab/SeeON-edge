@@ -99,6 +99,10 @@ def _unused_topology() -> Any:
     raise AssertionError("worker config must not touch topology")
 
 
+def _unused_heartbeats() -> dict[str, object]:
+    raise AssertionError("worker config must not read heartbeats")
+
+
 def _app() -> FastAPI:
     app = create_app(lifespan=no_lifespan)
     app.state.edge_relay_token = RELAY_TOKEN
@@ -156,6 +160,7 @@ def _patch_minimal_dependencies(
         lambda app: CameraPorts(
             enrolled_facility_id=lambda: _FakeConnSettingsStore().load().facility_id,
             topology=_unused_topology,
+            heartbeats=_unused_heartbeats,
         ),
         raising=True,
     )

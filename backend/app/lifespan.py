@@ -44,7 +44,11 @@ from backend.app.features.status.backend_heartbeat_relay import (
     get_heartbeat_relay_state,
     relay_heartbeats_once,
 )
-from backend.app.features.status.heartbeat_store import DEFAULT_STALE_AFTER_SEC, HeartbeatStore
+from backend.app.features.status.heartbeat_store import (
+    DEFAULT_STALE_AFTER_SEC,
+    HeartbeatStore,
+    get_heartbeat_store,
+)
 from backend.app.features.status.runtime_status_store import RuntimeStatusStore
 from backend.app.postgres_root import (
     PostgresRoot,
@@ -98,6 +102,7 @@ def install_feature_ports(app: FastAPI) -> None:
     app.state.camera_ports = CameraPorts(
         enrolled_facility_id=lambda: get_connection_settings_store(app).load().facility_id,
         topology=lambda: topology_retry_coordinator(app),
+        heartbeats=lambda: get_heartbeat_store(app).snapshot(),
     )
     app.state.detection_settings_ports = DetectionSettingsPorts(
         enrolled_facility_id=lambda: get_connection_settings_store(app).load().facility_id,
