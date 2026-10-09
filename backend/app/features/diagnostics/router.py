@@ -32,12 +32,6 @@ from shared.events.execution_records import (
 DISABLED_DETAIL = "execution records disabled"
 UNAVAILABLE_DETAIL = "diagnostics store unavailable: check PostgreSQL and run migration provision"
 
-router = APIRouter(
-    tags=["diagnostics"],
-    route_class=bounded_body_route({"/execution-records": MAX_EXECUTION_RECORD_BODY_BYTES}),
-    strict_content_type=False,
-)
-
 
 def require_relay_execution_records(
     request: Request,
@@ -60,6 +54,25 @@ def execution_record_store(request: Request) -> ExecutionRecordStore:
             detail=DISABLED_DETAIL,
         )
     return store
+
+
+def gate_execution_records_before_body(request: Request) -> None:
+    require_relay_execution_records(
+        request,
+        relay_token=request.headers.get(RELAY_TOKEN_HEADER),
+        authorization=request.headers.get("authorization"),
+    )
+    execution_record_store(request)
+
+
+router = APIRouter(
+    tags=["diagnostics"],
+    route_class=bounded_body_route(
+        {"/execution-records": MAX_EXECUTION_RECORD_BODY_BYTES},
+        before_body=gate_execution_records_before_body,
+    ),
+    strict_content_type=False,
+)
 
 
 def backend_build_revision(request: Request) -> str:

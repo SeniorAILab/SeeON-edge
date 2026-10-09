@@ -46,7 +46,11 @@ def authorize_relay_body(
     authorize_relay(request, relay_token or _bearer_token(authorization))
 
 
-def bounded_body_route(limits: Mapping[str, int]) -> type[APIRoute]:
+def bounded_body_route(
+    limits: Mapping[str, int],
+    *,
+    before_body: Callable[[Request], object] | None = None,
+) -> type[APIRoute]:
     max_bytes_by_suffix = dict(limits)
 
     class BoundedBodyRoute(APIRoute):
@@ -64,6 +68,8 @@ def bounded_body_route(limits: Mapping[str, int]) -> type[APIRoute]:
                 return original
 
             async def bounded_handler(request: Request) -> Response:
+                if before_body is not None:
+                    before_body(request)
                 request._receive = _bounded_receive(request.receive, max_bytes)  # noqa: SLF001
                 return await original(request)
 

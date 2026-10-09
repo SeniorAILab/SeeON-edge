@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from backend.app.features.diagnostics.query import QueryResult
 
@@ -65,8 +66,15 @@ class ExecutionRecordGapRequest(BaseModel):
     to_ns: int = _COUNT
     record_count: int = _COUNT
     cause: str = _IDENTITY
-    source_generation: int = Field(default=None, ge=0)
-    stream_epoch: int = Field(default=None, ge=0)
+    source_generation: Annotated[int, Field(ge=0)] | SkipJsonSchema[None] = None
+    stream_epoch: Annotated[int, Field(ge=0)] | SkipJsonSchema[None] = None
+
+    @field_validator("source_generation", "stream_epoch", mode="before")
+    @classmethod
+    def _present_scope_is_int(cls, value: object) -> object:
+        if value is None:
+            raise ValueError("gap scope must be an integer when present")
+        return value
 
 
 class ExecutionRecordBatchRequest(BaseModel):

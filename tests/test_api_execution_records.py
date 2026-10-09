@@ -142,6 +142,86 @@ def test_relay_post_requires_token(enabled_client: TestClient) -> None:
     assert wrong.status_code == 403
 
 
+_UNAUTHORIZED = (
+    pytest.param({}, 401, id="no-token"),
+    pytest.param({RELAY_TOKEN_HEADER: "wrong"}, 403, id="wrong-token"),
+)
+_BODY_DEFECTS = (
+    pytest.param(b'{"camera_id":', id="invalid-json"),
+    pytest.param(b'{"camera_id":"\xff"}', id="invalid-utf8"),
+    pytest.param(b'{"camera_id":""}', id="schema-violation"),
+    pytest.param(b"", id="empty"),
+)
+
+
+@pytest.mark.parametrize(("auth", "status"), _UNAUTHORIZED)
+@pytest.mark.parametrize("body", _BODY_DEFECTS)
+@pytest.mark.parametrize("content_type", ["application/json", "text/plain"])
+def test_relay_auth_is_decided_before_the_body_is_read(
+    enabled_client: TestClient,
+    auth: dict[str, str],
+    status: int,
+    body: bytes,
+    content_type: str,
+) -> None:
+    response = enabled_client.post(
+        _PATH, content=body, headers={**auth, "Content-Type": content_type}
+    )
+    assert response.status_code == status
+
+
+@pytest.mark.parametrize(("auth", "status"), _UNAUTHORIZED)
+def test_relay_auth_is_decided_before_a_chunked_oversized_body(
+    enabled_client: TestClient, auth: dict[str, str], status: int
+) -> None:
+    response = enabled_client.post(
+        _PATH,
+        headers={**auth, "Content-Type": "application/json"},
+        content=_oversized_chunks(MAX_EXECUTION_RECORD_BODY_BYTES + 4096),
+    )
+    assert response.status_code == status
+
+
+@pytest.mark.parametrize(("auth", "status"), _UNAUTHORIZED)
+def test_oversized_content_length_is_rejected_before_auth(
+    enabled_client: TestClient, auth: dict[str, str], status: int
+) -> None:
+    response = enabled_client.post(
+        _PATH,
+        headers={
+            **auth,
+            "Content-Type": "application/json",
+            "Content-Length": str(MAX_EXECUTION_RECORD_BODY_BYTES + 1),
+        },
+        content=b"{}",
+    )
+    assert response.status_code == 413
+
+
+@pytest.mark.parametrize("body", _BODY_DEFECTS)
+def test_disabled_feature_answers_503_before_the_body_is_read(
+    product_app: FastAPI, body: bytes
+) -> None:
+    response = TestClient(product_app).post(
+        _PATH,
+        content=body,
+        headers={RELAY_TOKEN_HEADER: _RELAY_TOKEN, "Content-Type": "application/json"},
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == "execution records disabled"
+
+
+def test_disabled_feature_answers_503_before_a_chunked_oversized_body(
+    product_app: FastAPI,
+) -> None:
+    response = TestClient(product_app).post(
+        _PATH,
+        headers={RELAY_TOKEN_HEADER: _RELAY_TOKEN, "Content-Type": "application/json"},
+        content=_oversized_chunks(MAX_EXECUTION_RECORD_BODY_BYTES + 4096),
+    )
+    assert response.status_code == 503
+
+
 def test_oversized_content_length_is_rejected(enabled_client: TestClient) -> None:
     client = enabled_client
     response = client.post(

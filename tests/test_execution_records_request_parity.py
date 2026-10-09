@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from backend.app.features.diagnostics.schemas import ExecutionRecordBatchRequest
 from shared.events.execution_records import (
+    MAX_EXECUTION_RECORD_BODY_BYTES,
     RECORD_KINDS,
     TIME_QUALITIES,
     ExecutionRecordContractError,
@@ -22,7 +23,9 @@ from worker.pipeline.diagnostics.lanes import (
     EXPORT_FAILED_CAUSE,
     LANE_OVERFLOW_CAUSE,
     RECORD_INVALID_CAUSE,
+    ExecutionRecordLanes,
 )
+from worker.pipeline.diagnostics.record_builder import frame_causal_unit_id, make_record
 from worker.types.trace import DecisionTraceReason, DecisionTraceSnapshot, DecisionTraceState
 
 Body = dict[str, Any]
@@ -33,6 +36,8 @@ _BOOT = "boot-1"
 _LONG = "x" * 128
 _T = 1_760_000_000_000_000_000
 _GAP_CAUSES = (LANE_OVERFLOW_CAUSE, EXPORT_FAILED_CAUSE, RECORD_INVALID_CAUSE)
+_PRODUCERS = ("sdk", "model", "policy", "delivery")
+_WIDE = (2**31, 2**31 + 1, 2**32, 2**32 + 1, 2**63 - 1)
 
 
 def _provenance(**overrides: str) -> WireProvenance:
@@ -184,6 +189,128 @@ def _worker_records(pts: int) -> tuple[WireRecord, ...]:
     return tuple(records)
 
 
+def _lane_wire(
+    *,
+    per_producer: int,
+    capacity: int,
+    first_ns: int = _T,
+    export_failed: bool = False,
+    camera_id: str = _CAMERA,
+    worker_boot_id: str = _BOOT,
+) -> Body:
+    lanes = ExecutionRecordLanes(lane_capacity=capacity)
+    for producer in _PRODUCERS:
+        for seq in range(per_producer):
+            lanes.try_emit(
+                make_record(
+                    record_kind="sdk.frame",
+                    camera_id=camera_id,
+                    worker_boot_id=worker_boot_id,
+                    source_generation=1,
+                    stream_epoch=2,
+                    producer=producer,
+                    observed_at_ns=first_ns + seq,
+                    time_quality="pts",
+                    causal_unit_id=frame_causal_unit_id(camera_id, worker_boot_id, 2, seq),
+                    outcome="accepted",
+                    payload={"seq": seq},
+                    frame_seq=seq,
+                    source_pts_ns=33_366_666 * seq,
+                )
+            )
+    limit = len(_PRODUCERS) * per_producer
+    drained = lanes.drain_for(camera_id, worker_boot_id, limit=limit)
+    assert drained is not None
+    if export_failed:
+        lanes.note_export_failure(drained)
+        drained = lanes.drain_for(camera_id, worker_boot_id, limit=limit)
+        assert drained is not None
+    return _wire(drained.records, drained.gaps, camera_id=camera_id, worker_boot_id=worker_boot_id)
+
+
+def _body_bytes(body: Body) -> int:
+    return len(WireBatch.from_json(body).encode())
+
+
+def _largest_lane_wire() -> Body:
+    one = _body_bytes(_lane_wire(per_producer=2, capacity=1))
+    step = _body_bytes(_lane_wire(per_producer=3, capacity=2)) - one
+    capacity = (MAX_EXECUTION_RECORD_BODY_BYTES - one) // step + 1
+    while _body_bytes(_lane_wire(per_producer=capacity + 2, capacity=capacity + 1)) <= (
+        MAX_EXECUTION_RECORD_BODY_BYTES
+    ):
+        capacity += 1
+    body = _lane_wire(per_producer=capacity + 1, capacity=capacity)
+    while _body_bytes(body) > MAX_EXECUTION_RECORD_BODY_BYTES:
+        capacity -= 1
+        body = _lane_wire(per_producer=capacity + 1, capacity=capacity)
+    assert len(body["records"]) > 64
+    assert len(body["gaps"]) == len(_PRODUCERS)
+    return body
+
+
+def _wide_numbers() -> Body:
+    records = tuple(
+        _record(
+            0,
+            producer=f"sdk-{index}",
+            producer_sequence=value,
+            source_generation=value,
+            stream_epoch=value,
+        )
+        for index, value in enumerate(_WIDE)
+    )
+    gaps = tuple(
+        _gap(
+            from_sequence=value,
+            to_sequence=value,
+            record_count=1,
+            source_generation=value,
+            stream_epoch=value,
+        )
+        for value in _WIDE
+    )
+    return _wire(records, gaps)
+
+
+def _one_char_identities() -> Body:
+    record = _record(
+        0,
+        camera_id="c",
+        worker_boot_id="b",
+        producer="p",
+        causal_unit_id="u",
+        outcome="o",
+        reason="r",
+    )
+    return _wire(
+        (record,),
+        (_gap(producer="p", cause="x"),),
+        camera_id="c",
+        worker_boot_id="b",
+        provenance=_provenance(**dict.fromkeys(WireProvenance.__slots__, "v")),
+    )
+
+
+def _colon_identities() -> Body:
+    camera, boot = "site:1:cam:2", "boot:2026-10-09T05:13:00Z"
+    record = _record(
+        0,
+        camera_id=camera,
+        worker_boot_id=boot,
+        producer="sdk:main",
+        causal_unit_id=frame_causal_unit_id(camera, boot, 1, 0),
+        outcome="accepted:late",
+    )
+    return _wire(
+        (record,),
+        (_gap(producer="sdk:main", cause="operator:reset"),),
+        camera_id=camera,
+        worker_boot_id=boot,
+        provenance=_provenance(**{name: f"{name}:1" for name in WireProvenance.__slots__}),
+    )
+
+
 def _edited(body: Body, edit: Edit) -> Body:
     edit(body)
     return body
@@ -237,6 +364,16 @@ def _accepted_bodies() -> list[tuple[str, Body]]:
         ("gap-without-range", _wire(gaps=(_gap(source_generation=None, stream_epoch=None),))),
         ("gap-zero-count", _wire(gaps=(_gap(record_count=0),))),
         ("gaps-only", _wire(gaps=tuple(_gap(cause=cause) for cause in _GAP_CAUSES))),
+        ("worker-gap-from-zero", _wire(gaps=(_gap(from_sequence=0, to_sequence=0, from_ns=0),))),
+        (
+            "worker-lanes-export-failed-from-zero",
+            _lane_wire(per_producer=4, capacity=2, first_ns=0, export_failed=True),
+        ),
+        ("worker-lanes-overflow", _lane_wire(per_producer=4, capacity=2)),
+        ("worker-lanes-largest-under-body-limit", _largest_lane_wire()),
+        ("wide-sequence-and-epoch", _wide_numbers()),
+        ("identities-1-char", _one_char_identities()),
+        ("identities-with-colons", _colon_identities()),
         ("extra-batch-key", _edited(_wire((first,)), lambda b: b.update(schema="v2"))),
         (
             "extra-provenance-key",
@@ -285,6 +422,7 @@ _REJECTED: list[tuple[str, Edit]] = [
     ("negative-frame-seq", _set(("records", 0, "frame_seq"), -1)),
     ("negative-gap-count", _set(("gaps", 0, "record_count"), -1)),
     ("negative-gap-from-ns", _set(("gaps", 0, "from_ns"), -1)),
+    ("null-gap-scope", _set(("gaps", 0, "source_generation"), None)),
     ("empty-gap-cause", _set(("gaps", 0, "cause"), "")),
     ("uppercase-parent", _set(("records", 0, "parent_record_id"), "A" * 64)),
     ("unknown-kind", _set(("records", 0, "record_kind"), "sdk.unknown")),
