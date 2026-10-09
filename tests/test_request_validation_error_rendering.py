@@ -387,3 +387,18 @@ def test_a_surrogate_in_an_echoed_object_key_is_escaped(client: TestClient) -> N
             b'"msg":"Extra inputs are not permitted","input":{"\\\\ud800":1}}]}'
         ),
     )
+
+
+def test_encodable_values_next_to_an_unencodable_one_keep_their_bytes(client: TestClient) -> None:
+    body = {**ALERT, "camera_id": "\ud800", "evidence": "é"}
+    assert _post(client, "/api/v1/relay/alerts", body) == (
+        422,
+        (
+            b'{"detail":[{"type":"string_unicode","loc":["body","camera_id"],'
+            b'"msg":"Input should be a valid string, '
+            b'unable to parse raw data as a unicode string",'
+            b'"input":"\\\\ud800"},'
+            b'{"type":"dict_type","loc":["body","evidence"],'
+            b'"msg":"Input should be a valid dictionary","input":"\xc3\xa9"}]}'
+        ),
+    )
