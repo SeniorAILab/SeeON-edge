@@ -523,6 +523,18 @@ def test_many_small_unencodable_errors_stop_echoing_once_the_budget_is_spent(
     assert inputs[9:] == ["omitted: too large to escape"] * 3
 
 
+def test_a_scalar_input_is_echoed_after_the_budget_is_spent(client: TestClient) -> None:
+    body = {**ALERT, "za": list(range(9_989)), "zz": "\ud800"}
+    assert _post(client, "/api/v1/relay/alerts", body) == (
+        422,
+        b'{"detail":['
+        + _extra("za", _ints(9_989) + b"]")
+        + b","
+        + _extra("zz", b'"\\\\ud800"')
+        + b"]}",
+    )
+
+
 def test_an_oversized_error_does_not_spend_the_budget_of_the_errors_after_it(
     client: TestClient,
 ) -> None:

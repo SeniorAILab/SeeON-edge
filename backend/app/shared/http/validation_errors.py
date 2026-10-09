@@ -63,7 +63,7 @@ def _bounded(errors: list[Any]) -> list[Any]:
     remaining = MAX_ESCAPED_ERROR_NODES
     bounded: list[Any] = []
     for error in errors:
-        if isinstance(error, dict):
+        if isinstance(error, dict) and isinstance(error.get("input"), dict | list | tuple):
             nodes = _count_nodes(error, remaining)
             if nodes > remaining:
                 bounded.append({**error, "input": OMITTED_INPUT})
