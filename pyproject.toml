@@ -488,6 +488,24 @@ ignore_imports = [
 ]
 
 [[tool.importlinter.contracts]]
+name = "backend features take audit values from backend.app.shared.audit_values"
+type = "forbidden"
+source_modules = [
+    "backend.app.features.auth",
+    "backend.app.features.cameras",
+    "backend.app.features.clips",
+    "backend.app.features.connection",
+    "backend.app.features.detection_settings",
+    "backend.app.features.diagnostics",
+    "backend.app.features.evidence",
+    "backend.app.features.relay",
+    "backend.app.features.runtime_settings",
+    "backend.app.features.status",
+]
+forbidden_modules = ["backend.app.features.audit.store"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
 name = "backend features do not import the composition root"
 type = "forbidden"
 source_modules = ["backend.app.features"]
