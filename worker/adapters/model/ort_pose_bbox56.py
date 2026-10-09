@@ -143,12 +143,6 @@ class OrtPoseBbox56Runner:
         *,
         session_factory: SessionFactory | None = None,
     ) -> OrtPoseBbox56Runner:
-        if selection.output_class_count != OUTPUT_CLASS_COUNT:
-            raise ModelLoadError(
-                f"selected bundle declares output_class_count={selection.output_class_count}, "
-                f"but this runner implements {OUTPUT_CLASS_COUNT} (a single fall-transition "
-                "logit); a model with another output contract needs its own runner"
-            )
         member_digests = proof.observed.get("member_digests")
         if not isinstance(member_digests, Mapping):
             raise ModelLoadError("admitted bundle proof has no member digests")
@@ -180,16 +174,12 @@ class OrtPoseBbox56Runner:
         root = Path(artifact_dir).expanduser().resolve()
         _verify_admitted_member(root, "model.onnx", model_digest)
         _verify_admitted_member(root, "calibration.json", calibration_digest)
-        conformance = _admitted_conformance(root, member_digests, selection.conformance_digest)
-        if conformance.preprocessing_identity != selection.preprocessing_identity:
-            raise ModelLoadError(
-                "selected preprocessing_identity differs from bundle conformance: "
-                f"selection {selection.preprocessing_identity!r}, "
-                f"conformance {conformance.preprocessing_identity!r}"
-            )
+        conformance = _admitted_conformance(root, member_digests)
         _validate_runner_conformance(conformance)
         calibration = read_json(root / "calibration.json")
-        temperature = _calibration_temperature(root, calibration, selection.preprocessing_identity)
+        temperature = _calibration_temperature(
+            root, calibration, conformance.preprocessing_identity
+        )
         receipt_transition_votes, receipt_transition_window = _calibration_temporal_rule(
             calibration
         )
@@ -402,16 +392,19 @@ def _packaged_conformance(root: Path, manifest: object) -> PoseBbox56Conformance
 
 
 def _admitted_conformance(
-    root: Path, member_digests: Mapping[str, object], conformance_digest: str
+    root: Path, member_digests: Mapping[str, object]
 ) -> PoseBbox56Conformance:
-    candidates = [path for path, digest in member_digests.items() if digest == conformance_digest]
-    if len(candidates) != 1:
+    candidates = [
+        (path, digest)
+        for path, digest in member_digests.items()
+        if Path(path).parent == Path("conformance")
+    ]
+    if len(candidates) != 1 or not isinstance(candidates[0][1], str):
         raise ModelLoadError(
-            f"conformance_digest {conformance_digest} names {len(candidates)} members "
-            f"{candidates!r}, not exactly one"
+            f"bundle must contain exactly one conformance member; observed {candidates!r}"
         )
-    relative_path = candidates[0]
-    _verify_admitted_member(root, relative_path, conformance_digest)
+    relative_path, digest = candidates[0]
+    _verify_admitted_member(root, relative_path, digest)
     return _parse_conformance(root, relative_path)
 
 

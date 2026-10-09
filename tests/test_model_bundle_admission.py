@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from contracts.model_selection import canonical_digest
 from worker.runtime.provenance.model_bundle import (
     ModelBundleAdmissionError,
     admit_model_bundle,
@@ -19,47 +17,15 @@ def _canonical(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
 
 
-_IDENTITIES = {
-    "dataset": "1" * 64,
-    "calibration": hashlib.sha256(b'{"calibration": true}').hexdigest(),
-    "conformance": hashlib.sha256(b'{"conformance": true}').hexdigest(),
-    "class": "4" * 64,
-    "input": "pose-bbox56.v1",
-    "policy": canonical_digest(None),
-    "members": "6" * 64,
-}
-
-
-def _selection(
-    bundle_sha256: str,
-    evaluation: str,
-    field: str,
-    identities: dict[str, str] = _IDENTITIES,
-) -> dict[str, object]:
+def _selection(bundle_sha256: str) -> dict[str, object]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "model_publication": {
             "source_locator": "seeon/fall-model",
             "revision": "a" * 40,
             "bundle_sha256": bundle_sha256,
         },
-        "bundle_members_digest": identities["members"],
-        "dataset_publication": {
-            "source_locator": "seeon/dataset",
-            "revision": "b" * 40,
-            "payload_digest": identities["dataset"],
-        },
-        "evaluation_receipt_digest": evaluation,
-        "field_evaluation_receipt_digest": field,
-        "calibration_digest": identities["calibration"],
-        "conformance_digest": identities["conformance"],
-        "input_observation_schema": identities["input"],
-        "output_class_count": 2,
-        "output_class_semantics_digest": identities["class"],
-        "policy_digest": identities["policy"],
         "runtime_format": "opaque-bundle-format",
-        "bundle_format": "bundle-manifest/proxy-v0",
-        "preprocessing_identity": "coco17-xyc-plus-pose-head-xyxy-valid-f32-v1",
         "transition_threshold": 0.5,
         "threshold_source": "default",
     }
@@ -67,35 +33,21 @@ def _selection(
 
 def _bundle(
     tmp_path: Path,
-    identities: dict[str, str] | None = None,
     members: dict[str, bytes] | None = None,
     *,
-    payload_identities: dict[str, str] | None = None,
+    receipts: dict[str, bytes] | None = None,
 ) -> tuple[Path, object]:
     members = (
         {
-            "model.pt": b"model",
-            "arch.json": b'{"arch": true}',
-            "metadata.yaml": b"metadata",
-            "input-contract.json": b'{"input": true}',
-            "fall-policy-v2.json": b'{"policy": true}',
+            "model.onnx": b"model",
             "calibration.json": b'{"calibration": true}',
-            "conformance.json": b'{"conformance": true}',
+            "conformance/pose-bbox56-v1.json": b'{"conformance": true}',
             "bundle-manifest.json": b'{"schema_version":"bundle-manifest/proxy-v0"}',
         }
         if members is None
         else members
     )
-    derived = {}
-    if "calibration.json" in members:
-        derived["calibration"] = hashlib.sha256(members["calibration.json"]).hexdigest()
-    conformance_member = next(
-        (path for path in members if path.split("/")[-1].startswith("conformance")), None
-    )
-    if conformance_member is not None:
-        derived["conformance"] = hashlib.sha256(members[conformance_member]).hexdigest()
-    identities = {**_IDENTITIES, **derived, **(identities or {})}
-    payload = {"identities": {**identities, **(payload_identities or {})}}
+    payload = {"identities": {"anything": "the producer chooses"}}
     member_records = [
         {"path": path, "sha256": hashlib.sha256(content).hexdigest(), "size": len(content)}
         for path, content in members.items()
@@ -107,47 +59,28 @@ def _bundle(
             separators=(",", ":"),
         ).encode()
     ).hexdigest()
-    evaluation = {
-        "bundle_sha256": bundle_sha256,
-        "bundle_members_digest": identities["members"],
-        "dataset_payload_digest": identities["dataset"],
-        "calibration_digest": identities["calibration"],
-        "conformance_digest": identities["conformance"],
-        "input_observation_schema": identities["input"],
-        "output_class_count": 2,
-        "output_class_semantics_digest": identities["class"],
-        "policy_digest": identities["policy"],
-    }
-    field = {
-        **evaluation,
-        "evaluation_receipt_digest": canonical_digest(evaluation),
-        "status": "green",
-    }
     root = tmp_path / "models" / "bundles" / bundle_sha256
     root.mkdir(parents=True)
-    for path, content in members.items():
+    receipt_records = []
+    for path, content in {**members, **(receipts or {})}.items():
         (root / path).parent.mkdir(parents=True, exist_ok=True)
         (root / path).write_bytes(content)
-    for path, document in (
-        ("evaluation-receipt.json", evaluation),
-        ("field-evaluation-receipt.json", field),
-    ):
-        content = _canonical(document)
-        (root / path).write_bytes(content)
-        member_records.append(
+    for path, content in (receipts or {}).items():
+        receipt_records.append(
             {"path": path, "sha256": hashlib.sha256(content).hexdigest(), "size": len(content)}
         )
     manifest = {
         "schema_version": 1,
         "bundle_sha256": bundle_sha256,
         "runtime_format": "opaque-bundle-format",
-        "members": member_records[: len(members)],
-        "receipts": member_records[len(members) :],
+        "members": member_records,
         "payload": payload,
     }
+    if receipt_records:
+        manifest["receipts"] = receipt_records
     (root / "manifest.json").write_bytes(_canonical(manifest))
     return tmp_path / "models", desired_model_bundle_from_selection_document(
-        _selection(bundle_sha256, canonical_digest(evaluation), canonical_digest(field), identities)
+        _selection(bundle_sha256)
     )
 
 
@@ -155,17 +88,8 @@ def test_admission_returns_immutable_content_proof(tmp_path: Path) -> None:
     models_root, desired = _bundle(tmp_path)
     proof = admit_model_bundle(models_root, desired)
     assert proof.observed["bundle_sha256"] == desired.bundle_sha256
-    assert proof.applied["identities"]["members"] == _IDENTITIES["members"]
     with pytest.raises(TypeError):
         proof.observed["bundle_sha256"] = "x"  # type: ignore[index]
-
-
-@pytest.mark.parametrize("field", sorted(_IDENTITIES))
-def test_each_bundle_identity_mismatch_is_fatal(tmp_path: Path, field: str) -> None:
-    contradiction = {field: "different" if field == "input" else "f" * 64}
-    models_root, desired = _bundle(tmp_path, payload_identities=contradiction)
-    with pytest.raises(ModelBundleAdmissionError, match=rf"{field} identity mismatch"):
-        admit_model_bundle(models_root, desired)
 
 
 def test_admission_rejects_extra_bundle_member(tmp_path: Path) -> None:
@@ -196,67 +120,6 @@ def test_admission_uses_manifest_declared_member_set(tmp_path: Path) -> None:
     )
 
 
-def test_admission_refuses_selection_calibration_digest_not_matching_member_content(
-    tmp_path: Path,
-) -> None:
-    declared = hashlib.sha256(b'{"calibration": true}').hexdigest()
-    models_root, desired = _bundle(
-        tmp_path,
-        identities={"calibration": declared},
-        members={
-            "model.pt": b"model",
-            "calibration.json": b"different calibration",
-            "conformance/pose-bbox56-v1.json": b'{"conformance": true}',
-        },
-    )
-
-    with pytest.raises(
-        ModelBundleAdmissionError,
-        match=rf"selection declares {declared}.*member content has "
-        rf"'{hashlib.sha256(b'different calibration').hexdigest()}'",
-    ):
-        admit_model_bundle(models_root, desired)
-
-
-def test_admission_refuses_selection_conformance_digest_not_matching_member_content(
-    tmp_path: Path,
-) -> None:
-    declared = hashlib.sha256(b"{}").hexdigest()
-    models_root, desired = _bundle(
-        tmp_path,
-        identities={"conformance": declared},
-        members={
-            "model.pt": b"model",
-            "calibration.json": b'{"calibration": true}',
-            "conformance/pose-bbox56-v1.json": b"different conformance",
-        },
-    )
-
-    with pytest.raises(
-        ModelBundleAdmissionError,
-        match=rf"conformance_digest {declared} matches 0 bundle member",
-    ):
-        admit_model_bundle(models_root, desired)
-
-
-def test_admission_refuses_policy_digest_not_matching_temporal_rule_content(
-    tmp_path: Path,
-) -> None:
-    models_root, desired = _bundle(tmp_path)
-    assert desired.selection is not None
-    desired = replace(
-        desired,
-        selection=replace(desired.selection, policy_digest="5" * 64),
-    )
-
-    with pytest.raises(
-        ModelBundleAdmissionError,
-        match=rf"policy_digest mismatch: selection declares {'5' * 64}, "
-        rf"calibration temporal_rule content has {_IDENTITIES['policy']}",
-    ):
-        admit_model_bundle(models_root, desired)
-
-
 def test_admission_requires_the_manifest_runtime_format(tmp_path: Path) -> None:
     models_root, desired = _bundle(tmp_path)
     root = models_root / "bundles" / desired.bundle_sha256
@@ -268,18 +131,17 @@ def test_admission_requires_the_manifest_runtime_format(tmp_path: Path) -> None:
         admit_model_bundle(models_root, desired)
 
 
-def test_admission_requires_bundle_manifest_schema_version(tmp_path: Path) -> None:
-    models_root, desired = _bundle(tmp_path)
-    desired = replace(
-        desired,
-        selection=replace(desired.selection, bundle_format="bundle-manifest/other"),
-    )
 
-    with pytest.raises(
-        ModelBundleAdmissionError,
-        match=(
-            "selection declares 'bundle-manifest/other'.*"
-            "schema_version is 'bundle-manifest/proxy-v0'"
-        ),
-    ):
+
+def test_admission_rejects_tampered_member_bytes(tmp_path: Path) -> None:
+    models_root, desired = _bundle(tmp_path)
+    root = models_root / "bundles" / desired.bundle_sha256
+    (root / "model.onnx").write_bytes(b"swapped")
+    with pytest.raises(ModelBundleAdmissionError, match="member mismatch"):
         admit_model_bundle(models_root, desired)
+
+
+def test_admission_accepts_receipt_files_without_reading_their_content(tmp_path: Path) -> None:
+    models_root, desired = _bundle(tmp_path, receipts={"evaluation-receipt.json": b"not json"})
+    proof = admit_model_bundle(models_root, desired)
+    assert proof.observed["receipts"] == ("evaluation-receipt.json",)
