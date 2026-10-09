@@ -85,7 +85,7 @@ from backend.app.features.detection_settings.store import DetectionSettingsStore
 from backend.app.shared.audit_values import AuditAction, AuditEvent
 from backend.app.shared.audit_values import utc_now as audit_now
 from backend.app.shared.heartbeat_status import ONLINE
-from backend.app.shared.http.dashboard_auth import authorize_dashboard
+from backend.app.shared.http.dashboard_auth import DashboardBodyRoute, authorize_dashboard
 from contracts.edge_provisioning_models import EdgeErrorCode, TopologyFloor, TopologyRoom
 from contracts.worker_config import PulledWorkerConfig
 from shared.boundary import Boundary, isolate
@@ -95,7 +95,7 @@ RELAY_TOKEN_HEADER = "X-Edge-Relay-Token"
 # Worker route that camera registration delegates RTSP probing to (server-side only).
 PROBE_PATH = "/probe"
 
-router = APIRouter(prefix="/cameras", tags=["cameras"])
+router = APIRouter(prefix="/cameras", tags=["cameras"], route_class=DashboardBodyRoute)
 _Written = TypeVar("_Written")
 
 

@@ -16,9 +16,9 @@ from backend.app.features.evidence.record_store import (
     ReviewDisposition,
 )
 from backend.app.shared.audit_values import AuditAction, AuditEvent
-from backend.app.shared.http.dashboard_auth import authorize_dashboard
+from backend.app.shared.http.dashboard_auth import DashboardBodyRoute, authorize_dashboard
 
-router = APIRouter(tags=["evidence"])
+router = APIRouter(tags=["evidence"], route_class=DashboardBodyRoute)
 
 _DEFAULT_INCIDENT_LIMIT = 50
 _MAX_INCIDENT_LIMIT = 100

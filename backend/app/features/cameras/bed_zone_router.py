@@ -23,9 +23,9 @@ from backend.app.features.cameras.bed_zone_store import (
 from backend.app.features.cameras.store import utc_now_iso
 from backend.app.shared.audit_values import AuditAction, AuditEvent
 from backend.app.shared.audit_values import utc_now as audit_now
-from backend.app.shared.http.dashboard_auth import authorize_dashboard
+from backend.app.shared.http.dashboard_auth import DashboardBodyRoute, authorize_dashboard
 
-router = APIRouter(prefix="/cameras", tags=["cameras"])
+router = APIRouter(prefix="/cameras", tags=["cameras"], route_class=DashboardBodyRoute)
 
 
 class _ResponseHeaders(Protocol):

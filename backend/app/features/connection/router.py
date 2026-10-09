@@ -26,10 +26,11 @@ from backend.app.features.connection.topology_retry_coordinator import (
 from backend.app.features.status.backend_heartbeat_relay import HeartbeatRelayState
 from backend.app.lifespan import apply_connection_settings, refresh_backend_config
 from backend.app.shared.audit_values import AuditAction, AuditEvent, utc_now
+from backend.app.shared.http.dashboard_auth import DashboardBodyRoute
 from backend.app.shared.http.dashboard_auth import authorize_dashboard as _authorize
 from shared.boundary import Boundary, isolate
 
-router = APIRouter(prefix="/connection", tags=["connection"])
+router = APIRouter(prefix="/connection", tags=["connection"], route_class=DashboardBodyRoute)
 
 _HEARTBEAT_DETAIL: dict[str, str] = {
     "auth": "외부 백엔드 인증에 실패했습니다. 시설 토큰을 확인해 주세요.",

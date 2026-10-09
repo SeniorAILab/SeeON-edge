@@ -42,7 +42,7 @@ def authorize_relay_body(
     relay_token: str | None,
     authorization: str | None = None,
 ) -> None:
-    _reject_oversized_body(request, max_bytes=max_bytes)
+    reject_oversized_body(request, max_bytes=max_bytes)
     authorize_relay(request, relay_token or _bearer_token(authorization))
 
 
@@ -127,7 +127,7 @@ def _bounded_receive(receive: Receive, max_bytes: int) -> Receive:
     return wrapped
 
 
-def _reject_oversized_body(request: Request, *, max_bytes: int) -> None:
+def reject_oversized_body(request: Request, *, max_bytes: int) -> None:
     raw = request.headers.get("content-length")
     if raw is None:
         return
@@ -158,4 +158,5 @@ __all__ = [
     "authorize_relay_body",
     "bounded_body_route",
     "camera_binding",
+    "reject_oversized_body",
 ]
