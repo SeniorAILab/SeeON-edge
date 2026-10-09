@@ -66,7 +66,7 @@ from contracts.worker_config import (
     PulledWorkerConfig,
     detection_window_validation_error,
 )
-from shared.boundary import Boundary, isolate
+from shared.boundary import Boundary, LogThrottle, isolate
 from shared.events.edge_ingest_client import (
     BackendEvidenceClient,
     EdgeIngestClient,
@@ -483,6 +483,7 @@ async def _backend_outbox_sender_loop(
 ) -> None:
     status: OutboxSenderStatus = app.state.backend_outbox_sender_status
     retry_after: float | None = None
+    tick_throttle = LogThrottle()
     while not stop_event.is_set():
         wait_sec = sender_delay(
             SENDER_BASE_INTERVAL_SEC, status.consecutive_failures, retry_after, random.random()
@@ -493,13 +494,16 @@ async def _backend_outbox_sender_loop(
             pass
         if stop_event.is_set():
             break
-        try:
+        failure = None
+        with isolate(
+            Boundary.SENDER_TICK,
+            stage="backend_outbox_sender_tick",
+            throttle=tick_throttle,
+            level=logging.ERROR,
+        ):
             failure = await asyncio.get_running_loop().run_in_executor(
                 executor, send_outbox_once, app
             )
-        except Exception:
-            logger.exception("backend outbox sender tick failed")
-            failure = None
         retry_after = failure.retry_after_seconds if failure is not None else None
 
 

@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Final, Protocol, final
 
+from shared.boundary import Boundary, LogThrottle, isolate
 from shared.events.delivery_queue import DeliveryQueue
 from shared.events.evidence_export_contract import DeliveryDisposition, DeliveryFailure
 from shared.events.evidence_http_transport import (
@@ -109,6 +110,7 @@ class RuntimeStatusSender:
     ) -> None:
         resolved_config = RuntimeStatusSenderConfig() if config is None else config
         self._diagnostics = diagnostics
+        self._log_snapshot_throttle = LogThrottle()
         self._facility_id = facility_id
         self._transport = transport
         self._before_publish = before_publish
@@ -200,10 +202,12 @@ class RuntimeStatusSender:
                 )
 
     def _log_local_snapshot(self) -> None:
-        try:
+        with isolate(
+            Boundary.OPTIONAL_FEATURE,
+            stage="diagnostics_log_snapshot",
+            throttle=self._log_snapshot_throttle,
+        ):
             self._diagnostics.log_snapshot()
-        except Exception:
-            LOGGER.warning("worker diagnostics log_snapshot failed", exc_info=True)
 
     def _take_latest(self) -> list[RelayRuntimeStatusPayload] | None:
         latest: list[RelayRuntimeStatusPayload] | None = None

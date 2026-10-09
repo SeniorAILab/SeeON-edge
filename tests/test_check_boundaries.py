@@ -13,6 +13,9 @@ from scripts.check_boundaries import (
     FILE_NOQA,
     SUPPRESS_BROAD,
     UNPARSEABLE,
+    ZERO_ENFORCED_ROOTS,
+    Finding,
+    blocking_findings,
     check_source,
     in_scope,
     load_baseline,
@@ -43,8 +46,8 @@ def copied_exporter_source() -> str:
 
 RECORDED_BASELINE = {
     "BLANKET_NOQA": 0,
-    "BLE_NOQA": 42,
-    "BROAD_EXCEPT": 124,
+    "BLE_NOQA": 38,
+    "BROAD_EXCEPT": 107,
     "FILE_NOQA": 0,
     "SUPPRESS_BROAD": 4,
 }
@@ -195,3 +198,18 @@ def test_cli_is_report_only_and_exits_zero_with_findings() -> None:
     assert "check_boundaries (report-only):" in result.stdout.splitlines()[-1]
     assert "shared/boundary/" not in result.stdout
     assert "tests/test_" not in result.stdout
+
+
+def test_a_layer_that_reached_zero_is_enforced() -> None:
+    assert Path("worker/domains") in ZERO_ENFORCED_ROOTS
+    held = Finding(Path("worker/domains/bed_exit/detector.py"), 3, BROAD_EXCEPT)
+    other = Finding(Path("worker/runtime/worker.py"), 5, BROAD_EXCEPT)
+    assert blocking_findings([held, other]) == [held]
+
+
+def test_cli_names_the_enforced_layers_and_passes_while_they_stay_at_zero() -> None:
+    result = subprocess.run(
+        [sys.executable, str(CHECKER)], cwd=REPO_ROOT, capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0
+    assert "enforced at zero: worker/domains" in result.stdout.splitlines()[-1]

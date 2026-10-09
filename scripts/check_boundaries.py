@@ -23,6 +23,7 @@ SCOPE_ROOTS = (
 EXCLUDED_ROOTS = (BOUNDARY_OWNER, Path("tests"))
 PYTHON_SUFFIXES = frozenset({".py", ".pyi"})
 BASELINE_PATH = Path("scripts/check_boundaries_baseline.json")
+ZERO_ENFORCED_ROOTS = (Path("worker/domains"),)
 LINE_NOQA = re.compile(r"noqa(?P<codes>\s*:.*)?$")
 FILE_RUFF_NOQA = re.compile(r"ruff\s*:\s*noqa(?:\s*:\s*(?P<codes>.*))?$")
 BROAD = frozenset({"Exception", "BaseException"})
@@ -171,6 +172,14 @@ def _is_under(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
 
 
+def blocking_findings(findings: Sequence[Finding]) -> list[Finding]:
+    return [
+        finding
+        for finding in findings
+        if any(_is_under(finding.path, root) for root in ZERO_ENFORCED_ROOTS)
+    ]
+
+
 def in_scope(path: Path) -> bool:
     if path.suffix not in PYTHON_SUFFIXES:
         return False
@@ -218,11 +227,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(finding.render())
     counts = Counter(finding.kind for finding in findings)
     summary = drift_summary(counts, load_baseline(root))
+    blocking = blocking_findings(findings)
+    enforced = ", ".join(root.as_posix() for root in ZERO_ENFORCED_ROOTS)
     print(
         f"check_boundaries (report-only): {len(findings)} finding(s), "
-        f"vs {BASELINE_PATH.as_posix()} baseline: {summary}"
+        f"vs {BASELINE_PATH.as_posix()} baseline: {summary}; "
+        f"enforced at zero: {enforced} ({len(blocking)} finding(s))"
     )
-    return 0
+    return 1 if blocking else 0
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, final
 
+from shared.boundary import Boundary, isolate
 from shared.events.delivery_queue import ClipEntry, DeliveryQueue
 from worker.interfaces import ThumbnailGenerator
 from worker.pipeline.output.evidence.clip_corrupt_publication import publish_existing_corrupt
@@ -87,19 +88,15 @@ class ClipPublisher:
     ) -> PublishedClip:
         self._validate_reservation(reservation)
         video_path = self._publish_media(reservation, artifact_path)
-        try:
+        with isolate(
+            Boundary.OPTIONAL_FEATURE, stage="thumbnail", clip_id=str(reservation.clip_id)
+        ) as thumbnailing:
             thumbnail_path = self._thumbnail_generator.generate(
                 video_path,
                 reservation.final_dir / "thumbnail.jpg",
                 metadata.duration_s,
             )
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.warning(
-                "thumbnail generation failed stage=thumbnail clip_id=%s exception_class=%s",
-                reservation.clip_id,
-                type(exc).__name__,
-            )
-        else:
+        if not thumbnailing.failed:
             self._barrier(PublicationStage.THUMBNAIL_RENAMED, thumbnail_path)
         manifest = finalize_ready_manifest(
             video_path=video_path,
@@ -131,7 +128,11 @@ class ClipPublisher:
         self._enqueue_clip(manifest, metadata)
         self._cleanup_staging(reservation)
         _ = schedule_playback_rendition(video_path, str(reservation.clip_id))
-        try:
+        with isolate(
+            Boundary.OPTIONAL_FEATURE,
+            stage="clip_analysis_ready",
+            clip_id=str(reservation.clip_id),
+        ):
             self._on_ready(
                 ReadyClipPublication(
                     clip_id=str(reservation.clip_id),
@@ -140,13 +141,6 @@ class ClipPublisher:
                     size_bytes=manifest.size_bytes,
                     duration_ms=manifest.duration_ms,
                 )
-            )
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.warning(
-                "clip analysis ready hook failed stage=clip_analysis_ready "
-                "clip_id=%s exception_class=%s",
-                reservation.clip_id,
-                type(exc).__name__,
             )
         return PublishedClip(reservation.clip_id, manifest, manifest_path, video_path)
 

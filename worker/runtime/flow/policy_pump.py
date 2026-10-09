@@ -11,6 +11,7 @@ from typing import Protocol, final, runtime_checkable
 
 from contracts.observation import BoundingBox
 from contracts.replay_trace import ReplayRow, ReplaySource, ReplayTrack
+from shared.boundary import Boundary, isolate
 from worker.interfaces.execution_records import ExecutionRecordSink
 from worker.interfaces.media_plane import OnDemandSnapshotUnsupported
 from worker.pipeline.decision import EventAggregator, unwrap_decider
@@ -289,28 +290,27 @@ class NativePolicyPump:
         )
         for position, event in enumerate(events):
             event = _with_decision_trace_id(event, self._decision)
-            try:
-                snapshot = self._control.snapshot(self.camera_id)
-            except OnDemandSnapshotUnsupported as error:
-                snapshot = None
-                event = replace(
-                    event,
-                    snapshot_unavailable_reason="deepstream_on_demand_capture_unsupported",
-                )
-                LOGGER.warning(
-                    "snapshot unavailable for camera_id=%s; staging the event without it "
-                    "reason=deepstream_on_demand_capture_unsupported: %s",
-                    self.camera_id,
-                    error,
-                )
-            except Exception as error:  # noqa: BLE001
-                snapshot = None
-                LOGGER.warning(
-                    "snapshot unavailable for camera_id=%s; staging the event without it "
-                    "reason=snapshot_capture_failed: %s",
-                    self.camera_id,
-                    error,
-                )
+            snapshot = None
+            with isolate(
+                Boundary.OPTIONAL_FEATURE,
+                stage="snapshot_capture",
+                camera_id=self.camera_id,
+                reason="snapshot_capture_failed",
+            ):
+                try:
+                    snapshot = self._control.snapshot(self.camera_id)
+                except OnDemandSnapshotUnsupported as error:
+                    snapshot = None
+                    event = replace(
+                        event,
+                        snapshot_unavailable_reason="deepstream_on_demand_capture_unsupported",
+                    )
+                    LOGGER.warning(
+                        "snapshot unavailable for camera_id=%s; staging the event without it "
+                        "reason=deepstream_on_demand_capture_unsupported: %s",
+                        self.camera_id,
+                        error,
+                    )
             try:
                 self._sink.emit_for_frame(self._attacher.attach_native(event, snapshot), trigger)
             except Exception:

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Final, TypeAlias, override
 from uuid import uuid4
 
+from shared.boundary import Boundary, LogThrottle, isolate
 from worker.pipeline.decision.event_identity import EventIdentityStore
 from worker.types import BusinessEvent
 
@@ -47,6 +48,7 @@ class IncidentManager:
     _admitted_keys: dict[str, CooldownKey] = field(default_factory=dict, init=False)
     _identities: EventIdentityStore = field(init=False, repr=False)
     identity_journal_failures: int = field(default=0, init=False)
+    _journal_throttle: LogThrottle = field(default_factory=LogThrottle, init=False, repr=False)
     cooldown_suppressed_total: int = field(default=0, init=False)
     last_audit_snapshot: IncidentAuditSnapshot | None = field(
         default=None,
@@ -56,18 +58,13 @@ class IncidentManager:
     def __post_init__(self) -> None:
         if self.cooldown_sec < 0.0:
             raise IncidentConfigurationError(self.cooldown_sec)
-        try:
+        with isolate(
+            Boundary.OPTIONAL_FEATURE, stage="event_identity_journal_open", level=logging.ERROR
+        ) as opened:
             self._identities = EventIdentityStore(self.identity_path)
-        except Exception:
+        if opened.failed:
             self._identities = EventIdentityStore(None)
             self.identity_journal_failures += 1
-            _LOGGER.error(
-                "event identity journal at %s is unusable; continuing without "
-                "persisted identities so the camera still detects. A restart may "
-                "produce duplicates the backend will deduplicate",
-                self.identity_path,
-                exc_info=True,
-            )
 
     def admit(
         self,
@@ -83,20 +80,19 @@ class IncidentManager:
             return None
 
         source_identity = event.identity
-        try:
+        edge_event_id = ""
+        with isolate(
+            Boundary.OPTIONAL_FEATURE,
+            stage="event_identity_journal_resolve",
+            throttle=self._journal_throttle,
+            level=logging.ERROR,
+            camera_id=event.camera_id,
+            event_type=event.event_type,
+        ) as resolved:
             edge_event_id = self._identities.resolve(_source_key(event))
-        except Exception:
+        if resolved.failed:
             edge_event_id = str(uuid4())
             self.identity_journal_failures += 1
-            _LOGGER.error(
-                "event identity journal failed for camera %s; admitting %s with a "
-                "fresh identity so the alert is not lost. A restart may produce a "
-                "duplicate the backend will deduplicate (failures=%d)",
-                event.camera_id,
-                event.event_type,
-                self.identity_journal_failures,
-                exc_info=True,
-            )
         admitted = replace(event, identity=edge_event_id)
         self._last_seen[key] = event_time
         self._admitted_keys[edge_event_id] = key

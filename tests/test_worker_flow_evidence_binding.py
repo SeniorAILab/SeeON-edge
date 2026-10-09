@@ -360,6 +360,8 @@ def test_replay_isolates_a_mismatched_sidecar_and_still_replays_its_neighbor(
         (EVENT_ONE, "clip-1"),
     ]
     assert any("clip-2" in record.message for record in caplog.records)
+    assert any("stage=sealed_clip_replay " in record.message for record in caplog.records)
+    assert not [record for record in caplog.records if record.exc_info]
 
 
 class _CollectingSink:

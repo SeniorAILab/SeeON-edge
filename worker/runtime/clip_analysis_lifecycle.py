@@ -4,6 +4,7 @@ import logging
 import subprocess
 from collections.abc import Callable
 
+from shared.boundary import Boundary, isolate
 from worker.pipeline.output.evidence.clip_analysis_artifact import ClipAnalysisArtifactIdentity
 from worker.runtime.clip_analysis_execution import settle_job
 from worker.runtime.clip_analysis_process import ClipAnalysisJob
@@ -30,10 +31,10 @@ def retry_teardown(
     attempts: int = 3,
 ) -> bool:
     for _ in range(attempts):
-        try:
+        with isolate(
+            Boundary.OPTIONAL_FEATURE, stage="clip_analysis_teardown", level=logging.ERROR
+        ) as attempt:
             terminate(process)
-        except Exception:
-            LOGGER.exception("clip analysis shutdown teardown retry failed")
-        else:
+        if not attempt.failed:
             return True
     return False
