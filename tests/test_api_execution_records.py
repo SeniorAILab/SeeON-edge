@@ -222,6 +222,34 @@ def test_disabled_feature_answers_503_before_a_chunked_oversized_body(
     assert response.status_code == 503
 
 
+@pytest.mark.parametrize(("auth", "status"), _UNAUTHORIZED)
+def test_relay_auth_is_decided_before_the_disabled_feature_answers(
+    product_app: FastAPI, auth: dict[str, str], status: int
+) -> None:
+    response = TestClient(product_app).post(_PATH, json=_batch(_record(0)).to_json(), headers=auth)
+    assert response.status_code == status
+
+
+@pytest.mark.parametrize(
+    "auth",
+    [{}, {RELAY_TOKEN_HEADER: "wrong"}, {RELAY_TOKEN_HEADER: _RELAY_TOKEN}],
+    ids=["no-token", "wrong-token", "valid-token"],
+)
+def test_disabled_feature_rejects_an_oversized_content_length_first(
+    product_app: FastAPI, auth: dict[str, str]
+) -> None:
+    response = TestClient(product_app).post(
+        _PATH,
+        headers={
+            **auth,
+            "Content-Type": "application/json",
+            "Content-Length": str(MAX_EXECUTION_RECORD_BODY_BYTES + 1),
+        },
+        content=b"{}",
+    )
+    assert response.status_code == 413
+
+
 def test_oversized_content_length_is_rejected(enabled_client: TestClient) -> None:
     client = enabled_client
     response = client.post(
