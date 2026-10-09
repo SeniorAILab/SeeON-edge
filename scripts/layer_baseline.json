@@ -61,16 +61,12 @@
       "FEATURE_ROOT_FILE topology_query.py": 1,
       "FEATURE_ROOT_FILE update_command.py": 1,
       "FEATURE_ROOT_FILE worker_config_service.py": 1,
-      "UNMIGRATED_IMPORT camera_crud_service -> psycopg": 1,
       "UNMIGRATED_IMPORT edge_topology_sync_state -> psycopg": 1,
       "UNMIGRATED_IMPORT location_operations -> psycopg": 1,
       "UNMIGRATED_IMPORT topology -> psycopg": 1,
-      "UNMIGRATED_IMPORT topology_confirmation -> psycopg": 1,
       "UNMIGRATED_IMPORT topology_confirmation_state -> psycopg": 1
     },
     "clips": {
-      "CONTROLLER_IMPORT_OUTSIDE_CONTROLLER analysis_status.py": 1,
-      "CONTROLLER_IMPORT_OUTSIDE_CONTROLLER listing.py": 1,
       "CROSS_FEATURE_EDGE clips.router -> audit.http": 1,
       "CROSS_FEATURE_EDGE clips.router -> evidence.receipt_store": 1,
       "CROSS_FEATURE_EDGE clips.storage_router -> audit.catalog": 1,
@@ -123,9 +119,7 @@
       "FEATURE_ROOT_FILE store.py": 1,
       "FEATURE_ROOT_FILE topology_confirmation_router.py": 1,
       "FEATURE_ROOT_FILE topology_retry_coordinator.py": 1,
-      "FEATURE_ROOT_FILE topology_retry_result.py": 1,
-      "UNMIGRATED_IMPORT topology_retry_coordinator -> psycopg": 1,
-      "UNMIGRATED_IMPORT topology_retry_result -> psycopg": 1
+      "FEATURE_ROOT_FILE topology_retry_result.py": 1
     },
     "detection_settings": {
       "CROSS_FEATURE_EDGE detection_settings.router -> audit.catalog": 1,
@@ -139,7 +133,6 @@
       "FEATURE_ROOT_FILE policy_store.py": 1,
       "FEATURE_ROOT_FILE router.py": 1,
       "FEATURE_ROOT_FILE store.py": 1,
-      "UNMIGRATED_IMPORT policy_diff -> psycopg": 1,
       "UNMIGRATED_IMPORT policy_mutations -> psycopg": 1
     },
     "diagnostics": {
@@ -193,8 +186,7 @@
       "FEATURE_ROOT_FILE relay_projection.py": 1,
       "FEATURE_ROOT_FILE router.py": 1,
       "UNMIGRATED_IMPORT event_outbox -> psycopg": 1,
-      "UNMIGRATED_IMPORT outbox_delivery -> psycopg": 1,
-      "UNMIGRATED_IMPORT outbox_dispatch -> psycopg": 1
+      "UNMIGRATED_IMPORT outbox_delivery -> psycopg": 1
     },
     "relay": {
       "CROSS_FEATURE_EDGE relay.router -> audit.catalog": 1,

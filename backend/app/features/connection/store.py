@@ -6,8 +6,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Final, TypedDict
 
-import psycopg
-
+from backend.app.edge_db import DatabaseConnection
 from backend.app.edge_db.authority import AuthorityToken, require_authority
 from backend.app.edge_db.postgres import PostgresDatabase
 from backend.app.features.connection.hub_url import hub_url_transport_allowed
@@ -89,7 +88,7 @@ class ConnectionSettingsStore:
         *,
         after_write: ConnectionWriteHook | None = None,
     ) -> ConnectionSettings:
-        def persist(connection: psycopg.Connection) -> ConnectionSettings:
+        def persist(connection: DatabaseConnection) -> ConnectionSettings:
             require_authority(connection, self.authority)
             data = read_settings(connection, for_update=True)
             previous_principal = (data["edge_installation_id"], data["enrollment_generation"])

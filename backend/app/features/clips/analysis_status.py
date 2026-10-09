@@ -1,20 +1,37 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from http import HTTPStatus
-from typing import Literal, cast
+from typing import Literal, TypeAlias, cast
 
 from backend.app.features.clips.analysis_relay import AnalysisRelayError, AnalysisTransport
-from backend.app.features.clips.schemas import ClipAnalysisResponse
 from backend.app.features.clips.store import ClipStore, LocatedClip
 from shared.events.clip_analysis_wire import ClipAnalysisWireError, decode_clip_analysis
 
+ClipAnalysisState: TypeAlias = Literal[
+    "idle",
+    "queued",
+    "running",
+    "available",
+    "failed",
+    "unavailable",
+]
 _WORKER_STATES = frozenset({"idle", "queued", "running", "available", "failed"})
+
+
+@dataclass(frozen=True, slots=True)
+class ClipAnalysisStatus:
+    state: ClipAnalysisState
+    served_media_sha256: str | None
+    reason: str | None = None
+    served_timing_identical: bool | None = None
+    result: dict[str, object] | None = None
 
 
 def assemble_clip_analysis_status(
     transport: AnalysisTransport, clip_id: str, located: LocatedClip, store: ClipStore
-) -> ClipAnalysisResponse:
+) -> ClipAnalysisStatus:
     try:
         identity = store.open_located_playback_identity(located)
     except (ValueError, FileNotFoundError):
@@ -49,7 +66,7 @@ def assemble_clip_analysis_status(
                 return _unavailable(
                     served_media_sha256, "timing_unverified", timing_identical=False
                 )
-            return ClipAnalysisResponse(
+            return ClipAnalysisStatus(
                 state="available",
                 served_media_sha256=served_media_sha256,
                 served_timing_identical=True,
@@ -89,8 +106,8 @@ def assemble_clip_analysis_status(
         return _unavailable(served_media_sha256, "worker_unreachable")
     if state_value == "available" and not served_timing_identical:
         return _unavailable(served_media_sha256, "timing_unverified", timing_identical=False)
-    return ClipAnalysisResponse(
-        state=cast(Literal["idle", "queued", "running", "available", "failed"], state_value),
+    return ClipAnalysisStatus(
+        state=cast(ClipAnalysisState, state_value),
         served_media_sha256=served_media_sha256,
         reason=reason,
     )
@@ -101,8 +118,8 @@ def _unavailable(
     reason: str,
     *,
     timing_identical: bool | None = None,
-) -> ClipAnalysisResponse:
-    return ClipAnalysisResponse(
+) -> ClipAnalysisStatus:
+    return ClipAnalysisStatus(
         state="unavailable",
         served_media_sha256=served_media_sha256,
         reason=reason,
