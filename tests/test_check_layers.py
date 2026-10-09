@@ -1,5 +1,4 @@
 import json
-import shutil
 import subprocess
 import sys
 import tomllib
@@ -10,6 +9,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECKER = REPO_ROOT / "scripts" / "check_layers.py"
 LINT_IMPORTS = Path(sys.executable).parent / "lint-imports"
+RUFF = Path(sys.executable).parent / "ruff"
 F = "backend.app.features"
 
 SHARED_HTTP = "backend base code reaches HTTP frameworks only inside backend.app.shared.http"
@@ -142,10 +142,6 @@ def test_clean_layered_features_keep_every_layer_contract(tmp_path: Path) -> Non
 
 ALPHA = "backend/app/features/alpha"
 BASE_MODEL = "from pydantic import BaseModel\n\n\nclass Wire(BaseModel):\n    x: int\n"
-DTO_FIX = "move the DTO to the controller and convert it to a value type there"
-CONTROLLER_IMPORT_FIX = (
-    "import a service or a value type instead; the controller converts DTOs to values"
-)
 LEGACY = "backend/app/features/legacy"
 
 MUTATIONS = {
@@ -291,40 +287,19 @@ def test_layer_violation_breaks_its_contract(tmp_path: Path, case: str) -> None:
     assert f"{contract} BROKEN" in output, output
 
 
-INDEPENDENCE_TOML = (
+EXCEPTIONS_TOML = (
     "[[tool.importlinter.contracts]]\n"
     f'name = "{INDEPENDENCE}"\n'
     'type = "independence"\n'
     'modules = ["backend.app.features.*"]\n'
     "ignore_imports = [\n"
-    '    "backend.app.features.legacy.* -> backend.app.features.**",\n'
-    '    "backend.app.features.** -> backend.app.features.legacy.*",\n'
+    '    "backend.app.features.legacy.* -> backend.app.features.alpha.**",\n'
     "]\n"
-)
-
-ALPHA_PAIR = (
-    '    "backend.app.features.alpha.* -> backend.app.features.**",\n'
-    '    "backend.app.features.** -> backend.app.features.alpha.*",\n'
-)
-LEGACY_STORE = "import psycopg\nimport pydantic\n"
-LEGACY_WORKER = f"import psycopg\nfrom {F}.alpha.service import logic\n"
-LEGACY_COMMAND = (
-    "from pydantic import BaseModel\n\n\n"
-    "class Command(BaseModel):\n"
-    "    x: int\n\n\n"
-    "def handle():\n"
-    f"    from {F}.alpha.controller import api\n"
-    "    return api\n"
 )
 LEGACY_ENTRIES = {
     "FEATURE_ROOT_FILE command.py": 1,
     "FEATURE_ROOT_FILE store.py": 1,
     "FEATURE_ROOT_FILE worker.py": 1,
-    "DTO_OUTSIDE_CONTROLLER command.py": 1,
-    "CONTROLLER_IMPORT_OUTSIDE_CONTROLLER command.py": 1,
-    "UNMIGRATED_IMPORT worker -> psycopg": 1,
-    "CROSS_FEATURE_EDGE legacy.command -> alpha.controller.api": 1,
-    "CROSS_FEATURE_EDGE legacy.worker -> alpha.service.logic": 1,
 }
 
 
@@ -332,11 +307,11 @@ def checker_tree() -> dict[str, str]:
     files = clean_tree()
     files.update(
         {
-            "pyproject.toml": INDEPENDENCE_TOML,
+            "pyproject.toml": EXCEPTIONS_TOML,
             f"{LEGACY}/__init__.py": "",
-            f"{LEGACY}/command.py": LEGACY_COMMAND,
-            f"{LEGACY}/store.py": LEGACY_STORE,
-            f"{LEGACY}/worker.py": LEGACY_WORKER,
+            f"{LEGACY}/command.py": "",
+            f"{LEGACY}/store.py": "",
+            f"{LEGACY}/worker.py": "",
             "scripts/layer_baseline.json": json.dumps({"features": {"legacy": LEGACY_ENTRIES}}),
         }
     )
@@ -409,171 +384,6 @@ CHECKER_MUTATIONS = {
         {f"{ALPHA}/service/logic.py": "def f(request):\n    return request.app.state.db\n"},
         "APP_STATE_OUTSIDE_CONTROLLER service/logic.py:2. Fix: take the collaborator",
     ),
-    "new_cross_feature_edge": (
-        {f"{LEGACY}/worker.py": LEGACY_WORKER + f"from {F}.beta.service import logic as b\n"},
-        "CROSS_FEATURE_EDGE legacy.worker -> beta.service.logic. Fix: call the other feature",
-    ),
-    "fastapi_in_unmigrated_repository_file": (
-        {f"{LEGACY}/store.py": LEGACY_STORE + "import fastapi\n"},
-        "UNMIGRATED_IMPORT store -> fastapi. Fix: keep HTTP in the controller",
-    ),
-    "dto_in_unmigrated_service_file": (
-        {f"{LEGACY}/worker.py": LEGACY_WORKER + BASE_MODEL},
-        f"DTO_OUTSIDE_CONTROLLER worker.py. Fix: {DTO_FIX}",
-    ),
-    "dto_in_unmigrated_repository_file": (
-        {f"{LEGACY}/store.py": LEGACY_STORE + "\n\nclass Row(pydantic.BaseModel):\n    x: int\n"},
-        f"DTO_OUTSIDE_CONTROLLER store.py. Fix: {DTO_FIX}",
-    ),
-    "dto_in_service": (
-        {f"{ALPHA}/service/logic.py": BASE_MODEL},
-        f"DTO_OUTSIDE_CONTROLLER service/logic.py. Fix: {DTO_FIX}",
-    ),
-    "dto_with_an_aliased_base": (
-        {
-            f"{ALPHA}/repository/rows.py": (
-                "from pydantic import BaseModel as Base\n\n\nclass Row(Base):\n    x: int\n"
-            )
-        },
-        "DTO_OUTSIDE_CONTROLLER repository/rows.py. Fix:",
-    ),
-    "dto_through_a_dotted_module_alias": (
-        {
-            f"{ALPHA}/service/logic.py": (
-                "import pydantic.main as pm\n\n\nclass Wire(pm.BaseModel):\n    x: int\n"
-            )
-        },
-        "DTO_OUTSIDE_CONTROLLER service/logic.py. Fix:",
-    ),
-    "dto_as_a_root_model": (
-        {
-            f"{ALPHA}/service/logic.py": (
-                "from pydantic import RootModel\n\n\nclass Ids(RootModel[list[int]]):\n    pass\n"
-            )
-        },
-        "DTO_OUTSIDE_CONTROLLER service/logic.py. Fix:",
-    ),
-    "dto_through_a_local_model_base": (
-        {f"{ALPHA}/service/logic.py": BASE_MODEL + "\n\nclass Child(Wire):\n    y: int\n"},
-        "DTO_OUTSIDE_CONTROLLER service/logic.py (2 found, baseline allows 0). Fix:",
-    ),
-    "dto_subclassing_a_model_from_another_file": (
-        {
-            f"{LEGACY}/worker.py": LEGACY_WORKER
-            + f"from {F}.legacy.command import Command\n\n\nclass Patch(Command):\n    y: int\n"
-        },
-        "DTO_OUTSIDE_CONTROLLER worker.py. Fix:",
-    ),
-    "dto_subclassing_a_model_through_its_module": (
-        {
-            f"{LEGACY}/worker.py": LEGACY_WORKER
-            + f"from {F}.legacy import command\n\n\nclass Patch(command.Command):\n    y: int\n"
-        },
-        "DTO_OUTSIDE_CONTROLLER worker.py. Fix:",
-    ),
-    "dto_through_from_pydantic_import_main": (
-        {
-            f"{ALPHA}/service/logic.py": (
-                "from pydantic import main\n\n\nclass Wire(main.BaseModel):\n    x: int\n"
-            )
-        },
-        "DTO_OUTSIDE_CONTROLLER service/logic.py. Fix:",
-    ),
-    "dto_through_import_pydantic_v1": (
-        {
-            f"{ALPHA}/service/logic.py": (
-                "import pydantic.v1\n\n\nclass Wire(pydantic.v1.BaseModel):\n    x: int\n"
-            )
-        },
-        "DTO_OUTSIDE_CONTROLLER service/logic.py. Fix:",
-    ),
-    "dto_through_from_pydantic_v1_import": (
-        {
-            f"{ALPHA}/service/logic.py": (
-                "from pydantic.v1 import BaseModel\n\n\nclass Wire(BaseModel):\n    x: int\n"
-            )
-        },
-        "DTO_OUTSIDE_CONTROLLER service/logic.py. Fix:",
-    ),
-    "dto_through_from_pydantic_import_v1": (
-        {
-            f"{ALPHA}/service/logic.py": (
-                "from pydantic import v1\n\n\nclass Wire(v1.BaseModel):\n    x: int\n"
-            )
-        },
-        "DTO_OUTSIDE_CONTROLLER service/logic.py. Fix:",
-    ),
-    "dto_through_a_base_alias": (
-        {
-            f"{ALPHA}/service/logic.py": (
-                "from pydantic import BaseModel\n\nBase = BaseModel\n\n\n"
-                "class Wire(Base):\n    x: int\n"
-            )
-        },
-        "DTO_OUTSIDE_CONTROLLER service/logic.py. Fix:",
-    ),
-    "dto_as_a_pydantic_dataclass": (
-        {
-            f"{ALPHA}/repository/rows.py": (
-                "from pydantic.dataclasses import dataclass\n\n\n"
-                "@dataclass\nclass Row:\n    x: int\n"
-            )
-        },
-        "DTO_OUTSIDE_CONTROLLER repository/rows.py. Fix:",
-    ),
-    "dto_as_a_dotted_pydantic_dataclass_call": (
-        {
-            f"{ALPHA}/repository/rows.py": (
-                "import pydantic.dataclasses\n\n\n"
-                "@pydantic.dataclasses.dataclass(frozen=True)\nclass Row:\n    x: int\n"
-            )
-        },
-        "DTO_OUTSIDE_CONTROLLER repository/rows.py. Fix:",
-    ),
-    "baselined_file_gains_a_controller_name_on_the_same_line": (
-        {
-            f"{LEGACY}/command.py": LEGACY_COMMAND.replace(
-                "controller import api\n", "controller import api, extra\n"
-            )
-        },
-        "CONTROLLER_IMPORT_OUTSIDE_CONTROLLER command.py (2 found, baseline allows 1). Fix:",
-    ),
-    "controller_import_in_unmigrated_service_file": (
-        {
-            f"{LEGACY}/router.py": "",
-            f"{LEGACY}/worker.py": LEGACY_WORKER + f"from {F}.legacy import router\n",
-        },
-        f"CONTROLLER_IMPORT_OUTSIDE_CONTROLLER worker.py. Fix: {CONTROLLER_IMPORT_FIX}",
-    ),
-    "controller_import_in_service": (
-        {f"{ALPHA}/service/logic.py": f"from {F}.alpha.controller.api import thing\n"},
-        f"CONTROLLER_IMPORT_OUTSIDE_CONTROLLER service/logic.py. Fix: {CONTROLLER_IMPORT_FIX}",
-    ),
-    "controller_import_inside_a_function": (
-        {f"{ALPHA}/repository/rows.py": f"def f():\n    import {F}.alpha.controller.api\n"},
-        "CONTROLLER_IMPORT_OUTSIDE_CONTROLLER repository/rows.py. Fix:",
-    ),
-    "controller_import_under_type_checking": (
-        {
-            f"{ALPHA}/service/logic.py": (
-                "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n"
-                f"    from {F}.alpha.controller import api\n"
-            )
-        },
-        "CONTROLLER_IMPORT_OUTSIDE_CONTROLLER service/logic.py. Fix:",
-    ),
-    "baselined_file_gains_a_dto": (
-        {f"{LEGACY}/command.py": LEGACY_COMMAND + "\n\nclass Other(BaseModel):\n    y: int\n"},
-        "DTO_OUTSIDE_CONTROLLER command.py (2 found, baseline allows 1). Fix:",
-    ),
-    "baselined_file_gains_a_controller_import": (
-        {f"{LEGACY}/command.py": LEGACY_COMMAND + f"\n\nfrom {F}.alpha.controller import api\n"},
-        "CONTROLLER_IMPORT_OUTSIDE_CONTROLLER command.py (2 found, baseline allows 1). Fix:",
-    ),
-    "psycopg_in_unmigrated_controller_file": (
-        {f"{LEGACY}/router.py": "import psycopg_pool\n"},
-        "UNMIGRATED_IMPORT router -> psycopg_pool. Fix: move the SQL and the psycopg types",
-    ),
 }
 
 
@@ -598,73 +408,22 @@ def test_new_finding_outside_the_baseline_fails_with_a_fix(tmp_path: Path, case:
     assert "Rules: AGENTS.md" in result.stdout
 
 
-@pytest.mark.parametrize(
-    "source",
-    [
-        "from pydantic import JsonValue, TypeAdapter\n\nA = TypeAdapter(dict[str, JsonValue])\n",
-        "import pydantic\n\nA = pydantic.TypeAdapter(int)\n",
-        "from pydantic import BaseModel\n\nX = BaseModel\n",
-        "from pydantic_settings import BaseSettings\n\n\nclass S(BaseSettings):\n    x: int = 1\n",
-        "from dataclasses import dataclass\n\n\n@dataclass\nclass V:\n    x: int\n",
-        "import dataclasses\n\n\n@dataclasses.dataclass(frozen=True)\nclass V:\n    x: int\n",
-        (
-            "from pydantic import validate_call\n\n\n@validate_call\ndef f(x: int) -> int:\n"
-            "    return x\n"
-        ),
-        f"from {F}.beta.service import logic\n",
-    ],
-)
-def test_validation_and_service_imports_are_not_dto_findings(tmp_path: Path, source: str) -> None:
-    root = checker_repo(tmp_path, {f"{ALPHA}/service/logic.py": source})
-    result = run_checker(root, "--against", "HEAD")
-    assert result.returncode == 0, result.stdout
-
-
-def test_using_a_model_from_another_file_without_subclassing_is_not_a_finding(
-    tmp_path: Path,
-) -> None:
-    worker = LEGACY_WORKER + (
-        f"from {F}.legacy.command import Command\n\n\ndef f(c: Command) -> int:\n    return 1\n"
-    )
-    root = checker_repo(tmp_path, {f"{LEGACY}/worker.py": worker})
-    result = run_checker(root, "--against", "HEAD")
-    assert result.returncode == 0, result.stdout
-
-
-def test_a_smaller_count_must_be_locked_in_the_baseline(tmp_path: Path) -> None:
-    root = checker_repo(tmp_path, {f"{LEGACY}/command.py": "def handle():\n    return 1\n"})
-    result = run_checker(root, "--against", "HEAD")
-    assert result.returncode == 1, result.stdout
-    assert "  DTO_OUTSIDE_CONTROLLER command.py: 0 left, baseline 1" in result.stdout
-
-
-def test_a_raised_count_in_the_baseline_is_caught_by_against(tmp_path: Path) -> None:
-    root = checker_repo(tmp_path)
-    path = root / "scripts/layer_baseline.json"
-    data = json.loads(path.read_text(encoding="utf-8"))
-    data["features"]["legacy"]["DTO_OUTSIDE_CONTROLLER command.py"] = 2
-    path.write_text(json.dumps(data), encoding="utf-8")
-    result = run_checker(root, "--against", "HEAD")
-    assert result.returncode == 1, result.stdout
-    assert "gained DTO_OUTSIDE_CONTROLLER command.py (1 -> 2) compared with HEAD" in result.stdout
-
-
 def test_untracked_ignored_files_are_not_findings(tmp_path: Path) -> None:
     root = checker_repo(tmp_path, {".gitignore": "scratch/\n", f"{ALPHA}/scratch/x.py": ""})
     result = run_checker(root, "--against", "HEAD")
     assert result.returncode == 0, result.stdout
 
 
-def hide_in_baseline(root: Path, entry: str) -> None:
+def edit_baseline(root: Path, feature: str, entries: dict[str, int]) -> None:
     path = root / "scripts/layer_baseline.json"
     data = json.loads(path.read_text(encoding="utf-8"))
-    data["features"]["legacy"][entry] = 1
+    data["features"].setdefault(feature, {}).update(entries)
     path.write_text(json.dumps(data), encoding="utf-8")
 
 
 def test_hiding_a_violation_in_the_baseline_is_caught_by_against(tmp_path: Path) -> None:
     root = checker_repo(tmp_path, {f"{LEGACY}/extra.py": ""})
-    hide_in_baseline(root, "FEATURE_ROOT_FILE extra.py")
+    edit_baseline(root, "legacy", {"FEATURE_ROOT_FILE extra.py": 1})
     assert run_checker(root).returncode == 0
     result = run_checker(root, "--against", "HEAD")
     assert result.returncode == 1, result.stdout
@@ -675,28 +434,28 @@ def test_hiding_a_violation_in_the_baseline_is_caught_by_against(tmp_path: Path)
     assert "Fix: remove the entry and fix the code instead." in result.stdout
 
 
+def test_a_raised_count_in_the_baseline_is_caught_by_against(tmp_path: Path) -> None:
+    root = checker_repo(tmp_path)
+    edit_baseline(root, "legacy", {"FEATURE_ROOT_FILE store.py": 2})
+    result = run_checker(root, "--against", "HEAD")
+    assert result.returncode == 1, result.stdout
+    assert "gained FEATURE_ROOT_FILE store.py (1 -> 2) compared with HEAD" in result.stdout
+
+
 def test_a_feature_new_to_the_baseline_is_caught_by_against(tmp_path: Path) -> None:
     root = checker_repo(tmp_path, {f"{ALPHA}/extra.py": ""})
-    data = json.loads((root / "scripts/layer_baseline.json").read_text(encoding="utf-8"))
-    data["features"]["alpha"] = {"FEATURE_ROOT_FILE extra.py": 1}
-    (root / "scripts/layer_baseline.json").write_text(json.dumps(data), encoding="utf-8")
+    edit_baseline(root, "alpha", {"FEATURE_ROOT_FILE extra.py": 1})
     result = run_checker(root, "--against", "HEAD")
     assert result.returncode == 1, result.stdout
     assert (
         'alpha: scripts/layer_baseline.json gained the feature "alpha"; FEATURE_ROOT_FILE extra.py'
         in result.stdout
     )
-    assert "alpha: listed in scripts/layer_baseline.json" in result.stdout
 
 
-def test_an_empty_feature_entry_with_migration_lines_is_caught(tmp_path: Path) -> None:
-    root = checker_repo(
-        tmp_path,
-        {"pyproject.toml": INDEPENDENCE_TOML.removesuffix("]\n") + ALPHA_PAIR + "]\n"},
-    )
-    data = json.loads((root / "scripts/layer_baseline.json").read_text(encoding="utf-8"))
-    data["features"]["alpha"] = {}
-    (root / "scripts/layer_baseline.json").write_text(json.dumps(data), encoding="utf-8")
+def test_an_empty_feature_entry_is_caught(tmp_path: Path) -> None:
+    root = checker_repo(tmp_path)
+    edit_baseline(root, "alpha", {})
     result = run_checker(root, "--against", "HEAD")
     assert result.returncode == 1, result.stdout
     assert 'alpha: scripts/layer_baseline.json gained the feature "alpha"' in result.stdout
@@ -729,12 +488,25 @@ def test_a_fixed_entry_must_leave_the_baseline(tmp_path: Path) -> None:
     assert "  FEATURE_ROOT_FILE store.py: 0 left, baseline 1" in result.stdout
 
 
-def test_baseline_and_migration_lines_stay_in_step(tmp_path: Path) -> None:
-    root = checker_repo(tmp_path, {"pyproject.toml": INDEPENDENCE_TOML.replace("legacy", "alpha")})
-    result = run_checker(root)
+def with_exception(line: str) -> str:
+    return EXCEPTIONS_TOML.removesuffix("]\n") + f'    "{line}",\n]\n'
+
+
+def test_a_new_import_exception_is_caught_by_against(tmp_path: Path) -> None:
+    line = f"{F}.alpha.service.logic -> {F}.beta.repository.rows"
+    root = checker_repo(tmp_path, {"pyproject.toml": with_exception(line)})
+    assert run_checker(root).returncode == 0
+    result = run_checker(root, "--against", "HEAD")
     assert result.returncode == 1, result.stdout
-    assert "legacy: listed in scripts/layer_baseline.json, so" in result.stdout
-    assert "alpha: not listed in scripts/layer_baseline.json, so" in result.stdout
+    assert f"'{INDEPENDENCE}' gained the exception \"{line}\" compared with HEAD" in result.stdout
+    assert "Fix: remove the line and fix the import instead." in result.stdout
+
+
+def test_spelling_out_an_earlier_wildcard_exception_is_not_growth(tmp_path: Path) -> None:
+    line = f"{F}.legacy.worker -> {F}.alpha.service.logic"
+    root = checker_repo(tmp_path, {"pyproject.toml": with_exception(line)})
+    result = run_checker(root, "--against", "HEAD")
+    assert result.returncode == 0, result.stdout
 
 
 def test_main_passes_with_its_baseline() -> None:
@@ -753,74 +525,84 @@ def test_baseline_lists_only_features_that_exist() -> None:
     assert set(data["features"]) <= features
 
 
-REVERTED_IMPORTS = {
-    "cameras.roster_sync -> connection.topology_retry_coordinator": (
-        "backend/app/features/cameras/roster_sync.py",
-        f"from {F}.connection.topology_retry_coordinator import TopologyRetryCoordinator\n",
-    ),
-    "cameras.topology_client -> connection.enrollment": (
-        "backend/app/features/cameras/topology_client.py",
-        f"from {F}.connection.enrollment import verify_enrollment\n",
-    ),
-    "connection.router -> cameras.dependencies": (
-        "backend/app/features/connection/router.py",
-        f"from {F}.cameras.dependencies import sync_camera_roster\n",
-    ),
-    "cameras.dependencies -> connection.dependencies": (
-        "backend/app/features/cameras/dependencies.py",
-        f"from {F}.connection.dependencies import topology_retry_coordinator\n",
-    ),
-    "cameras.router -> connection.dependencies": (
-        "backend/app/features/cameras/router.py",
-        f"from {F}.connection.dependencies import get_connection_settings_store\n",
-    ),
-    "cameras.router -> status.heartbeat_store": (
-        "backend/app/features/cameras/router.py",
-        f"from {F}.status.heartbeat_store import get_heartbeat_store\n",
-    ),
-    "cameras.router -> runtime_settings.dependencies": (
-        "backend/app/features/cameras/router.py",
-        f"from {F}.runtime_settings.dependencies import get_runtime_settings_store\n",
-    ),
-    "evidence.router -> runtime_settings.dependencies": (
-        "backend/app/features/evidence/router.py",
-        f"from {F}.runtime_settings.dependencies import get_runtime_settings_store\n",
-    ),
-    "status.router -> runtime_settings.dependencies": (
-        "backend/app/features/status/router.py",
-        f"from {F}.runtime_settings.dependencies import get_runtime_settings_store\n",
-    ),
-    "detection_settings.router -> cameras.store": (
-        "backend/app/features/detection_settings/router.py",
-        f"from {F}.cameras.store import CameraRegistryStore\n",
-    ),
-    "detection_settings.router -> connection.dependencies": (
-        "backend/app/features/detection_settings/router.py",
-        f"from {F}.connection.dependencies import get_connection_settings_store\n",
+REVERTED_IMPORTS = (
+    "cameras.roster_sync -> connection.topology_retry_coordinator",
+    "cameras.topology_client -> connection.enrollment",
+    "connection.router -> cameras.dependencies",
+    "cameras.dependencies -> connection.dependencies",
+    "cameras.router -> connection.dependencies",
+    "cameras.router -> status.heartbeat_store",
+    "cameras.router -> runtime_settings.dependencies",
+    "evidence.router -> runtime_settings.dependencies",
+    "status.router -> runtime_settings.dependencies",
+    "detection_settings.router -> cameras.store",
+    "detection_settings.router -> connection.dependencies",
+)
+
+
+def real_exceptions(contract: str) -> list[str]:
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    contracts = data["tool"]["importlinter"]["contracts"]
+    return next(c["ignore_imports"] for c in contracts if c["name"] == contract)
+
+
+@pytest.mark.parametrize("edge", REVERTED_IMPORTS)
+def test_a_removed_cross_feature_import_has_no_exception_to_come_back_through(edge: str) -> None:
+    source, target = edge.split(" -> ")
+    exceptions = real_exceptions(INDEPENDENCE)
+    assert f"{F}.{source} -> {F}.{target}" not in exceptions
+    assert not [line for line in exceptions if "*" in line]
+
+
+def ruff_dto(path: str, source: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(RUFF), "check", "--select", "TID251", "--no-cache", "--stdin-filename", path, "-"],
+        cwd=REPO_ROOT,
+        input=source,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+DTO_SOURCES = {
+    "base_model": BASE_MODEL,
+    "aliased_base": "from pydantic import BaseModel as Base\n\n\nclass Row(Base):\n    x: int\n",
+    "dotted_module_alias": "import pydantic.main as pm\n\n\nclass W(pm.BaseModel):\n    x: int\n",
+    "root_model": "from pydantic import RootModel\n\n\nclass Ids(RootModel[int]):\n    pass\n",
+    "pydantic_v1": "from pydantic.v1 import BaseModel\n\n\nclass Wire(BaseModel):\n    x: int\n",
+    "pydantic_dataclass": (
+        "from pydantic.dataclasses import dataclass\n\n\n@dataclass\nclass Row:\n    x: int\n"
     ),
 }
 
 
-def repository_copy(root: Path) -> Path:
-    shutil.copytree(
-        REPO_ROOT / "backend", root / "backend", ignore=shutil.ignore_patterns("__pycache__")
-    )
-    (root / "scripts").mkdir()
-    shutil.copy(REPO_ROOT / "scripts/layer_baseline.json", root / "scripts/layer_baseline.json")
-    shutil.copy(REPO_ROOT / "pyproject.toml", root / "pyproject.toml")
-    return root
-
-
-def test_repository_copy_passes_unchanged(tmp_path: Path) -> None:
-    result = run_checker(repository_copy(tmp_path))
-    assert result.stdout.strip() == "check_layers: ok", result.stdout
-
-
-@pytest.mark.parametrize("edge", sorted(REVERTED_IMPORTS))
-def test_reverting_a_removed_cross_feature_import_fails(tmp_path: Path, edge: str) -> None:
-    path, line = REVERTED_IMPORTS[edge]
-    target = repository_copy(tmp_path) / path
-    target.write_text(target.read_text(encoding="utf-8") + line, encoding="utf-8")
-    result = run_checker(tmp_path)
+@pytest.mark.parametrize("case", sorted(DTO_SOURCES))
+@pytest.mark.parametrize("path", [f"{ALPHA}/service/logic.py", f"{ALPHA}/worker.py"])
+def test_a_pydantic_model_outside_the_controller_fails_ruff(case: str, path: str) -> None:
+    result = ruff_dto(path, DTO_SOURCES[case])
     assert result.returncode == 1, result.stdout
-    assert f"CROSS_FEATURE_EDGE {edge}" in result.stdout, result.stdout
+    assert "TID251" in result.stdout, result.stdout
+    assert "DTOs live in the controller" in result.stdout, result.stdout
+
+
+@pytest.mark.parametrize(
+    ("path", "source"),
+    [
+        (f"{ALPHA}/controller/api.py", BASE_MODEL),
+        (f"{ALPHA}/router.py", BASE_MODEL),
+        (f"{ALPHA}/extra_router.py", BASE_MODEL),
+        ("backend/app/core/config.py", BASE_MODEL),
+        (
+            f"{ALPHA}/service/logic.py",
+            "from pydantic import JsonValue, TypeAdapter\n\nA = TypeAdapter(list[JsonValue])\n",
+        ),
+        (
+            f"{ALPHA}/service/logic.py",
+            "from dataclasses import dataclass\n\n\n@dataclass\nclass V:\n    x: int\n",
+        ),
+    ],
+)
+def test_controller_models_and_plain_validation_pass_ruff(path: str, source: str) -> None:
+    result = ruff_dto(path, source)
+    assert result.returncode == 0, result.stdout

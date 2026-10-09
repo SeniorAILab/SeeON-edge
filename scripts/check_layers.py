@@ -12,26 +12,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 FEATURES = Path("backend/app/features")
-FEATURES_PACKAGE = "backend.app.features"
 BASELINE = Path("scripts/layer_baseline.json")
 LAYERS = ("controller", "service", "repository")
 ROOT_ALLOWED = frozenset({"__init__.py", "AGENTS.md"})
-INDEPENDENCE_CONTRACT = "backend features meet only service to service"
 GUIDE = "AGENTS.md, Enforced Rules (backend feature layers)"
 CONTROLLER_STEMS = frozenset(
     {"router", "dependencies", "http", "auth", "schemas", "responses", "media_response", "wire"}
 )
 REPOSITORY_STEMS = frozenset({"store", "repository", "records"})
-HTTP = frozenset({"fastapi", "starlette"})
-DRIVERS = frozenset({"psycopg", "psycopg_pool"})
-MODEL_CLASSES = frozenset({"BaseModel", "RootModel"})
-PYDANTIC_MODULES = frozenset({"main", "v1", "dataclasses", "root_model"})
-DTO_FIX = "move the DTO to the controller and convert it to a value type there"
-CONTROLLER_IMPORT_FIX = (
-    "import a service or a value type instead; the controller converts DTOs to values"
-)
-OUTBOUND = re.compile(r"^backend\.app\.features\.(\w+)\.\* -> backend\.app\.features\.\*\*$")
-INBOUND = re.compile(r"^backend\.app\.features\.\*\* -> backend\.app\.features\.(\w+)\.\*$")
 
 
 @dataclass(frozen=True)
@@ -40,7 +28,6 @@ class Finding:
     rule: str
     subject: str
     fix: str
-    count: int = 1
 
     @property
     def key(self) -> str:
@@ -120,169 +107,8 @@ def reads_app_state(module: Path) -> int | None:
     return None
 
 
-@dataclass(frozen=True)
-class Source:
-    feature: str
-    path: Path
-    subject: str
-    module: str
-    tree: ast.Module
-
-
-@dataclass
-class Bindings:
-    models: set[str]
-    modules: set[str]
-    decorators: set[str]
-    imported: dict[str, set[str]]
-    index: dict[str, set[str]]
-
-
-def is_pydantic(module: str) -> bool:
-    return module.split(".", maxsplit=1)[0] == "pydantic"
-
-
-def pydantic_bindings(tree: ast.AST, index: dict[str, set[str]]) -> Bindings:
-    found = Bindings(set(), set(), set(), {}, index)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            for alias in node.names:
-                bound = alias.asname or alias.name
-                if is_pydantic(node.module) and alias.name in MODEL_CLASSES:
-                    found.models.add(bound)
-                elif is_pydantic(node.module) and alias.name in PYDANTIC_MODULES:
-                    found.modules.add(bound)
-                elif is_pydantic(node.module) and alias.name == "dataclass":
-                    found.decorators.add(bound)
-                elif alias.name in index.get(node.module, set()):
-                    found.models.add(bound)
-                elif f"{node.module}.{alias.name}" in index:
-                    found.imported[bound] = index[f"{node.module}.{alias.name}"]
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                if is_pydantic(alias.name):
-                    found.modules.add(alias.asname or "pydantic")
-                elif alias.asname and alias.name in index:
-                    found.imported[alias.asname] = index[alias.name]
-    return found
-
-
-def root_name(node: ast.expr) -> tuple[ast.expr, list[str]]:
-    path: list[str] = []
-    while isinstance(node, ast.Attribute):
-        path.insert(0, node.attr)
-        node = node.value
-    return node, path
-
-
-def names_a_model(base: ast.expr, bound: Bindings) -> bool:
-    if isinstance(base, ast.Subscript):
-        base = base.value
-    if isinstance(base, ast.Name):
-        return base.id in bound.models
-    root, path = root_name(base)
-    if not isinstance(root, ast.Name) or not path:
-        return False
-    if root.id in bound.modules:
-        return path[-1] in MODEL_CLASSES
-    if root.id in bound.imported:
-        return path[-1] in bound.imported[root.id]
-    return path[-1] in bound.index.get(".".join([root.id, *path[:-1]]), set())
-
-
-def is_pydantic_dataclass(decorator: ast.expr, bound: Bindings) -> bool:
-    if isinstance(decorator, ast.Call):
-        decorator = decorator.func
-    if isinstance(decorator, ast.Name):
-        return decorator.id in bound.decorators
-    root, path = root_name(decorator)
-    return isinstance(root, ast.Name) and root.id in bound.modules and path[-1:] == ["dataclass"]
-
-
-def model_classes(tree: ast.AST, index: dict[str, set[str]]) -> list[str]:
-    bound = pydantic_bindings(tree, index)
-    found: list[str] = []
-    changed = True
-    while changed:
-        changed = False
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Assign) and names_a_model(node.value, bound):
-                for target in node.targets:
-                    if isinstance(target, ast.Name) and target.id not in bound.models:
-                        bound.models.add(target.id)
-                        changed = True
-            elif (
-                isinstance(node, ast.ClassDef)
-                and node.name not in found
-                and (
-                    any(names_a_model(base, bound) for base in node.bases)
-                    or any(is_pydantic_dataclass(d, bound) for d in node.decorator_list)
-                )
-            ):
-                bound.models.add(node.name)
-                found.append(node.name)
-                changed = True
-    return found
-
-
-def model_index(sources: list[Source]) -> dict[str, set[str]]:
-    index: dict[str, set[str]] = {}
-    while True:
-        grown = {
-            source.module: set(model_classes(source.tree, index))
-            for source in sources
-            if model_classes(source.tree, index)
-        }
-        if grown == index:
-            return index
-        index = grown
-
-
-def is_controller_module(dotted: str) -> bool:
-    parts = dotted.split(".")
-    if not dotted.startswith(FEATURES_PACKAGE + ".") or len(parts) < 5:
-        return False
-    return parts[4] == "controller" or (len(parts) == 5 and root_role(parts[4]) == "controller")
-
-
-def controller_imports(tree: ast.AST) -> int:
-    found = 0
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            found += sum(is_controller_module(alias.name) for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            whole = is_controller_module(node.module)
-            found += sum(
-                whole or is_controller_module(f"{node.module}.{alias.name}") for alias in node.names
-            )
-    return found
-
-
-def scan_sources(sources: list[Source]) -> Iterable[Finding]:
-    index = model_index(sources)
-    for source in sources:
-        models = len(model_classes(source.tree, index))
-        if models:
-            yield Finding(source.feature, "DTO_OUTSIDE_CONTROLLER", source.subject, DTO_FIX, models)
-        imports = controller_imports(source.tree)
-        if imports:
-            yield Finding(
-                source.feature,
-                "CONTROLLER_IMPORT_OUTSIDE_CONTROLLER",
-                source.subject,
-                CONTROLLER_IMPORT_FIX,
-                imports,
-            )
-
-
-def source(repo: Path, feature: str, path: Path, subject: str) -> Source:
-    module = ".".join(path.relative_to(repo).with_suffix("").parts)
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    return Source(feature, path, subject, module, tree)
-
-
 def scan_layer(
-    repo: Path, feature: str, layer: Path, exists: Callable[[Path], bool], sources: list[Source]
+    repo: Path, feature: str, layer: Path, exists: Callable[[Path], bool]
 ) -> Iterable[Finding]:
     rel = layer.relative_to(repo)
     init = layer / "__init__.py"
@@ -307,7 +133,6 @@ def scan_layer(
                 "or split a new feature",
             )
         elif child.suffix == ".py" and layer.name != "controller":
-            sources.append(source(repo, feature, child, f"{layer.name}/{child.name}"))
             line = reads_app_state(child)
             if line is not None:
                 yield Finding(
@@ -319,7 +144,7 @@ def scan_layer(
 
 
 def scan_feature(
-    repo: Path, feature_dir: Path, exists: Callable[[Path], bool], sources: list[Source]
+    repo: Path, feature_dir: Path, exists: Callable[[Path], bool]
 ) -> Iterable[Finding]:
     feature = feature_dir.name
     rel = feature_dir.relative_to(repo)
@@ -344,8 +169,6 @@ def scan_feature(
                 else f"move {crel} into a layer folder or delete it"
             )
             yield Finding(feature, "FEATURE_ROOT_FILE", child.name, fix)
-            if child.suffix == ".py" and root_role(child.stem) != "controller":
-                sources.append(source(repo, feature, child, child.name))
         elif child.name not in LAYERS:
             yield Finding(
                 feature,
@@ -355,7 +178,7 @@ def scan_feature(
                 "or into backend/app/shared when several features use them",
             )
         else:
-            yield from scan_layer(repo, feature, child, exists, sources)
+            yield from scan_layer(repo, feature, child, exists)
 
 
 def scan_tree(repo: Path) -> list[Finding]:
@@ -367,56 +190,9 @@ def scan_tree(repo: Path) -> list[Finding]:
         )
 
     features = sorted(p for p in (repo / FEATURES).iterdir() if p.is_dir() and exists(p))
-    sources: list[Source] = []
-    found = [
-        finding
-        for feature_dir in features
-        for finding in scan_feature(repo, feature_dir, exists, sources)
+    return [
+        finding for feature_dir in features for finding in scan_feature(repo, feature_dir, exists)
     ]
-    return found + list(scan_sources(sources))
-
-
-def unmigrated_import_fix(role: str, imported: str) -> str | None:
-    top = imported.split(".", maxsplit=1)[0]
-    if role != "controller" and top in HTTP:
-        return "keep HTTP in the controller; pass plain values to the service"
-    if role != "repository" and top in DRIVERS:
-        return "move the SQL and the psycopg types into the feature's repository"
-    return None
-
-
-def scan_imports(repo: Path) -> list[Finding]:
-    sys.path.insert(0, str(repo))
-    import grimp
-
-    graph = grimp.build_graph("backend", include_external_packages=True, cache_dir=None)
-    prefix = FEATURES_PACKAGE + "."
-    found: list[Finding] = []
-    for importer in sorted(m for m in graph.modules if m.startswith(prefix)):
-        source = importer.split(".")
-        if len(source) < 5:
-            continue
-        for imported in sorted(graph.find_modules_directly_imported_by(importer)):
-            target = imported.split(".")
-            if len(source) == 5:
-                fix = unmigrated_import_fix(root_role(source[4]), imported)
-                if fix is not None:
-                    found.append(
-                        Finding(source[3], "UNMIGRATED_IMPORT", f"{source[4]} -> {imported}", fix)
-                    )
-            crosses = imported.startswith(prefix) and len(target) >= 5 and target[3] != source[3]
-            if crosses and (len(source) == 5 or len(target) == 5):
-                owner = source[3] if len(source) == 5 else target[3]
-                found.append(
-                    Finding(
-                        owner,
-                        "CROSS_FEATURE_EDGE",
-                        f"{'.'.join(source[3:])} -> {'.'.join(target[3:])}",
-                        "call the other feature's service, "
-                        "or migrate one of the two features first",
-                    )
-                )
-    return found
 
 
 Counts = dict[str, dict[str, int]]
@@ -450,16 +226,36 @@ def baseline_at(repo: Path, ref: str, path: Path) -> Counts | None:
     return load_baseline(shown.stdout) if shown.returncode == 0 else None
 
 
-def migration_pairs(repo: Path) -> tuple[set[str], set[str]]:
-    data = tomllib.loads((repo / "pyproject.toml").read_text(encoding="utf-8"))
-    for contract in data.get("tool", {}).get("importlinter", {}).get("contracts", []):
-        if contract.get("name") == INDEPENDENCE_CONTRACT:
-            lines = contract.get("ignore_imports", [])
-            return (
-                {m.group(1) for line in lines if (m := OUTBOUND.match(line))},
-                {m.group(1) for line in lines if (m := INBOUND.match(line))},
-            )
-    return set(), set()
+def ignored_imports(text: str) -> dict[str, list[str]]:
+    contracts = tomllib.loads(text).get("tool", {}).get("importlinter", {}).get("contracts", [])
+    return {contract["name"]: contract.get("ignore_imports", []) for contract in contracts}
+
+
+def covers(pattern: str, line: str) -> bool:
+    expression = re.escape(pattern).replace(r"\*\*", ".+").replace(r"\*", r"[^.\s]+")
+    return re.fullmatch(expression, line) is not None
+
+
+def grown_exceptions(repo: Path, ref: str) -> list[str]:
+    shown = subprocess.run(
+        ["git", "-C", str(repo), "show", f"{ref}:pyproject.toml"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if shown.returncode != 0:
+        return []
+    before = ignored_imports(shown.stdout)
+    now = ignored_imports((repo / "pyproject.toml").read_text(encoding="utf-8"))
+    return [
+        f"pyproject.toml: import-linter contract '{name}' gained the exception "
+        f'"{line}" compared with {ref}. Exception lists only shrink. '
+        "Fix: remove the line and fix the import instead."
+        for name, lines in now.items()
+        if name in before
+        for line in lines
+        if not any(covers(earlier, line) for earlier in before[name])
+    ]
 
 
 def check(opts: Options) -> list[str]:
@@ -471,11 +267,11 @@ def check(opts: Options) -> list[str]:
             "that exists, e.g. --against HEAD."
         )
         return [missing]
-    findings = scan_tree(opts.repo) + scan_imports(opts.repo)
+    findings = scan_tree(opts.repo)
     current: Counts = {}
     for finding in findings:
         entries = current.setdefault(finding.feature, {})
-        entries[finding.key] = entries.get(finding.key, 0) + finding.count
+        entries[finding.key] = entries.get(finding.key, 0) + 1
     if opts.write:
         ordered = {feature: dict(sorted(current[feature].items())) for feature in sorted(current)}
         opts.baseline.write_text(json.dumps({"features": ordered}, indent=2) + "\n")
@@ -485,6 +281,7 @@ def check(opts: Options) -> list[str]:
     )
     errors: list[str] = []
     if opts.against is not None:
+        errors.extend(grown_exceptions(opts.repo, opts.against))
         before = baseline_at(opts.repo, opts.against, opts.baseline)
         for feature, entries in sorted(baseline.items()):
             earlier = (before or {}).get(feature, {})
@@ -524,8 +321,7 @@ def check(opts: Options) -> list[str]:
         if feature in baseline and not have:
             errors.append(
                 f"{feature}: no layer findings left. "
-                f'Lock the gain: delete "{feature}" from {BASELINE} '
-                f"and its two MIGRATION lines from '{INDEPENDENCE_CONTRACT}' in pyproject.toml."
+                f'Lock the gain: delete "{feature}" from {BASELINE}.'
             )
         elif gone:
             errors.append(
@@ -533,16 +329,6 @@ def check(opts: Options) -> list[str]:
                 f"Lock the gain: lower or delete them in {BASELINE}."
             )
             errors.extend(f"  {key}: {have.get(key, 0)} left, baseline {n}" for key, n in gone)
-    outbound, inbound = migration_pairs(opts.repo)
-    for feature in sorted(outbound | inbound | set(baseline)):
-        wanted = feature in baseline
-        if (feature in outbound) != wanted or (feature in inbound) != wanted:
-            need = "both MIGRATION lines" if wanted else "no MIGRATION lines"
-            errors.append(
-                f"{feature}: {'listed' if wanted else 'not listed'} in {BASELINE}, "
-                f"so '{INDEPENDENCE_CONTRACT}' "
-                f"in pyproject.toml needs {need} for it."
-            )
     return errors
 
 
