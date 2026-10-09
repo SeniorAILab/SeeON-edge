@@ -272,9 +272,31 @@ def test_available_analysis_reports_identical_served_timing(
         _login(client)
         response = client.get(f"/api/v1/clips/{CLIP_ID}/analysis")
     assert response.status_code == 200
-    assert response.json()["state"] == "available"
-    assert response.json()["served_timing_identical"] is True
-    assert response.json()["result"]["clip_sha256"] == CLIP_SHA256
+    assert response.json() == {
+        "state": "available",
+        "served_media_sha256": hashlib.sha256(b"playback").hexdigest(),
+        "served_timing_identical": True,
+        "result": {
+            "source": "clip_reanalysis",
+            "clip_id": CLIP_ID,
+            "clip_sha256": CLIP_SHA256,
+            "pose_model_sha256": "b" * 64,
+            "bed_model_sha256": "c" * 64,
+            "decoder_identity": "ffmpeg",
+            "analysis_profile_sha256": "d" * 64,
+            "image_width": 640,
+            "image_height": 480,
+            "time_base": {"numerator": 1, "denominator": 12000},
+            "frames": [
+                {
+                    "pts": 0,
+                    "status": "available",
+                    "boxes": [{"x1": 1, "y1": 1, "x2": 10, "y2": 10, "confidence": 0.9}],
+                }
+            ],
+            "bed_geometries": [],
+        },
+    }
 
 
 def test_available_analysis_on_original_reports_identical_served_timing(
@@ -343,6 +365,34 @@ def test_corrupt_newest_analysis_does_not_mask_older_valid_analysis(
     assert response.json()["result"]["clip_sha256"] == CLIP_SHA256
 
 
+@pytest.mark.parametrize(
+    ("payload", "recorded_sha256"),
+    [
+        (b"corrupt", hashlib.sha256(b"different").hexdigest()),
+        (b"corrupt", hashlib.sha256(b"corrupt").hexdigest()),
+    ],
+    ids=["sidecar-mismatch", "undecodable"],
+)
+def test_invalid_analysis_artifact_is_reported_as_artifact_invalid(
+    _environment: Path, app: FastAPI, payload: bytes, recorded_sha256: str
+) -> None:
+    clip_dir = _write_clip(_environment)
+    artifact = clip_dir / "clip.analysis.0123456789abcdef.json"
+    artifact.write_bytes(payload)
+    artifact.with_name(f"{artifact.name}.sha256").write_text(
+        recorded_sha256 + "\n", encoding="ascii"
+    )
+    with TestClient(app) as client:
+        _login(client)
+        response = client.get(f"/api/v1/clips/{CLIP_ID}/analysis")
+    assert response.status_code == 200
+    assert response.json() == {
+        "state": "unavailable",
+        "served_media_sha256": CLIP_SHA256,
+        "reason": "artifact_invalid",
+    }
+
+
 def test_worker_unreachable_is_an_honest_available_status(
     _environment: Path, app: FastAPI, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -399,24 +449,35 @@ def test_analysis_uses_original_when_rendition_attestation_is_unbound(
     assert response.json()["result"]["clip_sha256"] == CLIP_SHA256
 
 
-@pytest.mark.parametrize("worker_state", ["idle", "queued", "running", "failed"])
+@pytest.mark.parametrize(
+    "worker_body",
+    [
+        {"state": "idle"},
+        {"state": "queued"},
+        {"state": "running"},
+        {"state": "failed"},
+        {"state": "failed", "reason": "decode_error"},
+        {"state": "queued", "reason": "busy"},
+    ],
+    ids=["idle", "queued", "running", "failed", "failed-with-reason", "queued-with-reason"],
+)
 def test_worker_states_include_served_media_identity(
     _environment: Path,
     app: FastAPI,
     worker_server: _WorkerServer,
     monkeypatch: pytest.MonkeyPatch,
-    worker_state: str,
+    worker_body: dict[str, object],
 ) -> None:
     _write_clip(_environment)
     worker_server.response_status = 200
-    worker_server.response_body = {"state": worker_state}
+    worker_server.response_body = worker_body
     monkeypatch.setenv("ML_API_WORKER_STREAM_ORIGIN", worker_server.origin)
     get_settings.cache_clear()
     with TestClient(app) as client:
         _login(client)
         response = client.get(f"/api/v1/clips/{CLIP_ID}/analysis")
-    assert response.json()["state"] == worker_state
-    assert response.json()["served_media_sha256"] == CLIP_SHA256
+    assert response.status_code == 200
+    assert response.json() == {**worker_body, "served_media_sha256": CLIP_SHA256}
 
 
 def test_cancel_relays_empty_response_and_worker_auth_is_unreachable(
