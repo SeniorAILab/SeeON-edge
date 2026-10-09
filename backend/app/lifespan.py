@@ -64,6 +64,7 @@ from contracts.worker_config import (
     PulledWorkerConfig,
     detection_window_validation_error,
 )
+from shared.boundary import Boundary, isolate
 from shared.events.edge_ingest_client import (
     BackendEvidenceClient,
     EdgeIngestClient,
@@ -418,12 +419,10 @@ async def _backend_config_refresh_loop(
             pass
         if stop_event.is_set():
             break
-        try:
+        with isolate(Boundary.SENDER_TICK, stage="backend_config_refresh"):
             await asyncio.get_running_loop().run_in_executor(
                 executor, refresh_backend_config, app, stop_event
             )
-        except Exception:
-            logger.exception("backend config refresh tick failed")
 
 
 async def _backend_heartbeat_relay_loop(
@@ -441,10 +440,8 @@ async def _backend_heartbeat_relay_loop(
             pass
         if stop_event.is_set():
             break
-        try:
+        with isolate(Boundary.SENDER_TICK, stage="backend_heartbeat_relay"):
             await asyncio.get_running_loop().run_in_executor(executor, relay_heartbeats_once, app)
-        except Exception:
-            logger.exception("backend heartbeat relay tick failed")
 
 
 async def _backend_outbox_sender_loop(

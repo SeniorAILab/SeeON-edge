@@ -91,7 +91,7 @@ def test_heartbeat_relay_loop_relays_on_the_next_tick_after_a_failed_registry_re
         )
     )
 
-    with caplog.at_level(logging.ERROR, logger="backend.app.lifespan"):
+    with caplog.at_level(logging.WARNING, logger="shared.boundary"):
         task = asyncio.run(
             _run_until(
                 lambda stop, executor: lifespan_module._backend_heartbeat_relay_loop(
@@ -106,8 +106,12 @@ def test_heartbeat_relay_loop_relays_on_the_next_tick_after_a_failed_registry_re
 
     assert client.calls[:1] == ["cam-online"]
     assert not task.cancelled() and task.exception() is None
-    [record] = [r for r in caplog.records if r.name == "backend.app.lifespan"]
-    assert record.getMessage() == "backend heartbeat relay tick failed"
+    [record] = [r for r in caplog.records if r.name == "shared.boundary"]
+    assert record.levelno == logging.WARNING
+    assert record.getMessage() == (
+        "contained failure boundary=sender_tick stage=backend_heartbeat_relay "
+        "exception_class=PostgresError"
+    )
     assert record.exc_info is not None
     assert str(record.exc_info[1]) == "connection lost during registry read"
 
@@ -128,7 +132,7 @@ def test_config_refresh_loop_refreshes_on_the_next_tick_after_a_failed_refresh(
     monkeypatch.setattr(lifespan_module, "_backend_config_refresh_sec", lambda: 0.01)
     app = SimpleNamespace(state=SimpleNamespace())
 
-    with caplog.at_level(logging.ERROR, logger="backend.app.lifespan"):
+    with caplog.at_level(logging.WARNING, logger="shared.boundary"):
         task = asyncio.run(
             _run_until(
                 lambda stop, executor: lifespan_module._backend_config_refresh_loop(
@@ -142,8 +146,12 @@ def test_config_refresh_loop_refreshes_on_the_next_tick_after_a_failed_refresh(
 
     assert calls[:2] == ["refresh", "refresh"]
     assert not task.cancelled() and task.exception() is None
-    [record] = [r for r in caplog.records if r.name == "backend.app.lifespan"]
-    assert record.getMessage() == "backend config refresh tick failed"
+    [record] = [r for r in caplog.records if r.name == "shared.boundary"]
+    assert record.levelno == logging.WARNING
+    assert record.getMessage() == (
+        "contained failure boundary=sender_tick stage=backend_config_refresh "
+        "exception_class=PostgresError"
+    )
     assert record.exc_info is not None
     assert str(record.exc_info[1]) == "connection lost during roster resume"
 
