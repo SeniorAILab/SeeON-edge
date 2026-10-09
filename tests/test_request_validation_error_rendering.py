@@ -228,6 +228,10 @@ def _at(*path: str | int) -> _Edit:
     return edit
 
 
+def _extra_record_key(body: dict[str, Any]) -> None:
+    body["records"][0][_SURROGATE] = 1
+
+
 _RECORD_STRINGS = (
     "camera_id",
     "producer",
@@ -261,6 +265,7 @@ _SURROGATE_CASES = [
         pytest.param(_at("provenance", name), [("provenance", name)], id=f"provenance-{name}")
         for name in WireProvenance.__slots__
     ],
+    pytest.param(_extra_record_key, [("records", 0)], id="record-extra-key-name"),
 ]
 
 
