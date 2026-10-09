@@ -131,6 +131,7 @@ class OrtPoseBbox56Runner:
         self.receipt_transition_votes = calibration.temporal_rule.m
         self.receipt_transition_window = calibration.temporal_rule.n
         self.promotion_eligible = calibration.promotion_eligible
+        self.calibration_applies = calibration.promotion_eligible
         self.artifact_digest = artifact_digest
         self.calibration_digest = calibration_digest
         self.preprocessing_identity = conformance.preprocessing_identity
@@ -158,7 +159,11 @@ class OrtPoseBbox56Runner:
         *,
         session_factory: SessionFactory | None = None,
     ) -> OrtPoseBbox56Runner:
-        return cls._load(Path(artifact_dir).expanduser().resolve(), member_digests, session_factory)
+        runner = cls._load(
+            Path(artifact_dir).expanduser().resolve(), member_digests, session_factory
+        )
+        runner.calibration_applies = True
+        return runner
 
     @classmethod
     def _load(

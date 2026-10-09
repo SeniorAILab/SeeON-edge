@@ -606,7 +606,7 @@ def test_packaged_bundle_applies_a_runtime_manifest_with_nvdec_camera(
 
 def test_selected_bundle_uses_the_admitted_onnx_member_without_model_pt(tmp_path: Path) -> None:
     artifact_dir = write_admitted_pose_bbox56_bundle(
-        tmp_path, receipt_threshold=0.31, promotion_eligible=True
+        tmp_path, receipt_threshold=0.31, promotion_eligible=False
     )
 
     runner = OrtPoseBbox56Runner.from_admitted_bundle(
@@ -620,7 +620,7 @@ def test_selected_bundle_uses_the_admitted_onnx_member_without_model_pt(tmp_path
         runner.artifact_digest
         == hashlib.sha256((artifact_dir / "model.onnx").read_bytes()).hexdigest()
     )
-    assert (runner.receipt_threshold, runner.promotion_eligible) == (0.31, True)
+    assert (runner.receipt_threshold, runner.promotion_eligible) == (0.31, False)
     policy = default_policy_bundle(("camera-a",)).resolve("camera-a", "fall", 2)
     effective = _effective_transition_threshold(runner, policy)
     assert effective.transition_threshold == pytest.approx(0.31)

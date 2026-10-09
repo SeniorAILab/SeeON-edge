@@ -107,6 +107,7 @@ def _frame(
 class _FakeRunner:
     receipt_threshold = 0.42
     promotion_eligible = True
+    calibration_applies = True
 
 
 def _fake_replay_factory(runs_by_camera: dict[str, ReplayRun]):

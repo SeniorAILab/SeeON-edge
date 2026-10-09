@@ -49,6 +49,7 @@ class PoseBbox56BundleRunner:
         self._temperature = temperature
         self.receipt_threshold = receipt_threshold
         self.promotion_eligible = promotion_eligible
+        self.calibration_applies = promotion_eligible
         self.artifact_digest = artifact_digest
         self.preprocessing_identity = preprocessing_identity
 
