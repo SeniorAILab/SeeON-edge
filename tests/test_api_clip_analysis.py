@@ -360,10 +360,10 @@ def test_field_1002e76a_analysis_bytes_decode_and_are_served_as_written(
     decoded = decode_clip_analysis(FIELD_1002E76A_ANALYSIS_BYTES)
     assert decoded == _field_result()
     assert encode_clip_analysis(decoded) == FIELD_1002E76A_ANALYSIS_BYTES, (
-        "encoder output no longer matches the artifact field revision 1002e76a wrote: "
-        "this breaks compatibility with existing field artifacts (the worker raises "
-        "identity_collision when republishing one) and needs a migration or versioning "
-        "decision, not a new FIELD_1002E76A_ANALYSIS_BYTES"
+        "encoder output no longer matches the artifact field revision 1002e76a wrote. "
+        "If unintended, fix the encoder. If intended, decide on a migration or versioning: "
+        "existing field artifacts break (the worker raises identity_collision when "
+        "republishing one); do not replace FIELD_1002E76A_ANALYSIS_BYTES"
     )
     clip_dir = _write_clip(_environment)
     (clip_dir / FIELD_1002E76A_ANALYSIS_NAME).write_bytes(FIELD_1002E76A_ANALYSIS_BYTES)
