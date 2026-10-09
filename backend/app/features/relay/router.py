@@ -11,7 +11,18 @@ from contextlib import contextmanager
 from typing import Annotated, Any, Protocol
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ModelWrapValidatorHandler,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 
 from backend.app.edge_db import CheckViolation, DataError, NotNullViolation
 from backend.app.edge_db.authority import AuthorityFenced
@@ -202,6 +213,46 @@ class RelaySnapshotDispositionRequest(BaseModel):
     audit: RelayAuditEnvelope | None = None
 
 
+def _envelope_encodable(value: object) -> bool:
+    try:
+        json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except ValueError:
+        return False
+    return True
+
+
+class RelayAlertEvidence(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    domain: StrictStr | None = None
+    identity: StrictStr | StrictInt | None = None
+    time_sec: StrictInt | StrictFloat | None = None
+    person_id: StrictInt | None = None
+    bed_id: StrictInt | None = None
+    clip_id: StrictStr | None = None
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def unencodable_evidence_is_left_to_the_envelope(
+        cls, data: Any, handler: ModelWrapValidatorHandler[RelayAlertEvidence]
+    ) -> RelayAlertEvidence:
+        if isinstance(data, dict) and not _envelope_encodable(data):
+            evidence = cls.model_construct()
+            evidence.__pydantic_extra__ = dict(data)
+            return evidence
+        return handler(data)
+
+
+def _evidence_values(evidence: RelayAlertEvidence | None) -> dict[str, Any] | None:
+    if evidence is None:
+        return None
+    known = evidence.model_fields_set & set(RelayAlertEvidence.model_fields)
+    return {**{key: getattr(evidence, key) for key in known}, **(evidence.model_extra or {})}
+
+
+_EVIDENCE_JSON = TypeAdapter(dict[str, Any])
+
+
 class RelayAlertRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -212,7 +263,7 @@ class RelayAlertRequest(BaseModel):
     camera_id: str = Field(min_length=1)
     facility_id: str = Field(min_length=1)
     resident_id: str | None = None
-    evidence: dict[str, Any] | None = None
+    evidence: RelayAlertEvidence | None = None
     audit: RelayAuditEnvelope | None = None
     snapshot_jpeg_base64: str | None = Field(
         default=None, max_length=MAX_INLINE_SNAPSHOT_BASE64_CHARS
@@ -474,15 +525,15 @@ _IDLESS_ALERT_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "urn:seeon-edge:relay-a
 def _alert_event_id(payload: RelayAlertRequest) -> str:
     if payload.edge_event_id is not None:
         return payload.edge_event_id
-    canonical = json.dumps(
-        payload.model_dump(
-            exclude={"edge_event_id", "attempt_ordinal", "snapshot_jpeg_base64"},
-            exclude_none=True,
-            mode="json",
-        ),
-        sort_keys=True,
-        separators=(",", ":"),
+    fields = payload.model_dump(
+        exclude={"edge_event_id", "attempt_ordinal", "snapshot_jpeg_base64", "evidence"},
+        exclude_none=True,
+        mode="json",
     )
+    evidence = _evidence_values(payload.evidence)
+    if evidence is not None:
+        fields["evidence"] = _EVIDENCE_JSON.dump_python(evidence, mode="json")
+    canonical = json.dumps(fields, sort_keys=True, separators=(",", ":"))
     return str(uuid.uuid5(_IDLESS_ALERT_NAMESPACE, canonical))
 
 
@@ -548,7 +599,7 @@ def _relay_event(payload: RelayAlertRequest, edge_event_id: str) -> RelayEvent:
         camera_id=payload.camera_id,
         facility_id=payload.facility_id,
         resident_id=payload.resident_id,
-        evidence=payload.evidence,
+        evidence=_evidence_values(payload.evidence),
         audit=None if payload.audit is None else payload.audit.model_dump(exclude_none=True),
     )
 
