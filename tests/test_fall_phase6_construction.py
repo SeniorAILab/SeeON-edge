@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from contracts.model_reference import parse_model_reference
@@ -29,11 +27,3 @@ def test_mutable_ref_is_a_config_error() -> None:
         local_env.worker_models_config_from_environment(
             {"ML_WORKER_FALL_MODEL": "owner/model@main"}
         )
-
-
-def test_unset_fall_model_env_keeps_the_packaged_default(packaged_fall_bundle: Path) -> None:
-    for env in ({}, {"ML_WORKER_FALL_MODEL": ""}):
-        config = local_env.worker_models_config_from_environment(env)
-        assert config.fall_model is None
-        assert config.fall is not None
-        assert config.fall.artifact_dir == packaged_fall_bundle.resolve()

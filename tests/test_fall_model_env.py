@@ -9,7 +9,7 @@ from contracts.model_reference import parse_model_reference
 from tests_support.pose_bbox56_bundle_artifact import write_admitted_pose_bbox56_bundle
 from worker.adapters.model.errors import ModelLoadError
 from worker.adapters.model.ort_pose_bbox56 import OrtPoseBbox56Runner
-from worker.runtime.config import WorkerConfig
+from worker.runtime.config import WorkerConfig, local_env
 from worker.runtime.config.local_env import worker_models_config_from_environment
 from worker.runtime.lease import GpuLease
 from worker.runtime.worker import WorkerRuntime
@@ -86,3 +86,11 @@ def test_fall_model_env_refuses_a_missing_dir_naming_the_reference(tmp_path: Pat
 
     with pytest.raises(ModelLoadError, match=f"^fall model {REFERENCE}: unreadable or malformed"):
         runtime._create_fall_model()
+
+
+def test_unset_fall_model_env_keeps_the_packaged_default(packaged_fall_bundle: Path) -> None:
+    for env in ({}, {"ML_WORKER_FALL_MODEL": ""}):
+        config = local_env.worker_models_config_from_environment(env)
+        assert config.fall_model is None
+        assert config.fall is not None
+        assert config.fall.artifact_dir == packaged_fall_bundle.resolve()
