@@ -66,16 +66,12 @@
       "FEATURE_ROOT_FILE topology_query.py": 1,
       "FEATURE_ROOT_FILE update_command.py": 1,
       "FEATURE_ROOT_FILE worker_config_service.py": 1,
-      "UNMIGRATED_IMPORT camera_crud_service -> psycopg": 1,
       "UNMIGRATED_IMPORT edge_topology_sync_state -> psycopg": 1,
       "UNMIGRATED_IMPORT location_operations -> psycopg": 1,
       "UNMIGRATED_IMPORT topology -> psycopg": 1,
-      "UNMIGRATED_IMPORT topology_confirmation -> psycopg": 1,
       "UNMIGRATED_IMPORT topology_confirmation_state -> psycopg": 1
     },
     "clips": {
-      "CONTROLLER_IMPORT_OUTSIDE_CONTROLLER analysis_status.py": 1,
-      "CONTROLLER_IMPORT_OUTSIDE_CONTROLLER listing.py": 1,
       "CROSS_FEATURE_EDGE clips.router -> audit.catalog": 1,
       "CROSS_FEATURE_EDGE clips.router -> audit.http": 1,
       "CROSS_FEATURE_EDGE clips.router -> evidence.receipt_store": 1,
@@ -109,13 +105,11 @@
       "CROSS_FEATURE_EDGE connection.router -> audit.http": 1,
       "CROSS_FEATURE_EDGE connection.router -> audit.store": 1,
       "CROSS_FEATURE_EDGE connection.router -> cameras.dependencies": 1,
-      "CROSS_FEATURE_EDGE connection.router -> cameras.router": 1,
       "CROSS_FEATURE_EDGE connection.router -> status.backend_heartbeat_relay": 1,
       "CROSS_FEATURE_EDGE connection.topology_confirmation_router -> audit.catalog": 1,
       "CROSS_FEATURE_EDGE connection.topology_confirmation_router -> audit.http": 1,
       "CROSS_FEATURE_EDGE connection.topology_confirmation_router -> audit.store": 1,
       "CROSS_FEATURE_EDGE connection.topology_confirmation_router -> cameras.edge_topology_sync_state": 1,
-      "CROSS_FEATURE_EDGE connection.topology_confirmation_router -> cameras.router": 1,
       "CROSS_FEATURE_EDGE connection.topology_confirmation_router -> cameras.topology_client": 1,
       "CROSS_FEATURE_EDGE connection.topology_confirmation_router -> cameras.topology_confirmation": 1,
       "CROSS_FEATURE_EDGE connection.topology_retry_coordinator -> audit.postgres_runtime": 1,
@@ -134,9 +128,7 @@
       "FEATURE_ROOT_FILE store.py": 1,
       "FEATURE_ROOT_FILE topology_confirmation_router.py": 1,
       "FEATURE_ROOT_FILE topology_retry_coordinator.py": 1,
-      "FEATURE_ROOT_FILE topology_retry_result.py": 1,
-      "UNMIGRATED_IMPORT topology_retry_coordinator -> psycopg": 1,
-      "UNMIGRATED_IMPORT topology_retry_result -> psycopg": 1
+      "FEATURE_ROOT_FILE topology_retry_result.py": 1
     },
     "detection_settings": {
       "CROSS_FEATURE_EDGE detection_settings.router -> audit.catalog": 1,
@@ -151,11 +143,9 @@
       "FEATURE_ROOT_FILE policy_store.py": 1,
       "FEATURE_ROOT_FILE router.py": 1,
       "FEATURE_ROOT_FILE store.py": 1,
-      "UNMIGRATED_IMPORT policy_diff -> psycopg": 1,
       "UNMIGRATED_IMPORT policy_mutations -> psycopg": 1
     },
     "diagnostics": {
-      "CROSS_FEATURE_EDGE diagnostics.router -> relay.router": 1,
       "FEATURE_INIT_CODE __init__.py": 1,
       "FEATURE_ROOT_FILE coverage.py": 1,
       "FEATURE_ROOT_FILE ingest.py": 1,
@@ -195,8 +185,6 @@
       "CROSS_FEATURE_EDGE evidence.router -> audit.http": 1,
       "CROSS_FEATURE_EDGE evidence.router -> audit.store": 1,
       "CROSS_FEATURE_EDGE evidence.router -> clips.store": 1,
-      "CROSS_FEATURE_EDGE evidence.router -> relay.auth": 1,
-      "CROSS_FEATURE_EDGE evidence.router -> relay.router": 1,
       "CROSS_FEATURE_EDGE evidence.router -> runtime_settings.dependencies": 1,
       "FEATURE_ROOT_FILE event_outbox.py": 1,
       "FEATURE_ROOT_FILE operator_router.py": 1,
@@ -211,8 +199,7 @@
       "FEATURE_ROOT_FILE relay_projection.py": 1,
       "FEATURE_ROOT_FILE router.py": 1,
       "UNMIGRATED_IMPORT event_outbox -> psycopg": 1,
-      "UNMIGRATED_IMPORT outbox_delivery -> psycopg": 1,
-      "UNMIGRATED_IMPORT outbox_dispatch -> psycopg": 1
+      "UNMIGRATED_IMPORT outbox_delivery -> psycopg": 1
     },
     "relay": {
       "CROSS_FEATURE_EDGE relay.router -> audit.catalog": 1,
@@ -228,7 +215,6 @@
       "CROSS_FEATURE_EDGE relay.router -> evidence.relay_projection": 1,
       "CROSS_FEATURE_EDGE relay.router -> status.heartbeat_store": 1,
       "CROSS_FEATURE_EDGE relay.router -> status.runtime_status_store": 1,
-      "FEATURE_ROOT_FILE auth.py": 1,
       "FEATURE_ROOT_FILE router.py": 1
     },
     "runtime_settings": {

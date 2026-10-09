@@ -16,7 +16,7 @@ from backend.app.features.evidence.record_store import (
     EvidenceReviewConflictError,
     ReviewDisposition,
 )
-from backend.app.shared.dashboard_auth import authorize_dashboard
+from backend.app.shared.http.dashboard_auth import authorize_dashboard
 
 router = APIRouter(tags=["evidence"])
 

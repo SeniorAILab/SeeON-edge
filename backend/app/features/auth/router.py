@@ -15,7 +15,7 @@ from backend.app.features.audit.http import (
     mutation_audit,
 )
 from backend.app.features.audit.store import AuditEvent, utc_now
-from backend.app.shared.dashboard_auth import (
+from backend.app.shared.http.dashboard_auth import (
     DASHBOARD_SESSION_COOKIE,
     DashboardSessionStore,
     authorize_dashboard,

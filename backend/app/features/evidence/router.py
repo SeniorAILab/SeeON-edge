@@ -31,10 +31,10 @@ from backend.app.features.evidence.receipt_store import (
     VerifiedArtifact,
     verified_artifact,
 )
-from backend.app.features.relay.auth import authorize_relay as _authorize
-from backend.app.features.relay.router import RELAY_TOKEN_HEADER, _camera_binding
 from backend.app.features.runtime_settings.dependencies import get_runtime_settings_store
-from backend.app.shared.backend_client_bundle import backend_client_bundle
+from backend.app.shared.http.backend_client_bundle import backend_client_bundle
+from backend.app.shared.http.relay_http import RELAY_TOKEN_HEADER, camera_binding
+from backend.app.shared.http.relay_http import authorize_relay as _authorize
 from shared.events.clip_identity import is_clip_id
 from shared.events.evidence_export_client import ReadyClipRequest, UnavailableClipRequest
 from shared.events.evidence_export_contract import (
@@ -162,7 +162,7 @@ def capabilities(
     _authorize(request, relay_token)
     if not _enabled(request):
         return CapabilityResponse(event_idempotency=1, clip_export=0)
-    binding = _camera_binding(request, camera_id, "")
+    binding = camera_binding(request, camera_id, "")
     bound_camera_id = binding.get("backend_camera_id")
     if not isinstance(bound_camera_id, str) or not bound_camera_id.strip():
         _LOGGER.warning(
@@ -192,7 +192,7 @@ def export_clip(
     _authorize(request, relay_token)
     if not _enabled(request) or not is_clip_id(clip_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="clip export unavailable")
-    binding = _camera_binding(request, payload.camera_id, payload.facility_id)
+    binding = camera_binding(request, payload.camera_id, payload.facility_id)
     bound_camera_id = binding.get("backend_camera_id")
     if not isinstance(bound_camera_id, str) or not bound_camera_id.strip():
         raise HTTPException(

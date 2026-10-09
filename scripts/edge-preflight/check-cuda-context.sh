@@ -25,8 +25,8 @@ PY
 case "$rc" in
   0) : ;;
   no-libcuda) die "libcuda.so.1 not found in the container/host" ;;
-  100) die "cuInit(0)=100 (CUDA_ERROR_NO_DEVICE): CUDA context cannot init even though nvidia-smi works. Known driver/CUDA-pairing breakage (see ADR-0002 + docs/runbooks/driver-cuda-alignment.md). Align the host driver/CUDA before starting the GPU worker." ;;
-  *) die "cuInit(0)=$rc (not 0): CUDA driver API init failed; see docs/runbooks/driver-cuda-alignment.md" ;;
+  100) die "cuInit(0)=100 (CUDA_ERROR_NO_DEVICE): CUDA context cannot init even though nvidia-smi works. Known driver/CUDA-pairing breakage (see ADR-0002). Align the host driver/CUDA before starting the GPU worker." ;;
+  *) die "cuInit(0)=$rc (not 0): CUDA driver API init failed" ;;
 esac
 
 # torch-level check (arch kernels + availability), when torch is importable.

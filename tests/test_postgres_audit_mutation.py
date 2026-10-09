@@ -20,7 +20,7 @@ from backend.app.features.cameras.store import CameraRegistryStore
 from backend.app.features.cameras.update_command import CameraUpdate
 from backend.app.features.connection.topology_retry_coordinator import TopologyRetryCoordinator
 from backend.app.main import create_app, no_lifespan
-from backend.app.shared.dashboard_auth import (
+from backend.app.shared.http.dashboard_auth import (
     DASHBOARD_SESSION_COOKIE,
     DashboardSessionStore,
     PlaintextDashboardCredentials,

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict
 
 from backend.app.features.clips.store import CLIP_STORE_DIR_ENV, DEFAULT_CLIP_STORE_DIR
-from backend.app.shared.backend_client_bundle import backend_client_bundle
+from backend.app.shared.http.backend_client_bundle import backend_client_bundle
 
 router = APIRouter(tags=["system"])
 
