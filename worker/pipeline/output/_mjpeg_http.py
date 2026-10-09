@@ -317,7 +317,7 @@ def build_http_server(
                 return
 
         def _handle_get_pose(self, camera_id: str) -> None:
-            if not _authorized_pose(self.headers.get(RELAY_TOKEN_HEADER), probe_token):
+            if not _authorized_probe(self.headers.get(RELAY_TOKEN_HEADER), probe_token):
                 self.send_error(HTTPStatus.FORBIDDEN)
                 return
             if camera_id == "" or not store.is_known(camera_id):
@@ -326,7 +326,7 @@ def build_http_server(
             self._write_selection_json(store.get_selection(camera_id))
 
         def _handle_set_pose(self, camera_id: str) -> None:
-            if not _authorized_pose(self.headers.get(RELAY_TOKEN_HEADER), probe_token):
+            if not _authorized_probe(self.headers.get(RELAY_TOKEN_HEADER), probe_token):
                 self.send_error(HTTPStatus.FORBIDDEN)
                 return
             if camera_id == "" or not store.is_known(camera_id):
@@ -512,12 +512,6 @@ def _authorized_probe(supplied: str | None, expected: str | None) -> bool:
         supplied.encode("utf-8"),
         expected.strip().encode("utf-8"),
     )
-
-
-def _authorized_pose(supplied: str | None, expected: str | None) -> bool:
-    if expected is None or expected.strip() == "":
-        return True
-    return _authorized_probe(supplied, expected)
 
 
 def _recovered_trace(

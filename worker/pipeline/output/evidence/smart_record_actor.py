@@ -8,6 +8,7 @@ from threading import RLock
 from typing import Literal
 from uuid import uuid4
 
+from shared.boundary import Boundary, isolate
 from worker.interfaces.media_plane import (
     EarlyStopUnsupported,
     MediaPlane,
@@ -189,7 +190,13 @@ class SmartRecordActor:
                 ),
                 boundary=recording.boundary,
             )
-            self._sink(sealed)
+            with isolate(
+                Boundary.CLIP_SEAL,
+                stage="sink",
+                camera_id=self._camera_id,
+                clip_id=recording.clip_id,
+            ):
+                self._sink(sealed)
             self._sealed_sessions.add(info.session_id)
             self._recording = None
             self._state = SmartRecordState.IDLE

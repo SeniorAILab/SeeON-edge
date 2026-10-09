@@ -101,8 +101,7 @@ def test_failed_seal_replays_contributors_and_discards_missing_media(tmp_path: P
     binding.emit_for_frame(_event("two"), _trigger())
 
     assert callable(plane.callback)
-    with pytest.raises(FlowClipPublicationError, match="publication failed"):
-        plane.callback(RecordingInfo(1, "camera-a", str(media), 12_000, 640, 360))
+    plane.callback(RecordingInfo(1, "camera-a", str(media), 12_000, 640, 360))
 
     pending = sidecars.pending_for_camera("camera-a")
     assert len(pending) == 1

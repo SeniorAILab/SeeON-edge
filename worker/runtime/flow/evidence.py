@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -38,6 +39,7 @@ class FlowEvidenceBinding:
     execution_records: ExecutionRecordSink | None = None
     now: Callable[[], datetime] = lambda: datetime.now(UTC)
     _events: dict[str, BusinessEvent] = field(default_factory=dict, init=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     sealed_recovery_missing_media_total: int = field(default=0, init=False)
 
     def emit_for_frame(self, event: BusinessEvent, trigger: NativeEvidenceTrigger) -> None:
@@ -96,15 +98,21 @@ class FlowEvidenceBinding:
             self.execution_records,
             _delivery_record(True, reason),
         )
-        self._events[event_ref] = event
+        with self._lock:
+            self._events[event_ref] = event
         self.actor.admit(event_ref, detected_at)
 
     def on_sealed(self, sealed: ClipSealed) -> None:
-        sidecar_path = self.sidecars.persist(sealed, self._events)
-        recovery = FlowSealedRecovery(sealed, dict(self._events), self.camera_id, sidecar_path)
+        with self._lock:
+            events = dict(self._events)
+        if sealed.contributors and all(c.event_ref not in events for c in sealed.contributors):
+            return
+        sidecar_path = self.sidecars.persist(sealed, events)
+        recovery = FlowSealedRecovery(sealed, events, self.camera_id, sidecar_path)
         self._publish_recovery(recovery)
-        for contributor in sealed.contributors:
-            del self._events[contributor.event_ref]
+        with self._lock:
+            for contributor in sealed.contributors:
+                self._events.pop(contributor.event_ref, None)
 
     def replay_sealed(self) -> None:
         for recovery in self.sidecars.pending_for_camera(self.camera_id):

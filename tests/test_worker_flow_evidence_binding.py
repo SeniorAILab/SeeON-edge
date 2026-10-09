@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -225,7 +226,7 @@ def test_successful_seal_retires_the_sidecar_so_a_restart_does_not_replay_it(
     assert publisher.calls == 1
 
 
-def test_publication_failure_surfaces_without_completing_the_incident(tmp_path: Path) -> None:
+def test_publication_failure_is_contained_and_left_for_replay(tmp_path: Path) -> None:
     plane, now = _Plane(), [0.0]
     actor, binding, stager, publisher = _binding(
         plane, now, [datetime(2026, 1, 1, tzinfo=UTC)], tmp_path
@@ -233,11 +234,10 @@ def test_publication_failure_surfaces_without_completing_the_incident(tmp_path: 
     binding.emit_for_frame(_event("one"), _trigger())
     publisher.fail = True
 
-    with pytest.raises(FlowClipPublicationError, match="publication failed"):
-        plane.seal(1)
+    plane.seal(1)
 
     assert stager.completed == []
-    assert actor.state.name == "FINALIZING"
+    assert actor.state.name == "IDLE"
     assert len(binding.sidecars.pending_for_camera("camera-a")) == 1
 
 
@@ -493,3 +493,45 @@ def test_duck_with_accepted_true_is_not_proof_of_admission(tmp_path: Path) -> No
         binding.emit_for_frame(_event("one"), _trigger())
     (record,) = sink.records
     assert record.outcome == "refused"  # type: ignore[attr-defined]
+
+
+def _sealed(*refs: str) -> ClipSealed:
+    contributors = tuple(ClipContributor(ref, "2026-01-01T00:00:00Z") for ref in refs)
+    return ClipSealed("clip", "/clips/x.mp4", 12_000, contributors, "none")
+
+
+def test_double_seal_is_a_noop(tmp_path: Path) -> None:
+    plane, now = _Plane(), [0.0]
+    _, binding, stager, _ = _binding(plane, now, [datetime(2026, 1, 1, tzinfo=UTC)], tmp_path)
+    binding.emit_for_frame(_event("one"), _trigger())
+    binding.on_sealed(_sealed("one"))
+    binding.on_sealed(_sealed("one"))
+    assert stager.completed == [("one", "clip")]
+
+
+def test_concurrent_emit_and_seal_do_not_raise(tmp_path: Path) -> None:
+    plane, now = _Plane(), [0.0]
+    dates = [datetime(2026, 1, 1, tzinfo=UTC)] * 1000
+    _, binding, _, _ = _binding(plane, now, dates, tmp_path)
+    errors: list[BaseException] = []
+
+    def emit() -> None:
+        try:
+            for index in range(1000):
+                binding.emit_for_frame(_event(f"e{index}"), _trigger())
+        except Exception as error:  # noqa: BLE001
+            errors.append(error)
+
+    def seal() -> None:
+        try:
+            for index in range(1000):
+                binding.on_sealed(_sealed(f"e{index}"))
+        except Exception as error:  # noqa: BLE001
+            errors.append(error)
+
+    threads = [threading.Thread(target=emit), threading.Thread(target=seal)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
