@@ -64,9 +64,16 @@ def _analysis_status(
     request: Request, clip_id: str, located: LocatedClip, store: ClipStore
 ) -> ClipAnalysisResponse:
     try:
-        return assemble_clip_analysis_status(_transport(request), clip_id, located, store)
+        analysis = assemble_clip_analysis_status(_transport(request), clip_id, located, store)
     except AnalysisRelayError as error:
         raise HTTPException(status_code=error.status_code, detail=error.detail) from error
+    return ClipAnalysisResponse(
+        state=analysis.state,
+        served_media_sha256=analysis.served_media_sha256,
+        reason=analysis.reason,
+        served_timing_identical=analysis.served_timing_identical,
+        result=analysis.result,
+    )
 
 
 @router.post(
