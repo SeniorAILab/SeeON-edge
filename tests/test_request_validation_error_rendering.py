@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 from fastapi import APIRouter
@@ -185,9 +187,12 @@ _GAP = WireGap("sdk", 1, 2, 1, 2, 2, "lane-overflow", 1, 1)
 _SURROGATE = "\ud800"
 
 
-def _batch() -> dict[str, object]:
+_Edit = Callable[[dict[str, Any]], None]
+
+
+def _batch() -> dict[str, Any]:
     batch = WireBatch("camera-1", "boot-1", _PROVENANCE, (_RECORD,), (_GAP,))
-    loaded: dict[str, object] = json.loads(batch.encode())
+    loaded: dict[str, Any] = json.loads(batch.encode())
     del loaded["batch_id"]
     for record in loaded["records"]:
         del record["record_id"]
@@ -205,17 +210,17 @@ def _unicode_errors(*locs: tuple[object, ...]) -> bytes:
     return b'{"detail":[' + b",".join(items) + b"]}"
 
 
-def _everywhere(field: str) -> object:
-    def edit(body: dict[str, object]) -> None:
+def _everywhere(field: str) -> _Edit:
+    def edit(body: dict[str, Any]) -> None:
         body[field] = _SURROGATE
         body["records"][0][field] = _SURROGATE
 
     return edit
 
 
-def _at(*path: str | int) -> object:
-    def edit(body: dict[str, object]) -> None:
-        target: object = body
+def _at(*path: str | int) -> _Edit:
+    def edit(body: dict[str, Any]) -> None:
+        target: Any = body
         for step in path[:-1]:
             target = target[step]
         target[path[-1]] = _SURROGATE
@@ -261,7 +266,7 @@ _SURROGATE_CASES = [
 
 @pytest.mark.parametrize(("edit", "locs"), _SURROGATE_CASES)
 def test_execution_record_string_fields_with_a_surrogate_are_a_422(
-    client: TestClient, edit: object, locs: list[tuple[object, ...]]
+    client: TestClient, edit: _Edit, locs: list[tuple[object, ...]]
 ) -> None:
     body = _batch()
     edit(body)
@@ -313,4 +318,67 @@ def test_a_failure_while_rendering_that_is_not_about_encoding_stays_a_500(
     assert _post(client, "/__explode", {"value": "opaque"}) == (
         500,
         b'{"detail":"internal server error"}',
+    )
+
+
+def _nested(depth: int) -> object:
+    value: object = "é"
+    for _ in range(depth):
+        value = [value]
+    return value
+
+
+@pytest.mark.parametrize("depth", [973, 1200])
+def test_a_recursion_error_while_rendering_a_deep_input_stays_a_500(
+    client: TestClient, caplog: pytest.LogCaptureFixture, depth: int
+) -> None:
+    with caplog.at_level(logging.ERROR, logger="backend.app.main"):
+        status, body = _post(client, "/api/v1/relay/alerts", {**ALERT, "camera_id": _nested(depth)})
+    assert (status, body) == (500, b'{"detail":"internal server error"}')
+    assert "exception_class=RecursionError" in caplog.text
+
+
+def test_a_deep_input_below_the_recursion_limit_is_a_422(client: TestClient) -> None:
+    assert _post(client, "/api/v1/relay/alerts", {**ALERT, "camera_id": _nested(900)}) == (
+        422,
+        b'{"detail":[{"type":"string_type","loc":["body","camera_id"],'
+        b'"msg":"Input should be a valid string","input":'
+        + b"[" * 900
+        + b'"\xc3\xa9"'
+        + b"]" * 900
+        + b"}]}",
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "escaped"),
+    [
+        (b"\xff\xfe", b"\\\\xff\\\\xfe"),
+        (b'{"camera_id":"\xff"}', b'{\\"camera_id\\":\\"\\\\xff\\"}'),
+    ],
+    ids=["bare-bytes", "json-shaped-bytes"],
+)
+def test_a_non_json_body_with_invalid_utf8_is_a_422_with_the_bytes_escaped(
+    client: TestClient, body: bytes, escaped: bytes
+) -> None:
+    response = client.post(
+        "/api/v1/relay/alerts",
+        content=body,
+        headers={**RELAY_HEADERS, "Content-Type": "text/plain"},
+    )
+    assert (response.status_code, response.content) == (
+        422,
+        b'{"detail":[{"type":"model_attributes_type","loc":["body"],'
+        b'"msg":"Input should be a valid dictionary or object to extract fields from",'
+        b'"input":"' + escaped + b'"}]}',
+    )
+
+
+def test_a_surrogate_in_an_echoed_object_key_is_escaped(client: TestClient) -> None:
+    assert _post(client, "/api/v1/relay/alerts", {**ALERT, "zz": {"\ud800": 1}}) == (
+        422,
+        (
+            b'{"detail":[{"type":"extra_forbidden","loc":["body","zz"],'
+            b'"msg":"Extra inputs are not permitted","input":{"\\\\ud800":1}}]}'
+        ),
     )
