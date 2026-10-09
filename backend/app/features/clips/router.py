@@ -19,6 +19,7 @@ from backend.app.features.clips.schemas import (
     ListClipsResponse,
     SnapshotArtifactState,
 )
+from backend.app.features.clips.service.camera_filter import camera_filter_ids
 from backend.app.features.clips.store import (
     ClipStore,
     DuplicateClipIdError,
@@ -46,7 +47,9 @@ def list_clips(
         page = _clip_catalog(request).page(
             store,
             ClipCatalogQuery(
-                camera_id=filters.camera_id,
+                camera_ids=camera_filter_ids(
+                    _app_state_value(request, "camera_registry"), filters.camera_id
+                ),
                 event_type=filters.event_type,
                 limit=filters.limit or 100,
                 cursor=filters.cursor,

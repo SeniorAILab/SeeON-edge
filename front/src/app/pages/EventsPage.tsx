@@ -11,9 +11,15 @@ import { resolveCameraLabel } from '@/features/events/resolveCameraLabel';
 import { useClipMetadata } from '@/features/events/useClipMetadata';
 import { useEventsPage } from '@/features/events/useEventsPage';
 import { useEventsLocation } from '@/features/events/useEventsLocation';
-import type { Clip } from '@/shared/api/types';
+import type { Camera, Clip } from '@/shared/api/types';
 
 const EMPTY_CLIPS: readonly Clip[] = [];
+
+function clipMatchesCamera(cameras: readonly Camera[], cameraId: string, clipCameraId: string | null): boolean {
+  if (clipCameraId === cameraId) return true;
+  const backendId = cameras.find((camera) => camera.id === cameraId)?.backend_camera_id;
+  return Boolean(backendId) && clipCameraId === backendId;
+}
 
 export function EventsPage(): JSX.Element {
   const [selectedCameraId, setSelectedCameraId] = useState('');
@@ -41,7 +47,7 @@ export function EventsPage(): JSX.Element {
   });
   const cameras = camerasResource.data?.cameras ?? [];
   const metadataMatchesFilters = metadata.clip !== null
-    && (!selectedCameraId || metadata.clip.camera_id === selectedCameraId)
+    && (!selectedCameraId || clipMatchesCamera(cameras, selectedCameraId, metadata.clip.camera_id))
     && (!location.eventType || toEventFacet(metadata.clip.event_type) === location.eventType);
   const activeClip = location.clipId
     ? clips.find((clip) => clip.id === location.clipId)
@@ -63,8 +69,10 @@ export function EventsPage(): JSX.Element {
   const lastSuccessDate = clipsResource.lastSuccessAt === null ? null : new Date(clipsResource.lastSuccessAt);
   const handleCameraChange = useCallback((cameraId: string): void => {
     setSelectedCameraId(cameraId);
-    if (cameraId && activeClip && activeClip.camera_id !== cameraId) location.discardClip();
-  }, [activeClip, location.discardClip]);
+    if (cameraId && activeClip && !clipMatchesCamera(cameras, cameraId, activeClip.camera_id)) {
+      location.discardClip();
+    }
+  }, [activeClip, cameras, location.discardClip]);
 
   return (
     <section>

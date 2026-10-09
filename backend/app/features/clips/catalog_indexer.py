@@ -109,7 +109,7 @@ def clip_catalog_interval_sec() -> float:
 
 @dataclass(frozen=True, slots=True)
 class ClipCatalogQuery:
-    camera_id: str | None
+    camera_ids: tuple[str, ...] | None
     event_type: str | None
     limit: int
     cursor: str | None
@@ -498,12 +498,12 @@ def _page_rows(
     cursor: tuple[str, str] | None,
 ) -> tuple[list[tuple], int, dict[str, int]]:
     scope_predicates = [_VISIBLE]
-    scope_params: list[str] = []
-    if query.camera_id is not None:
-        scope_predicates.append("camera_id = %s")
-        scope_params.append(query.camera_id)
+    scope_params: list[str | list[str]] = []
+    if query.camera_ids is not None:
+        scope_predicates.append("camera_id = ANY(%s)")
+        scope_params.append(list(query.camera_ids))
     page_predicates = list(scope_predicates)
-    page_params: list[str | int] = list(scope_params)
+    page_params: list[str | int | list[str]] = list(scope_params)
     if query.event_type is not None:
         page_predicates.append("event_facet = %s")
         page_params.append(query.event_type)
