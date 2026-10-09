@@ -861,6 +861,13 @@ _LINT_STEPS = [
         )
     },
     {
+        "run": (
+            "uv run --group lint mypy --follow-imports=silent "
+            "backend/app/shared/http backend/app/shared/backend_client_bundle.py "
+            "backend/app/shared/dashboard_credential_rotation.py"
+        )
+    },
+    {
         "name": ("Scope fidelity (no env-provisioned identity or camera roster)"),
         "run": (
             "uv run python scripts/verify_scope_fidelity.py --fixture\n"

@@ -5,7 +5,7 @@ from backend.app.features.cameras.store import CameraRegistryStore
 from backend.app.features.cameras.topology_client import TopologyClient
 from backend.app.features.connection.store import ConnectionSettingsStore
 from backend.app.features.connection.topology_retry_coordinator import TopologyRetryCoordinator
-from backend.app.shared.backend_client_bundle import backend_client_bundle
+from backend.app.shared.http.backend_client_bundle import backend_client_bundle
 
 
 def get_connection_settings_store(app: FastAPI) -> ConnectionSettingsStore:

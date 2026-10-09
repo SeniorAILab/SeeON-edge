@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from backend.app.features.status.heartbeat_store import ONLINE, get_heartbeat_store
-from backend.app.shared.backend_client_bundle import backend_client_bundle
+from backend.app.shared.http.backend_client_bundle import backend_client_bundle
 
 logger = logging.getLogger(__name__)
 

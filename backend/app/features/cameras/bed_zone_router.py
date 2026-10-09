@@ -23,7 +23,7 @@ from backend.app.features.cameras.bed_zone_store import (
     validate_bed_zone,
 )
 from backend.app.features.cameras.store import utc_now_iso
-from backend.app.shared.dashboard_auth import authorize_dashboard
+from backend.app.shared.http.dashboard_auth import authorize_dashboard
 
 router = APIRouter(prefix="/cameras", tags=["cameras"])
 

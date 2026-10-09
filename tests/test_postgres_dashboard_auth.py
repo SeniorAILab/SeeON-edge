@@ -20,9 +20,9 @@ from backend.app.features.auth.router import (
 from backend.app.features.clips.router import clip_video
 from backend.app.features.clips.store import ClipStore
 from backend.app.main import create_app, no_lifespan
-from backend.app.shared import dashboard_auth
-from backend.app.shared.dashboard_auth import DASHBOARD_SESSION_COOKIE, DashboardSessionStore
 from backend.app.shared.dashboard_credentials import PersistedDashboardCredentials
+from backend.app.shared.http import dashboard_auth
+from backend.app.shared.http.dashboard_auth import DASHBOARD_SESSION_COOKIE, DashboardSessionStore
 from backend.app.shared.postgres_dashboard_credentials import PostgresDashboardCredentialsStore
 
 pytest_plugins = ("tests_support.postgres_sandbox",)

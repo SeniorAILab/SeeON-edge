@@ -23,9 +23,9 @@ Read or call. Do not construct the other slice's store.
   catalog, and status stores. No store of its own.
 - `diagnostics` owns `execution_record_store` and the engineer query
   `GET /diagnostics/executions`. Worker ingest is `POST /relay/execution-records`
-  on the diagnostics router; relay only registers the BoundedBodyRoute suffix
-  and `require_relay_execution_records`.
-- `evidence` reuses `relay.auth` plus `_camera_binding`, clip-dir constants,
+  on the diagnostics router, which passes its own body cap to
+  `shared/http/relay_http.bounded_body_route`.
+- `evidence` reuses `shared/http/relay_http` (`authorize_relay`, `camera_binding`), clip-dir constants,
   and the runtime-settings export gate. Worker ingest stays under `/relay`.
   Operator incidents are the second router in this same slice.
 - `cameras` merges detection, connection, clip storage location, runtime
@@ -49,17 +49,18 @@ Parent locks BaseModel shape. Schemas sit next to the router or in slice
 `schemas.py`. No package-wide `models.py`. Query objects are frozen models
 via `Annotated[..., Query()]`. Optimistic writes carry `expected_version`
 and return 409 with the current row. Dashboard routes call
-`authorize_dashboard`. Worker routes call `relay.auth.authorize_relay`.
-New slices do not borrow `cameras.router._authorize`. Body caps stay on
-relay `BoundedBodyRoute`; add a suffix entry, do not copy the class.
-A route that serves bytes registers `methods=HEAD_METHODS` (`shared/head_response.py`) -- FastAPI never synthesises HEAD from GET, so a
+`authorize_dashboard`. Worker routes call `shared/http/relay_http.authorize_relay`.
+Shared HTTP helpers live in `backend/app/shared/http/`; do not borrow them
+from another slice's router. Body caps come from
+`bounded_body_route(limits)`; each router passes its own suffix table.
+A route that serves bytes registers `methods=HEAD_METHODS` (`shared/http/head_response.py`) -- FastAPI never synthesises HEAD from GET, so a
 bare `@router.get` 404s the probe a player sends before it opens the media.
 One endpoint serves both methods so headers cannot drift; drop the body last
 with `drop_body_for_head`, and never read a file a HEAD will not send.
 API actor writes the compact application tables and the six `execution_*`
 record tables. Never INSERT retired
 `control_*`, `qa_*`, `runtime_*`, `evidence_*`, or `derivative_*` families.
-Dashboard sessions are in memory (`shared/dashboard_auth.py`), not in
+Dashboard sessions are in memory (`shared/http/dashboard_auth.py`), not in
 the database. Incomplete enrollment deletes ingest and evidence
 attrs and sets `backend_configured=False`. Handlers do not
 build `EdgeIngestClient`. Drive the slice through

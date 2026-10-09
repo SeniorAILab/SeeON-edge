@@ -100,11 +100,10 @@ def rotate_dashboard_credentials(
         try:
             return rotate_credentials(
                 sessions,
-                store,
+                lambda username, password: persist(store, username, password),
                 token=request.cookies.get(DASHBOARD_SESSION_COOKIE),
                 new_username=new_username,
                 new_password=new_password,
-                persist=persist,
             )
         except DashboardSessionRequired as error:
             raise HTTPException(status_code=401, detail="dashboard session required") from error
