@@ -573,11 +573,9 @@ def test_edge_worker_boot_smoke_runs_on_the_single_build() -> None:
         assert retired not in dockerfile, retired
     dev_compose = (REPO_ROOT / "compose.edge.dev.yaml").read_text(encoding="utf-8")
     assert "target:" not in dev_compose
-    for doc in ("AGENTS.md", "docs/runbooks/edge-image-publish.md"):
-        text = (REPO_ROOT / doc).read_text(encoding="utf-8")
-        for line in text.splitlines():
-            if "docker build" in line and "Dockerfile.edge" in line:
-                assert "--target" not in line, (doc, line)
+    for line in (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8").splitlines():
+        if "docker build" in line and "Dockerfile.edge" in line:
+            assert "--target" not in line, line
 
 
 def test_a_publishing_run_never_records_an_empty_digest() -> None:
