@@ -23,6 +23,7 @@ from backend.app.features.cameras.store import CameraRegistryStore
 class CameraPorts:
     enrolled_facility_id: Callable[[], str | None]
     topology: Callable[[], TopologyPublisher]
+    heartbeats: Callable[[], dict[str, object]]
 
 
 def camera_ports(app: FastAPI) -> CameraPorts:

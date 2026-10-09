@@ -83,9 +83,9 @@ from backend.app.features.detection_settings.policy_store import (
 )
 from backend.app.features.detection_settings.store import DetectionSettingsStore
 from backend.app.features.runtime_settings.dependencies import get_runtime_settings_store
-from backend.app.features.status.heartbeat_store import ONLINE, get_heartbeat_store
 from backend.app.shared.audit_values import AuditAction, AuditEvent
 from backend.app.shared.audit_values import utc_now as audit_now
+from backend.app.shared.heartbeat_status import ONLINE
 from backend.app.shared.http.dashboard_auth import authorize_dashboard
 from contracts.edge_provisioning_models import EdgeErrorCode, TopologyFloor, TopologyRoom
 from contracts.worker_config import PulledWorkerConfig
@@ -354,7 +354,7 @@ class WorkerConfigResponse(BaseModel):
 @router.get("", response_model=ListCamerasResponse)
 def list_cameras(request: Request) -> dict[str, object]:
     _authorize(request)
-    heartbeats = get_heartbeat_store(request.app).snapshot()
+    heartbeats = camera_ports(request.app).heartbeats()
     return _public_snapshot(
         request.app,
         _store(request.app).snapshot(),

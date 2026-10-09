@@ -6,6 +6,7 @@ import pytest
 from fastapi import FastAPI
 
 from backend.app.features.cameras.dependencies import CameraPorts, camera_ports
+from backend.app.features.status.heartbeat_store import DEFAULT_STALE_AFTER_SEC, HeartbeatStore
 from backend.app.lifespan import install_feature_ports
 
 
@@ -43,4 +44,7 @@ def test_installed_ports_are_frozen_and_read_the_connection_owner_on_each_call()
         ports.__setattr__("enrolled_facility_id", str)
     with pytest.raises(RuntimeError, match="connection settings store is not injected"):
         ports.enrolled_facility_id()
+    assert not hasattr(app.state, "heartbeat_store")
+    assert ports.heartbeats() == {"cameras": {}, "stale_after_sec": DEFAULT_STALE_AFTER_SEC}
+    assert isinstance(app.state.heartbeat_store, HeartbeatStore)
     assert camera_ports(app) is ports
