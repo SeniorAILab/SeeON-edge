@@ -711,7 +711,7 @@ def _backend_heartbeat_relay_sec() -> float:
         value = float(raw)
     except ValueError:
         return 0.0
-    return value if value > 0 else 0.0
+    return max(value, 1.0) if value > 0 else 0.0
 
 
 def _utc_now() -> str:
