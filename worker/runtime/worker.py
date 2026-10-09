@@ -873,13 +873,6 @@ class WorkerRuntime:
             return
         if models.box_source != "pose":
             raise RuntimeError("selected fall bundle requires box_source=pose")
-        if (
-            selected.desired.selection is None
-            or selected.desired.selection.input_observation_schema != "pose-bbox56.v1"
-        ):
-            raise RuntimeError(
-                "selected fall bundle requires input_observation_schema=pose-bbox56.v1"
-            )
         self._selected_bundle_admission = admit_model_bundle(selected.models_root, selected.desired)
 
     def _initialize_flow_media_plane(self, boot: BootContext) -> SharedComponentGraph:

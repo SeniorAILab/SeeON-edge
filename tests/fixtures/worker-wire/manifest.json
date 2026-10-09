@@ -19,7 +19,7 @@
     "d/delivery-queue/disposition-d6681ffe537c67cb3880ffbf5edaa522cd5bfe992a5f99a034c3471ba257c405.json": "9370f1b2f2d86c7006e71ec89bc5754b7bd8079ab1ff3939a4e4551095f04d3c",
     "d/delivery-queue/event-a5e15ff2-90fd-4764-be74-a7da4f573cc9.json": "fc7a8aa478a9078bb720b66b6bfd817d92492d530a31f7801e678c1081a8b905",
     "d/engine-identity.json": "d97dffe367deb592f215d04195e143392c785e7d5049b61147f16dc161d71c0c",
-    "d/model-selection.json": "ad894cc0e868cc1a463292ae418ecc14183680bd832b1adb4b09a1787e9e549b",
+    "d/model-selection.json": "fcd2d328d4770052dbd58c4655b2560292041015ef755aa727ba9ea6a0f05c39",
     "d/models-bundle-layout.json": "099dcee5335d6e3d6c68c8d2b45ed39be402b42e133821979f63ced33ea3b963",
     "d/models-layout.json": "1a8fb4ed580ba875ec1b90c94fd11c71ac9ae75618a9ce9e87876b95b032cf93",
     "d/replay-engine/bed-exit-v1.input.json": "2df388136c0d8fcc74b7d7c5e9cad3baac187d32dafb27a9dcb1cb347163242e",
@@ -391,7 +391,7 @@
       "wire_class": "D"
     },
     {
-      "backend_parser": "contracts/model_selection.py:parse_model_selection (round-trip equal); worker/runtime/provenance/model_bundle.py:desired_model_bundle_from_selection_document -> {'bundle_sha256': '2222222222222222222222222222222222222222222222222222222222222222', 'identities': {'dataset': '5555555555555555555555555555555555555555555555555555555555555555', 'evaluation': '66666",
+      "backend_parser": "contracts/model_selection.py:parse_model_selection (round-trip equal); worker/runtime/provenance/model_bundle.py:desired_model_bundle_from_selection_document -> DesiredModelBundle(bundle_sha256=2222222222222222222222222222222222222222222222222222222222222222, selection)",
       "compare": "bytes",
       "input": "synthetic digests (repeated hex digits), SeniorAILab/synthetic locators",
       "normalised": [],
@@ -400,8 +400,8 @@
       "rows": [
         2
       ],
-      "sha256": "ad894cc0e868cc1a463292ae418ecc14183680bd832b1adb4b09a1787e9e549b",
-      "size_bytes": 1342,
+      "sha256": "fcd2d328d4770052dbd58c4655b2560292041015ef755aa727ba9ea6a0f05c39",
+      "size_bytes": 308,
       "wire_class": "D"
     },
     {
@@ -1209,7 +1209,7 @@
     "backend/app/features/clips/store.py": "eeda3ffbcafdb695841ccc97da118faaa30c9b51cb5bfe9d65afbc343e7a4367",
     "backend/app/features/diagnostics/router.py": "3a0d50251ffcd218bb0be82c33741c3fad07103b16b8a7f47dfba8720284909f",
     "backend/app/routes/health.py": "ea1e03df38678fffd09818e97afc1cea3568c5c142735e8f92c5225c0a5aaa18",
-    "contracts/model_selection.py": "e431fa90a46da8c7b5aeb2a2b625b32bfecd4cc534ea19cb91dcb1acbea46de6",
+    "contracts/model_selection.py": "e5bd89d7b078cd8396441596e0f5179d6e5bc76b53bb531f8fc1ce0de7fa485f",
     "contracts/replay_trace.py": "ef3950d2675cd571030f8b5bf53674a52027986a7ffc9f90c9c3a794a0f96e5b",
     "scripts/ops/replay-runtime-analysis.py": "01ff571d224a4490b68ab54376bb8015e7399d14e1e93a626b721c9b1bec6d29",
     "shared/events/clip_analysis_wire.py": "f23467c8524072219a988390846e04d3712c0a526639fb17b0f1fbc19122bbcd",
@@ -1218,7 +1218,7 @@
     "shared/events/evidence_http_transport.py": "7029889c9bc76efb6cfd8a170961b61b05746def9e7be196e93cf6134584abd7",
     "shared/events/execution_records_client.py": "22404e7db39aad2e9617635302b50428978d4be45faba531fc1ceaa47d97b168",
     "shared/events/replay_wire.py": "02805cffeddbf32a5b2daa786a6cd42bc45a19ef8a3d78fb9a4554579e3f13d7",
-    "worker/adapters/model/ort_pose_bbox56.py": "feb883ce9fc5689e36b51ce922c65515e7a11d7740ea02922e3d03b98d3cb820",
+    "worker/adapters/model/ort_pose_bbox56.py": "e04ada666e54a6a75645eb2b4ca8d63ac730aa2d18856be58add78300bcbcb25",
     "worker/domains/fall/classifier.py": "026a2a6bf0244f0da2e847d1d40999dfbf30a5927d1ac833b1da07e088c7e314",
     "worker/pipeline/diagnostics/emit_policy.py": "5dd1b808d4b4c3d8894aea0ee2adc3682eb7251a8d3dd55fbb94946db99df880",
     "worker/pipeline/diagnostics/exporter.py": "b5fe553747dd07ef15781c68323f8a93ef70f90de4a29541b75261b68f20bb02",
@@ -1236,7 +1236,7 @@
     "worker/runtime/config/lkg_store.py": "03452f78e26dccaff5f201b4db0a93eaa5ccd5931ff2edfd0f569435ff6031b8",
     "worker/runtime/config/release_pair.py": "7b349655b50731ad70156450e054ff55a8960e92fd5d0818426fa83b74d93ce6",
     "worker/runtime/flow/cold_start.py": "3a35e253b9f0bdeed3c676321ca9eaabca1147bbd83017b29ac86bb1bbb40d74",
-    "worker/runtime/provenance/model_bundle.py": "d4bf1c368d680051b346d0a8ea999c58d98342041ada5dc24307b0c51378f39f",
+    "worker/runtime/provenance/model_bundle.py": "3d5f62004ed4cd9ef08d5a1a03ae5c56ca3e36c948f35ebb563744b99db7ec98",
     "worker/runtime/telemetry/runtime_status_sender.py": "47bb568c70e8c4c4e6d10a66f92666630d020e5744614b61f81124256522031c",
     "worker/runtime/worker.py": "f6391cca2501d220e9595dfc06f00a8b8977bbbc28e0f969dbebbd28237831f7",
     "worker/tools/edge_engine_build.py": "636e6991397f2c2f219198461eb38066697407961b9fc6a8fc2b7697f598ce83",

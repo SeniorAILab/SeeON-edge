@@ -10,20 +10,7 @@ from worker.runtime.provenance.model_bundle import DesiredModelBundle
 
 
 def _desired() -> DesiredModelBundle:
-    return DesiredModelBundle(
-        bundle_sha256="a" * 64,
-        identities={
-            "dataset": "1" * 64,
-            "evaluation": "2" * 64,
-            "field": "3" * 64,
-            "calibration": "4" * 64,
-            "conformance": "5" * 64,
-            "class": "6" * 64,
-            "input": "pose-bbox56.v1",
-            "policy": "7" * 64,
-            "members": "8" * 64,
-        },
-    )
+    return DesiredModelBundle(bundle_sha256="a" * 64)
 
 
 def test_selected_bundle_refuses_person_boxes() -> None:

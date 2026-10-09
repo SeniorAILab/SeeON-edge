@@ -11,12 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from contracts.model_selection import (
-    DatasetPublication,
-    ModelPublication,
-    ModelSelection,
-    canonical_digest,
-)
+from contracts.model_selection import ModelPublication, ModelSelection
 from tests_support.pose_bbox56_bundle_artifact import write_pose_bbox56_bundle
 from worker.tools.fetch_models import cli
 from worker.tools.fetch_models.fetcher import (
@@ -220,45 +215,14 @@ def _selected_bundle_delivery(
         )
         if include_calibration or path != "calibration.json"
     }
-    identities = {
-        "dataset": "1" * 64,
-        "calibration": _sha(members["calibration.json"])
-        if "calibration.json" in members
-        else "2" * 64,
-        "conformance": _sha(members["conformance/pose-bbox56-v1.json"]),
-        "class": "4" * 64,
-        "input": "pose-bbox56.v1",
-        "policy": (
-            canonical_digest(json.loads(members["calibration.json"])["temporal_rule"])
-            if "calibration.json" in members
-            else "5" * 64
-        ),
-        "members": "6" * 64,
-    }
     member_records = [
         {"path": path, "sha256": _sha(body), "size": len(body)} for path, body in members.items()
     ]
-    payload = {"identities": identities}
+    payload = {"identities": {}}
     bundle_sha256 = _sha(canonical_json({"members": member_records, "payload": payload}).encode())
-    evaluation = {
-        "bundle_sha256": bundle_sha256,
-        "bundle_members_digest": identities["members"],
-        "dataset_payload_digest": identities["dataset"],
-        "calibration_digest": identities["calibration"],
-        "conformance_digest": identities["conformance"],
-        "input_observation_schema": identities["input"],
-        "output_class_count": 2,
-        "output_class_semantics_digest": identities["class"],
-        "policy_digest": identities["policy"],
-    }
-    field = {
-        **evaluation,
-        "evaluation_receipt_digest": canonical_digest(evaluation),
-        "status": "green",
-    }
     receipts = {
-        "evaluation-receipt.json": canonical_json(evaluation).encode() + b"\n",
-        "field-evaluation-receipt.json": canonical_json(field).encode() + b"\n",
+        "evaluation-receipt.json": b"{}\n",
+        "field-evaluation-receipt.json": b"{}\n",
     }
     raw = _manifest_dict()
     manifest = parse_manifest(raw)
@@ -281,19 +245,7 @@ def _selected_bundle_delivery(
     )
     selection = ModelSelection(
         model_publication=ModelPublication(source.source_locator, source.ref, bundle_sha256),
-        bundle_members_digest=identities["members"],
-        dataset_publication=DatasetPublication("facility/dataset", "b" * 40, identities["dataset"]),
-        evaluation_receipt_digest=canonical_digest(evaluation),
-        field_evaluation_receipt_digest=canonical_digest(field),
-        calibration_digest=identities["calibration"],
-        conformance_digest=identities["conformance"],
-        input_observation_schema=identities["input"],
-        output_class_count=2,
-        output_class_semantics_digest=identities["class"],
-        policy_digest=identities["policy"],
         runtime_format="onnxruntime",
-        bundle_format="bundle-manifest/proxy-v0",
-        preprocessing_identity="coco17-xyc-plus-pose-head-xyxy-valid-f32-v1",
         transition_threshold=0.5,
         threshold_source="default",
     )
@@ -529,7 +481,7 @@ def test_fetch_all_refuses_selected_bundle_boot_would_refuse(tmp_path: Path) -> 
         tmp_path, include_calibration=False
     )
 
-    with pytest.raises(VerificationError, match="calibration.json digest mismatch"):
+    with pytest.raises(VerificationError, match="must contain model.onnx and calibration.json"):
         fetch_all(
             manifest,
             tmp_path / "models",

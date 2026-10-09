@@ -11,10 +11,8 @@ import numpy as np
 import pytest
 
 from contracts.model_selection import (
-    DatasetPublication,
     ModelPublication,
     ModelSelection,
-    canonical_digest,
 )
 from contracts.runner import Image, RunnerResult
 from shared.detection_policies import default_policy_bundle
@@ -221,21 +219,11 @@ def _selected_onnx_bundle(
             "bundle-manifest.json",
         )
     }
-    calibration_document = json.loads(members["calibration.json"])
-    identities = {
-        "dataset": "1" * 64,
-        "calibration": hashlib.sha256(members["calibration.json"]).hexdigest(),
-        "conformance": hashlib.sha256(members["conformance/pose-bbox56-v1.json"]).hexdigest(),
-        "class": "4" * 64,
-        "input": "pose-bbox56.v1",
-        "policy": canonical_digest(calibration_document.get("temporal_rule")),
-        "members": "6" * 64,
-    }
     member_records = [
         {"path": path, "sha256": hashlib.sha256(content).hexdigest(), "size": len(content)}
         for path, content in members.items()
     ]
-    payload = {"identities": identities}
+    payload = {"identities": {}}
     bundle_sha256 = hashlib.sha256(
         json.dumps(
             {"members": member_records, "payload": payload},
@@ -243,37 +231,11 @@ def _selected_onnx_bundle(
             separators=(",", ":"),
         ).encode()
     ).hexdigest()
-    evaluation = {
-        "bundle_sha256": bundle_sha256,
-        "bundle_members_digest": identities["members"],
-        "dataset_payload_digest": identities["dataset"],
-        "calibration_digest": identities["calibration"],
-        "conformance_digest": identities["conformance"],
-        "input_observation_schema": identities["input"],
-        "output_class_count": 2,
-        "output_class_semantics_digest": identities["class"],
-        "policy_digest": identities["policy"],
-    }
-    field = {
-        **evaluation,
-        "evaluation_receipt_digest": canonical_digest(evaluation),
-        "status": "green",
-    }
     root = tmp_path / "models" / "bundles" / bundle_sha256
     root.mkdir(parents=True)
     for path, content in members.items():
         (root / path).parent.mkdir(parents=True, exist_ok=True)
         (root / path).write_bytes(content)
-    receipts = []
-    for path, document in (
-        ("evaluation-receipt.json", evaluation),
-        ("field-evaluation-receipt.json", field),
-    ):
-        content = json.dumps(document, sort_keys=True, separators=(",", ":")).encode() + b"\n"
-        (root / path).write_bytes(content)
-        receipts.append(
-            {"path": path, "sha256": hashlib.sha256(content).hexdigest(), "size": len(content)}
-        )
     (root / "manifest.json").write_bytes(
         json.dumps(
             {
@@ -281,7 +243,6 @@ def _selected_onnx_bundle(
                 "bundle_sha256": bundle_sha256,
                 "runtime_format": "onnxruntime",
                 "members": member_records,
-                "receipts": receipts,
                 "payload": payload,
             },
             sort_keys=True,
@@ -291,31 +252,11 @@ def _selected_onnx_bundle(
     )
     selection = ModelSelection(
         model_publication=ModelPublication("facility/fall", "a" * 40, bundle_sha256),
-        bundle_members_digest=identities["members"],
-        dataset_publication=DatasetPublication("facility/dataset", "b" * 40, identities["dataset"]),
-        evaluation_receipt_digest=canonical_digest(evaluation),
-        field_evaluation_receipt_digest=canonical_digest(field),
-        calibration_digest=identities["calibration"],
-        conformance_digest=identities["conformance"],
-        input_observation_schema=identities["input"],
-        output_class_count=2,
-        output_class_semantics_digest=identities["class"],
-        policy_digest=identities["policy"],
         runtime_format="onnxruntime",
-        bundle_format="bundle-manifest/proxy-v0",
-        preprocessing_identity="coco17-xyc-plus-pose-head-xyxy-valid-f32-v1",
         transition_threshold=transition_threshold,
         threshold_source=threshold_source,
     )
-    return tmp_path / "models", DesiredModelBundle(
-        bundle_sha256,
-        {
-            **identities,
-            "evaluation": selection.evaluation_receipt_digest,
-            "field": selection.field_evaluation_receipt_digest,
-        },
-        selection,
-    )
+    return tmp_path / "models", DesiredModelBundle(bundle_sha256, selection)
 
 
 def test_probability_only_result_has_no_inferred_binary_evidence() -> None:
@@ -952,23 +893,6 @@ def test_selected_receipt_without_threshold_refuses_construction(tmp_path: Path)
         )
 
 
-def test_selected_preprocessing_contradiction_refuses_construction(tmp_path: Path) -> None:
-    models_root, desired = _selected_onnx_bundle(tmp_path)
-    selection = desired.selection
-    assert selection is not None
-    proof = admit_model_bundle(models_root, desired)
-
-    with pytest.raises(
-        ModelLoadError, match="selected preprocessing_identity differs from bundle conformance"
-    ):
-        OrtPoseBbox56Runner.from_admitted_bundle(
-            models_root / "bundles" / desired.bundle_sha256,
-            proof,
-            replace(selection, preprocessing_identity="contradictory-preprocessing"),
-            session_factory=lambda _path, _providers: _ControlledLogitSession(),
-        )
-
-
 def test_selected_default_source_with_a_non_default_threshold_refuses(tmp_path: Path) -> None:
     models_root, desired = _selected_onnx_bundle(tmp_path)
     selection = desired.selection
@@ -1021,21 +945,6 @@ def test_selected_receipt_claim_refuses_when_the_granted_threshold_differs(
             bundle_dir,
             proof,
             selection,
-            session_factory=lambda _path, _providers: _ControlledLogitSession(),
-        )
-
-
-def test_selected_output_contract_mismatch_refuses_construction(tmp_path: Path) -> None:
-    models_root, desired = _selected_onnx_bundle(tmp_path)
-    selection = desired.selection
-    assert selection is not None
-    proof = admit_model_bundle(models_root, desired)
-
-    with pytest.raises(ModelLoadError, match="output_class_count=3"):
-        OrtPoseBbox56Runner.from_admitted_bundle(
-            models_root / "bundles" / desired.bundle_sha256,
-            proof,
-            replace(selection, output_class_count=3),
             session_factory=lambda _path, _providers: _ControlledLogitSession(),
         )
 
