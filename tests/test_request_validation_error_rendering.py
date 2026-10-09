@@ -402,3 +402,67 @@ def test_encodable_values_next_to_an_unencodable_one_keep_their_bytes(client: Te
             b'"msg":"Input should be a valid dictionary","input":"\xc3\xa9"}]}'
         ),
     )
+
+
+_COLLIDING_KEYS = b'{"\\ud800":1,"\\\\ud800":2}'
+_COLLIDING_INPUT = b'{"\\\\ud800":1}'
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "expected"),
+    [
+        (
+            "POST",
+            "/api/v1/relay/execution-records",
+            b'{"detail":['
+            + b",".join(
+                b'{"type":"missing","loc":["body","' + field + b'"],'
+                b'"msg":"Field required","input":' + _COLLIDING_INPUT + b"}"
+                for field in (b"camera_id", b"worker_boot_id", b"provenance")
+            )
+            + b"]}",
+        ),
+        (
+            "PUT",
+            "/api/v1/relay/clips/clip-1",
+            b'{"detail":[{"type":"union_tag_not_found","loc":["body"],'
+            b'"msg":"Unable to extract tag using discriminator \'state\'",'
+            b'"input":' + _COLLIDING_INPUT + b',"ctx":{"discriminator":"\'state\'"}}]}',
+        ),
+    ],
+    ids=["execution-records", "clips"],
+)
+def test_keys_that_collide_after_escaping_keep_the_first_value(
+    client: TestClient, method: str, path: str, expected: bytes
+) -> None:
+    response = client.request(
+        method,
+        path,
+        content=_COLLIDING_KEYS,
+        headers={**RELAY_HEADERS, "Content-Type": "application/json"},
+    )
+    assert (response.status_code, response.content) == (422, expected)
+
+
+def test_an_unencodable_input_too_large_to_escape_is_omitted(client: TestClient) -> None:
+    body = {**ALERT, "zz": [*range(10_000), "\ud800"]}
+    assert _post(client, "/api/v1/relay/alerts", body) == (
+        422,
+        (
+            b'{"detail":[{"type":"extra_forbidden","loc":["body","zz"],'
+            b'"msg":"Extra inputs are not permitted","input":"omitted: too large to escape"}]}'
+        ),
+    )
+
+
+def test_an_unencodable_input_small_enough_to_escape_is_echoed(client: TestClient) -> None:
+    body = {**ALERT, "zz": [*range(9_000), "\ud800"]}
+    assert _post(client, "/api/v1/relay/alerts", body) == (
+        422,
+        (
+            b'{"detail":[{"type":"extra_forbidden","loc":["body","zz"],'
+            b'"msg":"Extra inputs are not permitted","input":['
+            + ",".join(str(index) for index in range(9_000)).encode()
+            + b',"\\\\ud800"]}]}'
+        ),
+    )
