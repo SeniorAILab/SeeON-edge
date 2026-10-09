@@ -285,3 +285,33 @@ def test_clip_analysis_resolves_nested_historical_layout(tmp_path: Path) -> None
         assert supervisor.calls[0][1] == clip
     finally:
         server.stop()
+
+
+def test_clip_analysis_duplicate_clip_id_across_roots_answers_409(tmp_path: Path) -> None:
+    for root in (tmp_path / "clips", tmp_path / "old" / "clips"):
+        clip = root / "camera-1" / "clip.mp4"
+        clip.parent.mkdir(parents=True)
+        clip.write_bytes(b"clip")
+        _write_ready_manifest(clip)
+    supervisor = _Supervisor()
+    server = MjpegServer(
+        LatestFrameStore(),
+        MjpegServerConfig(port=0, probe_token=_TOKEN),
+        clip_analysis_supervisor=supervisor,
+        clip_store_dir=tmp_path,
+    )
+    server.start()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(
+                _request(
+                    f"http://127.0.0.1:{server.port}",
+                    "/clips/camera-1/analysis",
+                    {"clip_sha256": _SHA256},
+                ),
+                timeout=1,
+            )
+        assert error.value.code == 409
+        assert supervisor.calls == []
+    finally:
+        server.stop()

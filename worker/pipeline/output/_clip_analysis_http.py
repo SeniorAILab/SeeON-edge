@@ -16,6 +16,7 @@ from worker.pipeline.output.evidence.evidence_manifest import (
     ClipEvidenceError,
     parse_manifest_content,
 )
+from worker.pipeline.output.evidence.evidence_outbox_types import EvidenceReasonCode
 from worker.pipeline.output.evidence.manifest_models import ReadyClipManifest
 
 MAX_ANALYSIS_BODY_BYTES = 256
@@ -166,7 +167,7 @@ def _locate_clip(store_dir: Path, clip_id: str) -> Path | None:
             continue
         candidates.append(clip_path)
     if len(candidates) > 1:
-        raise ClipEvidenceError("duplicate clip_id")
+        raise ClipEvidenceError(EvidenceReasonCode.CORRUPT, "duplicate clip_id")
     return candidates[0] if candidates else None
 
 
