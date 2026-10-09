@@ -34,6 +34,7 @@ repos:
         entry: uv run --group lint python scripts/check_model_swap_surface.py
         language: system
         files: ^(contracts/model_selection\.py|worker/runtime/provenance/.*\.py|scripts/check_model_swap_surface\.py)$
+        pass_filenames: false
         require_serial: true
       - id: layers
         name: backend feature layers (baseline only shrinks)
