@@ -14,6 +14,7 @@ from shared.boundary import (
     isolate,
     probe,
     register_fatal,
+    register_translation_target,
     root_sink,
     translate,
 )
@@ -31,9 +32,12 @@ class TypedError(RuntimeError):
 @pytest.fixture(autouse=True)
 def fatal_registry() -> Iterator[None]:
     saved = list(boundary._fatal)
+    saved_targets = list(boundary._translation_targets)
     register_fatal(FatalProbeError)
+    register_translation_target(TypedError)
     yield
     boundary._fatal[:] = saved
+    boundary._translation_targets[:] = saved_targets
 
 
 def raising(error: BaseException) -> Callable[[], int]:
@@ -318,3 +322,30 @@ def test_root_sink_maps_errors_and_exit_codes(caplog: pytest.LogCaptureFixture) 
 def test_root_sink_none_exit_code_lets_a_caller_keep_its_own_bare_exit_code() -> None:
     assert root_sink(raising(SystemExit()), on_error_exit_code=3, none_exit_code=1) == 1
     assert root_sink(raising(SystemExit(0)), on_error_exit_code=3, none_exit_code=1) == 0
+
+
+class UnregisteredError(RuntimeError):
+    pass
+
+
+class TypedChildError(TypedError):
+    pass
+
+
+def test_translate_refuses_a_target_outside_the_registered_set() -> None:
+    with pytest.raises(TypeError, match="UnregisteredError"):
+        with translate(UnregisteredError, "nope"):
+            pass
+
+
+def test_translate_accepts_a_subclass_of_a_registered_target() -> None:
+    with pytest.raises(TypedChildError), translate(TypedChildError, "child"):
+        raise OSError("cause")
+
+
+def test_postgres_error_is_a_registered_translation_target() -> None:
+    from backend.app.edge_db.postgres import PostgresError, PostgresStartupError
+
+    for target in (PostgresError, PostgresStartupError):
+        with pytest.raises(target), translate(target, "db"):
+            raise OSError("cause")

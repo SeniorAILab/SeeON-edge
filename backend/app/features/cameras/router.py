@@ -88,6 +88,7 @@ from backend.app.shared.heartbeat_status import ONLINE
 from backend.app.shared.http.dashboard_auth import authorize_dashboard
 from contracts.edge_provisioning_models import EdgeErrorCode, TopologyFloor, TopologyRoom
 from contracts.worker_config import PulledWorkerConfig
+from shared.boundary import Boundary, isolate
 from shared.rtsp_url_policy import assert_rtsp_endpoint_allowed
 
 RELAY_TOKEN_HEADER = "X-Edge-Relay-Token"
@@ -633,13 +634,8 @@ def _trigger_roster_sync(app: FastAPI) -> None:
     lands the sync has already been attempted; sync_camera_roster() itself
     never raises, but this still guards against a future change there.
     """
-    try:
-        # A CRUD event is the operator's explicit retry signal. Refreshing the
-        # Hub revision here is what clears a durable CONFLICT pause; a plain
-        # retry returns early forever and leaves new cameras unpublished.
+    with isolate(Boundary.OPTIONAL_FEATURE, stage="roster_sync"):
         sync_camera_roster(app, _force=True, _refresh=True)
-    except Exception:  # noqa: BLE001, S110 - a roster-sync bug must never surface here
-        pass
 
 
 def _duplicate_camera_error(exc: DuplicateCameraError) -> HTTPException:

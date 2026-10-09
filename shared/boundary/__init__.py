@@ -2,7 +2,7 @@ import asyncio
 import logging
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final, TypeVar
 
@@ -21,6 +21,7 @@ ALWAYS_PROPAGATE: Final[tuple[type[BaseException], ...]] = (
 )
 
 _fatal: list[type[BaseException]] = []
+_translation_targets: list[type[Exception]] = []
 
 
 class Boundary(StrEnum):
@@ -35,6 +36,16 @@ def register_fatal(*types: type[BaseException]) -> None:
     for kind in types:
         if kind not in _fatal:
             _fatal.append(kind)
+
+
+def register_translation_target(*types: type[Exception]) -> None:
+    for kind in types:
+        if kind not in _translation_targets:
+            _translation_targets.append(kind)
+
+
+def translation_targets() -> tuple[type[Exception], ...]:
+    return tuple(_translation_targets)
 
 
 def fatal_types() -> tuple[type[BaseException], ...]:
@@ -131,6 +142,7 @@ def attempt_delivery(
 @dataclass(frozen=True, slots=True)
 class ProbeFailure:
     reason: str
+    error: BaseException | None = field(default=None, compare=False, repr=False)
 
 
 def probe(fn: Callable[[], T]) -> T | ProbeFailure:
@@ -139,7 +151,7 @@ def probe(fn: Callable[[], T]) -> T | ProbeFailure:
     except BaseException as error:
         if _must_propagate(error):
             raise
-        return ProbeFailure(reason=_describe(error))
+        return ProbeFailure(reason=_describe(error), error=error)
 
 
 def _primary_failure(primary: BaseException, cleanup: BaseException) -> BaseException:
@@ -171,6 +183,8 @@ def cleanup_on_failure(*cleanups: Callable[[], None]) -> Iterator[None]:
 
 @contextmanager
 def translate(to: type[E], message: str) -> Iterator[None]:
+    if not issubclass(to, translation_targets()):
+        raise TypeError(f"translate target {to.__name__} is not a registered translation target")
     try:
         yield
     except BaseException as error:
@@ -216,6 +230,8 @@ __all__ = [
     "isolate",
     "probe",
     "register_fatal",
+    "register_translation_target",
     "root_sink",
     "translate",
+    "translation_targets",
 ]

@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Final
 
+from shared.boundary import degrade
 from shared.events.delivery_queue import DeliveryQueue, EventEntry
 from worker.runtime.state_dir import resolve_state_dir
 
@@ -48,14 +49,23 @@ def _iso_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
-def _frame_hash(image: object) -> str | None:
-    try:
-        import numpy as np
+def _hash_ndarray(image: object) -> str | None:
+    import numpy as np
 
-        if isinstance(image, np.ndarray):
-            return hashlib.sha256(image.tobytes()).hexdigest()
-    except Exception:  # noqa: BLE001, S110
-        pass
+    if isinstance(image, np.ndarray):
+        return hashlib.sha256(image.tobytes()).hexdigest()
+    return None
+
+
+def _frame_hash(image: object) -> str | None:
+    return degrade(lambda: _hash_ndarray(image), stage="fault_frame_hash", default=None)
+
+
+def _ndarray_shape(image: object) -> tuple[int, ...] | None:
+    import numpy as np
+
+    if isinstance(image, np.ndarray):
+        return tuple(image.shape)
     return None
 
 
@@ -127,14 +137,7 @@ def make_fault_record(
     invocation_seq: int = 0,
     exit_code: int = 4,
 ) -> FirstFaultRecord:
-    frame_shape: tuple[int, ...] | None = None
-    try:
-        import numpy as np
-
-        if isinstance(image, np.ndarray):
-            frame_shape = tuple(image.shape)
-    except Exception:  # noqa: BLE001, S110
-        pass
+    frame_shape = degrade(lambda: _ndarray_shape(image), stage="fault_frame_shape", default=None)
     return FirstFaultRecord(
         pid=os.getpid(),
         boot_time_iso=time.strftime(

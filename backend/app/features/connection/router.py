@@ -27,6 +27,7 @@ from backend.app.features.status.backend_heartbeat_relay import HeartbeatRelaySt
 from backend.app.lifespan import apply_connection_settings, refresh_backend_config
 from backend.app.shared.audit_values import AuditAction, AuditEvent, utc_now
 from backend.app.shared.http.dashboard_auth import authorize_dashboard as _authorize
+from shared.boundary import Boundary, isolate
 
 router = APIRouter(prefix="/connection", tags=["connection"])
 
@@ -272,10 +273,8 @@ def _heartbeat_relay_view(app: FastAPI) -> dict[str, object]:
 
 
 def _trigger_roster_sync(app: FastAPI) -> None:
-    try:
+    with isolate(Boundary.OPTIONAL_FEATURE, stage="roster_sync"):
         topology_retry_coordinator(app).trigger(force=True, refresh=True)
-    except Exception:  # noqa: BLE001, S110
-        pass
 
 
 def _kick_backend_config_refresh(app: FastAPI) -> None:
