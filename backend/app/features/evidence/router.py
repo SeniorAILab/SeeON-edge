@@ -21,10 +21,10 @@ from backend.app.features.evidence.receipt_store import (
     ArtifactReceipt,
     ArtifactReceiptConflictError,
     ArtifactReceiptPersistenceError,
-    ArtifactReceiptVerificationError,
     VerifiedArtifact,
     verified_artifact,
 )
+from backend.app.shared.artifact_verification import ArtifactReceiptVerificationError
 from backend.app.shared.audit_values import (
     AuditAction,
     AuditActorType,

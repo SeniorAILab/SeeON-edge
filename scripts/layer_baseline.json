@@ -62,7 +62,6 @@
     },
     "clips": {
       "CROSS_FEATURE_EDGE clips.router -> audit.http": 1,
-      "CROSS_FEATURE_EDGE clips.router -> evidence.receipt_store": 1,
       "CROSS_FEATURE_EDGE clips.storage_router -> audit.catalog": 1,
       "CROSS_FEATURE_EDGE clips.storage_router -> audit.http": 1,
       "FEATURE_ROOT_FILE analysis_relay.py": 1,
