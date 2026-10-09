@@ -173,3 +173,23 @@ def test_shutdown_finishes_cleanup_when_a_background_task_already_died(
     assert record.getMessage() == "background task backend-config-refresh ended with an error"
     assert record.exc_info is not None
     assert str(record.exc_info[1]) == "config refresh loop died"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("1e-09", 1.0),
+        ("0.001", 1.0),
+        ("0.5", 1.0),
+        ("1", 1.0),
+        ("2.5", 2.5),
+        ("0", 0.0),
+        ("-3", 0.0),
+    ],
+)
+def test_heartbeat_relay_interval_from_env_never_drops_below_one_second(
+    monkeypatch: pytest.MonkeyPatch, raw: str, expected: float
+) -> None:
+    monkeypatch.setenv(lifespan_module.API_BACKEND_HEARTBEAT_RELAY_SEC_ENV, raw)
+
+    assert lifespan_module._backend_heartbeat_relay_sec() == expected
