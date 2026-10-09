@@ -64,6 +64,7 @@ from contracts.worker_config import (
     PulledWorkerConfig,
     detection_window_validation_error,
 )
+from shared.boundary import Boundary, isolate
 from shared.events.edge_ingest_client import (
     BackendEvidenceClient,
     EdgeIngestClient,
@@ -191,12 +192,7 @@ async def _gateway_lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         refresh_stop.set()
         refresh_task = app.state.backend_config_refresh_task
-        try:
-            await asyncio.wait_for(
-                asyncio.shield(refresh_task), timeout=BACKEND_CONFIG_SHUTDOWN_WAIT_SEC
-            )
-        except TimeoutError:
-            refresh_task.cancel()
+        await _stop_background_task(refresh_task, BACKEND_CONFIG_SHUTDOWN_WAIT_SEC)
         refresh_executor.shutdown(wait=False, cancel_futures=True)
         app.state.backend_config_refresh_executor = None
         app.state.backend_config_refresh_task = None
@@ -204,12 +200,7 @@ async def _gateway_lifespan(app: FastAPI) -> AsyncIterator[None]:
         relay_stop.set()
         relay_task = app.state.backend_heartbeat_relay_task
         if relay_task is not None:
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(relay_task), timeout=BACKEND_HEARTBEAT_RELAY_SHUTDOWN_WAIT_SEC
-                )
-            except TimeoutError:
-                relay_task.cancel()
+            await _stop_background_task(relay_task, BACKEND_HEARTBEAT_RELAY_SHUTDOWN_WAIT_SEC)
             relay_executor = app.state.backend_heartbeat_relay_executor
             if relay_executor is not None:
                 relay_executor.shutdown(wait=False, cancel_futures=True)
@@ -219,12 +210,7 @@ async def _gateway_lifespan(app: FastAPI) -> AsyncIterator[None]:
         outbox_stop.set()
         outbox_task = app.state.backend_outbox_sender_task
         if outbox_task is not None:
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(outbox_task), timeout=BACKEND_OUTBOX_SENDER_SHUTDOWN_WAIT_SEC
-                )
-            except TimeoutError:
-                outbox_task.cancel()
+            await _stop_background_task(outbox_task, BACKEND_OUTBOX_SENDER_SHUTDOWN_WAIT_SEC)
             outbox_executor = app.state.backend_outbox_sender_executor
             if outbox_executor is not None:
                 outbox_executor.shutdown(wait=False, cancel_futures=True)
@@ -415,6 +401,14 @@ def refresh_backend_config(app: FastAPI, stop_token: asyncio.Event | None = None
         refresh_lock.release()
 
 
+async def _stop_background_task(task: asyncio.Task[None], timeout: float) -> None:
+    done, _ = await asyncio.wait({task}, timeout=timeout)
+    if not done:
+        task.cancel()
+    elif not task.cancelled() and (error := task.exception()) is not None:
+        logger.error("background task %s ended with an error", task.get_name(), exc_info=error)
+
+
 async def _backend_config_refresh_loop(
     app: FastAPI, stop_event: asyncio.Event, executor: ThreadPoolExecutor
 ) -> None:
@@ -425,9 +419,10 @@ async def _backend_config_refresh_loop(
             pass
         if stop_event.is_set():
             break
-        await asyncio.get_running_loop().run_in_executor(
-            executor, refresh_backend_config, app, stop_event
-        )
+        with isolate(Boundary.SENDER_TICK, stage="backend_config_refresh"):
+            await asyncio.get_running_loop().run_in_executor(
+                executor, refresh_backend_config, app, stop_event
+            )
 
 
 async def _backend_heartbeat_relay_loop(
@@ -445,7 +440,8 @@ async def _backend_heartbeat_relay_loop(
             pass
         if stop_event.is_set():
             break
-        await asyncio.get_running_loop().run_in_executor(executor, relay_heartbeats_once, app)
+        with isolate(Boundary.SENDER_TICK, stage="backend_heartbeat_relay"):
+            await asyncio.get_running_loop().run_in_executor(executor, relay_heartbeats_once, app)
 
 
 async def _backend_outbox_sender_loop(
@@ -712,7 +708,7 @@ def _backend_heartbeat_relay_sec() -> float:
         value = float(raw)
     except ValueError:
         return 0.0
-    return value if value > 0 else 0.0
+    return max(value, 1.0) if value > 0 else 0.0
 
 
 def _utc_now() -> str:
