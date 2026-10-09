@@ -46,10 +46,14 @@ async def request_validation_handler(
     request: Request, error: RequestValidationError
 ) -> JSONResponse:
     del request
-    return JSONResponse(
-        status_code=422,
-        content={"detail": _json_safe(jsonable_encoder(_json_safe(error.errors())))},
-    )
+    errors = error.errors()
+    try:
+        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
+    except ValueError:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": _json_safe(jsonable_encoder(_json_safe(errors)))},
+        )
 
 
 __all__ = ["request_validation_handler"]
