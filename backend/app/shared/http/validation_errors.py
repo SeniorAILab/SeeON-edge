@@ -45,26 +45,32 @@ def _json_safe(value: object) -> object:
     return root[0]
 
 
-def _exceeds(value: object, limit: int) -> bool:
+def _count_nodes(value: object, limit: int) -> int:
     pending: list[object] = [value]
     seen = 0
-    while pending:
+    while pending and seen <= limit:
         seen += 1
-        if seen > limit:
-            return True
         item = pending.pop()
         if isinstance(item, dict):
             pending.extend(item.keys())
             pending.extend(item.values())
         elif isinstance(item, list | tuple):
             pending.extend(item)
-    return False
+    return seen
 
 
-def _bounded(error: object) -> object:
-    if isinstance(error, dict) and _exceeds(error, MAX_ESCAPED_ERROR_NODES):
-        return {**error, "input": OMITTED_INPUT}
-    return error
+def _bounded(errors: list[Any]) -> list[Any]:
+    remaining = MAX_ESCAPED_ERROR_NODES
+    bounded: list[Any] = []
+    for error in errors:
+        if isinstance(error, dict):
+            nodes = _count_nodes(error, remaining)
+            if nodes > remaining:
+                bounded.append({**error, "input": OMITTED_INPUT})
+                continue
+            remaining -= nodes
+        bounded.append(error)
+    return bounded
 
 
 async def request_validation_handler(request: Request, error: Exception) -> Response:
@@ -75,7 +81,7 @@ async def request_validation_handler(request: Request, error: Exception) -> Resp
     try:
         return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
     except ValueError:
-        bounded = [_bounded(item) for item in errors]
+        bounded = _bounded(list(errors))
         return JSONResponse(
             status_code=422,
             content={"detail": _json_safe(jsonable_encoder(_json_safe(bounded)))},

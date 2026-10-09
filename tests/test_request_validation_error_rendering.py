@@ -475,6 +475,68 @@ def test_an_unencodable_input_small_enough_to_escape_is_echoed(client: TestClien
     )
 
 
+def _extra(key: str, value: bytes) -> bytes:
+    return (
+        b'{"type":"extra_forbidden","loc":["body","' + key.encode() + b'"],'
+        b'"msg":"Extra inputs are not permitted","input":' + value + b"}"
+    )
+
+
+def _ints(count: int) -> bytes:
+    return b"[" + ",".join(str(index) for index in range(count)).encode()
+
+
+def test_unencodable_inputs_split_across_errors_that_fit_one_budget_are_echoed(
+    client: TestClient,
+) -> None:
+    body = {**ALERT, "za": list(range(5_000)), "zb": [*range(4_977), "\ud800"]}
+    assert _post(client, "/api/v1/relay/alerts", body) == (
+        422,
+        b'{"detail":['
+        + _extra("za", _ints(5_000) + b"]")
+        + b","
+        + _extra("zb", _ints(4_977) + b',"\\\\ud800"]')
+        + b"]}",
+    )
+
+
+def test_unencodable_inputs_split_across_errors_share_one_budget(client: TestClient) -> None:
+    body = {**ALERT, "za": list(range(5_000)), "zb": [*range(4_978), "\ud800"]}
+    assert _post(client, "/api/v1/relay/alerts", body) == (
+        422,
+        b'{"detail":['
+        + _extra("za", _ints(5_000) + b"]")
+        + b","
+        + _extra("zb", b'"omitted: too large to escape"')
+        + b"]}",
+    )
+
+
+def test_many_small_unencodable_errors_stop_echoing_once_the_budget_is_spent(
+    client: TestClient,
+) -> None:
+    body = {**ALERT, **{f"z{index:02d}": [*range(999), "\ud800"] for index in range(12)}}
+    status, content = _post(client, "/api/v1/relay/alerts", body)
+    inputs = [error["input"] for error in json.loads(content)["detail"]]
+    assert status == 422
+    assert [isinstance(value, list) for value in inputs] == [True] * 9 + [False] * 3
+    assert inputs[9:] == ["omitted: too large to escape"] * 3
+
+
+def test_an_oversized_error_does_not_spend_the_budget_of_the_errors_after_it(
+    client: TestClient,
+) -> None:
+    body = {**ALERT, "za": [*range(20_000), "\ud800"], "zb": list(range(9_989))}
+    assert _post(client, "/api/v1/relay/alerts", body) == (
+        422,
+        b'{"detail":['
+        + _extra("za", b'"omitted: too large to escape"')
+        + b","
+        + _extra("zb", _ints(9_989) + b"]")
+        + b"]}",
+    )
+
+
 def test_a_large_encodable_input_is_echoed_in_full(client: TestClient) -> None:
     body = {**ALERT, "zz": list(range(20_000))}
     assert _post(client, "/api/v1/relay/alerts", body) == (
