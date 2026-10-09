@@ -87,10 +87,24 @@ class InvalidBackendIngestTimeoutError(ValueError):
 logger = logging.getLogger(__name__)
 
 
+def install_feature_ports(app: FastAPI) -> None:
+    from backend.app.features.cameras.dependencies import CameraPorts
+    from backend.app.features.connection.dependencies import (
+        get_connection_settings_store,
+        topology_retry_coordinator,
+    )
+
+    app.state.camera_ports = CameraPorts(
+        enrolled_facility_id=lambda: get_connection_settings_store(app).load().facility_id,
+        topology=lambda: topology_retry_coordinator(app),
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     reject_retired_backend_environment(os.environ)
     owned = _configure_postgres(app)
+    install_feature_ports(app)
     try:
         async with _gateway_lifespan(app):
             yield

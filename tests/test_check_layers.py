@@ -766,6 +766,14 @@ REVERTED_IMPORTS = {
         "backend/app/features/connection/router.py",
         f"from {F}.cameras.dependencies import sync_camera_roster\n",
     ),
+    "cameras.dependencies -> connection.dependencies": (
+        "backend/app/features/cameras/dependencies.py",
+        f"from {F}.connection.dependencies import topology_retry_coordinator\n",
+    ),
+    "cameras.router -> connection.dependencies": (
+        "backend/app/features/cameras/router.py",
+        f"from {F}.connection.dependencies import get_connection_settings_store\n",
+    ),
 }
 
 

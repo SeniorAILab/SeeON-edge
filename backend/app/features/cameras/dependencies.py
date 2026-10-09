@@ -2,18 +2,35 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
+
 from fastapi import FastAPI
 from pydantic import JsonValue
 
 from backend.app.features.audit.postgres_runtime import AuditMutation
-from backend.app.features.cameras.roster_sync import RosterSyncResult
+from backend.app.features.cameras.roster_sync import RosterSyncResult, TopologyPublisher
 from backend.app.features.cameras.roster_sync import (
     camera_sync_view as sync_view,
 )
 from backend.app.features.cameras.roster_sync import (
     sync_camera_roster as sync_roster,
 )
-from backend.app.features.connection.dependencies import topology_retry_coordinator
+
+
+@dataclass(frozen=True, slots=True)
+class CameraPorts:
+    enrolled_facility_id: Callable[[], str | None]
+    topology: Callable[[], TopologyPublisher]
+
+
+def camera_ports(app: FastAPI) -> CameraPorts:
+    ports = getattr(app.state, "camera_ports", None)
+    if ports is None:
+        raise RuntimeError("camera ports are not injected")
+    if not isinstance(ports, CameraPorts):
+        raise TypeError("camera ports have invalid type")
+    return ports
 
 
 def sync_camera_roster(
@@ -26,7 +43,7 @@ def sync_camera_roster(
 ) -> RosterSyncResult:
     """Publish at most one durable snapshot for this explicit event."""
     return sync_roster(
-        topology_retry_coordinator(app),
+        camera_ports(app).topology(),
         _force=_force,
         _refresh=_refresh,
         _now=_now,
@@ -36,11 +53,13 @@ def sync_camera_roster(
 
 def camera_sync_view(app: FastAPI, _camera_id: str) -> dict[str, JsonValue]:
     """Expose the durable complete-topology state through the legacy camera view."""
-    return sync_view(topology_retry_coordinator(app), _camera_id)
+    return sync_view(camera_ports(app).topology(), _camera_id)
 
 
 __all__ = [
+    "CameraPorts",
     "RosterSyncResult",
+    "camera_ports",
     "camera_sync_view",
     "sync_camera_roster",
 ]

@@ -7,6 +7,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from backend.app.features.cameras.dependencies import CameraPorts
 from backend.app.main import create_app, no_lifespan
 from contracts.worker_config import PulledNightWindow, PulledWorkerConfig
 
@@ -94,6 +95,10 @@ class _FakeDetectionPolicyStore:
         return
 
 
+def _unused_topology() -> Any:
+    raise AssertionError("worker config must not touch topology")
+
+
 def _app() -> FastAPI:
     app = create_app(lifespan=no_lifespan)
     app.state.edge_relay_token = RELAY_TOKEN
@@ -147,8 +152,11 @@ def _patch_minimal_dependencies(
     )
     monkeypatch.setattr(
         cameras_router,
-        "get_connection_settings_store",
-        lambda app: _FakeConnSettingsStore(),
+        "camera_ports",
+        lambda app: CameraPorts(
+            enrolled_facility_id=lambda: _FakeConnSettingsStore().load().facility_id,
+            topology=_unused_topology,
+        ),
         raising=True,
     )
     monkeypatch.setattr(

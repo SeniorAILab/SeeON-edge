@@ -45,6 +45,7 @@ from backend.app.features.cameras.camera_crud_service import (
     update_camera as _service_update_camera,
 )
 from backend.app.features.cameras.dependencies import (
+    camera_ports,
     camera_sync_view,
     sync_camera_roster,
 )
@@ -75,7 +76,6 @@ from backend.app.features.cameras.worker_config_service import (
     compute_policy_camera_identities,
 )
 from backend.app.features.clips.storage_location_store import ClipStorageLocationStore
-from backend.app.features.connection.dependencies import get_connection_settings_store
 from backend.app.features.detection_settings.policy_store import (
     DetectionPolicyStore,
     PolicyActivationRefused,
@@ -774,7 +774,7 @@ def _hub_canonical_id(record: dict[str, object]) -> str | None:
 def _worker_config_response(request: Request, *, require_available: bool) -> dict[str, object]:
     snapshot = _store(request.app).snapshot()
     bed_zones = _bed_zone_store(request.app).get_all()
-    facility_id = get_connection_settings_store(request.app).load().facility_id
+    facility_id = camera_ports(request.app).enrolled_facility_id()
     policy_gen = _detection_policy_store(request.app).generation(facility_id)
     # Resolve policy bundle under the router's HTTP boundary so resolution errors map to 503
     policy_bundle = None
@@ -942,7 +942,7 @@ def acknowledge_applied_detection_policies(
     request: Request, *, facility_id: str, config_version: int | None
 ) -> None:
     """Move pending activations to applied only after a restarted worker heartbeats."""
-    enrolled_facility = get_connection_settings_store(request.app).load().facility_id
+    enrolled_facility = camera_ports(request.app).enrolled_facility_id()
     if enrolled_facility != facility_id or config_version is None:
         return
     expected = _worker_config_response(request, require_available=False).get("config_version")
