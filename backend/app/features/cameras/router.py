@@ -49,6 +49,7 @@ from backend.app.features.cameras.dependencies import (
     camera_sync_view,
     sync_camera_roster,
 )
+from backend.app.features.cameras.dependencies import camera_registry as _store
 from backend.app.features.cameras.rtsp_probe_service import (
     RTSPProbeInputs as _RTSPProbeInputs,
 )
@@ -57,7 +58,6 @@ from backend.app.features.cameras.rtsp_probe_service import (
 )
 from backend.app.features.cameras.store import (
     CameraRegistryData,
-    CameraRegistryStore,
     DuplicateCameraError,
     ProbeErrorClass,
     ProbeResult,
@@ -1238,15 +1238,6 @@ def _snapshot_camera_records(
     if not isinstance(cameras, list):
         return []
     return [record for record in cameras if isinstance(record, dict)]
-
-
-def _store(app: FastAPI) -> CameraRegistryStore:
-    store = getattr(app.state, "camera_registry", None)
-    if store is None:
-        raise RuntimeError("camera registry is not injected")
-    if not isinstance(store, CameraRegistryStore):
-        raise TypeError("camera registry has invalid type")
-    return store
 
 
 def _bed_zone_store(app: FastAPI) -> BedZoneStore:
