@@ -119,8 +119,6 @@
     "detection_settings": {
       "CROSS_FEATURE_EDGE detection_settings.router -> audit.catalog": 1,
       "CROSS_FEATURE_EDGE detection_settings.router -> audit.http": 1,
-      "CROSS_FEATURE_EDGE detection_settings.router -> cameras.store": 1,
-      "CROSS_FEATURE_EDGE detection_settings.router -> connection.dependencies": 1,
       "FEATURE_ROOT_FILE policy_diff.py": 1,
       "FEATURE_ROOT_FILE policy_models.py": 1,
       "FEATURE_ROOT_FILE policy_mutations.py": 1,

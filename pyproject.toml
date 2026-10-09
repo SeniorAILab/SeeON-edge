@@ -536,8 +536,6 @@ type = "acyclic_siblings"
 ancestors = ["backend.app.features"]
 ignore_imports = [
     "backend.app.features.cameras.router -> backend.app.features.status.heartbeat_store",
-    "backend.app.features.detection_settings.router -> backend.app.features.cameras.store",
-    "backend.app.features.detection_settings.router -> backend.app.features.connection.dependencies",
     "backend.app.features.clips.router -> backend.app.features.evidence.receipt_store",
 ]
 
