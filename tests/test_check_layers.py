@@ -778,6 +778,18 @@ REVERTED_IMPORTS = {
         "backend/app/features/cameras/router.py",
         f"from {F}.status.heartbeat_store import get_heartbeat_store\n",
     ),
+    "cameras.router -> runtime_settings.dependencies": (
+        "backend/app/features/cameras/router.py",
+        f"from {F}.runtime_settings.dependencies import get_runtime_settings_store\n",
+    ),
+    "evidence.router -> runtime_settings.dependencies": (
+        "backend/app/features/evidence/router.py",
+        f"from {F}.runtime_settings.dependencies import get_runtime_settings_store\n",
+    ),
+    "status.router -> runtime_settings.dependencies": (
+        "backend/app/features/status/router.py",
+        f"from {F}.runtime_settings.dependencies import get_runtime_settings_store\n",
+    ),
     "detection_settings.router -> cameras.store": (
         "backend/app/features/detection_settings/router.py",
         f"from {F}.cameras.store import CameraRegistryStore\n",

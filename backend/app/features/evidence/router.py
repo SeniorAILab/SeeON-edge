@@ -3,14 +3,14 @@ from __future__ import annotations
 import logging
 import os
 import stat
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, BinaryIO, Literal, Never, Protocol, runtime_checkable
 from uuid import UUID
 
-from fastapi import APIRouter, Header, HTTPException, Request, status
+from fastapi import APIRouter, FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.app.features.audit.catalog import empty_detail
@@ -25,7 +25,6 @@ from backend.app.features.evidence.receipt_store import (
     VerifiedArtifact,
     verified_artifact,
 )
-from backend.app.features.runtime_settings.dependencies import get_runtime_settings_store
 from backend.app.shared.audit_values import (
     AuditAction,
     AuditActorType,
@@ -349,8 +348,22 @@ def _verified_media(
         return verified
 
 
+@dataclass(frozen=True, slots=True)
+class EvidencePorts:
+    clip_export_enabled: Callable[[], bool]
+
+
+def evidence_ports(app: FastAPI) -> EvidencePorts:
+    ports = getattr(app.state, "evidence_ports", None)
+    if ports is None:
+        raise RuntimeError("evidence ports are not injected")
+    if not isinstance(ports, EvidencePorts):
+        raise TypeError("evidence ports have invalid type")
+    return ports
+
+
 def _enabled(request: Request) -> bool:
-    return get_runtime_settings_store(request.app).get().clip_export_enabled
+    return evidence_ports(request.app).clip_export_enabled()
 
 
 def _receipt_store(request: Request) -> PostgresArtifactReceiptStore:
@@ -396,4 +409,4 @@ def _raise_failure(failure: DeliveryFailure) -> Never:
     raise HTTPException(status_code=code, detail="backend evidence export failed", headers=headers)
 
 
-__all__ = ["router"]
+__all__ = ["EvidencePorts", "evidence_ports", "router"]

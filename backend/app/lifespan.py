@@ -98,15 +98,25 @@ def install_feature_ports(app: FastAPI) -> None:
         topology_retry_coordinator,
     )
     from backend.app.features.detection_settings.router import DetectionSettingsPorts
+    from backend.app.features.evidence.router import EvidencePorts
+    from backend.app.features.runtime_settings.dependencies import get_runtime_settings_store
+    from backend.app.features.status.router import StatusPorts
 
     app.state.camera_ports = CameraPorts(
         enrolled_facility_id=lambda: get_connection_settings_store(app).load().facility_id,
         topology=lambda: topology_retry_coordinator(app),
         heartbeats=lambda: get_heartbeat_store(app).snapshot(),
+        clip_export_setting=lambda: get_runtime_settings_store(app).get(),
     )
     app.state.detection_settings_ports = DetectionSettingsPorts(
         enrolled_facility_id=lambda: get_connection_settings_store(app).load().facility_id,
         camera_records=lambda: camera_registry(app).snapshot()["cameras"],
+    )
+    app.state.evidence_ports = EvidencePorts(
+        clip_export_enabled=lambda: get_runtime_settings_store(app).get().clip_export_enabled,
+    )
+    app.state.status_ports = StatusPorts(
+        runtime_settings=lambda: get_runtime_settings_store(app).get().as_dict(),
     )
 
 
