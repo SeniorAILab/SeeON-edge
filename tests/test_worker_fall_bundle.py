@@ -594,9 +594,10 @@ def test_packaged_bundle_applies_a_runtime_manifest_with_nvdec_camera(
     boot = _flow_boot()
     runtime._boot = boot
     runtime._initialize_flow_policy_graph(boot)
-    plan = runtime._preflight_camera_graph(config.cameras[0])
+    activation = runtime._camera_activation(config.cameras[0])
 
-    runtime._apply_runtime_manifest(boot, {"camera-a": plan})
+    runtime._apply_runtime_manifest(boot, {"camera-a": activation})
+    print("MANIFEST_SHA", runtime._runtime_manifest.sha256)
 
     manifest = runtime._runtime_manifest
     assert manifest is not None

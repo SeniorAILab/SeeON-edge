@@ -259,7 +259,10 @@ def test_build_flow_camera_composes_ffmpeg_thumbnail_generator(
     runtime._camera_evidence_attachers = {}
     runtime._native_policy_pumps_by_camera = {}
     runtime._resolved_clip_store_dir = lambda: tmp_path / "clips"
-    runtime._preflight_camera_graph = lambda _camera, **_kwargs: plan
+    preflights: list[tuple[str, str, int]] = []
+    runtime._preflight_camera_graph = lambda _camera, **kwargs: (
+        preflights.append(kwargs["episode_source_identity"]) or plan
+    )
     runtime.temporal_profile = SimpleNamespace(
         decision_interval_frames=lambda _module_id: 1,
     )
@@ -275,6 +278,35 @@ def test_build_flow_camera_composes_ffmpeg_thumbnail_generator(
 
     assert len(thumbnail_generators) == 1
     assert isinstance(thumbnail_generators[0], FfmpegThumbnailGenerator)
+    assert preflights == [("boot-1", "7", 3)]
+
+
+def test_boot_manifest_pass_does_not_compile_the_camera_graph() -> None:
+    class _StopAfterManifest(Exception):
+        pass
+
+    runtime = WorkerRuntime.__new__(WorkerRuntime)
+    runtime._flow_media_plane = object()
+    runtime._compose_evidence_export = lambda: None
+    runtime.config = SimpleNamespace(
+        cameras=[SimpleNamespace(camera_id="camera-a"), SimpleNamespace(camera_id="camera-b")]
+    )
+    compiled: list[str] = []
+    runtime._preflight_camera_graph = lambda camera, **_kwargs: compiled.append(camera.camera_id)
+    runtime._camera_activation = lambda camera: f"activation-{camera.camera_id}"
+    applied: list[object] = []
+
+    def apply(_boot: object, activations: object) -> None:
+        applied.append(activations)
+        raise _StopAfterManifest
+
+    runtime._apply_runtime_manifest = apply
+
+    with pytest.raises(_StopAfterManifest):
+        runtime._activate_flow(SimpleNamespace(), SimpleNamespace())
+
+    assert compiled == []
+    assert applied == [{"camera-a": "activation-camera-a", "camera-b": "activation-camera-b"}]
 
 
 def test_shutdown_stops_the_flow_without_removing_its_sources() -> None:
