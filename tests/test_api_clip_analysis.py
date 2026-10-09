@@ -43,19 +43,6 @@ FIELD_1002E76A_ANALYSIS_BYTES = (
     b'bbbbbbbbbbbbbbbbbbbbb","source":"clip_reanalysis","time_base":{"denominator":120'
     b'00,"numerator":1}}'
 )
-ENCODER_FORMAT_PIN_BYTES = (
-    b'{"analysis_profile_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddd'
-    b'dddddddddddd","bed_geometries":[{"points":[[100.0,100.0],[500.0,100.0],[500.0,30'
-    b'0.0]],"provenance_pts":0}],"bed_model_sha256":"ccccccccccccccccccccccccccccccccc'
-    b'ccccccccccccccccccccccccccccccc","clip_id":"clip-1","clip_sha256":"aaaaaaaaaaaaa'
-    b'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","decoder_identity":"ffmpeg"'
-    b',"frames":[{"boxes":[{"confidence":0.9,"x1":1.0,"x2":10.0,"y1":1.0,"y2":10.0},{"'
-    b'confidence":0.75,"x1":20.5,"x2":200.0,"y1":30.25,"y2":300.0}],"pts":0,"status":"'
-    b'available"},{"boxes":[],"pts":400,"status":"no_evidence"}],"image_height":480,"i'
-    b'mage_width":640,"pose_model_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
-    b'bbbbbbbbbbbbbbbbbbbbb","source":"clip_reanalysis","time_base":{"denominator":120'
-    b'00,"numerator":1}}'
-)
 FIELD_1002E76A_ANALYSIS_SIDECAR = (
     b"3cfc00800bb20be0f6617cfd22a31af9ab1801d9f6dd80e5c5b3029ca80de761\n"
 )
@@ -365,13 +352,6 @@ def _field_result() -> ClipAnalysisResult:
     )
 
 
-def test_encoder_output_format_pin() -> None:
-    assert encode_clip_analysis(_field_result()) == ENCODER_FORMAT_PIN_BYTES, (
-        "encoder output format changed; if intended, regenerate only ENCODER_FORMAT_PIN_BYTES "
-        "and leave FIELD_1002E76A_ANALYSIS_BYTES as written by field revision 1002e76a"
-    )
-
-
 def test_field_1002e76a_analysis_bytes_decode_and_are_served_as_written(
     _environment: Path, app: FastAPI
 ) -> None:
@@ -380,8 +360,10 @@ def test_field_1002e76a_analysis_bytes_decode_and_are_served_as_written(
     decoded = decode_clip_analysis(FIELD_1002E76A_ANALYSIS_BYTES)
     assert decoded == _field_result()
     assert encode_clip_analysis(decoded) == FIELD_1002E76A_ANALYSIS_BYTES, (
-        "current encoder no longer reproduces the bytes field revision 1002e76a wrote; "
-        "do not regenerate FIELD_1002E76A_ANALYSIS_BYTES"
+        "encoder output no longer matches the artifact field revision 1002e76a wrote: "
+        "this breaks compatibility with existing field artifacts (the worker raises "
+        "identity_collision when republishing one) and needs a migration or versioning "
+        "decision, not a new FIELD_1002E76A_ANALYSIS_BYTES"
     )
     clip_dir = _write_clip(_environment)
     (clip_dir / FIELD_1002E76A_ANALYSIS_NAME).write_bytes(FIELD_1002E76A_ANALYSIS_BYTES)
