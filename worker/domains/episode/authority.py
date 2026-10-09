@@ -76,6 +76,9 @@ class EpisodeAuthority:
             raise ValueError("confirmation_window must cover confirmation_votes")
         key = (proposal.camera_id, proposal.event_type, proposal.bed_id, proposal.track_id)
         episode = self._episodes.setdefault(key, _Episode())
+        if episode.state is EpisodeState.CANDIDATE:
+            episode.unknown_frame = None
+            episode.unknown_time = None
         if episode.state is EpisodeState.UNKNOWN:
             if self._within_reassociation(episode, proposal):
                 episode.state = EpisodeState.OPEN
@@ -83,6 +86,8 @@ class EpisodeAuthority:
                 return ()
             episode.state = EpisodeState.RESOLVED
         if episode.state is EpisodeState.RESOLVED:
+            episode.unknown_frame = None
+            episode.unknown_time = None
             if proposal.confirmed_recovery:
                 episode.state = EpisodeState.NORMAL
                 episode.votes.clear()
@@ -155,12 +160,14 @@ class EpisodeAuthority:
         time_sec: float,
         track_id: int | None = None,
     ) -> None:
-        for (episode_camera, _event, _bed, episode_track), episode in self._episodes.items():
-            if (
-                episode_camera == camera_id
-                and (track_id is None or episode_track == track_id)
-                and episode.state is EpisodeState.OPEN
-            ):
+        for key, episode in tuple(self._episodes.items()):
+            episode_camera, _event, _bed, episode_track = key
+            if episode_camera != camera_id or (track_id is not None and episode_track != track_id):
+                continue
+            if episode.state is EpisodeState.CANDIDATE and episode.unknown_frame is None:
+                episode.unknown_frame = frame_index
+                episode.unknown_time = time_sec
+            elif episode.state is EpisodeState.OPEN:
                 episode.state = EpisodeState.UNKNOWN
                 episode.unknown_frame = frame_index
                 episode.unknown_time = time_sec
@@ -210,11 +217,21 @@ class EpisodeAuthority:
         return bool(candidates) and self.reassociate(proposal, candidates[0])
 
     def expire(self, *, frame_index: int, time_sec: float) -> None:
-        for episode in self._episodes.values():
-            if episode.state is EpisodeState.UNKNOWN and not self._within_values(
+        for key, episode in tuple(self._episodes.items()):
+            if episode.state is EpisodeState.NORMAL or (
+                episode.state is EpisodeState.RESOLVED and episode.unknown_frame is not None
+            ):
+                del self._episodes[key]
+            elif episode.state is EpisodeState.UNKNOWN and not self._within_values(
                 episode, frame_index, time_sec
             ):
                 episode.state = EpisodeState.RESOLVED
+            elif (
+                episode.state is EpisodeState.CANDIDATE
+                and episode.unknown_frame is not None
+                and not self._within_values(episode, frame_index, time_sec)
+            ):
+                del self._episodes[key]
 
     @staticmethod
     def _within_values(episode: _Episode, frame_index: int, time_sec: float) -> bool:

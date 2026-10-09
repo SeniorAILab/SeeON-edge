@@ -96,6 +96,7 @@ class FallPolicyDecider:
     ) -> tuple[BusinessEvent, ...]:
         live_ids = frozenset(live_track_ids)
         self._evict_stale(live_ids, frame_index, time_sec)
+        self._episodes.expire(frame_index=frame_index, time_sec=time_sec)
         emitted: list[BusinessEvent] = []
         snapshots: list[DecisionTraceSnapshot] = []
         for track_id in sorted(live_ids):
