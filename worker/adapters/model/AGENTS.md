@@ -52,5 +52,5 @@ importing files, its own artifact-verification rules (score 12, distinct domain)
 `tests/test_runners_registry.py`, `tests/test_worker_model_serving.py`,
 `tests/test_serving_batch_client.py`, `tests/test_ort_pose_bbox56_runner.py`,
 `tests/test_ort_bed_seg_runner.py`, `tests/test_worker_yolo_adapters.py`,
-`tests/test_worker_fall_adapters.py`, `tests/test_worker_fall_model_selection.py`,
-`tests/test_worker_no_torch_import_surface.py`.
+`tests/test_worker_fall_adapters.py`, `tests/test_worker_fall_bundle.py`,
+`tests/test_fall_bundle_dir_env.py`, `tests/test_worker_no_torch_import_surface.py`.

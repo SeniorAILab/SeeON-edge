@@ -14,7 +14,6 @@ Define every cross-layer **protocol, constant, enum, and shared data shape** her
 - `runner.py`: runner result kinds, `<X>Output` aliases, `RunnerProtocol`.
 - `worker_config.py`: `PulledWorkerConfig` family, `WORKER_CONFIG_PATH` / `WORKER_RESTART_PATH`, version keys.
 - `replay_trace.py`: versioned replay rows + `encode_*` / `decode_*` (document and JSONL).
-- `model_selection.py`: model selection document (publication, runtime format, threshold) and canonical digest.
 - `edge_provisioning_*.py` (v1, models, parse, codec, enrollment, response, validation): Hub enrollment and topology vocabulary. `edge_provisioning_v1.py` is the entry.
 - `edge-provisioning-v1/`: byte-frozen `contract-fixtures.json` + `provenance.json`. Synthetic tokens keep the upstream digest (`.gitleaksignore`).
 - `decode_diagnostics.py` / `encode_diagnostics.py`: backend names, fallback reasons, selection shapes.

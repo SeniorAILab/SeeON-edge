@@ -100,39 +100,23 @@ worker tree revision, models directory, and new engine directory. Roll back by
 recreating the container with the previous tuple. A boot refusal means
 re-export and rebuild, never delete the identity.
 
-## Deploying an admitted model selection
+## Swapping the fall model
 
-`/app/model-selection.json` is a deployment-owned, read-only file; it is never
-copied into `Dockerfile.edge`. To switch the running fall model, publish the
-bundle into `worker-models`, place the matching selection document at
-`/deployment/model-selection.json` on the host, and add the opt-in overlay
-`compose.edge.model-selection.yaml` with a second `-f`. Never bind the file
-unconditionally: on a host without it Docker creates a directory of that name
-and the worker refuses to boot (`IsADirectoryError`, #498). Restart `ml-worker` only after `edge-model-fetch` has
-verified the bundle. Removing that mount is the only normal path back to the
-packaged fallback. Replacing a model requires only the bundle and selection
-file, not an image rebuild.
+A fall model bundle is a directory holding `manifest.json`, `model.onnx`,
+`calibration.json` and one `conformance/` file. To swap the model, place the
+directory under `/models/bundles/` on the host volume, set
+`ML_WORKER_FALL_BUNDLE_DIR` to its path in the deployment env, and restart
+`ml-worker`. To roll back, unset the variable and restart; the worker then uses
+the packaged default.
 
-The selection document is five keys and nothing else:
-
-```json
-{
-  "schema_version": 3,
-  "model_publication": {
-    "source_locator": "<where the bundle is fetched from>",
-    "revision": "<publisher revision>",
-    "bundle_sha256": "<sha256 of the bundle manifest>"
-  },
-  "runtime_format": "onnxruntime",
-  "transition_threshold": 0.5,
-  "threshold_source": "default"
-}
-```
-
-Admission checks bytes only: the bundle manifest digest equals
-`bundle_sha256`, every member matches its recorded sha256 and size, and the
-tree and runtime format are exact. There is no receipt, status, or "green"
-step. Swapping the model means swapping the bundle and this file.
+Admission reads only `manifest.json`: it must be canonical JSON, every member
+must match its recorded sha256 and size, the file tree must match exactly, and
+`runtime_format` must be `onnxruntime`. The worker then checks the conformance
+file and creates the ONNX session. Any failure refuses worker start (exit code
+3) with one log line naming the bundle directory and the cause. The decision
+threshold is `threshold` in `calibration.json` when present, otherwise the
+packaged policy default. There is no receipt, status, or "green" step and no
+image rebuild.
 
 Publish only through `.github/workflows/edge-images.yml` for the sealed SHA.
 Download the exact-SHA artifact and compare both digests with the seal before
@@ -451,12 +435,10 @@ for path in (
 
 The worker has dual mounts of the same model volume. `/app/models` preserves
 the packaged pose+bbox56 bundle; `/models` holds admitted bundles at
-`/models/bundles/<digest>`. The image ships neither a selection document nor a
-bundle. Deployment supplies a read-only selection document when it chooses an
-admitted model. Its manifest declares the payload member list; evaluation and
-field receipts are externally hashed, non-recursive receipts. A selected bundle
-must pass `admit → construct → warm → persist` before camera activation. Any
-failure refuses boot; no fallback is permitted while a selection exists.
+`/models/bundles/<name>`. The image ships no bundle. A bundle selected with
+`ML_WORKER_FALL_BUNDLE_DIR` must pass `admit → construct → warm → persist`
+before camera activation. Any failure refuses boot; no fallback is permitted
+while the variable is set.
 
 Runtime provenance is dedicated local state, never an alert payload. Each boot
 writes an immutable mode-0600 record under

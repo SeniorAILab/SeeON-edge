@@ -49,8 +49,9 @@ An omitted domain is ALWAYS, 24/7. YAML windows apply only when the pull said no
 Degenerate start==end is invalid. Per-domain bad windows fail open to ALWAYS.
 
 Retired env: `RELAY_URL`, both legacy Edge camera-config keys, `CLIP_STORE_DIR`,
-`ML_WORKER_FALL_MODEL_*`, `ML_WORKER_CLIP_*`, `ML_WORKER_DEV_MJPEG*`, `ML_WORKER_EVENT_CLIP_EXPORT_ENABLED`.
+`ML_WORKER_CLIP_*`, `ML_WORKER_DEV_MJPEG*`, `ML_WORKER_EVENT_CLIP_EXPORT_ENABLED`.
 Present keys refuse boot.
+`ML_WORKER_FALL_BUNDLE_DIR` (a fall bundle directory) is the one supported fall-model env key; see `local_env.py`.
 
 `RestartDirective(generation, version, registry)` is `(restart_epoch, config_version,
 registry_version)`. Newer generation wins even at version 0; within an equal

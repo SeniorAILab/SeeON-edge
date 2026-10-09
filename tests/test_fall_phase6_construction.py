@@ -6,43 +6,25 @@ import pytest
 
 from worker.runtime.config import local_env
 from worker.runtime.config.worker_models import WorkerModelsConfig
-from worker.runtime.provenance.model_bundle import DesiredModelBundle
 
 
-def _desired() -> DesiredModelBundle:
-    return DesiredModelBundle(bundle_sha256="a" * 64)
-
-
-def test_selected_bundle_refuses_person_boxes() -> None:
+def test_bundle_dir_refuses_person_boxes() -> None:
     with pytest.raises(ValueError, match="requires box_source=pose"):
-        WorkerModelsConfig(
-            box_source="person",
-            selected={"models_root": "/sealed/selected", "desired": _desired()},
-        )
+        WorkerModelsConfig(box_source="person", fall_bundle_dir=Path("/b"))
 
 
-def test_selection_loads_without_image_identity(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    selection = tmp_path / "model-selection.json"
-    selection.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(
-        local_env, "desired_model_bundle_from_selection_document", lambda raw: _desired()
+def test_set_bundle_dir_env_selects_that_directory(tmp_path: Path) -> None:
+    config = local_env.worker_models_config_from_environment(
+        {"ML_WORKER_FALL_BUNDLE_DIR": str(tmp_path)}
     )
 
-    selected = local_env.selected_fall_bundle_config_from_environment(
-        selection_path=selection,
-        models_root=Path("/models"),
-    )
-
-    assert selected is not None
-    assert selected.models_root == Path("/models")
+    assert config.fall_bundle_dir == tmp_path.resolve()
+    assert config.fall is None
 
 
-def test_missing_selection_keeps_packaged_model_path(tmp_path: Path) -> None:
-    assert (
-        local_env.selected_fall_bundle_config_from_environment(
-            selection_path=tmp_path / "missing-model-selection.json"
-        )
-        is None
-    )
+def test_unset_bundle_dir_env_keeps_the_packaged_default(packaged_fall_bundle: Path) -> None:
+    for env in ({}, {"ML_WORKER_FALL_BUNDLE_DIR": ""}):
+        config = local_env.worker_models_config_from_environment(env)
+        assert config.fall_bundle_dir is None
+        assert config.fall is not None
+        assert config.fall.artifact_dir == packaged_fall_bundle.resolve()

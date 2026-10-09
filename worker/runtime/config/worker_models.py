@@ -14,7 +14,6 @@ from worker.domains.registry import DOMAIN_REGISTRY
 from worker.runtime.config.camera_models import CameraRuntimeConfig, RelayConfig
 from worker.runtime.config.domain_models import DomainsConfig
 from worker.runtime.config.errors import ConfigValidationError, WorkerConfigError
-from worker.runtime.provenance.model_bundle import DesiredModelBundle
 
 RELAY_ALERTS_PATH: Final = "/api/v1/relay/alerts"
 RELAY_HEARTBEAT_PATH: Final = "/api/v1/relay/heartbeat"
@@ -73,36 +72,29 @@ class FallModelConfig(BaseModel):
         return self
 
 
-class SelectedFallBundleConfig(BaseModel):
-    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
-
-    models_root: Path
-    desired: DesiredModelBundle
-
-    @field_validator("models_root")
-    @classmethod
-    def _expand_models_root(cls, value: Path) -> Path:
-        return Path(os.path.expanduser(str(value))).resolve()
-
-
 class WorkerModelsConfig(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
     fall: FallModelConfig | None = None
-    selected: SelectedFallBundleConfig | None = None
+    fall_bundle_dir: Path | None = None
     box_source: Literal["pose", "person"] = "pose"
 
     @model_validator(mode="after")
     def _validate_fall_model_source(self) -> WorkerModelsConfig:
-        if (self.fall is None) == (self.selected is None):
+        if (self.fall is None) == (self.fall_bundle_dir is None):
             raise ConfigValidationError(
                 "no fall model configured"
                 if self.fall is None
-                else "packaged and selected fall models cannot coexist"
+                else "packaged fall model and fall bundle dir cannot coexist"
             )
-        if self.selected is not None and self.box_source != "pose":
-            raise ConfigValidationError("selected fall bundle requires box_source=pose")
+        if self.fall_bundle_dir is not None and self.box_source != "pose":
+            raise ConfigValidationError("fall bundle dir requires box_source=pose")
         return self
+
+    @field_validator("fall_bundle_dir")
+    @classmethod
+    def _expand_fall_bundle_dir(cls, value: Path | None) -> Path | None:
+        return None if value is None else Path(os.path.expanduser(str(value))).resolve()
 
 
 class DevMjpegConfig(BaseModel):
@@ -214,7 +206,6 @@ __all__ = [
     "ConfigValue",
     "DevMjpegConfig",
     "FallModelConfig",
-    "SelectedFallBundleConfig",
     "WorkerConfig",
     "WorkerConfigError",
     "WorkerModelsConfig",

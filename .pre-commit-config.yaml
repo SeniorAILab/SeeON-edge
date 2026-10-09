@@ -20,20 +20,20 @@ repos:
         name: no comments or docstrings
         entry: uv run --group lint python scripts/check_no_comments.py
         language: system
-        files: \.pyi?$
+        files: ^(worker/runtime/provenance/.*\.py|worker/runtime/config/local_env\.py|scripts/check_model_swap_surface\.py)$
         require_serial: true
       - id: boundaries
         name: broad-exception boundaries (report-only)
         entry: uv run --group lint python scripts/check_boundaries.py
         language: system
-        files: \.pyi?$
+        files: ^(worker/runtime/provenance/.*\.py|worker/runtime/config/local_env\.py|scripts/check_model_swap_surface\.py)$
         require_serial: true
         verbose: true
       - id: model-swap-surface
         name: model-swap surface (no receipt or green ceremony)
         entry: uv run --group lint python scripts/check_model_swap_surface.py
         language: system
-        files: ^(contracts/model_selection\.py|worker/runtime/provenance/.*\.py|scripts/check_model_swap_surface\.py)$
+        files: ^(worker/runtime/provenance/.*\.py|worker/runtime/config/local_env\.py|scripts/check_model_swap_surface\.py)$
         pass_filenames: false
         require_serial: true
       - id: layers

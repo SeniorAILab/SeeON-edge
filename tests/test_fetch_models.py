@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-from contracts.model_selection import ModelPublication, ModelSelection
 from tests_support.pose_bbox56_bundle_artifact import write_pose_bbox56_bundle
 from worker.tools.fetch_models import cli
 from worker.tools.fetch_models.fetcher import (
@@ -31,11 +30,9 @@ from worker.tools.fetch_models.http_source import (
 from worker.tools.fetch_models.manifest import (
     MANIFEST_PATH,
     SIDECAR_ROOT,
-    Artifact,
     Bundle,
     Manifest,
     ManifestError,
-    Source,
     canonical_json,
     load_manifest,
     parse_manifest,
@@ -201,73 +198,6 @@ def _bundle_source(bundle: Bundle) -> FakeSource:
     )
 
 
-def _selected_bundle_delivery(
-    tmp_path: Path, *, include_calibration: bool = True
-) -> tuple[Manifest, FakeSource, Path, Bundle]:
-    source_root = write_pose_bbox56_bundle(tmp_path / "source")
-    members = {
-        path: (source_root / path).read_bytes()
-        for path in (
-            "model.onnx",
-            "calibration.json",
-            "conformance/pose-bbox56-v1.json",
-            "bundle-manifest.json",
-        )
-        if include_calibration or path != "calibration.json"
-    }
-    member_records = [
-        {"path": path, "sha256": _sha(body), "size": len(body)} for path, body in members.items()
-    ]
-    payload = {"identities": {}}
-    bundle_sha256 = _sha(canonical_json({"members": member_records, "payload": payload}).encode())
-    receipts = {
-        "evaluation-receipt.json": b"{}\n",
-        "field-evaluation-receipt.json": b"{}\n",
-    }
-    raw = _manifest_dict()
-    manifest = parse_manifest(raw)
-    source = Source(
-        name="replacement-publication",
-        kind="huggingface",
-        source_locator="replacement/models",
-        ref="c" * 40,
-    )
-    bundle = Bundle(
-        bundle_sha256,
-        tuple(
-            Artifact(path, source, path, len(body), _sha(body)) for path, body in members.items()
-        ),
-        payload,
-        tuple(
-            Artifact(path, source, path, len(body), _sha(body)) for path, body in receipts.items()
-        ),
-        "onnxruntime",
-    )
-    selection = ModelSelection(
-        model_publication=ModelPublication(source.source_locator, source.ref, bundle_sha256),
-        runtime_format="onnxruntime",
-        transition_threshold=0.5,
-        threshold_source="default",
-    )
-    selection_path = tmp_path / "model-selection.json"
-    selection_path.write_text(json.dumps(selection.as_dict()), encoding="utf-8")
-    bodies = _fake_for(manifest).bodies
-    bodies[source.url_for("manifest.json")] = bundle.manifest_bytes
-    bodies.update(
-        {
-            artifact.url: body
-            for artifact, body in zip(bundle.members, members.values(), strict=True)
-        }
-    )
-    bodies.update(
-        {
-            artifact.url: body
-            for artifact, body in zip(bundle.receipts, receipts.values(), strict=True)
-        }
-    )
-    return manifest, FakeSource(bodies), selection_path, bundle
-
-
 def test_committed_manifest_parses_and_pins_every_family_the_worker_loads() -> None:
     manifest = load_manifest(MANIFEST_PATH)
     paths = {artifact.path for artifact in manifest.artifacts}
@@ -395,128 +325,6 @@ def test_fetch_all_public_only_skips_huggingface_artifacts_and_fetches_public_on
         ),
         f"fetched          {_sha(UPSTREAM)}  fall/lstm/metadata.upstream.json",
     ]
-
-
-def test_fetch_all_delivers_and_rehearses_selected_bundle_not_listed_in_manifest(
-    tmp_path: Path,
-) -> None:
-    manifest, source, selection_path, bundle = _selected_bundle_delivery(tmp_path)
-    publication = json.loads(selection_path.read_text(encoding="utf-8"))["model_publication"]
-    assert not any(
-        (candidate.source_locator, candidate.ref)
-        == (publication["source_locator"], publication["revision"])
-        for candidate in manifest.sources.values()
-    )
-
-    report = fetch_all(
-        manifest,
-        tmp_path / "models",
-        source,
-        env={},
-        retry=_no_sleep_policy(),
-        selection_path=selection_path,
-    )
-
-    destination = tmp_path / "models" / "bundles" / bundle.sha256
-    assert {result.path for result in report.results} >= {
-        "model.onnx",
-        "calibration.json",
-        "evaluation-receipt.json",
-        "field-evaluation-receipt.json",
-    }
-    assert (destination / "manifest.json").read_bytes() == bundle.manifest_bytes
-    assert all(
-        sha256_of(destination / artifact.path) == artifact.sha256
-        for artifact in (*bundle.members, *bundle.receipts)
-    )
-
-
-def test_fetch_all_refuses_selection_when_its_source_is_unreachable(tmp_path: Path) -> None:
-    manifest = parse_manifest(_manifest_dict())
-    selection_path = tmp_path / "model-selection.json"
-    _, _, selected_path, _ = _selected_bundle_delivery(tmp_path / "selection")
-    selection_path.write_bytes(selected_path.read_bytes())
-
-    with pytest.raises(
-        VerificationError,
-        match="published bundle source replacement/models@c{40} is unreachable",
-    ):
-        fetch_all(
-            manifest,
-            tmp_path / "models",
-            _fake_for(manifest),
-            env={},
-            retry=_no_sleep_policy(),
-            selection_path=selection_path,
-        )
-
-
-def test_fetch_all_refuses_selected_bundle_claim_with_different_members_identity(
-    tmp_path: Path,
-) -> None:
-    manifest, source, selection_path, bundle = _selected_bundle_delivery(tmp_path)
-    raw_selection = json.loads(selection_path.read_text(encoding="utf-8"))
-    raw_selection["model_publication"]["bundle_sha256"] = "0" * 64
-    selection_path.write_text(json.dumps(raw_selection), encoding="utf-8")
-
-    with pytest.raises(
-        VerificationError,
-        match=(
-            f"published bundle manifest identity {bundle.sha256} does not match selected bundle "
-            f"{'0' * 64}"
-        ),
-    ):
-        fetch_all(
-            manifest,
-            tmp_path / "models",
-            source,
-            env={},
-            retry=_no_sleep_policy(),
-            selection_path=selection_path,
-        )
-
-
-def test_fetch_all_refuses_selected_bundle_boot_would_refuse(tmp_path: Path) -> None:
-    manifest, source, selection_path, bundle = _selected_bundle_delivery(
-        tmp_path, include_calibration=False
-    )
-
-    with pytest.raises(VerificationError, match="must contain model.onnx and calibration.json"):
-        fetch_all(
-            manifest,
-            tmp_path / "models",
-            source,
-            env={},
-            retry=_no_sleep_policy(),
-            selection_path=selection_path,
-        )
-    assert (tmp_path / "models" / "bundles" / bundle.sha256).is_dir()
-
-
-def test_fetch_all_rejects_tampered_selected_bundle_with_boot_reason(tmp_path: Path) -> None:
-    manifest, source, selection_path, bundle = _selected_bundle_delivery(tmp_path)
-    models_root = tmp_path / "models"
-    fetch_all(
-        manifest,
-        models_root,
-        source,
-        env={},
-        retry=_no_sleep_policy(),
-        selection_path=selection_path,
-    )
-    (models_root / "bundles" / bundle.sha256 / "calibration.json").write_text(
-        "tampered", encoding="utf-8"
-    )
-
-    with pytest.raises(VerificationError, match="member mismatch: calibration.json"):
-        fetch_all(
-            manifest,
-            models_root,
-            source,
-            env={},
-            retry=_no_sleep_policy(),
-            selection_path=selection_path,
-        )
 
 
 def test_hash_mismatch_fails_and_leaves_nothing_at_the_final_path(tmp_path: Path) -> None:
