@@ -17,6 +17,7 @@ from backend.app.features.audit.http import (
 from backend.app.shared.audit_values import AuditAction, AuditEvent, utc_now
 from backend.app.shared.http.dashboard_auth import (
     DASHBOARD_SESSION_COOKIE,
+    DashboardBodyRoute,
     DashboardSessionStore,
     authorize_dashboard,
     dashboard_credentials_store,
@@ -24,7 +25,7 @@ from backend.app.shared.http.dashboard_auth import (
     rotate_dashboard_credentials,
 )
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+router = APIRouter(prefix="/auth", tags=["auth"], route_class=DashboardBodyRoute)
 
 _LOGIN_WINDOW_SECONDS = 60.0
 _LOGIN_MAX_FAILURES_PER_KEY = 10

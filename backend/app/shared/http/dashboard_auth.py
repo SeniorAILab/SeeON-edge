@@ -20,11 +20,22 @@ from backend.app.shared.dashboard_sessions import (
     HashedDashboardCredentials,
     PlaintextDashboardCredentials,
 )
+from backend.app.shared.http.relay_http import bounded_body_route, reject_oversized_body
 from backend.app.shared.postgres_dashboard_credentials import PostgresDashboardCredentialsStore
 
 API_DASHBOARD_USERNAME_ENV = "API_DASHBOARD_USERNAME"
 API_DASHBOARD_PASSWORD_ENV = "API_DASHBOARD_PASSWORD"
 DASHBOARD_SESSION_COOKIE = "ml_dashboard_session"
+DASHBOARD_MAX_BODY_BYTES = 64 * 1024
+
+
+def _reject_oversized_dashboard_body(request: Request) -> None:
+    reject_oversized_body(request, max_bytes=DASHBOARD_MAX_BODY_BYTES)
+
+
+DashboardBodyRoute = bounded_body_route(
+    {"": DASHBOARD_MAX_BODY_BYTES}, before_body=_reject_oversized_dashboard_body
+)
 
 DEFAULT_DASHBOARD_USERNAME = "admin"
 DEFAULT_DASHBOARD_PASSWORD = "admin"
@@ -127,12 +138,14 @@ def authorize_dashboard(request: Request) -> str:
 __all__ = [
     "API_DASHBOARD_PASSWORD_ENV",
     "API_DASHBOARD_USERNAME_ENV",
+    "DASHBOARD_MAX_BODY_BYTES",
     "DASHBOARD_SESSION_COOKIE",
     "DASHBOARD_SESSION_TTL_SECONDS",
     "DEFAULT_DASHBOARD_PASSWORD",
     "DEFAULT_DASHBOARD_USERNAME",
     "KNOWN_DEFAULT_DASHBOARD_PASSWORD",
     "KNOWN_DEFAULT_DASHBOARD_USERNAME",
+    "DashboardBodyRoute",
     "DashboardCredentials",
     "DashboardSessionStore",
     "HashedDashboardCredentials",

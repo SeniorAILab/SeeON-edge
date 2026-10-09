@@ -12,9 +12,11 @@ from backend.app.features.runtime_settings.store import (
     RuntimeSettingsVersionConflict,
 )
 from backend.app.shared.audit_values import AuditAction, AuditEvent, utc_now
-from backend.app.shared.http.dashboard_auth import authorize_dashboard
+from backend.app.shared.http.dashboard_auth import DashboardBodyRoute, authorize_dashboard
 
-router = APIRouter(prefix="/runtime-settings", tags=["runtime-settings"])
+router = APIRouter(
+    prefix="/runtime-settings", tags=["runtime-settings"], route_class=DashboardBodyRoute
+)
 
 
 class RuntimeSettingsUpdateRequest(BaseModel):

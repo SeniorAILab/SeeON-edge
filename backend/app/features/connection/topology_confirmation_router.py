@@ -20,10 +20,11 @@ from backend.app.features.cameras.topology_confirmation import (
 )
 from backend.app.features.connection.dependencies import topology_retry_coordinator
 from backend.app.shared.audit_values import AuditAction, AuditEvent, utc_now
+from backend.app.shared.http.dashboard_auth import DashboardBodyRoute
 from backend.app.shared.http.dashboard_auth import authorize_dashboard as _authorize
 from contracts.edge_provisioning_v1 import EdgeErrorCode, MutationCounts
 
-router = APIRouter(prefix="/connection", tags=["connection"])
+router = APIRouter(prefix="/connection", tags=["connection"], route_class=DashboardBodyRoute)
 
 
 class TopologyConfirmRequest(BaseModel):

@@ -14,9 +14,9 @@ from backend.app.features.audit.http import mutation_audit
 from backend.app.features.clips.storage_location_store import ClipStorageLocationStore
 from backend.app.features.clips.store import CLIP_STORE_DIR_ENV, DEFAULT_CLIP_STORE_DIR
 from backend.app.shared.audit_values import AuditAction, AuditEvent, utc_now
-from backend.app.shared.http.dashboard_auth import authorize_dashboard
+from backend.app.shared.http.dashboard_auth import DashboardBodyRoute, authorize_dashboard
 
-router = APIRouter(tags=["clips"])
+router = APIRouter(tags=["clips"], route_class=DashboardBodyRoute)
 
 
 class ClipStorageBrowseEntry(BaseModel):

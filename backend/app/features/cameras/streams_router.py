@@ -17,10 +17,10 @@ from starlette.background import BackgroundTask
 
 from backend.app.core.config import get_settings
 from backend.app.features.cameras.store import CameraRegistryStore
-from backend.app.shared.http.dashboard_auth import authorize_dashboard
+from backend.app.shared.http.dashboard_auth import DashboardBodyRoute, authorize_dashboard
 from backend.app.shared.http.head_response import drop_body_for_head
 
-router = APIRouter(tags=["streams"])
+router = APIRouter(tags=["streams"], route_class=DashboardBodyRoute)
 
 _DEFAULT_MEDIA_TYPE = "multipart/x-mixed-replace; boundary=frame"
 _STREAM_CHUNK_SIZE = 64 * 1024

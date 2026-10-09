@@ -24,11 +24,11 @@ from backend.app.features.detection_settings.store import (
 )
 from backend.app.shared.audit_values import AuditAction, AuditEvent
 from backend.app.shared.audit_values import utc_now as audit_now
-from backend.app.shared.http.dashboard_auth import authorize_dashboard
+from backend.app.shared.http.dashboard_auth import DashboardBodyRoute, authorize_dashboard
 from contracts.worker_config import PulledWorkerConfig
 from shared.detection_policies import POLICY_DEFINITIONS
 
-router = APIRouter(tags=["detection-settings"])
+router = APIRouter(tags=["detection-settings"], route_class=DashboardBodyRoute)
 
 _HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
