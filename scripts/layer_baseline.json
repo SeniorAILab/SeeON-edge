@@ -107,13 +107,11 @@
       "CROSS_FEATURE_EDGE connection.router -> audit.http": 1,
       "CROSS_FEATURE_EDGE connection.router -> audit.store": 1,
       "CROSS_FEATURE_EDGE connection.router -> cameras.dependencies": 1,
-      "CROSS_FEATURE_EDGE connection.router -> cameras.router": 1,
       "CROSS_FEATURE_EDGE connection.router -> status.backend_heartbeat_relay": 1,
       "CROSS_FEATURE_EDGE connection.topology_confirmation_router -> audit.catalog": 1,
       "CROSS_FEATURE_EDGE connection.topology_confirmation_router -> audit.http": 1,
       "CROSS_FEATURE_EDGE connection.topology_confirmation_router -> audit.store": 1,
       "CROSS_FEATURE_EDGE connection.topology_confirmation_router -> cameras.edge_topology_sync_state": 1,
-      "CROSS_FEATURE_EDGE connection.topology_confirmation_router -> cameras.router": 1,
       "CROSS_FEATURE_EDGE connection.topology_confirmation_router -> cameras.topology_client": 1,
       "CROSS_FEATURE_EDGE connection.topology_confirmation_router -> cameras.topology_confirmation": 1,
       "CROSS_FEATURE_EDGE connection.topology_retry_coordinator -> audit.postgres_runtime": 1,
@@ -153,7 +151,6 @@
       "UNMIGRATED_IMPORT policy_mutations -> psycopg": 1
     },
     "diagnostics": {
-      "CROSS_FEATURE_EDGE diagnostics.router -> relay.router": 1,
       "FEATURE_INIT_CODE __init__.py": 1,
       "FEATURE_ROOT_FILE coverage.py": 1,
       "FEATURE_ROOT_FILE ingest.py": 1,
@@ -193,8 +190,6 @@
       "CROSS_FEATURE_EDGE evidence.router -> audit.http": 1,
       "CROSS_FEATURE_EDGE evidence.router -> audit.store": 1,
       "CROSS_FEATURE_EDGE evidence.router -> clips.store": 1,
-      "CROSS_FEATURE_EDGE evidence.router -> relay.auth": 1,
-      "CROSS_FEATURE_EDGE evidence.router -> relay.router": 1,
       "CROSS_FEATURE_EDGE evidence.router -> runtime_settings.dependencies": 1,
       "FEATURE_ROOT_FILE event_outbox.py": 1,
       "FEATURE_ROOT_FILE operator_router.py": 1,
@@ -226,7 +221,6 @@
       "CROSS_FEATURE_EDGE relay.router -> evidence.relay_projection": 1,
       "CROSS_FEATURE_EDGE relay.router -> status.heartbeat_store": 1,
       "CROSS_FEATURE_EDGE relay.router -> status.runtime_status_store": 1,
-      "FEATURE_ROOT_FILE auth.py": 1,
       "FEATURE_ROOT_FILE router.py": 1
     },
     "runtime_settings": {

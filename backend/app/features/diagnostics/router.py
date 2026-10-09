@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from starlette.concurrency import run_in_threadpool
 
 from backend.app.edge_db import DatabaseDriverError
@@ -16,14 +16,38 @@ from backend.app.features.diagnostics.schemas import (
 )
 from backend.app.features.diagnostics.store import ExecutionRecordStore
 from backend.app.features.diagnostics.wire import ingest_batch_from_wire, wire_receipt_from_store
-from backend.app.features.relay.router import BoundedBodyRoute, require_relay_execution_records
-from backend.app.shared.dashboard_auth import authorize_dashboard
-from shared.events.execution_records import ExecutionRecordContractError, WireBatch
+from backend.app.shared.http.dashboard_auth import authorize_dashboard
+from backend.app.shared.http.relay_http import (
+    RELAY_TOKEN_HEADER,
+    authorize_relay_body,
+    bounded_body_route,
+)
+from shared.events.execution_records import (
+    MAX_EXECUTION_RECORD_BODY_BYTES,
+    ExecutionRecordContractError,
+    WireBatch,
+)
 
 DISABLED_DETAIL = "execution records disabled"
 UNAVAILABLE_DETAIL = "diagnostics store unavailable: check PostgreSQL and run migration provision"
 
-router = APIRouter(tags=["diagnostics"], route_class=BoundedBodyRoute)
+router = APIRouter(
+    tags=["diagnostics"],
+    route_class=bounded_body_route({"/execution-records": MAX_EXECUTION_RECORD_BODY_BYTES}),
+)
+
+
+def require_relay_execution_records(
+    request: Request,
+    relay_token: Annotated[str | None, Header(alias=RELAY_TOKEN_HEADER)] = None,
+    authorization: Annotated[str | None, Header()] = None,
+) -> None:
+    authorize_relay_body(
+        request,
+        max_bytes=MAX_EXECUTION_RECORD_BODY_BYTES,
+        relay_token=relay_token,
+        authorization=authorization,
+    )
 
 
 def execution_record_store(request: Request) -> ExecutionRecordStore:

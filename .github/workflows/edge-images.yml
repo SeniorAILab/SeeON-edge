@@ -35,8 +35,7 @@ name: Edge ML Images
 #                       of only on release (#365 had release as the sole
 #                       cache writer).
 #   release          -> pushes the full-SHA tag and the release tag for the
-#   workflow_dispatch   sealed SHA; this is the path
-#                       docs/runbooks/edge-image-publish.md pins.
+#   workflow_dispatch   sealed SHA.
 #
 # ---------------------------------------------------------------------------
 # Per-image release isolation

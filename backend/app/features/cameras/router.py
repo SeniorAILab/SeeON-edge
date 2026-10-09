@@ -90,7 +90,7 @@ from backend.app.features.detection_settings.policy_store import (
 from backend.app.features.detection_settings.store import DetectionSettingsStore
 from backend.app.features.runtime_settings.dependencies import get_runtime_settings_store
 from backend.app.features.status.heartbeat_store import ONLINE, get_heartbeat_store
-from backend.app.shared.dashboard_auth import authorize_dashboard
+from backend.app.shared.http.dashboard_auth import authorize_dashboard
 from contracts.edge_provisioning_models import EdgeErrorCode, TopologyFloor, TopologyRoom
 from contracts.worker_config import PulledWorkerConfig
 from shared.rtsp_url_policy import assert_rtsp_endpoint_allowed
