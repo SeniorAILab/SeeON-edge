@@ -109,24 +109,27 @@ def _post(client: TestClient, path: str, body: object) -> tuple[int, bytes]:
             "/api/v1/relay/alerts",
             {**ALERT, "evidence": "\ud800"},
             (
-                b'{"detail":[{"type":"dict_type","loc":["body","evidence"],'
-                b'"msg":"Input should be a valid dictionary","input":"\\\\ud800"}]}'
+                b'{"detail":[{"type":"model_attributes_type","loc":["body","evidence"],'
+                b'"msg":"Input should be a valid dictionary or object to extract fields from",'
+                b'"input":"\\\\ud800"}]}'
             ),
         ),
         (
             "/api/v1/relay/alerts",
             {**ALERT, "evidence": ["\ud800"]},
             (
-                b'{"detail":[{"type":"dict_type","loc":["body","evidence"],'
-                b'"msg":"Input should be a valid dictionary","input":["\\\\ud800"]}]}'
+                b'{"detail":[{"type":"model_attributes_type","loc":["body","evidence"],'
+                b'"msg":"Input should be a valid dictionary or object to extract fields from",'
+                b'"input":["\\\\ud800"]}]}'
             ),
         ),
         (
             "/api/v1/relay/alerts",
             {**ALERT, "evidence": float("nan")},
             (
-                b'{"detail":[{"type":"dict_type","loc":["body","evidence"],'
-                b'"msg":"Input should be a valid dictionary","input":"NaN"}]}'
+                b'{"detail":[{"type":"model_attributes_type","loc":["body","evidence"],'
+                b'"msg":"Input should be a valid dictionary or object to extract fields from",'
+                b'"input":"NaN"}]}'
             ),
         ),
         (
@@ -136,7 +139,9 @@ def _post(client: TestClient, path: str, body: object) -> tuple[int, bytes]:
                 b'{"detail":[{"type":"string_unicode","loc":["body","facility_id"],'
                 b'"msg":"Input should be a valid string, '
                 b'unable to parse raw data as a unicode string",'
-                b'"input":"\\\\ud800"}]}'
+                b'"input":"\\\\ud800"},'
+                b'{"type":"string_type","loc":["body","evidence","domain"],'
+                b'"msg":"Input should be a valid string","input":5}]}'
             ),
         ),
         (
@@ -304,8 +309,9 @@ def test_encodable_validation_errors_keep_their_bytes(client: TestClient) -> Non
         (
             b'{"detail":[{"type":"less_than_equal","loc":["body","probability"],'
             b'"msg":"Input should be less than or equal to 1","input":2,"ctx":{"le":1.0}},'
-            b'{"type":"dict_type","loc":["body","evidence"],'
-            b'"msg":"Input should be a valid dictionary","input":"\xc3\xa9"}]}'
+            b'{"type":"model_attributes_type","loc":["body","evidence"],'
+            b'"msg":"Input should be a valid dictionary or object to extract fields from",'
+            b'"input":"\xc3\xa9"}]}'
         ),
     )
 
@@ -398,8 +404,9 @@ def test_encodable_values_next_to_an_unencodable_one_keep_their_bytes(client: Te
             b'"msg":"Input should be a valid string, '
             b'unable to parse raw data as a unicode string",'
             b'"input":"\\\\ud800"},'
-            b'{"type":"dict_type","loc":["body","evidence"],'
-            b'"msg":"Input should be a valid dictionary","input":"\xc3\xa9"}]}'
+            b'{"type":"model_attributes_type","loc":["body","evidence"],'
+            b'"msg":"Input should be a valid dictionary or object to extract fields from",'
+            b'"input":"\xc3\xa9"}]}'
         ),
     )
 
