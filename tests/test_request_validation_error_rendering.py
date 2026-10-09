@@ -445,7 +445,7 @@ def test_keys_that_collide_after_escaping_keep_the_first_value(
 
 
 def test_an_unencodable_input_too_large_to_escape_is_omitted(client: TestClient) -> None:
-    body = {**ALERT, "zz": [*range(10_000), "\ud800"]}
+    body = {**ALERT, "zz": [*range(9_989), "\ud800"]}
     assert _post(client, "/api/v1/relay/alerts", body) == (
         422,
         (
@@ -456,13 +456,26 @@ def test_an_unencodable_input_too_large_to_escape_is_omitted(client: TestClient)
 
 
 def test_an_unencodable_input_small_enough_to_escape_is_echoed(client: TestClient) -> None:
-    body = {**ALERT, "zz": [*range(9_000), "\ud800"]}
+    body = {**ALERT, "zz": [*range(9_988), "\ud800"]}
     assert _post(client, "/api/v1/relay/alerts", body) == (
         422,
         (
             b'{"detail":[{"type":"extra_forbidden","loc":["body","zz"],'
             b'"msg":"Extra inputs are not permitted","input":['
-            + ",".join(str(index) for index in range(9_000)).encode()
+            + ",".join(str(index) for index in range(9_988)).encode()
             + b',"\\\\ud800"]}]}'
+        ),
+    )
+
+
+def test_a_large_encodable_input_is_echoed_in_full(client: TestClient) -> None:
+    body = {**ALERT, "zz": list(range(20_000))}
+    assert _post(client, "/api/v1/relay/alerts", body) == (
+        422,
+        (
+            b'{"detail":[{"type":"extra_forbidden","loc":["body","zz"],'
+            b'"msg":"Extra inputs are not permitted","input":['
+            + ",".join(str(index) for index in range(20_000)).encode()
+            + b"]}]}"
         ),
     )
