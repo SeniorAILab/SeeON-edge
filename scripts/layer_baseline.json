@@ -74,8 +74,6 @@
       "UNMIGRATED_IMPORT topology_confirmation_state -> psycopg": 1
     },
     "clips": {
-      "CONTROLLER_IMPORT_OUTSIDE_CONTROLLER analysis_status.py": 1,
-      "CONTROLLER_IMPORT_OUTSIDE_CONTROLLER listing.py": 1,
       "CROSS_FEATURE_EDGE clips.router -> audit.catalog": 1,
       "CROSS_FEATURE_EDGE clips.router -> audit.http": 1,
       "CROSS_FEATURE_EDGE clips.router -> evidence.receipt_store": 1,
