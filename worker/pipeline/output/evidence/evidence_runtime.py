@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Final, Protocol
 
+from shared.boundary import ProbeFailure, probe
 from worker.interfaces.execution_records import ExecutionRecordSink
 from worker.pipeline.output.evidence.evidence_sender import (
     EvidenceSender,
@@ -14,6 +16,9 @@ from worker.pipeline.output.evidence.evidence_sender import (
     SenderStep,
 )
 from worker.pipeline.output.evidence.evidence_stager import DurableEvidenceStager
+
+LOGGER: Final = logging.getLogger(__name__)
+SENDER_FAILURE_LOG_INTERVAL_SECONDS: Final = 300.0
 
 
 class SenderProtocol(Protocol):
@@ -32,6 +37,9 @@ class EvidenceExportRuntime:
     _thread: threading.Thread | None = field(default=None, init=False)
     _wake_sender: threading.Event = field(default_factory=threading.Event, init=False)
     _lifecycle_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    monotonic: Callable[[], float] = field(default=time.monotonic, init=False)
+    _consecutive_failures: int = field(default=0, init=False)
+    _last_failure_log_at: float | None = field(default=None, init=False)
 
     @classmethod
     def from_config(
@@ -121,12 +129,36 @@ class EvidenceExportRuntime:
             if self._thread is thread and (thread is None or not thread.is_alive()):
                 self._thread = None
 
+    def _note_sender_failure(self, failure: ProbeFailure) -> None:
+        self._consecutive_failures += 1
+        now = self.monotonic()
+        last = self._last_failure_log_at
+        if last is not None and now - last < SENDER_FAILURE_LOG_INTERVAL_SECONDS:
+            return
+        self._last_failure_log_at = now
+        if self._consecutive_failures == 1 and failure.error is not None:
+            LOGGER.debug("evidence sender tick first failure traceback", exc_info=failure.error)
+        LOGGER.warning(
+            "evidence sender tick failing exception_class=%s failures=%d",
+            failure.reason.partition(":")[0],
+            self._consecutive_failures,
+        )
+
+    def _note_sender_success(self) -> None:
+        if self._consecutive_failures:
+            LOGGER.info("evidence sender recovered failures=%d", self._consecutive_failures)
+        self._consecutive_failures = 0
+        self._last_failure_log_at = None
+
     def _run_sender(self) -> None:
         while not self._stop_event.is_set():
-            try:
-                step = self.sender.run_once()
-            except Exception:  # noqa: BLE001
+            outcome = probe(self.sender.run_once)
+            if isinstance(outcome, ProbeFailure):
                 step = SenderStep.RETRY_SCHEDULED
+                self._note_sender_failure(outcome)
+            else:
+                step = outcome
+                self._note_sender_success()
             if step not in {SenderStep.EVENT_ACKED, SenderStep.CLIP_ACKED}:
                 self._wake_sender.wait(1.0)
                 self._wake_sender.clear()

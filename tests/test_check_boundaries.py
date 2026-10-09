@@ -6,13 +6,12 @@ import pytest
 
 from scripts.check_boundaries import (
     ADVICE,
-    BARE_EXCEPT,
-    BLANKET_NOQA,
-    BLE_NOQA,
     BROAD_EXCEPT,
-    FILE_NOQA,
     SUPPRESS_BROAD,
     UNPARSEABLE,
+    ZERO_ENFORCED_ROOTS,
+    Finding,
+    blocking_findings,
     check_source,
     in_scope,
     load_baseline,
@@ -42,10 +41,7 @@ def copied_exporter_source() -> str:
 
 
 RECORDED_BASELINE = {
-    "BLANKET_NOQA": 0,
-    "BLE_NOQA": 51,
-    "BROAD_EXCEPT": 134,
-    "FILE_NOQA": 0,
+    "BROAD_EXCEPT": 107,
     "SUPPRESS_BROAD": 4,
 }
 
@@ -64,14 +60,13 @@ def test_flags_the_catch_copied_into_the_exporter_in_71978e50() -> None:
         number for number, text in enumerate(source.splitlines(), start=1) if COPIED_REASON in text
     ]
     found = kinds_at(source, Path(COPIED_PATH))
-    assert (line, BLE_NOQA) in found
     assert (line, BROAD_EXCEPT) in found
 
 
 def test_advice_names_the_helper_to_use() -> None:
     source = "try:\n    pass\nexcept Exception:  # noqa: BLE001\n    pass\n"
     rendered = [finding.render() for finding in check_source(SAMPLE, source)]
-    assert rendered[1].startswith("worker/sample.py:3: BROAD_EXCEPT: ")
+    assert rendered[0].startswith("worker/sample.py:3: BROAD_EXCEPT: ")
     for helper in (
         "isolate()",
         "degrade(message=...)",
@@ -81,29 +76,7 @@ def test_advice_names_the_helper_to_use() -> None:
         "translate()",
         "root_sink()",
     ):
-        assert helper in rendered[1]
-    assert "shared.boundary helper" in rendered[0]
-
-
-def test_flags_a_blanket_noqa_on_a_broad_except_line() -> None:
-    source = "try:\n    pass\nexcept Exception:  # noqa\n    pass\n"
-    assert kinds(source) == [(3, BLANKET_NOQA), (3, BROAD_EXCEPT)]
-
-
-def test_a_blanket_noqa_away_from_an_except_line_is_not_a_boundary_finding() -> None:
-    assert kinds("import os  # noqa\n") == []
-
-
-@pytest.mark.parametrize(
-    "directive",
-    ["# ruff: noqa", "# ruff: noqa: BLE001", "# ruff: noqa: E501, BLE001", "#ruff:noqa"],
-)
-def test_flags_file_level_ruff_noqa_that_covers_blind_except(directive: str) -> None:
-    assert kinds(f"{directive}\nx = 1\n") == [(1, FILE_NOQA)]
-
-
-def test_file_level_ruff_noqa_for_other_codes_is_ignored() -> None:
-    assert kinds("# ruff: noqa: E501\nx = 1\n") == []
+        assert helper in rendered[0]
 
 
 def test_known_limit_an_aliased_exception_name_is_not_flagged() -> None:
@@ -138,7 +111,7 @@ def test_cli_reports_drift_against_the_baseline() -> None:
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
-        ("try:\n    pass\nexcept:\n    raise\n", [(3, BARE_EXCEPT)]),
+        ("try:\n    pass\nexcept:\n    raise\n", [(3, BROAD_EXCEPT)]),
         ("try:\n    pass\nexcept BaseException:\n    raise\n", [(3, BROAD_EXCEPT)]),
         ("try:\n    pass\nexcept (OSError, Exception):\n    pass\n", [(3, BROAD_EXCEPT)]),
         ("try:\n    pass\nexcept builtins.Exception:\n    pass\n", [(3, BROAD_EXCEPT)]),
@@ -195,3 +168,18 @@ def test_cli_is_report_only_and_exits_zero_with_findings() -> None:
     assert "check_boundaries (report-only):" in result.stdout.splitlines()[-1]
     assert "shared/boundary/" not in result.stdout
     assert "tests/test_" not in result.stdout
+
+
+def test_a_layer_that_reached_zero_is_enforced() -> None:
+    assert Path("worker/domains") in ZERO_ENFORCED_ROOTS
+    held = Finding(Path("worker/domains/bed_exit/detector.py"), 3, BROAD_EXCEPT)
+    other = Finding(Path("worker/runtime/worker.py"), 5, BROAD_EXCEPT)
+    assert blocking_findings([held, other]) == [held]
+
+
+def test_cli_names_the_enforced_layers_and_passes_while_they_stay_at_zero() -> None:
+    result = subprocess.run(
+        [sys.executable, str(CHECKER)], cwd=REPO_ROOT, capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0
+    assert "enforced at zero: worker/domains" in result.stdout.splitlines()[-1]

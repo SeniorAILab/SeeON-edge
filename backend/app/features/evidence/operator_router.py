@@ -6,9 +6,8 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.app.features.audit.catalog import AuditAction, empty_detail
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.http import append_governed, mutation_audit
-from backend.app.features.audit.store import AuditEvent
 from backend.app.features.evidence.record_store import (
     CentralEvidenceQuery,
     CentralEvidenceReviewStore,
@@ -16,7 +15,8 @@ from backend.app.features.evidence.record_store import (
     EvidenceReviewConflictError,
     ReviewDisposition,
 )
-from backend.app.shared.dashboard_auth import authorize_dashboard
+from backend.app.shared.audit_values import AuditAction, AuditEvent
+from backend.app.shared.http.dashboard_auth import authorize_dashboard
 
 router = APIRouter(tags=["evidence"])
 

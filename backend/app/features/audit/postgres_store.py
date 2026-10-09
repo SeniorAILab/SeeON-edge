@@ -14,8 +14,9 @@ from backend.app.features.audit.postgres_verification import (
     PostgresAuditCheckpoint,
     _verify_snapshot,
 )
-from backend.app.features.audit.store import AuditEvent, AuditRecord, _payload, utc_now
+from backend.app.features.audit.store import AuditRecord, _payload
 from backend.app.features.audit.verification import GENESIS_HASH, AuditVerificationError
+from backend.app.shared.audit_values import AuditEvent, utc_now
 
 
 def _lock_audit_chain(connection: psycopg.Connection) -> None:

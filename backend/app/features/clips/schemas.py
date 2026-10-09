@@ -4,7 +4,9 @@ from typing import ClassVar, Literal, Self, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-ClipEventType: TypeAlias = Literal["fall", "bed-exit", "other"]
+from backend.app.features.clips.analysis_status import ClipAnalysisState
+from backend.app.features.clips.listing import EventTypeFacet
+
 ClipExtensionBoundary: TypeAlias = Literal["none", "extension_bounded", "extension_raced"]
 
 
@@ -67,7 +69,7 @@ class ClipListQuery(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
 
     camera_id: str | None = Field(default=None, min_length=1)
-    event_type: ClipEventType | None = None
+    event_type: EventTypeFacet | None = None
     limit: int | None = Field(default=None, ge=1, le=100)
     cursor: str | None = Field(default=None, min_length=1, max_length=384)
     offset: int = Field(default=0, ge=0)
@@ -103,16 +105,6 @@ class AuditResponse(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
 
     entries: list[dict[str, object]]
-
-
-ClipAnalysisState: TypeAlias = Literal[
-    "idle",
-    "queued",
-    "running",
-    "available",
-    "failed",
-    "unavailable",
-]
 
 
 class ClipAnalysisResponse(BaseModel):

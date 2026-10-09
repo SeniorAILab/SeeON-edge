@@ -19,14 +19,7 @@ from backend.app.edge_db.authority import AuthorityFenced, AuthorityToken, freez
 from backend.app.edge_db.functions import audit_record_hash
 from backend.app.edge_db.postgres import CommitOutcomeUnknown
 from backend.app.features.audit import postgres_sessions
-from backend.app.features.audit.catalog import (
-    AuditAction,
-    AuditActorType,
-    AuditAuthMechanism,
-    camera_probe_detail,
-    empty_detail,
-    session_detail,
-)
+from backend.app.features.audit.catalog import camera_probe_detail, empty_detail, session_detail
 from backend.app.features.audit.postgres_sessions import (
     append_with_recovery,
     close_session,
@@ -34,8 +27,14 @@ from backend.app.features.audit.postgres_sessions import (
 )
 from backend.app.features.audit.postgres_store import PostgresAuditStore
 from backend.app.features.audit.sessions import AuditSession
-from backend.app.features.audit.store import AuditEvent, AuditRecord
+from backend.app.features.audit.store import AuditRecord
 from backend.app.features.audit.verification import GENESIS_HASH, AuditVerificationError
+from backend.app.shared.audit_values import (
+    AuditAction,
+    AuditActorType,
+    AuditAuthMechanism,
+    AuditEvent,
+)
 
 if TYPE_CHECKING:
     from tests_support.postgres_sandbox import ProductSandbox

@@ -14,9 +14,8 @@ from psycopg.rows import dict_row, tuple_row
 
 from backend.app.edge_db.authority import AuthorityFenced, freeze_authority
 from backend.app.edge_db.postgres import CommitOutcomeUnknown
-from backend.app.features.audit.catalog import AuditAction, empty_detail
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.postgres_store import append_postgres_audit
-from backend.app.features.audit.store import AuditEvent
 from backend.app.features.connection import store as connection_store
 from backend.app.features.connection.repository import (
     ConnectionData,
@@ -27,6 +26,7 @@ from backend.app.features.connection.store import (
     ConnectionSettingsStore,
     InvalidConnectionSettingError,
 )
+from backend.app.shared.audit_values import AuditAction, AuditEvent
 
 if TYPE_CHECKING:
     from tests_support.postgres_sandbox import ProductSandbox

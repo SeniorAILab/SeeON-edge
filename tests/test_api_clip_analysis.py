@@ -14,10 +14,12 @@ from fastapi.testclient import TestClient
 from backend.app.core.config import get_settings
 from backend.app.features.audit.postgres_runtime import PostgresAuditRuntime
 from shared.events.clip_analysis_wire import (
+    ClipAnalysisBedGeometry,
     ClipAnalysisBox,
     ClipAnalysisFrame,
     ClipAnalysisResult,
     ClipAnalysisTimeBase,
+    decode_clip_analysis,
     encode_clip_analysis,
 )
 from tests_support.postgres_api_app import postgres_api_app
@@ -27,6 +29,36 @@ pytest_plugins = ("tests_support.postgres_sandbox",)
 
 CLIP_ID = "clip-1"
 CLIP_SHA256 = "a" * 64
+FIELD_1002E76A_ANALYSIS_NAME = "clip.analysis.94606b6630d57bd3.json"
+FIELD_1002E76A_ANALYSIS_BYTES = (
+    b'{"analysis_profile_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddd'
+    b'dddddddddddd","bed_geometries":[{"points":[[100.0,100.0],[500.0,100.0],[500.0,30'
+    b'0.0]],"provenance_pts":0}],"bed_model_sha256":"ccccccccccccccccccccccccccccccccc'
+    b'ccccccccccccccccccccccccccccccc","clip_id":"clip-1","clip_sha256":"aaaaaaaaaaaaa'
+    b'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","decoder_identity":"ffmpeg"'
+    b',"frames":[{"boxes":[{"confidence":0.9,"x1":1.0,"x2":10.0,"y1":1.0,"y2":10.0},{"'
+    b'confidence":0.75,"x1":20.5,"x2":200.0,"y1":30.25,"y2":300.0}],"pts":0,"status":"'
+    b'available"},{"boxes":[],"pts":400,"status":"no_evidence"}],"image_height":480,"i'
+    b'mage_width":640,"pose_model_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+    b'bbbbbbbbbbbbbbbbbbbbb","source":"clip_reanalysis","time_base":{"denominator":120'
+    b'00,"numerator":1}}'
+)
+ENCODER_FORMAT_PIN_BYTES = (
+    b'{"analysis_profile_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddd'
+    b'dddddddddddd","bed_geometries":[{"points":[[100.0,100.0],[500.0,100.0],[500.0,30'
+    b'0.0]],"provenance_pts":0}],"bed_model_sha256":"ccccccccccccccccccccccccccccccccc'
+    b'ccccccccccccccccccccccccccccccc","clip_id":"clip-1","clip_sha256":"aaaaaaaaaaaaa'
+    b'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","decoder_identity":"ffmpeg"'
+    b',"frames":[{"boxes":[{"confidence":0.9,"x1":1.0,"x2":10.0,"y1":1.0,"y2":10.0},{"'
+    b'confidence":0.75,"x1":20.5,"x2":200.0,"y1":30.25,"y2":300.0}],"pts":0,"status":"'
+    b'available"},{"boxes":[],"pts":400,"status":"no_evidence"}],"image_height":480,"i'
+    b'mage_width":640,"pose_model_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+    b'bbbbbbbbbbbbbbbbbbbbb","source":"clip_reanalysis","time_base":{"denominator":120'
+    b'00,"numerator":1}}'
+)
+FIELD_1002E76A_ANALYSIS_SIDECAR = (
+    b"3cfc00800bb20be0f6617cfd22a31af9ab1801d9f6dd80e5c5b3029ca80de761\n"
+)
 
 
 class _WorkerServer(ThreadingHTTPServer):
@@ -174,6 +206,9 @@ def _write_analysis(
                 boxes=(ClipAnalysisBox(1, 1, 10, 10, 0.9),),
             ),
         ),
+        bed_geometries=(
+            ClipAnalysisBedGeometry(((100.0, 100.0), (500.0, 100.0), (500.0, 300.0)), 0),
+        ),
     )
     payload = encode_clip_analysis(result)
     artifact = clip_dir / f"clip.analysis.{artifact_id}.json"
@@ -272,9 +307,122 @@ def test_available_analysis_reports_identical_served_timing(
         _login(client)
         response = client.get(f"/api/v1/clips/{CLIP_ID}/analysis")
     assert response.status_code == 200
-    assert response.json()["state"] == "available"
-    assert response.json()["served_timing_identical"] is True
-    assert response.json()["result"]["clip_sha256"] == CLIP_SHA256
+    assert response.json() == {
+        "state": "available",
+        "served_media_sha256": hashlib.sha256(b"playback").hexdigest(),
+        "served_timing_identical": True,
+        "result": {
+            "source": "clip_reanalysis",
+            "clip_id": CLIP_ID,
+            "clip_sha256": CLIP_SHA256,
+            "pose_model_sha256": "b" * 64,
+            "bed_model_sha256": "c" * 64,
+            "decoder_identity": "ffmpeg",
+            "analysis_profile_sha256": "d" * 64,
+            "image_width": 640,
+            "image_height": 480,
+            "time_base": {"numerator": 1, "denominator": 12000},
+            "frames": [
+                {
+                    "pts": 0,
+                    "status": "available",
+                    "boxes": [{"x1": 1, "y1": 1, "x2": 10, "y2": 10, "confidence": 0.9}],
+                }
+            ],
+            "bed_geometries": [
+                {"points": [[100.0, 100.0], [500.0, 100.0], [500.0, 300.0]], "provenance_pts": 0}
+            ],
+        },
+    }
+
+
+def _field_result() -> ClipAnalysisResult:
+    return ClipAnalysisResult(
+        source="clip_reanalysis",
+        clip_id=CLIP_ID,
+        clip_sha256=CLIP_SHA256,
+        pose_model_sha256="b" * 64,
+        bed_model_sha256="c" * 64,
+        decoder_identity="ffmpeg",
+        analysis_profile_sha256="d" * 64,
+        image_width=640,
+        image_height=480,
+        time_base=ClipAnalysisTimeBase(1, 12000),
+        frames=(
+            ClipAnalysisFrame(
+                pts=0,
+                status="available",
+                boxes=(
+                    ClipAnalysisBox(1.0, 1.0, 10.0, 10.0, 0.9),
+                    ClipAnalysisBox(20.5, 30.25, 200.0, 300.0, 0.75),
+                ),
+            ),
+            ClipAnalysisFrame(pts=400, status="no_evidence"),
+        ),
+        bed_geometries=(
+            ClipAnalysisBedGeometry(((100.0, 100.0), (500.0, 100.0), (500.0, 300.0)), 0),
+        ),
+    )
+
+
+def test_encoder_output_format_pin() -> None:
+    assert encode_clip_analysis(_field_result()) == ENCODER_FORMAT_PIN_BYTES, (
+        "encoder output format changed; if intended, regenerate only ENCODER_FORMAT_PIN_BYTES "
+        "and leave FIELD_1002E76A_ANALYSIS_BYTES as written by field revision 1002e76a"
+    )
+
+
+def test_field_1002e76a_analysis_bytes_decode_and_are_served_as_written(
+    _environment: Path, app: FastAPI
+) -> None:
+    digest = hashlib.sha256(FIELD_1002E76A_ANALYSIS_BYTES).hexdigest()
+    assert f"{digest}\n".encode("ascii") == FIELD_1002E76A_ANALYSIS_SIDECAR
+    decoded = decode_clip_analysis(FIELD_1002E76A_ANALYSIS_BYTES)
+    assert decoded == _field_result()
+    assert encode_clip_analysis(decoded) == FIELD_1002E76A_ANALYSIS_BYTES, (
+        "current encoder no longer reproduces the bytes field revision 1002e76a wrote; "
+        "do not regenerate FIELD_1002E76A_ANALYSIS_BYTES"
+    )
+    clip_dir = _write_clip(_environment)
+    (clip_dir / FIELD_1002E76A_ANALYSIS_NAME).write_bytes(FIELD_1002E76A_ANALYSIS_BYTES)
+    (clip_dir / f"{FIELD_1002E76A_ANALYSIS_NAME}.sha256").write_bytes(
+        FIELD_1002E76A_ANALYSIS_SIDECAR
+    )
+    with TestClient(app) as client:
+        _login(client)
+        response = client.get(f"/api/v1/clips/{CLIP_ID}/analysis")
+    assert response.status_code == 200
+    assert response.json() == {
+        "state": "available",
+        "served_media_sha256": CLIP_SHA256,
+        "served_timing_identical": True,
+        "result": {
+            "source": "clip_reanalysis",
+            "clip_id": CLIP_ID,
+            "clip_sha256": CLIP_SHA256,
+            "pose_model_sha256": "b" * 64,
+            "bed_model_sha256": "c" * 64,
+            "decoder_identity": "ffmpeg",
+            "analysis_profile_sha256": "d" * 64,
+            "image_width": 640,
+            "image_height": 480,
+            "time_base": {"numerator": 1, "denominator": 12000},
+            "frames": [
+                {
+                    "pts": 0,
+                    "status": "available",
+                    "boxes": [
+                        {"x1": 1.0, "y1": 1.0, "x2": 10.0, "y2": 10.0, "confidence": 0.9},
+                        {"x1": 20.5, "y1": 30.25, "x2": 200.0, "y2": 300.0, "confidence": 0.75},
+                    ],
+                },
+                {"pts": 400, "status": "no_evidence", "boxes": []},
+            ],
+            "bed_geometries": [
+                {"points": [[100.0, 100.0], [500.0, 100.0], [500.0, 300.0]], "provenance_pts": 0}
+            ],
+        },
+    }
 
 
 def test_available_analysis_on_original_reports_identical_served_timing(
@@ -343,6 +491,34 @@ def test_corrupt_newest_analysis_does_not_mask_older_valid_analysis(
     assert response.json()["result"]["clip_sha256"] == CLIP_SHA256
 
 
+@pytest.mark.parametrize(
+    ("payload", "recorded_sha256"),
+    [
+        (b"corrupt", hashlib.sha256(b"different").hexdigest()),
+        (b"corrupt", hashlib.sha256(b"corrupt").hexdigest()),
+    ],
+    ids=["sidecar-mismatch", "undecodable"],
+)
+def test_invalid_analysis_artifact_is_reported_as_artifact_invalid(
+    _environment: Path, app: FastAPI, payload: bytes, recorded_sha256: str
+) -> None:
+    clip_dir = _write_clip(_environment)
+    artifact = clip_dir / "clip.analysis.0123456789abcdef.json"
+    artifact.write_bytes(payload)
+    artifact.with_name(f"{artifact.name}.sha256").write_text(
+        recorded_sha256 + "\n", encoding="ascii"
+    )
+    with TestClient(app) as client:
+        _login(client)
+        response = client.get(f"/api/v1/clips/{CLIP_ID}/analysis")
+    assert response.status_code == 200
+    assert response.json() == {
+        "state": "unavailable",
+        "served_media_sha256": CLIP_SHA256,
+        "reason": "artifact_invalid",
+    }
+
+
 def test_worker_unreachable_is_an_honest_available_status(
     _environment: Path, app: FastAPI, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -399,24 +575,35 @@ def test_analysis_uses_original_when_rendition_attestation_is_unbound(
     assert response.json()["result"]["clip_sha256"] == CLIP_SHA256
 
 
-@pytest.mark.parametrize("worker_state", ["idle", "queued", "running", "failed"])
+@pytest.mark.parametrize(
+    "worker_body",
+    [
+        {"state": "idle"},
+        {"state": "queued"},
+        {"state": "running"},
+        {"state": "failed"},
+        {"state": "failed", "reason": "decode_error"},
+        {"state": "queued", "reason": "busy"},
+    ],
+    ids=["idle", "queued", "running", "failed", "failed-with-reason", "queued-with-reason"],
+)
 def test_worker_states_include_served_media_identity(
     _environment: Path,
     app: FastAPI,
     worker_server: _WorkerServer,
     monkeypatch: pytest.MonkeyPatch,
-    worker_state: str,
+    worker_body: dict[str, object],
 ) -> None:
     _write_clip(_environment)
     worker_server.response_status = 200
-    worker_server.response_body = {"state": worker_state}
+    worker_server.response_body = worker_body
     monkeypatch.setenv("ML_API_WORKER_STREAM_ORIGIN", worker_server.origin)
     get_settings.cache_clear()
     with TestClient(app) as client:
         _login(client)
         response = client.get(f"/api/v1/clips/{CLIP_ID}/analysis")
-    assert response.json()["state"] == worker_state
-    assert response.json()["served_media_sha256"] == CLIP_SHA256
+    assert response.status_code == 200
+    assert response.json() == {**worker_body, "served_media_sha256": CLIP_SHA256}
 
 
 def test_cancel_relays_empty_response_and_worker_auth_is_unreachable(

@@ -6,21 +6,22 @@ import psycopg
 from psycopg.pq import TransactionStatus
 
 from backend.app.edge_db.authority import require_authority
-from backend.app.features.audit.catalog import (
-    AuditAction,
-    AuditActorType,
-    AuditAuthMechanism,
-    recovery_detail,
-    session_detail,
-)
+from backend.app.features.audit.catalog import recovery_detail, session_detail
 from backend.app.features.audit.postgres_store import (
     PostgresAuditStore,
     _lock_audit_chain,
     append_postgres_audit,
 )
 from backend.app.features.audit.sessions import AuditSession
-from backend.app.features.audit.store import AuditEvent, AuditRecord, utc_now
+from backend.app.features.audit.store import AuditRecord
 from backend.app.features.audit.verification import AuditVerificationError
+from backend.app.shared.audit_values import (
+    AuditAction,
+    AuditActorType,
+    AuditAuthMechanism,
+    AuditEvent,
+    utc_now,
+)
 
 
 def start_session(

@@ -17,7 +17,7 @@ from backend.app.features.audit.postgres_runtime import PostgresAuditRuntime
 from backend.app.features.diagnostics.records import CoverageKind, StorageState
 from backend.app.features.diagnostics.retention import RetentionBudget
 from backend.app.features.diagnostics.store import ExecutionRecordStore
-from backend.app.features.relay.router import RELAY_TOKEN_HEADER
+from backend.app.shared.http.relay_http import RELAY_TOKEN_HEADER
 from shared.events.execution_records import (
     MAX_EXECUTION_RECORD_BODY_BYTES,
     PROCESS_SCOPE,
@@ -154,7 +154,7 @@ def test_a3_unknown_record_kind_is_422(pg_stack: _PgStack, enabled_settings: Non
     del body["records"][0]["record_id"]
     response = client.post(_PATH, json=body, headers={RELAY_TOKEN_HEADER: _RELAY_TOKEN})
     assert response.status_code == 422
-    assert "record_kind" in response.json()["detail"]
+    assert "record_kind" in str(response.json()["detail"])
 
 
 def test_a4_process_scoped_kind_with_stream_epoch_is_422(

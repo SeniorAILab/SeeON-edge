@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from starlette.concurrency import run_in_threadpool
 
 from backend.app.edge_db import DatabaseDriverError
@@ -11,19 +11,39 @@ from backend.app.edge_db.postgres import PostgresError
 from backend.app.features.diagnostics.schemas import (
     ExecutionQueryParams,
     ExecutionQueryResponse,
+    ExecutionRecordBatchRequest,
     ExecutionRecordReceiptResponse,
     query_response_from_result,
 )
 from backend.app.features.diagnostics.store import ExecutionRecordStore
 from backend.app.features.diagnostics.wire import ingest_batch_from_wire, wire_receipt_from_store
-from backend.app.features.relay.router import BoundedBodyRoute, require_relay_execution_records
-from backend.app.shared.dashboard_auth import authorize_dashboard
-from shared.events.execution_records import ExecutionRecordContractError, WireBatch
+from backend.app.shared.http.dashboard_auth import authorize_dashboard
+from backend.app.shared.http.relay_http import (
+    RELAY_TOKEN_HEADER,
+    authorize_relay_body,
+    bounded_body_route,
+)
+from shared.events.execution_records import (
+    MAX_EXECUTION_RECORD_BODY_BYTES,
+    ExecutionRecordContractError,
+    WireBatch,
+)
 
 DISABLED_DETAIL = "execution records disabled"
 UNAVAILABLE_DETAIL = "diagnostics store unavailable: check PostgreSQL and run migration provision"
 
-router = APIRouter(tags=["diagnostics"], route_class=BoundedBodyRoute)
+
+def require_relay_execution_records(
+    request: Request,
+    relay_token: Annotated[str | None, Header(alias=RELAY_TOKEN_HEADER)] = None,
+    authorization: Annotated[str | None, Header()] = None,
+) -> None:
+    authorize_relay_body(
+        request,
+        max_bytes=MAX_EXECUTION_RECORD_BODY_BYTES,
+        relay_token=relay_token,
+        authorization=authorization,
+    )
 
 
 def execution_record_store(request: Request) -> ExecutionRecordStore:
@@ -34,6 +54,25 @@ def execution_record_store(request: Request) -> ExecutionRecordStore:
             detail=DISABLED_DETAIL,
         )
     return store
+
+
+def gate_execution_records_before_body(request: Request) -> None:
+    require_relay_execution_records(
+        request,
+        relay_token=request.headers.get(RELAY_TOKEN_HEADER),
+        authorization=request.headers.get("authorization"),
+    )
+    execution_record_store(request)
+
+
+router = APIRouter(
+    tags=["diagnostics"],
+    route_class=bounded_body_route(
+        {"/execution-records": MAX_EXECUTION_RECORD_BODY_BYTES},
+        before_body=gate_execution_records_before_body,
+    ),
+    strict_content_type=False,
+)
 
 
 def backend_build_revision(request: Request) -> str:
@@ -50,8 +89,9 @@ def backend_build_revision(request: Request) -> str:
 async def ingest_execution_records(
     request: Request,
     _: Annotated[None, Depends(require_relay_execution_records)],
+    store: Annotated[ExecutionRecordStore, Depends(execution_record_store)],
+    _body: ExecutionRecordBatchRequest,
 ) -> dict[str, object]:
-    store = execution_record_store(request)
     try:
         batch = WireBatch.from_json(await request.json())
     except ExecutionRecordContractError as error:

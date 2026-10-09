@@ -281,7 +281,15 @@ def test_sender_survives_a_log_snapshot_failure_and_keeps_delivering(
             sender.stop()
 
     assert transport.payloads
-    assert any("log_snapshot" in record.getMessage() for record in caplog.records)
+    contained = [
+        record
+        for record in caplog.records
+        if "stage=diagnostics_log_snapshot " in record.getMessage()
+        and record.levelno == logging.WARNING
+    ]
+    assert len(contained) == 1
+    assert not [record for record in caplog.records if record.exc_info]
+    assert "boom" not in caplog.text
 
 
 def _wait_until(predicate, timeout_sec: float = 0.5) -> None:

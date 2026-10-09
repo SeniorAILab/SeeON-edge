@@ -8,8 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-import psycopg
-
+from backend.app.edge_db import DatabaseDriverError
 from backend.app.edge_db.authority import AuthorityFenced
 from backend.app.edge_db.postgres import PostgresError
 from backend.app.features.evidence.event_outbox import OutboxBudget
@@ -168,7 +167,13 @@ def _finish(
             http_status=http_status,
             backend_event_id=backend_event_id,
         )
-    except (PostgresError, psycopg.Error, AuthorityFenced, DeliveryResponseConflict, ValueError):
+    except (
+        PostgresError,
+        DatabaseDriverError,
+        AuthorityFenced,
+        DeliveryResponseConflict,
+        ValueError,
+    ):
         _LOGGER.warning(
             "backend outbox delivery result not recorded; lease will expire",
             extra={"edge_event_id": claim.edge_event_id, "outcome": outcome.value},
@@ -184,7 +189,7 @@ def send_outbox_once(app: Any, *, limit: int = SENDER_BATCH_LIMIT) -> DeliveryFa
     for _ in range(limit):
         try:
             claim = delivery.claim()
-        except (PostgresError, psycopg.Error, AuthorityFenced) as error:
+        except (PostgresError, DatabaseDriverError, AuthorityFenced) as error:
             failure = DeliveryFailure(DeliveryDisposition.RETRY, type(error).__name__)
             _record(status, failure)
             return failure

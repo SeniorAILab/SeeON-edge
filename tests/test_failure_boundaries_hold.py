@@ -353,9 +353,10 @@ def test_evidence_delivery_init_failure_under_the_lock_is_a_typed_fatal_error(
         runtime._start_export_sender()
 
 
-def provenance_runtime(tmp_path: Path, admission: object) -> WorkerRuntime:
+def provenance_runtime(tmp_path: Path, bundle_dir: Path | None) -> WorkerRuntime:
     runtime = object.__new__(WorkerRuntime)
     runtime.config = relay_config()
+    runtime.config.models = SimpleNamespace(fall_model=bundle_dir)
     runtime._shared_graph = SimpleNamespace(identities=())
     runtime._module_registry = object()
     runtime._module_versions = {}
@@ -365,7 +366,6 @@ def provenance_runtime(tmp_path: Path, admission: object) -> WorkerRuntime:
     runtime._state_dir = tmp_path / "state"
     runtime._boot_instance_id = "boot-1"
     runtime._runtime_manifest = SimpleNamespace(canonical_json="stale")
-    runtime._selected_bundle_admission = admission
     return runtime
 
 
@@ -373,7 +373,7 @@ def test_runtime_provenance_failure_drops_the_manifest_and_lets_activation_conti
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    runtime = provenance_runtime(tmp_path, admission=None)
+    runtime = provenance_runtime(tmp_path, bundle_dir=None)
 
     with caplog.at_level(logging.WARNING):
         runtime._apply_runtime_manifest(SimpleNamespace(), {})
@@ -385,10 +385,10 @@ def test_runtime_provenance_failure_drops_the_manifest_and_lets_activation_conti
     assert record.exc_info is not None
 
 
-def test_runtime_provenance_failure_is_fatal_once_a_selected_bundle_was_admitted(
+def test_runtime_provenance_failure_is_fatal_when_a_fall_model_is_configured(
     tmp_path: Path,
 ) -> None:
-    runtime = provenance_runtime(tmp_path, admission=object())
+    runtime = provenance_runtime(tmp_path, bundle_dir=tmp_path / "bundle")
 
     with pytest.raises(OSError, match="environment probe failed"):
         runtime._apply_runtime_manifest(SimpleNamespace(), {})

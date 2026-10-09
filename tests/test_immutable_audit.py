@@ -7,13 +7,13 @@ from fastapi import FastAPI
 
 from backend.app.audit_lifecycle import close_audit_session, configure_audit_readiness
 from backend.app.features.audit.catalog import (
-    AuditAction,
     AuditDetailError,
     JsonValue,
     parse_detail_json,
     recovery_detail,
 )
 from backend.app.postgres_root import PostgresRoot
+from backend.app.shared.audit_values import AuditAction
 from tests_support.postgres_sandbox import ProductSandbox
 
 pytest_plugins = ("tests_support.postgres_sandbox",)

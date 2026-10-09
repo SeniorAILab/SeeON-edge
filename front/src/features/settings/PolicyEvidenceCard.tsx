@@ -5,6 +5,7 @@ import {
   fetchDetectionPolicies,
   rollbackDetectionPolicy,
 } from '@/shared/api/client';
+import { matchesCamera } from '@/shared/api/matchesCamera';
 import { toast } from '@/shared/ui/Toast';
 import type {
   CameraRegistry,
@@ -103,9 +104,7 @@ export function PolicyEvidenceCard({ cameras }: Props): JSX.Element {
   }
 
   const cameraOptions = cameras?.cameras ?? [];
-  const selectedCamera = cameraOptions.find(
-    (camera) => (camera.backend_camera_id ?? camera.id) === cameraId,
-  );
+  const selectedCamera = cameraOptions.find((camera) => matchesCamera(camera, cameraId));
   const effectiveCameraId = cameraId || null;
   const draftPayload: DetectionPolicyComparedPayload = {
     module_id: policy.module_id,

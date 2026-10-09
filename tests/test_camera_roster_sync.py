@@ -14,7 +14,7 @@ from backend.app.features.connection.store import (
     API_BACKEND_BASE_URL_ENV,
     ConnectionSettingsStore,
 )
-from backend.app.lifespan import apply_connection_settings
+from backend.app.lifespan import apply_connection_settings, install_feature_ports
 from backend.app.main import create_app, no_lifespan
 from backend.app.postgres_root import PostgresRoot, install_postgres_stores
 from tests_support.postgres_sandbox import ProductSandbox
@@ -65,6 +65,7 @@ def _run_server(server: ThreadingHTTPServer) -> Thread:
 def _postgres_app(sandbox: ProductSandbox):
     app = create_app(lifespan=no_lifespan)
     install_postgres_stores(app, PostgresRoot(sandbox.database, sandbox.authority))
+    install_feature_ports(app)
     store = app.state.camera_registry
     assert isinstance(store, CameraRegistryStore)
     return app, store

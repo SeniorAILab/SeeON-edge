@@ -6,6 +6,7 @@ from contracts.frame import Frame
 from contracts.observation import FrameObservation
 
 DEFAULT_FALL_CONFIDENCE_THRESHOLD: Final = 0.2
+POSE_BBOX56_PREPROCESSING_IDENTITY: Final = "coco17-xyc-plus-pose-head-xyxy-valid-f32-v1"
 
 
 @runtime_checkable

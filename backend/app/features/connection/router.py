@@ -7,12 +7,12 @@ from fastapi.exceptions import HTTPException
 from pydantic import UUID4, BaseModel, ConfigDict, Field
 
 from backend.app.core.config import get_settings
-from backend.app.features.audit.catalog import AuditAction, empty_detail
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.http import mutation_audit
-from backend.app.features.audit.store import AuditEvent, utc_now
-from backend.app.features.cameras.dependencies import sync_camera_roster
-from backend.app.features.cameras.router import _authorize
-from backend.app.features.connection.dependencies import get_connection_settings_store
+from backend.app.features.connection.dependencies import (
+    get_connection_settings_store,
+    topology_retry_coordinator,
+)
 from backend.app.features.connection.enrollment import (
     EnrollmentCredentials,
     EnrollmentErrorClass,
@@ -25,6 +25,9 @@ from backend.app.features.connection.topology_retry_coordinator import (
 )
 from backend.app.features.status.backend_heartbeat_relay import HeartbeatRelayState
 from backend.app.lifespan import apply_connection_settings, refresh_backend_config
+from backend.app.shared.audit_values import AuditAction, AuditEvent, utc_now
+from backend.app.shared.http.dashboard_auth import authorize_dashboard as _authorize
+from shared.boundary import Boundary, isolate
 
 router = APIRouter(prefix="/connection", tags=["connection"])
 
@@ -191,19 +194,17 @@ def test_connection(
 @router.post("/sync-cameras", response_model=CameraRosterSyncResponse)
 def sync_cameras(request: Request) -> dict[str, object]:
     actor = _authorize(request)
-    result = sync_camera_roster(
-        request.app,
-        audit=mutation_audit(
-            request,
-            lambda: AuditEvent(
-                occurred_at=utc_now(),
-                actor_id=actor,
-                action=AuditAction.CONNECTION_SYNC,
-                target_id="camera-roster",
-                detail=empty_detail(AuditAction.CONNECTION_SYNC),
-            ),
+    audit = mutation_audit(
+        request,
+        lambda: AuditEvent(
+            occurred_at=utc_now(),
+            actor_id=actor,
+            action=AuditAction.CONNECTION_SYNC,
+            target_id="camera-roster",
+            detail=empty_detail(AuditAction.CONNECTION_SYNC),
         ),
     )
+    result = topology_retry_coordinator(request.app).trigger(audit=audit)
     return {
         "status": result.status,
         "error_class": result.error_class,
@@ -272,10 +273,8 @@ def _heartbeat_relay_view(app: FastAPI) -> dict[str, object]:
 
 
 def _trigger_roster_sync(app: FastAPI) -> None:
-    try:
-        sync_camera_roster(app, _force=True, _refresh=True)
-    except Exception:  # noqa: BLE001, S110
-        pass
+    with isolate(Boundary.OPTIONAL_FEATURE, stage="roster_sync"):
+        topology_retry_coordinator(app).trigger(force=True, refresh=True)
 
 
 def _kick_backend_config_refresh(app: FastAPI) -> None:

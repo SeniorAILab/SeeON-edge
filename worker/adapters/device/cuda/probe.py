@@ -6,6 +6,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Final, Protocol, TypeAlias
 
+from shared.boundary import degrade
+
 
 @dataclass(frozen=True, slots=True)
 class CudaCapability:
@@ -30,15 +32,12 @@ def probe_cuda_capability(*, importer: TorchImporter = _import_torch) -> CudaCap
     except Exception as exc:  # noqa: BLE001
         return CudaCapability(available=False, reason=f"torch import failed: {type(exc).__name__}")
 
-    try:
-        arch_list = tuple(torch.cuda.get_arch_list())
-    except Exception:  # noqa: BLE001
-        arch_list = ()
-
-    try:
-        device_count = int(torch.cuda.device_count())
-    except Exception:  # noqa: BLE001
-        device_count = 0
+    arch_list: tuple[str, ...] = degrade(
+        lambda: tuple(torch.cuda.get_arch_list()), stage="cuda_arch_list", default=()
+    )
+    device_count = degrade(
+        lambda: int(torch.cuda.device_count()), stage="cuda_device_count", default=0
+    )
 
     try:
         available = bool(torch.cuda.is_available())

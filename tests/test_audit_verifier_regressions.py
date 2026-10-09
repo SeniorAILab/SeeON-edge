@@ -6,9 +6,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app.features.audit.catalog import AuditAction, AuditDetailError
+from backend.app.features.audit.catalog import AuditDetailError
 from backend.app.features.runtime_settings.store import RuntimeSettingsStore
 from backend.app.main import create_app, no_lifespan
+from backend.app.shared.audit_values import AuditAction
 from backend.app.shared.postgres_dashboard_credentials import PostgresDashboardCredentialsStore
 
 pytest_plugins = ("tests_support.postgres_sandbox",)

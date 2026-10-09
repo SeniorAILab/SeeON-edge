@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from contracts.model_selection import POSE_BBOX56_PREPROCESSING_IDENTITY
+from contracts.model import POSE_BBOX56_PREPROCESSING_IDENTITY
 from worker.adapters.model.errors import ModelLoadError
 from worker.adapters.model.pose_bbox56_bundle_support import (
     member_digest,

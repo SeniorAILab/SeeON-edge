@@ -23,13 +23,16 @@ from backend.app.features.evidence.receipt_store import (
     ArtifactReceipt,
     ArtifactReceiptConflictError,
     ArtifactReceiptStore,
-    ArtifactReceiptVerificationError,
     VerifiedArtifact,
-    verify_artifact,
 )
 from backend.app.features.evidence.relay_projection import RelayEvent
 from backend.app.features.runtime_settings.store import RuntimeSettingsStore
+from backend.app.lifespan import install_feature_ports
 from backend.app.main import create_app, no_lifespan
+from backend.app.shared.artifact_verification import (
+    ArtifactReceiptVerificationError,
+    verify_artifact,
+)
 from backend.app.shared.postgres_dashboard_credentials import PostgresDashboardCredentialsStore
 from shared.events.evidence_export_contract import ClipReceipt
 from tests_support.postgres_sandbox import ProductSandbox
@@ -182,6 +185,7 @@ def _client(tmp_path: Path, store: ArtifactReceiptStore, sandbox: ProductSandbox
     settings = RuntimeSettingsStore(sandbox.database, sandbox.authority)
     settings.set_clip_export_enabled(True)
     app.state.runtime_settings_store = settings
+    install_feature_ports(app)
     if isinstance(store, PostgresArtifactReceiptStore):
         EventOutbox(
             sandbox.database, sandbox.authority, TEST_OUTBOX_BUDGET, audit_runtime=runtime

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Final, Protocol
 
 from contracts.event import EventEvidence, EventScalar
+from shared.boundary import Boundary, isolate
 from worker.pipeline.output.evidence.event_payload import WorkerEventPayload
 from worker.pipeline.output.evidence.evidence_metadata import (
     runtime_manifest_sha256_from_audit,
@@ -109,59 +110,61 @@ class EvidenceEventSink:
                     edge_event_id, snapshot_id, "UNAVAILABLE", "snapshot_store_unconfigured"
                 )
             else:
-                try:
-                    staged_snapshot = snapshot_store.stage(
-                        event.snapshot_jpeg,
-                        snapshot_id=edge_event_id,
-                        captured_at=detected_at,
-                        camera_id=event.camera_id,
-                        edge_event_id=edge_event_id,
-                    )
-                except SnapshotCapacityError as error:
-                    LOGGER.warning(
-                        (
-                            "snapshot dropped by event sink backpressure: "
-                            "camera_id=%s edge_event_id=%s reason=%s"
-                        ),
-                        event.camera_id,
-                        edge_event_id,
-                        error.reason,
-                        extra={
-                            "camera_id": event.camera_id,
-                            "edge_event_id": edge_event_id,
-                            "reason": error.reason,
-                        },
-                    )
-                    self._record_snapshot_disposition(
-                        edge_event_id, snapshot_id, "UNAVAILABLE", "stage_capacity"
-                    )
-                except Exception:
-                    LOGGER.exception(
-                        "snapshot staging failed: camera_id=%s edge_event_id=%s",
-                        event.camera_id,
-                        edge_event_id,
-                    )
+                staged = False
+                with isolate(
+                    Boundary.OPTIONAL_FEATURE,
+                    stage="snapshot_stage",
+                    level=logging.ERROR,
+                    camera_id=event.camera_id,
+                    edge_event_id=edge_event_id,
+                ) as staging:
+                    try:
+                        staged_snapshot = snapshot_store.stage(
+                            event.snapshot_jpeg,
+                            snapshot_id=edge_event_id,
+                            captured_at=detected_at,
+                            camera_id=event.camera_id,
+                            edge_event_id=edge_event_id,
+                        )
+                    except SnapshotCapacityError as error:
+                        LOGGER.warning(
+                            (
+                                "snapshot dropped by event sink backpressure: "
+                                "camera_id=%s edge_event_id=%s reason=%s"
+                            ),
+                            event.camera_id,
+                            edge_event_id,
+                            error.reason,
+                            extra={
+                                "camera_id": event.camera_id,
+                                "edge_event_id": edge_event_id,
+                                "reason": error.reason,
+                            },
+                        )
+                        self._record_snapshot_disposition(
+                            edge_event_id, snapshot_id, "UNAVAILABLE", "stage_capacity"
+                        )
+                    else:
+                        staged = True
+                if staging.failed:
                     self._record_snapshot_disposition(
                         edge_event_id, snapshot_id, "UNAVAILABLE", "stage_failed"
                     )
-                else:
+                elif staged and staged_snapshot is not None:
                     snapshot_payload = _snapshot_payload(staged_snapshot)
         if staged_snapshot is not None and snapshot_payload is not None:
             assert snapshot_store is not None
-            try:
+            with isolate(
+                Boundary.OPTIONAL_FEATURE,
+                stage="snapshot_publish",
+                level=logging.ERROR,
+                camera_id=event.camera_id,
+                edge_event_id=edge_event_id,
+            ) as publishing:
                 snapshot_store.publish(staged_snapshot)
                 self.stager.attach_snapshot(edge_event_id, snapshot_payload)
                 snapshot_store.commit(staged_snapshot)
-            except Exception:
-                LOGGER.exception(
-                    (
-                        "snapshot publication remains staged for reconciliation: "
-                        "camera_id=%s edge_event_id=%s"
-                    ),
-                    event.camera_id,
-                    edge_event_id,
-                    extra={"camera_id": event.camera_id, "edge_event_id": edge_event_id},
-                )
+            if publishing.failed:
                 self._record_snapshot_disposition(
                     edge_event_id, snapshot_id, "UNAVAILABLE", "publish_or_attachment_failed"
                 )
@@ -182,12 +185,13 @@ class EvidenceEventSink:
     def _record_snapshot_disposition(
         self, edge_event_id: str, snapshot_id: str, disposition: str, reason: str
     ) -> None:
-        try:
+        with isolate(
+            Boundary.OPTIONAL_FEATURE,
+            stage="snapshot_disposition",
+            level=logging.ERROR,
+            edge_event_id=edge_event_id,
+        ):
             self.stager.record_snapshot_disposition(edge_event_id, snapshot_id, disposition, reason)
-        except Exception:
-            LOGGER.exception(
-                "snapshot disposition admission failed: edge_event_id=%s", edge_event_id
-            )
 
 
 def _snapshot_payload(snapshot: StoredSnapshot) -> dict[str, EventScalar]:

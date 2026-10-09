@@ -3,38 +3,38 @@ from __future__ import annotations
 import logging
 import os
 import stat
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, BinaryIO, Literal, Never, Protocol, runtime_checkable
 from uuid import UUID
 
-from fastapi import APIRouter, Header, HTTPException, Request, status
+from fastapi import APIRouter, FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from backend.app.features.audit.catalog import (
-    AuditAction,
-    AuditActorType,
-    AuditAuthMechanism,
-    empty_detail,
-)
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.http import mutation_audit
-from backend.app.features.audit.store import AuditEvent, utc_now
 from backend.app.features.clips.store import CLIP_STORE_DIR_ENV, DEFAULT_CLIP_STORE_DIR
 from backend.app.features.evidence.postgres_receipts import PostgresArtifactReceiptStore
 from backend.app.features.evidence.receipt_store import (
     ArtifactReceipt,
     ArtifactReceiptConflictError,
     ArtifactReceiptPersistenceError,
-    ArtifactReceiptVerificationError,
     VerifiedArtifact,
     verified_artifact,
 )
-from backend.app.features.relay.auth import authorize_relay as _authorize
-from backend.app.features.relay.router import RELAY_TOKEN_HEADER, _camera_binding
-from backend.app.features.runtime_settings.dependencies import get_runtime_settings_store
-from backend.app.shared.backend_client_bundle import backend_client_bundle
+from backend.app.shared.artifact_verification import ArtifactReceiptVerificationError
+from backend.app.shared.audit_values import (
+    AuditAction,
+    AuditActorType,
+    AuditAuthMechanism,
+    AuditEvent,
+    utc_now,
+)
+from backend.app.shared.http.backend_client_bundle import backend_client_bundle
+from backend.app.shared.http.relay_http import RELAY_TOKEN_HEADER, camera_binding
+from backend.app.shared.http.relay_http import authorize_relay as _authorize
 from shared.events.clip_identity import is_clip_id
 from shared.events.evidence_export_client import ReadyClipRequest, UnavailableClipRequest
 from shared.events.evidence_export_contract import (
@@ -162,7 +162,7 @@ def capabilities(
     _authorize(request, relay_token)
     if not _enabled(request):
         return CapabilityResponse(event_idempotency=1, clip_export=0)
-    binding = _camera_binding(request, camera_id, "")
+    binding = camera_binding(request, camera_id, "")
     bound_camera_id = binding.get("backend_camera_id")
     if not isinstance(bound_camera_id, str) or not bound_camera_id.strip():
         _LOGGER.warning(
@@ -192,7 +192,7 @@ def export_clip(
     _authorize(request, relay_token)
     if not _enabled(request) or not is_clip_id(clip_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="clip export unavailable")
-    binding = _camera_binding(request, payload.camera_id, payload.facility_id)
+    binding = camera_binding(request, payload.camera_id, payload.facility_id)
     bound_camera_id = binding.get("backend_camera_id")
     if not isinstance(bound_camera_id, str) or not bound_camera_id.strip():
         raise HTTPException(
@@ -348,8 +348,22 @@ def _verified_media(
         return verified
 
 
+@dataclass(frozen=True, slots=True)
+class EvidencePorts:
+    clip_export_enabled: Callable[[], bool]
+
+
+def evidence_ports(app: FastAPI) -> EvidencePorts:
+    ports = getattr(app.state, "evidence_ports", None)
+    if ports is None:
+        raise RuntimeError("evidence ports are not injected")
+    if not isinstance(ports, EvidencePorts):
+        raise TypeError("evidence ports have invalid type")
+    return ports
+
+
 def _enabled(request: Request) -> bool:
-    return get_runtime_settings_store(request.app).get().clip_export_enabled
+    return evidence_ports(request.app).clip_export_enabled()
 
 
 def _receipt_store(request: Request) -> PostgresArtifactReceiptStore:
@@ -395,4 +409,4 @@ def _raise_failure(failure: DeliveryFailure) -> Never:
     raise HTTPException(status_code=code, detail="backend evidence export failed", headers=headers)
 
 
-__all__ = ["router"]
+__all__ = ["EvidencePorts", "evidence_ports", "router"]

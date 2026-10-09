@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from backend.app.features.audit.catalog import AuditAction
+from backend.app.shared.audit_values import AuditAction
 from tests_support.audit_production_owners import (
     AuditOwnerCatalogError,
     assert_owner_catalog_complete,

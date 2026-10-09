@@ -77,6 +77,7 @@ jobs:
       # PR3: strict typing for RTSP probe service
       - run: uv run --group lint mypy --follow-imports=silent backend/app/features/cameras/rtsp_probe_service.py
       - run: uv run --group lint mypy --follow-imports=silent backend/app/features/cameras/camera_crud_service.py
+      - run: uv run --group lint mypy --follow-imports=silent backend/app/shared/http backend/app/shared/backend_client_bundle.py backend/app/shared/dashboard_credential_rotation.py
 
       # Facility identity (facility id / facility token) and the camera roster
       # must never be provisionable through the environment: an env var reaches
@@ -99,6 +100,8 @@ jobs:
       - run: uv run --group lint python scripts/check_no_comments.py
 
       - run: uv run --group lint python scripts/check_boundaries.py
+
+      - run: uv run --group lint python scripts/check_model_swap_surface.py
 
       # Backend feature layers: folder shape, unmigrated imports and the
       # shrink-only baseline, compared with the exact base commit (the PR base

@@ -124,6 +124,33 @@ describe('EventsPage metadata validation', () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
+  it('keeps an off-page clip recorded under the selected camera Hub id', async () => {
+    resetLocation('?page=events&clip=clip-49');
+    const registry = {
+      ...cameraRegistry,
+      cameras: cameraRegistry.cameras.map((camera) => (
+        camera.id === 'cam-1' ? { ...camera, backend_camera_id: 'hub-1' } : camera
+      )),
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/cameras')) return Promise.resolve(jsonResponse(registry));
+      if (url.endsWith('/clips/clip-49/metadata')) {
+        return Promise.resolve(jsonResponse(clipManifest({ clip_id: 'clip-49', camera_id: 'hub-1' })));
+      }
+      if (url.includes('/clips')) return Promise.resolve(pageResponse([]));
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { host } = await renderPage();
+
+    chooseCamera(host, 'cam-1');
+    await flush();
+
+    expect(window.location.search).toContain('clip=clip-49');
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+  });
+
   it.each([400, 404])('removes a terminal %i metadata link with replaceState', async (status) => {
     resetLocation('?page=events&clip=clip-invalid');
     const replaceSpy = vi.spyOn(window.history, 'replaceState');

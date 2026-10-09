@@ -4,12 +4,8 @@ import json
 from typing import Final
 
 from backend.app.edge_db.functions import audit_record_hash
-from backend.app.features.audit.catalog import (
-    AuditAction,
-    AuditActorType,
-    AuditAuthMechanism,
-    parse_detail_json,
-)
+from backend.app.features.audit.catalog import parse_detail_json
+from backend.app.shared.audit_values import AuditAction, AuditActorType, AuditAuthMechanism
 
 GENESIS_HASH: Final = "0" * 64
 MAX_AUDIT_ROWS: Final = 1_000_000

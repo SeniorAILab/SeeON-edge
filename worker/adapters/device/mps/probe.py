@@ -4,6 +4,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, TypeAlias
 
+from shared.boundary import degrade
+
 
 @dataclass(frozen=True, slots=True)
 class MpsCapability:
@@ -27,10 +29,9 @@ def probe_mps_capability(*, importer: TorchImporter = _import_torch) -> MpsCapab
     except Exception as exc:  # noqa: BLE001
         return MpsCapability(available=False, reason=f"torch import failed: {type(exc).__name__}")
 
-    try:
-        is_built = bool(torch.backends.mps.is_built())
-    except Exception:  # noqa: BLE001
-        is_built = False
+    is_built = degrade(
+        lambda: bool(torch.backends.mps.is_built()), stage="mps_is_built", default=False
+    )
 
     try:
         available = bool(torch.backends.mps.is_available())

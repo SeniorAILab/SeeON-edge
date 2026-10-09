@@ -7,60 +7,10 @@ from typing import Final, assert_never
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
+from backend.app.shared.audit_values import AuditAction, AuditDetail
+
 MAX_DETAIL_BYTES: Final = 16 * 1024
 _DETAIL_ADAPTER: Final = TypeAdapter(dict[str, JsonValue])
-
-
-class AuditActorType(StrEnum):
-    USER = "user"
-    SERVICE = "service"
-    SYSTEM = "system"
-
-
-class AuditAuthMechanism(StrEnum):
-    DASHBOARD_SESSION = "dashboard_session"
-    RELAY_TOKEN = "relay_token"
-    INTERNAL = "internal"
-
-
-class AuditAction(StrEnum):
-    AUTH_LOGIN = "auth.login"
-    AUTH_SESSION_READ = "auth.session.read"
-    AUTH_LOGOUT = "auth.logout"
-    CREDENTIAL_ROTATE = "credential.rotate"
-    CAMERA_CREATE = "camera.create"
-    CAMERA_UPDATE = "camera.update"
-    CAMERA_DELETE = "camera.delete"
-    CAMERA_PROBE = "camera.probe"
-    LOCATION_CREATE = "location.create"
-    LOCATION_UPDATE = "location.update"
-    LOCATION_DELETE = "location.delete"
-    BED_ZONE_UPDATE = "bed-zone.update"
-    CONNECTION_UPDATE = "connection.update"
-    CONNECTION_SYNC = "connection.sync"
-    TOPOLOGY_CONFIRM = "topology.confirm"
-    CLIP_STORAGE_UPDATE = "clip-storage.update"
-    DETECTION_SETTINGS_UPDATE = "detection-settings.update"
-    RUNTIME_SETTINGS_UPDATE = "runtime-settings.update"
-    POLICY_APPLY = "policy.apply"
-    POLICY_ROLLBACK = "policy.rollback"
-    INCIDENT_LIST = "incident.list"
-    INCIDENT_DETAIL = "incident.detail"
-    INCIDENT_REVIEW = "incident.review"
-    CLIP_LIST = "clip.list"
-    CLIP_DETAIL = "clip.detail"
-    CLIP_PLAY = "clip.play"
-    CLIP_THUMBNAIL = "clip.thumbnail"
-    CLIP_ARTIFACT = "clip.artifact"
-    EVIDENCE_RECEIPT = "evidence.receipt"
-    AUDIT_LIST = "audit.list"
-    AUDIT_DETAIL = "audit.detail"
-    RELAY_ALERT = "relay.alert"
-    RELAY_SNAPSHOT_ATTACHMENT = "relay.snapshot-attachment"
-    RELAY_SNAPSHOT_DISPOSITION = "relay.snapshot-disposition"
-    AUDIT_SESSION_START = "audit.session-start"
-    AUDIT_SESSION_CLOSE = "audit.session-close"
-    RECOVERY_FENCE = "audit.recovery-fence"
 
 
 class AuditDetailKind(StrEnum):
@@ -75,13 +25,6 @@ class AuditDetailDeclaration:
     action: AuditAction
     version: int
     kind: AuditDetailKind
-
-
-@dataclass(frozen=True, slots=True)
-class AuditDetail:
-    action: AuditAction
-    version: int
-    json: str
 
 
 class AuditDetailError(ValueError):
@@ -274,10 +217,6 @@ def _forbidden(value: str) -> bool:
 __all__ = [
     "ACTION_DETAIL_CATALOG",
     "MAX_DETAIL_BYTES",
-    "AuditAction",
-    "AuditActorType",
-    "AuditAuthMechanism",
-    "AuditDetail",
     "AuditDetailDeclaration",
     "AuditDetailError",
     "AuditDetailKind",

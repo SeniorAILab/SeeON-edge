@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.app.features.audit.postgres_runtime import PostgresAuditRuntime
-from backend.app.shared.dashboard_auth import (
+from backend.app.shared.http.dashboard_auth import (
     API_DASHBOARD_PASSWORD_ENV,
     API_DASHBOARD_USERNAME_ENV,
     DEFAULT_DASHBOARD_PASSWORD,

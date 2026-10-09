@@ -97,7 +97,7 @@ def _create_pose_bbox56_bundle_model(artifact_dir: Path, device: str) -> FallMod
 
 
 def _create_ort_pose_bbox56_bundle_model(artifact_dir: Path, device: str) -> FallModel:
-    return OrtPoseBbox56Runner.from_artifact_dir(artifact_dir, device=device)
+    return OrtPoseBbox56Runner.from_artifact_dir(artifact_dir)
 
 
 def _create_pose_bbox56_model(config: FallModelConfigLike, device: str) -> FallModel:

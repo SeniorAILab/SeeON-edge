@@ -20,6 +20,7 @@ from backend.app.features.evidence.event_outbox import EventOutbox, OutboxBudget
 from backend.app.features.evidence.postgres_receipts import PostgresArtifactReceiptStore
 from backend.app.features.evidence.relay_projection import RelayEvent
 from backend.app.features.runtime_settings.store import RuntimeSettingsStore
+from backend.app.lifespan import install_feature_ports
 from backend.app.main import create_app, no_lifespan
 from backend.app.shared.postgres_dashboard_credentials import PostgresDashboardCredentialsStore
 from shared.events.evidence_export_contract import (
@@ -163,6 +164,7 @@ def _setup(
     settings = RuntimeSettingsStore(sandbox.database, sandbox.authority)
     settings.set_clip_export_enabled(True)
     app.state.runtime_settings_store = settings
+    install_feature_ports(app)
     EventOutbox(
         sandbox.database, sandbox.authority, TEST_OUTBOX_BUDGET, audit_runtime=runtime
     ).accept(

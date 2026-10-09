@@ -8,12 +8,6 @@ import pytest
 from tests_support.pose_bbox56_bundle_artifact import write_pose_bbox56_bundle
 from worker.runtime.config.errors import WorkerConfigError
 from worker.runtime.config.local_env import (
-    ML_WORKER_FALL_MODEL_ARTIFACT_DIR_ENV,
-    ML_WORKER_FALL_MODEL_OPERATING_THRESHOLD_ENV,
-    ML_WORKER_FALL_MODEL_PREPROCESSING_IDENTITY_ENV,
-    ML_WORKER_FALL_MODEL_SCHEMA_VERSION_ENV,
-    ML_WORKER_FALL_MODEL_STRIDE_ENV,
-    ML_WORKER_FALL_MODEL_WINDOW_ENV,
     fall_model_config_from_environment,
     reject_retired_worker_environment,
     worker_models_config_from_environment,
@@ -81,11 +75,11 @@ def test_default_env_with_no_overrides_resolves_packaged_manifest_defaults(
     assert config.operating_threshold == 0.5
 
 
-def test_model_policy_environment_keys_are_retired_explicitly() -> None:
+def test_policy_environment_keys_are_retired_explicitly() -> None:
     environ = {
-        ML_WORKER_FALL_MODEL_WINDOW_ENV: "45",
-        ML_WORKER_FALL_MODEL_STRIDE_ENV: "9",
-        ML_WORKER_FALL_MODEL_OPERATING_THRESHOLD_ENV: "0.5",
+        "ML_WORKER_DEV_MJPEG_HOST": "0.0.0.0",
+        "ML_WORKER_DEV_MJPEG_PORT": "8090",
+        "RELAY_URL": "http://relay.test",
     }
 
     with pytest.raises(WorkerConfigError) as excinfo:
@@ -95,46 +89,13 @@ def test_model_policy_environment_keys_are_retired_explicitly() -> None:
     assert "versioned worker config authority" in str(excinfo.value)
 
 
-def test_default_env_with_no_threshold_override_logs_manifest_default_source(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    _write_fake_packaged_default(tmp_path, monkeypatch)
-
-    with caplog.at_level("INFO"):
-        fall_model_config_from_environment({})
-
-    assert any(
-        "source: packaged manifest default" in record.getMessage() for record in caplog.records
-    )
-
-
-def test_retired_manifest_environment_keys_fail_instead_of_warning() -> None:
+def test_retired_clip_environment_keys_fail_instead_of_warning() -> None:
     environ = {
-        ML_WORKER_FALL_MODEL_SCHEMA_VERSION_ENV: "2",
-        ML_WORKER_FALL_MODEL_PREPROCESSING_IDENTITY_ENV: "some-other-identity",
+        "ML_WORKER_EVENT_CLIP_EXPORT_ENABLED": "1",
+        "ML_WORKER_DEV_MJPEG": "1",
     }
 
     with pytest.raises(WorkerConfigError) as excinfo:
         reject_retired_worker_environment(environ)
 
     assert all(name in str(excinfo.value) for name in environ)
-
-
-def test_explicit_artifact_dir_aggregates_multiple_invalid_env_vars(tmp_path: Path) -> None:
-    environ = {
-        ML_WORKER_FALL_MODEL_ARTIFACT_DIR_ENV: str(tmp_path),
-        ML_WORKER_FALL_MODEL_WINDOW_ENV: "not-an-int",
-        ML_WORKER_FALL_MODEL_STRIDE_ENV: "also-not-an-int",
-        ML_WORKER_FALL_MODEL_OPERATING_THRESHOLD_ENV: "not-a-float",
-    }
-
-    with pytest.raises(WorkerConfigError) as excinfo:
-        fall_model_config_from_environment(environ)
-
-    message = str(excinfo.value)
-    assert "3 fall model environment variable(s) invalid" in message
-    assert ML_WORKER_FALL_MODEL_WINDOW_ENV in message
-    assert ML_WORKER_FALL_MODEL_STRIDE_ENV in message
-    assert ML_WORKER_FALL_MODEL_OPERATING_THRESHOLD_ENV in message
