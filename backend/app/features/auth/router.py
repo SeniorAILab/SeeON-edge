@@ -8,13 +8,13 @@ from dataclasses import dataclass, field
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.app.features.audit.catalog import AuditAction, empty_detail
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.http import (
     append_governed,
     audit_runtime,
     mutation_audit,
 )
-from backend.app.features.audit.store import AuditEvent, utc_now
+from backend.app.shared.audit_values import AuditAction, AuditEvent, utc_now
 from backend.app.shared.http.dashboard_auth import (
     DASHBOARD_SESSION_COOKIE,
     DashboardSessionStore,

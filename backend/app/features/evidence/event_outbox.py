@@ -10,25 +10,26 @@ import psycopg
 
 from backend.app.edge_db.authority import AuthorityToken, require_authority
 from backend.app.edge_db.postgres import PostgresDatabase
-from backend.app.features.audit.catalog import (
-    AuditAction,
-    AuditActorType,
-    AuditAuthMechanism,
-    empty_detail,
-)
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.postgres_runtime import (
     AuditRuntimeUnavailable,
     InvalidAuditPublication,
     PendingAuditPublication,
     PostgresAuditRuntime,
 )
-from backend.app.features.audit.store import AuditEvent, utc_now
 from backend.app.features.evidence.postgres_relay_projection import put_snapshot
 from backend.app.features.evidence.relay_projection import (
     RelayEvent,
     RelayEvidenceProjectionConflict,
     RelaySnapshot,
     _validate_snapshot,
+)
+from backend.app.shared.audit_values import (
+    AuditAction,
+    AuditActorType,
+    AuditAuthMechanism,
+    AuditEvent,
+    utc_now,
 )
 
 _LOGGER = logging.getLogger(__name__)

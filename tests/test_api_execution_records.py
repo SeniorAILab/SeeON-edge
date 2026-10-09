@@ -11,12 +11,12 @@ from pydantic import ValidationError
 
 from backend.app.core.config import Settings, get_settings
 from backend.app.edge_db.postgres import PoolBudget, PostgresDatabase
-from backend.app.features.audit.catalog import AuditAction
 from backend.app.features.audit.postgres_runtime import PostgresAuditRuntime
 from backend.app.features.diagnostics.retention import RetentionBudget
 from backend.app.features.diagnostics.store import ExecutionRecordStore
 from backend.app.lifespan import lifespan
 from backend.app.main import create_app
+from backend.app.shared.audit_values import AuditAction
 from backend.app.shared.http.relay_http import RELAY_TOKEN_HEADER
 from shared.events.execution_records import (
     MAX_EXECUTION_RECORD_BODY_BYTES,

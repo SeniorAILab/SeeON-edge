@@ -6,9 +6,9 @@ from typing import Any, Protocol, TypeVar
 
 import psycopg
 
-from backend.app.features.audit.catalog import AuditAction
 from backend.app.features.cameras.camera_values import CameraStatus, ProbeResult, status_from_probe
 from backend.app.features.cameras.update_command import CameraUpdate
+from backend.app.shared.audit_values import AuditAction
 
 AfterWrite = Callable[[psycopg.Connection[Any]], None]
 CameraRecord = dict[str, object]

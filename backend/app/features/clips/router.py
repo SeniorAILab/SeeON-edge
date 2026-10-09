@@ -5,7 +5,6 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import Response
 
-from backend.app.features.audit.catalog import AuditAction
 from backend.app.features.audit.http import append_governed
 from backend.app.features.clips.artifacts import CentralClipArtifactQuery
 from backend.app.features.clips.catalog_indexer import ClipCatalogQuery, PostgresClipCatalog
@@ -29,6 +28,7 @@ from backend.app.features.evidence.receipt_store import (
     ArtifactReceiptVerificationError,
     verify_artifact,
 )
+from backend.app.shared.audit_values import AuditAction
 from backend.app.shared.http.dashboard_auth import authorize_dashboard
 from backend.app.shared.http.head_response import drop_body_for_head
 

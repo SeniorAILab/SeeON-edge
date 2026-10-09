@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from backend.app.features.audit.catalog import AuditAction, AuditDetailError, parse_detail_json
+from backend.app.features.audit.catalog import AuditDetailError, parse_detail_json
+from backend.app.shared.audit_values import AuditAction
 
 
 def test_detail_version_is_exact_uncoerced_json_integer() -> None:

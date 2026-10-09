@@ -19,9 +19,8 @@ from psycopg.rows import dict_row, tuple_row
 
 from backend.app.edge_db.authority import AuthorityFenced, AuthorityToken, freeze_authority
 from backend.app.edge_db.postgres import CommitOutcomeUnknown, PoolBudget, PostgresDatabase
-from backend.app.features.audit.catalog import AuditAction, empty_detail
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.postgres_store import append_postgres_audit
-from backend.app.features.audit.store import AuditEvent
 from backend.app.features.cameras.camera_repository import CameraRegistryWriteError
 from backend.app.features.cameras.store import CameraRegistryStore
 from backend.app.features.cameras.update_command import CameraUpdate
@@ -34,6 +33,7 @@ from backend.app.features.detection_settings.policy_store import (
     PolicyRevisionConflict,
     PolicyRollbackUnavailable,
 )
+from backend.app.shared.audit_values import AuditAction, AuditEvent
 from shared.detection_policies import (
     PolicyDocumentError,
     default_policy_bundle,

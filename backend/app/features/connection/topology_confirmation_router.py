@@ -6,9 +6,8 @@ from fastapi import APIRouter, Request, status
 from fastapi.exceptions import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.app.features.audit.catalog import AuditAction, empty_detail
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.http import mutation_audit
-from backend.app.features.audit.store import AuditEvent, utc_now
 from backend.app.features.cameras.edge_topology_sync_state import TopologyPauseReason
 from backend.app.features.cameras.topology_client import (
     TopologyAccepted,
@@ -20,6 +19,7 @@ from backend.app.features.cameras.topology_confirmation import (
     TopologyConfirmationRejected,
 )
 from backend.app.features.connection.dependencies import topology_retry_coordinator
+from backend.app.shared.audit_values import AuditAction, AuditEvent, utc_now
 from backend.app.shared.http.dashboard_auth import authorize_dashboard as _authorize
 from contracts.edge_provisioning_v1 import EdgeErrorCode, MutationCounts
 

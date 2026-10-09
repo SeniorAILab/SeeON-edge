@@ -18,7 +18,7 @@ client the alert stays local and gets a local receipt.
 
 Read or call. Do not construct the other slice's store.
 - `audit` owns `AuditStore`. Governed mutations in any slice append through
-  `audit.http.append_transactional` / `append_governed` with a catalog `AuditAction`.
+  `audit.http.append_transactional` / `append_governed` with an `AuditAction` from `backend.app.shared.audit_values`.
 - `relay` consumes cameras (`worker_config_snapshot`, registry), clips
   catalog, and status stores. No store of its own.
 - `diagnostics` owns `execution_record_store` and the engineer query

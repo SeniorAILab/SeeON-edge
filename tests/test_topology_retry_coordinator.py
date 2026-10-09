@@ -8,9 +8,8 @@ from threading import Event
 
 import pytest
 
-from backend.app.features.audit.catalog import AuditAction, empty_detail
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.postgres_runtime import AuditRuntimeUnavailable
-from backend.app.features.audit.store import AuditEvent
 from backend.app.features.cameras.edge_topology_sync_state import (
     EdgeTopologySyncStateStore,
     PendingTopologySnapshot,
@@ -25,6 +24,7 @@ from backend.app.features.cameras.topology_client import (
 )
 from backend.app.features.connection.store import ConnectionSettingsStore
 from backend.app.features.connection.topology_retry_coordinator import TopologyRetryCoordinator
+from backend.app.shared.audit_values import AuditAction, AuditEvent
 from contracts.edge_provisioning_v1 import (
     MachinePrincipal,
     MutationCounts,

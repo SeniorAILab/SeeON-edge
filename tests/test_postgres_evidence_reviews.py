@@ -11,10 +11,9 @@ import pytest
 from backend.app.edge_db.authority import AuthorityFenced, freeze_authority
 from backend.app.edge_db.postgres import CommitOutcomeUnknown
 from backend.app.edge_db.reviews import ReviewDisposition
-from backend.app.features.audit.catalog import AuditAction, empty_detail
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.postgres_runtime import PostgresAuditRuntime
 from backend.app.features.audit.postgres_store import PostgresAuditStore
-from backend.app.features.audit.store import AuditEvent
 from backend.app.features.evidence.event_outbox import EventOutbox, OutboxBudget
 from backend.app.features.evidence.record_store import (
     LEGACY_DELIVERY_STATE,
@@ -24,6 +23,7 @@ from backend.app.features.evidence.record_store import (
     EvidenceReviewConflictError,
 )
 from backend.app.features.evidence.relay_projection import RelayEvent
+from backend.app.shared.audit_values import AuditAction, AuditEvent
 
 pytest_plugins = ("tests_support.postgres_sandbox",)
 _TIME = "2026-09-28T03:00:00.000Z"

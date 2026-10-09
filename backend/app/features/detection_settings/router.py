@@ -6,10 +6,8 @@ from typing import ClassVar, Literal
 from fastapi import APIRouter, FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from backend.app.features.audit.catalog import AuditAction, empty_detail
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.http import mutation_audit
-from backend.app.features.audit.store import AuditEvent
-from backend.app.features.audit.store import utc_now as audit_now
 from backend.app.features.cameras.store import CameraRegistryStore
 from backend.app.features.connection.dependencies import get_connection_settings_store
 from backend.app.features.detection_settings.policy_store import (
@@ -24,6 +22,8 @@ from backend.app.features.detection_settings.store import (
     DetectionSettingsStore,
     DomainDetectionSetting,
 )
+from backend.app.shared.audit_values import AuditAction, AuditEvent
+from backend.app.shared.audit_values import utc_now as audit_now
 from backend.app.shared.http.dashboard_auth import authorize_dashboard
 from contracts.worker_config import PulledWorkerConfig
 from shared.detection_policies import POLICY_DEFINITIONS

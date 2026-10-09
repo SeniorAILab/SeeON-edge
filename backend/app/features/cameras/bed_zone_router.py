@@ -12,17 +12,17 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from backend.app.core.config import get_settings
-from backend.app.features.audit.catalog import AuditAction, empty_detail
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.http import mutation_audit
 from backend.app.features.audit.postgres_runtime import AuditMutation
-from backend.app.features.audit.store import AuditEvent
-from backend.app.features.audit.store import utc_now as audit_now
 from backend.app.features.cameras.bed_zone_store import (
     BedZoneRegion,
     BedZoneStore,
     validate_bed_zone,
 )
 from backend.app.features.cameras.store import utc_now_iso
+from backend.app.shared.audit_values import AuditAction, AuditEvent
+from backend.app.shared.audit_values import utc_now as audit_now
 from backend.app.shared.http.dashboard_auth import authorize_dashboard
 
 router = APIRouter(prefix="/cameras", tags=["cameras"])

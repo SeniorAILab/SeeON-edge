@@ -7,9 +7,9 @@ from fastapi import FastAPI, Request, Response, status
 
 from backend.app.edge_db import DatabaseDriverError
 from backend.app.edge_db.postgres import PostgresError
-from backend.app.features.audit.catalog import AuditAction, empty_detail
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.postgres_runtime import AuditMutation, PostgresAuditRuntime
-from backend.app.features.audit.store import AuditEvent, utc_now
+from backend.app.shared.audit_values import AuditAction, AuditEvent, utc_now
 from backend.app.shared.dashboard_credentials import DashboardCredentialsStoreError
 
 

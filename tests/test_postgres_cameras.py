@@ -16,9 +16,8 @@ from psycopg.rows import tuple_row
 
 from backend.app.edge_db.authority import AuthorityFenced, freeze_authority
 from backend.app.edge_db.postgres import CommitOutcomeUnknown
-from backend.app.features.audit.catalog import AuditAction, empty_detail
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.postgres_store import append_postgres_audit
-from backend.app.features.audit.store import AuditEvent
 from backend.app.features.cameras.camera_repository import (
     CameraRegistryNotInitialized,
     CameraRegistryWriteError,
@@ -31,6 +30,7 @@ from backend.app.features.cameras.store import (
 )
 from backend.app.features.cameras.topology import TopologyConflictError, TopologyErrorCode
 from backend.app.features.cameras.update_command import CameraUpdate
+from backend.app.shared.audit_values import AuditAction, AuditEvent
 from contracts.edge_provisioning_models import EdgeErrorCode
 
 if TYPE_CHECKING:

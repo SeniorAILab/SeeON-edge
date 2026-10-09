@@ -12,12 +12,7 @@ import pytest
 
 from backend.app.edge_db.authority import AuthorityFenced, AuthorityToken, freeze_authority
 from backend.app.edge_db.postgres import CommitOutcomeUnknown, PoolBudget, PostgresDatabase
-from backend.app.features.audit.catalog import (
-    AuditAction,
-    AuditActorType,
-    AuditAuthMechanism,
-    empty_detail,
-)
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.postgres_runtime import (
     AuditRuntimeUnavailable,
     PendingAuditPublication,
@@ -25,7 +20,6 @@ from backend.app.features.audit.postgres_runtime import (
 )
 from backend.app.features.audit.postgres_store import PostgresAuditStore
 from backend.app.features.audit.sessions import AuditSession
-from backend.app.features.audit.store import AuditEvent, utc_now
 from backend.app.features.evidence.event_outbox import (
     EventIdentityConflict,
     EventOutbox,
@@ -39,6 +33,13 @@ from backend.app.features.evidence.outbox_delivery import (
     OutboxDelivery,
 )
 from backend.app.features.evidence.relay_projection import RelayEvent, RelaySnapshot
+from backend.app.shared.audit_values import (
+    AuditAction,
+    AuditActorType,
+    AuditAuthMechanism,
+    AuditEvent,
+    utc_now,
+)
 
 if TYPE_CHECKING:
     from tests_support.postgres_sandbox import ProductSandbox

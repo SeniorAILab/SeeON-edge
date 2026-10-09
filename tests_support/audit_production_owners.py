@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from backend.app.features.audit.catalog import AuditAction
+from backend.app.shared.audit_values import AuditAction
 
 ActionOwners = Mapping[AuditAction, tuple[Callable[..., Any], ...]]
 

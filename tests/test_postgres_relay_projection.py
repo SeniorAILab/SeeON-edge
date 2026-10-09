@@ -17,15 +17,9 @@ from backend.app.edge_db.authority import (
     require_authority,
 )
 from backend.app.edge_db.postgres import CommitOutcomeUnknown
-from backend.app.features.audit.catalog import (
-    AuditAction,
-    AuditActorType,
-    AuditAuthMechanism,
-    empty_detail,
-)
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.postgres_runtime import PostgresAuditRuntime
 from backend.app.features.audit.postgres_store import PostgresAuditStore
-from backend.app.features.audit.store import AuditEvent, utc_now
 from backend.app.features.evidence.event_outbox import (
     EventIdentityConflict,
     EventOutbox,
@@ -38,6 +32,13 @@ from backend.app.features.evidence.relay_projection import (
     RelayEvidenceProjectionError,
     RelayEvidenceProjectionMissingEvent,
     RelaySnapshot,
+)
+from backend.app.shared.audit_values import (
+    AuditAction,
+    AuditActorType,
+    AuditAuthMechanism,
+    AuditEvent,
+    utc_now,
 )
 
 pytest_plugins = ("tests_support.postgres_sandbox",)

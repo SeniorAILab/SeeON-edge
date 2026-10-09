@@ -15,15 +15,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from backend.app.edge_db import CheckViolation, DataError, NotNullViolation
 from backend.app.edge_db.authority import AuthorityFenced
-from backend.app.features.audit.catalog import (
-    AuditAction,
-    AuditActorType,
-    AuditAuthMechanism,
-    empty_detail,
-)
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.http import audit_runtime, mutation_audit
-from backend.app.features.audit.store import AuditEvent
-from backend.app.features.audit.store import utc_now as audit_now
 from backend.app.features.cameras.router import (
     acknowledge_applied_detection_policies,
     worker_config_snapshot,
@@ -50,6 +43,13 @@ from backend.app.features.evidence.relay_projection import (
 )
 from backend.app.features.status.heartbeat_store import get_heartbeat_store
 from backend.app.features.status.runtime_status_store import get_runtime_status_store
+from backend.app.shared.audit_values import (
+    AuditAction,
+    AuditActorType,
+    AuditAuthMechanism,
+    AuditEvent,
+)
+from backend.app.shared.audit_values import utc_now as audit_now
 from backend.app.shared.http.relay_http import (
     RELAY_TOKEN_HEADER,
     authorize_relay,
