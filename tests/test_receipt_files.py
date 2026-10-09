@@ -23,9 +23,9 @@ from backend.app.features.evidence.receipt_files import (
 )
 from backend.app.features.evidence.receipt_store import (
     ArtifactReceipt,
-    ArtifactReceiptVerificationError,
     verified_artifact,
 )
+from backend.app.shared.artifact_verification import ArtifactReceiptVerificationError
 
 pytest_plugins = ("tests_support.postgres_sandbox",)
 _TIME = "2026-07-06T00:00:00Z"

@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.edge_db.postgres import CommitOutcomeUnknown, PostgresDatabase
-from backend.app.features.audit.catalog import AuditAction, empty_detail
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.postgres_runtime import (
     AuditMutation,
     AuditRuntimeUnavailable,
@@ -14,13 +14,13 @@ from backend.app.features.audit.postgres_runtime import (
     PostgresAuditRuntime,
 )
 from backend.app.features.audit.postgres_store import PostgresAuditStore
-from backend.app.features.audit.store import AuditEvent
 from backend.app.features.cameras.edge_topology_sync_state import EdgeTopologySyncStateStore
 from backend.app.features.cameras.store import CameraRegistryStore
 from backend.app.features.cameras.update_command import CameraUpdate
 from backend.app.features.connection.topology_retry_coordinator import TopologyRetryCoordinator
 from backend.app.main import create_app, no_lifespan
-from backend.app.shared.dashboard_auth import (
+from backend.app.shared.audit_values import AuditAction, AuditEvent
+from backend.app.shared.http.dashboard_auth import (
     DASHBOARD_SESSION_COOKIE,
     DashboardSessionStore,
     PlaintextDashboardCredentials,

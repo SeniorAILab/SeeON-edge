@@ -15,11 +15,11 @@ from backend.app.features.clips.manifest import ClipManifest, parse_manifest_byt
 from backend.app.features.clips.store import ClipStore
 from backend.app.features.evidence.receipt_store import (
     ArtifactReceipt,
-    ArtifactReceiptVerificationError,
     ClipProjection,
     VerifiedArtifact,
     verified_artifact,
 )
+from backend.app.shared.artifact_verification import ArtifactReceiptVerificationError
 
 
 @dataclass(frozen=True, slots=True)

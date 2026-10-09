@@ -11,13 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from contracts.model_selection import (
-    DatasetPublication,
-    ModelPublication,
-    ModelSelection,
-    canonical_digest,
+from contracts.model_reference import parse_model_reference
+from tests_support.pose_bbox56_bundle_artifact import (
+    write_admitted_pose_bbox56_bundle,
+    write_pose_bbox56_bundle,
 )
-from tests_support.pose_bbox56_bundle_artifact import write_pose_bbox56_bundle
 from worker.tools.fetch_models import cli
 from worker.tools.fetch_models.fetcher import (
     PART_SUFFIX,
@@ -25,6 +23,7 @@ from worker.tools.fetch_models.fetcher import (
     fetch_all,
     fetch_artifact,
     fetch_bundle,
+    fetch_reference,
     sha256_of,
 )
 from worker.tools.fetch_models.http_source import (
@@ -36,11 +35,9 @@ from worker.tools.fetch_models.http_source import (
 from worker.tools.fetch_models.manifest import (
     MANIFEST_PATH,
     SIDECAR_ROOT,
-    Artifact,
     Bundle,
     Manifest,
     ManifestError,
-    Source,
     canonical_json,
     load_manifest,
     parse_manifest,
@@ -206,116 +203,6 @@ def _bundle_source(bundle: Bundle) -> FakeSource:
     )
 
 
-def _selected_bundle_delivery(
-    tmp_path: Path, *, include_calibration: bool = True
-) -> tuple[Manifest, FakeSource, Path, Bundle]:
-    source_root = write_pose_bbox56_bundle(tmp_path / "source")
-    members = {
-        path: (source_root / path).read_bytes()
-        for path in (
-            "model.onnx",
-            "calibration.json",
-            "conformance/pose-bbox56-v1.json",
-            "bundle-manifest.json",
-        )
-        if include_calibration or path != "calibration.json"
-    }
-    identities = {
-        "dataset": "1" * 64,
-        "calibration": _sha(members["calibration.json"])
-        if "calibration.json" in members
-        else "2" * 64,
-        "conformance": _sha(members["conformance/pose-bbox56-v1.json"]),
-        "class": "4" * 64,
-        "input": "pose-bbox56.v1",
-        "policy": (
-            canonical_digest(json.loads(members["calibration.json"])["temporal_rule"])
-            if "calibration.json" in members
-            else "5" * 64
-        ),
-        "members": "6" * 64,
-    }
-    member_records = [
-        {"path": path, "sha256": _sha(body), "size": len(body)} for path, body in members.items()
-    ]
-    payload = {"identities": identities}
-    bundle_sha256 = _sha(canonical_json({"members": member_records, "payload": payload}).encode())
-    evaluation = {
-        "bundle_sha256": bundle_sha256,
-        "bundle_members_digest": identities["members"],
-        "dataset_payload_digest": identities["dataset"],
-        "calibration_digest": identities["calibration"],
-        "conformance_digest": identities["conformance"],
-        "input_observation_schema": identities["input"],
-        "output_class_count": 2,
-        "output_class_semantics_digest": identities["class"],
-        "policy_digest": identities["policy"],
-    }
-    field = {
-        **evaluation,
-        "evaluation_receipt_digest": canonical_digest(evaluation),
-        "status": "green",
-    }
-    receipts = {
-        "evaluation-receipt.json": canonical_json(evaluation).encode() + b"\n",
-        "field-evaluation-receipt.json": canonical_json(field).encode() + b"\n",
-    }
-    raw = _manifest_dict()
-    manifest = parse_manifest(raw)
-    source = Source(
-        name="replacement-publication",
-        kind="huggingface",
-        source_locator="replacement/models",
-        ref="c" * 40,
-    )
-    bundle = Bundle(
-        bundle_sha256,
-        tuple(
-            Artifact(path, source, path, len(body), _sha(body)) for path, body in members.items()
-        ),
-        payload,
-        tuple(
-            Artifact(path, source, path, len(body), _sha(body)) for path, body in receipts.items()
-        ),
-        "onnxruntime",
-    )
-    selection = ModelSelection(
-        model_publication=ModelPublication(source.source_locator, source.ref, bundle_sha256),
-        bundle_members_digest=identities["members"],
-        dataset_publication=DatasetPublication("facility/dataset", "b" * 40, identities["dataset"]),
-        evaluation_receipt_digest=canonical_digest(evaluation),
-        field_evaluation_receipt_digest=canonical_digest(field),
-        calibration_digest=identities["calibration"],
-        conformance_digest=identities["conformance"],
-        input_observation_schema=identities["input"],
-        output_class_count=2,
-        output_class_semantics_digest=identities["class"],
-        policy_digest=identities["policy"],
-        runtime_format="onnxruntime",
-        bundle_format="bundle-manifest/proxy-v0",
-        preprocessing_identity="coco17-xyc-plus-pose-head-xyxy-valid-f32-v1",
-        transition_threshold=0.5,
-        threshold_source="default",
-    )
-    selection_path = tmp_path / "model-selection.json"
-    selection_path.write_text(json.dumps(selection.as_dict()), encoding="utf-8")
-    bodies = _fake_for(manifest).bodies
-    bodies[source.url_for("manifest.json")] = bundle.manifest_bytes
-    bodies.update(
-        {
-            artifact.url: body
-            for artifact, body in zip(bundle.members, members.values(), strict=True)
-        }
-    )
-    bodies.update(
-        {
-            artifact.url: body
-            for artifact, body in zip(bundle.receipts, receipts.values(), strict=True)
-        }
-    )
-    return manifest, FakeSource(bodies), selection_path, bundle
-
-
 def test_committed_manifest_parses_and_pins_every_family_the_worker_loads() -> None:
     manifest = load_manifest(MANIFEST_PATH)
     paths = {artifact.path for artifact in manifest.artifacts}
@@ -443,128 +330,6 @@ def test_fetch_all_public_only_skips_huggingface_artifacts_and_fetches_public_on
         ),
         f"fetched          {_sha(UPSTREAM)}  fall/lstm/metadata.upstream.json",
     ]
-
-
-def test_fetch_all_delivers_and_rehearses_selected_bundle_not_listed_in_manifest(
-    tmp_path: Path,
-) -> None:
-    manifest, source, selection_path, bundle = _selected_bundle_delivery(tmp_path)
-    publication = json.loads(selection_path.read_text(encoding="utf-8"))["model_publication"]
-    assert not any(
-        (candidate.source_locator, candidate.ref)
-        == (publication["source_locator"], publication["revision"])
-        for candidate in manifest.sources.values()
-    )
-
-    report = fetch_all(
-        manifest,
-        tmp_path / "models",
-        source,
-        env={},
-        retry=_no_sleep_policy(),
-        selection_path=selection_path,
-    )
-
-    destination = tmp_path / "models" / "bundles" / bundle.sha256
-    assert {result.path for result in report.results} >= {
-        "model.onnx",
-        "calibration.json",
-        "evaluation-receipt.json",
-        "field-evaluation-receipt.json",
-    }
-    assert (destination / "manifest.json").read_bytes() == bundle.manifest_bytes
-    assert all(
-        sha256_of(destination / artifact.path) == artifact.sha256
-        for artifact in (*bundle.members, *bundle.receipts)
-    )
-
-
-def test_fetch_all_refuses_selection_when_its_source_is_unreachable(tmp_path: Path) -> None:
-    manifest = parse_manifest(_manifest_dict())
-    selection_path = tmp_path / "model-selection.json"
-    _, _, selected_path, _ = _selected_bundle_delivery(tmp_path / "selection")
-    selection_path.write_bytes(selected_path.read_bytes())
-
-    with pytest.raises(
-        VerificationError,
-        match="published bundle source replacement/models@c{40} is unreachable",
-    ):
-        fetch_all(
-            manifest,
-            tmp_path / "models",
-            _fake_for(manifest),
-            env={},
-            retry=_no_sleep_policy(),
-            selection_path=selection_path,
-        )
-
-
-def test_fetch_all_refuses_selected_bundle_claim_with_different_members_identity(
-    tmp_path: Path,
-) -> None:
-    manifest, source, selection_path, bundle = _selected_bundle_delivery(tmp_path)
-    raw_selection = json.loads(selection_path.read_text(encoding="utf-8"))
-    raw_selection["model_publication"]["bundle_sha256"] = "0" * 64
-    selection_path.write_text(json.dumps(raw_selection), encoding="utf-8")
-
-    with pytest.raises(
-        VerificationError,
-        match=(
-            f"published bundle manifest identity {bundle.sha256} does not match selected bundle "
-            f"{'0' * 64}"
-        ),
-    ):
-        fetch_all(
-            manifest,
-            tmp_path / "models",
-            source,
-            env={},
-            retry=_no_sleep_policy(),
-            selection_path=selection_path,
-        )
-
-
-def test_fetch_all_refuses_selected_bundle_boot_would_refuse(tmp_path: Path) -> None:
-    manifest, source, selection_path, bundle = _selected_bundle_delivery(
-        tmp_path, include_calibration=False
-    )
-
-    with pytest.raises(VerificationError, match="calibration.json digest mismatch"):
-        fetch_all(
-            manifest,
-            tmp_path / "models",
-            source,
-            env={},
-            retry=_no_sleep_policy(),
-            selection_path=selection_path,
-        )
-    assert (tmp_path / "models" / "bundles" / bundle.sha256).is_dir()
-
-
-def test_fetch_all_rejects_tampered_selected_bundle_with_boot_reason(tmp_path: Path) -> None:
-    manifest, source, selection_path, bundle = _selected_bundle_delivery(tmp_path)
-    models_root = tmp_path / "models"
-    fetch_all(
-        manifest,
-        models_root,
-        source,
-        env={},
-        retry=_no_sleep_policy(),
-        selection_path=selection_path,
-    )
-    (models_root / "bundles" / bundle.sha256 / "calibration.json").write_text(
-        "tampered", encoding="utf-8"
-    )
-
-    with pytest.raises(VerificationError, match="member mismatch: calibration.json"):
-        fetch_all(
-            manifest,
-            models_root,
-            source,
-            env={},
-            retry=_no_sleep_policy(),
-            selection_path=selection_path,
-        )
 
 
 def test_hash_mismatch_fails_and_leaves_nothing_at_the_final_path(tmp_path: Path) -> None:
@@ -1005,3 +770,74 @@ def test_dev_wrapper_delegates_to_the_module() -> None:
     script = (REPO_ROOT / "scripts" / "fetch-models.sh").read_text(encoding="utf-8")
     assert "python -m worker.tools.fetch_models" in script
     assert "curl" not in script, "no second download path to drift from the manifest"
+
+
+REVISION = "c" * 40
+REFERENCE = parse_model_reference(f"owner/model@{REVISION}")
+
+
+def _published_model(tmp_path: Path) -> tuple[FakeSource, dict[str, bytes]]:
+    admitted = write_admitted_pose_bbox56_bundle(tmp_path / "src")
+    members = json.loads((admitted / "manifest.json").read_text(encoding="utf-8"))["members"]
+    digest = hashlib.sha256(
+        canonical_json({"members": members, "payload": {}}).encode()
+    ).hexdigest()
+    manifest = (
+        canonical_json(
+            {
+                "bundle_sha256": digest,
+                "members": members,
+                "payload": {},
+                "receipts": [],
+                "runtime_format": "onnxruntime",
+                "schema_version": 1,
+            }
+        )
+        + "\n"
+    ).encode()
+    base = f"https://huggingface.co/owner/model/resolve/{REVISION}/"
+    files = {"manifest.json": manifest} | {
+        member["path"]: (admitted / member["path"]).read_bytes() for member in members
+    }
+    return FakeSource({base + path: body for path, body in files.items()}), files
+
+
+def test_reference_lands_at_the_revision_dir_verified_and_idempotent(tmp_path: Path) -> None:
+    source, files = _published_model(tmp_path)
+    root = tmp_path / "models"
+
+    first = fetch_reference(REFERENCE, root, source, env={}, retry=_no_sleep_policy())
+    landed = REFERENCE.bundle_dir(root)
+    second = fetch_reference(REFERENCE, root, source, env={}, retry=_no_sleep_policy())
+
+    assert landed == root / "bundles" / REVISION
+    assert (landed / "model.onnx").read_bytes() == files["model.onnx"]
+    assert [result.outcome for result in first.results] == ["fetched"] * 3
+    assert second.is_noop
+
+
+def test_reference_refuses_a_tampered_member_and_lands_nothing(tmp_path: Path) -> None:
+    source, files = _published_model(tmp_path)
+    url = f"https://huggingface.co/owner/model/resolve/{REVISION}/model.onnx"
+    source.bodies[url] = b"\x00" * len(files["model.onnx"])
+    root = tmp_path / "models"
+
+    with pytest.raises(VerificationError, match="sha256 mismatch"):
+        fetch_reference(REFERENCE, root, source, env={}, retry=_no_sleep_policy())
+
+    assert not REFERENCE.bundle_dir(root).exists()
+
+
+def test_cli_refuses_a_mutable_ref_before_any_download(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = cli.main(
+        ["--dest", str(tmp_path), "--check"], env={"ML_WORKER_FALL_MODEL": "owner/model@main"}
+    )
+
+    assert code == 1
+    assert (
+        "fetch_models: FAILED: ML_WORKER_FALL_MODEL: model reference must be "
+        "'<owner>/<name>@<40-hex commit>', got 'owner/model@main'; "
+        "branch and tag names are not allowed"
+    ) in capsys.readouterr().err

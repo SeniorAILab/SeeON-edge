@@ -5,8 +5,9 @@ import os
 import re
 import stat
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, runtime_checkable
+
+from backend.app.shared.artifact_verification import ArtifactReceiptVerificationError
 
 if TYPE_CHECKING:
     from backend.app.features.clips.manifest import ClipManifest
@@ -15,10 +16,6 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class ArtifactReceiptConflictError(RuntimeError):
-    ...
-
-
-class ArtifactReceiptVerificationError(RuntimeError):
     ...
 
 
@@ -103,34 +100,14 @@ def verified_artifact(handle: BinaryIO) -> VerifiedArtifact:
     )
 
 
-def verify_artifact(path: Path, receipt: ArtifactReceipt) -> None:
-    try:
-        stat_result = path.stat()
-    except OSError as exc:
-        raise ArtifactReceiptVerificationError("artifact is missing") from exc
-    if not path.is_file() or stat_result.st_size != receipt.size_bytes:
-        raise ArtifactReceiptVerificationError("artifact size does not match receipt")
-    digest = hashlib.sha256()
-    try:
-        with path.open("rb") as artifact:
-            for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
-                digest.update(chunk)
-    except OSError as exc:
-        raise ArtifactReceiptVerificationError("artifact cannot be verified") from exc
-    if digest.hexdigest() != receipt.sha256:
-        raise ArtifactReceiptVerificationError("artifact hash does not match receipt")
-
-
 __all__ = [
     "ArtifactReceipt",
     "ArtifactReceiptConflictError",
     "ArtifactReceiptPersistenceError",
     "ArtifactReceiptStore",
-    "ArtifactReceiptVerificationError",
     "ClipProjection",
     "ReceiptMissingIncidentError",
     "VerifiedArtifact",
     "primary_artifact_id",
     "verified_artifact",
-    "verify_artifact",
 ]

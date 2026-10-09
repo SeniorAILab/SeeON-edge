@@ -73,8 +73,7 @@ The runtime does not read `edge.sqlite3` or `edge-diagnostics.sqlite3`. Only
 `backend/app/edge_db/migration/` opens the retired `edge.sqlite3`, once, to
 copy it into PostgreSQL through the `edge-db-cutover` compose service (ops
 profile); import-linter contracts in `pyproject.toml` keep every other module
-from importing `sqlite3`. Cutover and rollback are described in
-[`docs/runbooks/postgresql-cutover.md`](runbooks/postgresql-cutover.md).
+from importing `sqlite3`.
 
 ### Image rollback preserves the state
 
@@ -82,11 +81,7 @@ Rollback is binary-only and image-digest based. Pin the previous `@sha256:`
 digests in `ML_API_IMAGE` / `ML_WORKER_IMAGE`, never a mutable tag, and restart
 in the fixed order `edge-db-migrator` -> `ml-api` (healthy) -> `ml-worker`.
 There is no in-process downgrade path. Never run `down -v`, never delete the
-`edge-pgdata` volume, and never repair the database with direct SQL. See
-[`docs/runbooks/postgresql-cutover.md`](runbooks/postgresql-cutover.md),
-[`docs/runbooks/edge-redeploy-identity-continuity.md`](runbooks/edge-redeploy-identity-continuity.md),
-and for querying and interpreting execution records
-[`docs/runbooks/observability-diagnostics.md`](runbooks/observability-diagnostics.md).
+`edge-pgdata` volume, and never repair the database with direct SQL.
 
 ## Layers
 
@@ -564,7 +559,7 @@ Decision-trace replay is written by the worker as bounded on-disk JSONL
 (`worker/pipeline/trace/replay_trace_writer.py`), enabled only when a replay
 trace directory is configured. It is a replay-fidelity input, not the
 original-run observability record (that is the execution-record path,
-`docs/runbooks/observability-diagnostics.md`). There is no backend
+`worker/pipeline/diagnostics/`). There is no backend
 analysis-trace HTTP or database warehouse.
 
 ### Replay trace v2
@@ -590,14 +585,11 @@ burned overlay pixels; primary clip bytes never do.
 encoder session, segment ring, and their instrumentation reduce the window in
 which a hardware encoder is left in a bad state and make faults observable.
 They do not diagnose or repair any Xid GPU fault, and nothing in this migration
-may be presented as fixing one. Host driver and CUDA faults are handled by
-[`docs/runbooks/driver-cuda-alignment.md`](runbooks/driver-cuda-alignment.md).
+may be presented as fixing one.
 
 ## Related
 
 - [`docs/decisions/`](decisions/) — decision records, index in
   [`decisions/README.md`](decisions/README.md)
-- [`docs/runbooks/edge-redeploy-identity-continuity.md`](runbooks/edge-redeploy-identity-continuity.md)
-  — redeploy with the same state volume and camera identity
 - [`worker/AGENTS.md`](../worker/AGENTS.md) — worker package rules and the
   per-layer import ceilings

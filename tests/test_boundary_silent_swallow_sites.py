@@ -25,12 +25,20 @@ def boom(*args: object, **kwargs: object) -> None:
 
 
 @pytest.mark.parametrize(
-    "module", [cameras_router, connection_router], ids=["cameras", "connection"]
+    ("module", "seam"),
+    [
+        (cameras_router, "sync_camera_roster"),
+        (connection_router, "topology_retry_coordinator"),
+    ],
+    ids=["cameras", "connection"],
 )
 def test_roster_sync_failure_is_contained_and_logged(
-    module: object, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    module: object,
+    seam: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setattr(module, "sync_camera_roster", boom)
+    monkeypatch.setattr(module, seam, boom)
     with caplog.at_level(logging.WARNING, logger="shared.boundary"):
         assert module._trigger_roster_sync(FastAPI()) is None
     assert contained(caplog) == [

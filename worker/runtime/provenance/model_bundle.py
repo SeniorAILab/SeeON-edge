@@ -2,417 +2,80 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import re
 import stat
 from collections.abc import Mapping
-from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final
+from typing import Annotated, ClassVar, Final, Literal
 
-from contracts.model_selection import (
-    ContractError,
-    ModelSelection,
-    canonical_digest,
-    canonical_json_bytes,
-    parse_model_selection,
-    validate_evaluation_receipt_identity,
-    validate_field_receipt_identity,
-)
+from pydantic import BaseModel, ConfigDict, Field
 
-_BUNDLE_RE: Final = re.compile(r"^[0-9a-f]{64}$")
-_RELATIVE_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$")
-_IDENTITY_FIELDS: Final = (
-    "dataset",
-    "evaluation",
-    "field",
-    "calibration",
-    "conformance",
-    "class",
-    "input",
-    "policy",
-    "members",
-)
-_RECEIPT_IDENTITY_FIELDS: Final = ("evaluation", "field")
-_BUNDLE_IDENTITY_FIELDS: Final = tuple(
-    field for field in _IDENTITY_FIELDS if field not in _RECEIPT_IDENTITY_FIELDS
-)
+from worker.adapters.model.errors import ModelLoadError
+
+_SHA256: Final = r"^[0-9a-f]{64}$"
+_RELATIVE: Final = r"^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$"
+_MANIFEST: Final = "manifest.json"
 
 
-class ModelBundleAdmissionError(RuntimeError):
-    ...
+class _Member(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, strict=True)
+
+    path: Annotated[str, Field(pattern=_RELATIVE)]
+    sha256: Annotated[str, Field(pattern=_SHA256)]
+    size: Annotated[int, Field(ge=0)]
 
 
-@dataclass(frozen=True, slots=True)
-class DesiredModelBundle:
-    bundle_sha256: str
-    identities: Mapping[str, object]
-    selection: ModelSelection | None = None
+class _Manifest(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, strict=True)
 
-    def __post_init__(self) -> None:
-        if _BUNDLE_RE.fullmatch(self.bundle_sha256) is None:
-            raise ModelBundleAdmissionError("desired bundle identity is invalid")
-        identities = dict(self.identities)
-        if set(identities) != set(_IDENTITY_FIELDS):
-            raise ModelBundleAdmissionError(
-                "desired identities must contain exactly the required fields"
-            )
-        _canonical_json(identities)
-        object.__setattr__(self, "identities", _freeze(identities))
+    schema_version: Literal[1]
+    runtime_format: str
+    members: Annotated[list[_Member], Field(min_length=1)]
+    receipts: list[_Member] = []
 
 
-@dataclass(frozen=True, slots=True)
-class ModelBundleProof:
-    observed: Mapping[str, object]
-    applied: Mapping[str, object]
-
-
-def desired_model_bundle_from_selection_document(raw: object) -> DesiredModelBundle:
+def admit_model_bundle(root: Path) -> Mapping[str, str]:
     try:
-        selection = parse_model_selection(raw)
-    except ContractError as exc:
-        raise ModelBundleAdmissionError(str(exc)) from exc
-    return DesiredModelBundle(
-        selection.model_publication.bundle_sha256,
-        {
-            "dataset": selection.dataset_publication.payload_digest,
-            "evaluation": selection.evaluation_receipt_digest,
-            "field": selection.field_evaluation_receipt_digest,
-            "calibration": selection.calibration_digest,
-            "conformance": selection.conformance_digest,
-            "class": selection.output_class_semantics_digest,
-            "input": selection.input_observation_schema,
-            "policy": selection.policy_digest,
-            "members": selection.bundle_members_digest,
-        },
-        selection,
-    )
-
-
-def admit_model_bundle(models_root: Path, desired: DesiredModelBundle) -> ModelBundleProof:
-    _require_directory(models_root, "models root")
-    bundles_root = models_root / "bundles"
-    _require_directory(bundles_root, "bundles root")
-    root = bundles_root / desired.bundle_sha256
-    _require_directory(root, "bundle root")
-    _require_below(bundles_root, root)
-    manifest_path = root / "manifest.json"
-    raw = _read_regular(manifest_path, "manifest")
-    try:
+        raw = (root / _MANIFEST).read_bytes()
         document = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ModelBundleAdmissionError("bundle manifest is invalid JSON") from exc
-    if not isinstance(document, dict) or _canonical_json(document).encode() + b"\n" != raw:
-        raise ModelBundleAdmissionError("bundle manifest is not canonical")
-    if document.get("schema_version") != 1:
-        raise ModelBundleAdmissionError("bundle manifest schema mismatch")
-    if document.get("bundle_sha256") != desired.bundle_sha256:
-        raise ModelBundleAdmissionError("bundle identity mismatch")
-    if (
-        desired.selection is not None
-        and document.get("runtime_format") != desired.selection.runtime_format
-    ):
-        raise ModelBundleAdmissionError("bundle runtime format mismatch")
-    members = document.get("members")
-    receipts = document.get("receipts")
-    payload = document.get("payload")
-    if (
-        not isinstance(members, list)
-        or not isinstance(receipts, list)
-        or not isinstance(payload, dict)
-    ):
-        raise ModelBundleAdmissionError("bundle manifest shape mismatch")
-    identities = payload.get("identities")
-    if not isinstance(identities, dict):
-        raise ModelBundleAdmissionError("bundle identities missing")
-    for field in _BUNDLE_IDENTITY_FIELDS:
-        if identities.get(field) != desired.identities[field]:
-            raise ModelBundleAdmissionError(f"{field} identity mismatch")
-    if set(identities) != set(_BUNDLE_IDENTITY_FIELDS):
-        raise ModelBundleAdmissionError("bundle identities contain unknown fields")
-    _validate_bundle_identity(document, desired.bundle_sha256)
-    observed_members = _verify_members(root, members)
-    observed_receipts = _verify_members(root, receipts)
-    member_digests = {
-        member_path: member["sha256"]
-        for member_path, member in zip(observed_members, members, strict=True)
-        if isinstance(member, dict)
-    }
-    _verify_selection_member_digests(member_digests, desired.selection)
-    _verify_selection_bundle_format(root, member_digests, desired.selection)
-    _verify_selection_policy_digest(root, desired.selection)
-    receipt_identities = _verify_required_members(root, members, receipts, desired)
-    _verify_exact_tree(root, {"manifest.json", *observed_members, *observed_receipts})
-    frozen_static = _freeze({**dict(identities), **receipt_identities})
-    observed = _freeze(
-        {
-            "bundle_sha256": desired.bundle_sha256,
-            "members": tuple(observed_members),
-            "member_digests": member_digests,
-            "receipts": tuple(observed_receipts),
-            "identities": frozen_static,
-        }
-    )
-    applied = _freeze(
-        {
-            "bundle_sha256": desired.bundle_sha256,
-            "identities": {**dict(identities), **receipt_identities},
-        }
-    )
-    return ModelBundleProof(observed=observed, applied=applied)
-
-
-def _verify_selection_member_digests(
-    member_digests: Mapping[str, object], selection: ModelSelection | None
-) -> None:
-    if selection is None:
-        return
-    _verify_selection_member_digest(
-        member_digests, "calibration.json", selection.calibration_digest
-    )
-    matching = [
-        path for path, digest in member_digests.items() if digest == selection.conformance_digest
-    ]
-    if len(matching) != 1:
-        raise ModelBundleAdmissionError(
-            f"conformance_digest {selection.conformance_digest} matches "
-            f"{len(matching)} bundle member(s) {matching!r}; it must name exactly one"
+        canonical = json.dumps(
+            document, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
         )
-
-
-def _verify_selection_member_digest(
-    member_digests: Mapping[str, object], member_path: str, selected_digest: str
-) -> None:
-    observed_digest = member_digests.get(member_path)
-    if observed_digest != selected_digest:
-        raise ModelBundleAdmissionError(
-            f"{member_path} digest mismatch: selection declares {selected_digest}, "
-            f"member content has {observed_digest!r}"
-        )
-
-
-def _verify_selection_bundle_format(
-    root: Path,
-    member_digests: Mapping[str, object],
-    selection: ModelSelection | None,
-) -> None:
-    if selection is None:
-        return
-    if "bundle-manifest.json" not in member_digests:
-        raise ModelBundleAdmissionError(
-            "selected bundle has no bundle-manifest.json member for bundle_format"
-        )
-    raw = _read_regular(root / "bundle-manifest.json", "member bundle-manifest.json")
-    try:
-        manifest = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ModelBundleAdmissionError("bundle-manifest.json is invalid JSON") from exc
-    observed = manifest.get("schema_version") if isinstance(manifest, dict) else None
-    if observed != selection.bundle_format:
-        raise ModelBundleAdmissionError(
-            f"bundle format mismatch: selection declares {selection.bundle_format!r}, "
-            f"bundle-manifest.json schema_version is {observed!r}"
-        )
-
-
-def _verify_selection_policy_digest(root: Path, selection: ModelSelection | None) -> None:
-    if selection is None:
-        return
-    raw = _read_regular(root / "calibration.json", "member calibration.json")
-    try:
-        calibration = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ModelBundleAdmissionError("calibration.json is invalid JSON") from exc
-    temporal_rule = calibration.get("temporal_rule") if isinstance(calibration, dict) else None
-    actual_digest = canonical_digest(temporal_rule)
-    if actual_digest != selection.policy_digest:
-        raise ModelBundleAdmissionError(
-            f"policy_digest mismatch: selection declares {selection.policy_digest}, "
-            f"calibration temporal_rule content has {actual_digest}"
-        )
-
-
-def _validate_bundle_identity(document: Mapping[str, object], expected: str) -> None:
-    members = document["members"]
-    payload = document["payload"]
-    if not isinstance(members, list) or not isinstance(payload, dict):
-        raise ModelBundleAdmissionError("bundle manifest shape mismatch")
-    canonical_members: list[dict[str, object]] = []
-    for member in members:
-        if not isinstance(member, dict):
-            raise ModelBundleAdmissionError("bundle member is invalid")
-        try:
-            canonical_members.append(
-                {"path": member["path"], "sha256": member["sha256"], "size": member["size"]}
+        if canonical.encode() + b"\n" != raw:
+            raise ModelLoadError("manifest.json is not canonical JSON")
+        manifest = _Manifest.model_validate(document)
+        if manifest.runtime_format != "onnxruntime":
+            raise ModelLoadError(
+                f"runtime_format {manifest.runtime_format!r} is not onnxruntime; "
+                "the flow profile cannot run it"
             )
-        except KeyError as exc:
-            raise ModelBundleAdmissionError("bundle member is invalid") from exc
-    actual = hashlib.sha256(
-        _canonical_json({"members": canonical_members, "payload": payload}).encode()
-    ).hexdigest()
-    if actual != expected:
-        raise ModelBundleAdmissionError("bundle content identity mismatch")
+        declared = [*manifest.members, *manifest.receipts]
+        _require_exact_tree(root, [member.path for member in declared])
+        for member in declared:
+            content = (root / member.path).read_bytes()
+            if len(content) != member.size or hashlib.sha256(content).hexdigest() != member.sha256:
+                raise ModelLoadError(f"member {member.path} does not match its declared hash")
+    except (OSError, ValueError) as exc:
+        raise ModelLoadError(f"unreadable or malformed bundle: {exc}") from exc
+    return MappingProxyType({member.path: member.sha256 for member in declared})
 
 
-def _verify_members(root: Path, members: list[object]) -> tuple[str, ...]:
-    paths: list[str] = []
-    for member in members:
-        if not isinstance(member, dict):
-            raise ModelBundleAdmissionError("bundle member is invalid")
-        path = member.get("path")
-        size = member.get("size")
-        digest = member.get("sha256")
-        if (
-            not isinstance(path, str)
-            or _RELATIVE_RE.fullmatch(path) is None
-            or path == "manifest.json"
-            or not isinstance(size, int)
-            or isinstance(size, bool)
-            or size < 0
-            or not isinstance(digest, str)
-            or _BUNDLE_RE.fullmatch(digest) is None
-            or path in paths
-        ):
-            raise ModelBundleAdmissionError("bundle member is invalid")
-        member_path = root / path
-        _require_below(root, member_path)
-        content = _read_regular(member_path, f"member {path}")
-        if len(content) != size or hashlib.sha256(content).hexdigest() != digest:
-            raise ModelBundleAdmissionError(f"member mismatch: {path}")
-        paths.append(path)
-    if not paths:
-        raise ModelBundleAdmissionError("bundle members missing")
-    return tuple(paths)
-
-
-def _verify_required_members(
-    root: Path, members: list[object], receipts: list[object], desired: DesiredModelBundle
-) -> Mapping[str, str]:
-    if desired.selection is None:
-        return MappingProxyType({})
-    if not members or len(receipts) != 2:
-        raise ModelBundleAdmissionError(
-            "bundle manifest must declare payload members and two receipts"
-        )
-    observed: dict[str, str] = {}
-    for receipt in receipts:
-        if not isinstance(receipt, dict) or not isinstance(receipt.get("path"), str):
-            raise ModelBundleAdmissionError("bundle receipt is invalid")
-        path = receipt["path"]
-        try:
-            raw = _read_regular(root / path, path)
-            document = json.loads(raw)
-            if canonical_json_bytes(document) + b"\n" != raw:
-                raise ModelBundleAdmissionError(f"{path} is not canonical JSON")
-            is_field = isinstance(document, Mapping) and "status" in document
-            validator = (
-                validate_field_receipt_identity
-                if is_field
-                else validate_evaluation_receipt_identity
-            )
-            identity = "field" if is_field else "evaluation"
-            if identity in observed:
-                raise ModelBundleAdmissionError("bundle receipt identities are duplicated")
-            validator(desired.selection, document)
-            observed[identity] = hashlib.sha256(canonical_json_bytes(document)).hexdigest()
-        except (ContractError, json.JSONDecodeError) as exc:
-            raise ModelBundleAdmissionError(f"{path} is not a valid desired-bound receipt") from exc
-    if set(observed) != set(_RECEIPT_IDENTITY_FIELDS):
-        raise ModelBundleAdmissionError("bundle receipt identities are incomplete")
-    return MappingProxyType(observed)
-
-
-def _verify_exact_tree(root: Path, expected: set[str]) -> None:
-    expected_directories = {
-        parent.as_posix()
-        for relative in expected
-        for parent in Path(relative).parents
-        if parent != Path(".")
-    }
-    found_files: set[str] = set()
-    found_directories: set[str] = set()
+def _require_exact_tree(root: Path, members: list[str]) -> None:
+    expected = {_MANIFEST, *members}
+    if len(expected) != len(members) + 1:
+        raise ModelLoadError("manifest.json declares a duplicate member or lists itself")
+    found: set[str] = set()
     for path in root.rglob("*"):
-        relative = path.relative_to(root).as_posix()
         info = path.lstat()
-        if stat.S_ISLNK(info.st_mode) or not (
-            stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)
-        ):
-            raise ModelBundleAdmissionError(f"bundle contains unsafe path: {relative}")
         if stat.S_ISREG(info.st_mode):
-            found_files.add(relative)
-        else:
-            found_directories.add(relative)
-    if found_files != expected or found_directories != expected_directories:
-        raise ModelBundleAdmissionError("bundle tree contains missing or extra filesystem nodes")
-
-
-def _require_directory(path: Path, label: str) -> None:
-    try:
-        info = path.lstat()
-    except OSError as exc:
-        raise ModelBundleAdmissionError(f"{label} is unavailable") from exc
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        raise ModelBundleAdmissionError(f"{label} is not a regular directory")
-
-
-def _read_regular(path: Path, label: str) -> bytes:
-    try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-        try:
-            info = os.fstat(descriptor)
-            if not stat.S_ISREG(info.st_mode):
-                raise ModelBundleAdmissionError(f"{label} is not a regular file")
-            chunks: list[bytes] = []
-            while chunk := os.read(descriptor, 1 << 20):
-                chunks.append(chunk)
-            return b"".join(chunks)
-        finally:
-            os.close(descriptor)
-    except ModelBundleAdmissionError:
-        raise
-    except OSError as exc:
-        raise ModelBundleAdmissionError(f"{label} is unavailable") from exc
-
-
-def _require_below(root: Path, path: Path) -> None:
-    try:
-        resolved_root = root.resolve(strict=True)
-        if os.path.commonpath((str(resolved_root), str(path.resolve(strict=False)))) != str(
-            resolved_root
-        ):
-            raise ModelBundleAdmissionError("bundle path escapes its root")
-        relative = path.relative_to(root)
-        current = root
-        for part in relative.parts:
-            current = current / part
-            if current.exists() and stat.S_ISLNK(current.lstat().st_mode):
-                raise ModelBundleAdmissionError("bundle contains symlink path")
-    except OSError as exc:
-        raise ModelBundleAdmissionError("bundle path is unavailable") from exc
-
-
-def _canonical_json(value: object) -> str:
-    try:
-        return json.dumps(
-            value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+            found.add(path.relative_to(root).as_posix())
+        elif not stat.S_ISDIR(info.st_mode):
+            raise ModelLoadError(f"{path.relative_to(root)} is a symlink or special file")
+    if found != expected:
+        raise ModelLoadError(
+            f"file tree differs from manifest.json: missing={sorted(expected - found)}, "
+            f"extra={sorted(found - expected)}"
         )
-    except (TypeError, ValueError) as exc:
-        raise ModelBundleAdmissionError("bundle manifest contains non-JSON values") from exc
 
 
-def _freeze(value: object) -> object:
-    if isinstance(value, Mapping):
-        return MappingProxyType({key: _freeze(member) for key, member in value.items()})
-    if isinstance(value, (list, tuple)):
-        return tuple(_freeze(member) for member in value)
-    return value
-
-
-__all__ = [
-    "DesiredModelBundle",
-    "ModelBundleAdmissionError",
-    "ModelBundleProof",
-    "admit_model_bundle",
-    "desired_model_bundle_from_selection_document",
-]
+__all__ = ["admit_model_bundle"]

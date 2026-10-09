@@ -89,7 +89,7 @@ def test_authorized_small_heartbeat_is_accepted(app_with_camera: FastAPI) -> Non
 
 
 def test_authorize_relay_non_ascii_token_compares_constant_time_without_typeerror() -> None:
-    from backend.app.features.relay.auth import authorize_relay
+    from backend.app.shared.http.relay_http import authorize_relay
 
     state = SimpleNamespace(edge_relay_token="중계-토큰")
     request = SimpleNamespace(app=SimpleNamespace(state=state))

@@ -54,7 +54,7 @@ def _listed(sandbox: ProductSandbox, root: Path) -> list[str]:
     outcome = ClipCatalogIndexer(sandbox.database, sandbox.authority).reconcile(store)
     assert (outcome.remaining, outcome.isolated) == (0, 0)
     page = PostgresClipCatalog(sandbox.database).page(
-        store, ClipCatalogQuery(camera_id=None, event_type=None, limit=50, cursor=None)
+        store, ClipCatalogQuery(camera_ids=None, event_type=None, limit=50, cursor=None)
     )
     return [clip.manifest.clip_id for clip in page.clips]
 

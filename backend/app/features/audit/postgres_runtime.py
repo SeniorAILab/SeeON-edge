@@ -8,8 +8,7 @@ from threading import Lock
 from time import monotonic
 from typing import Protocol, TypeVar
 
-import psycopg
-
+from backend.app.edge_db import DatabaseConnection, DatabaseDriverError
 from backend.app.edge_db.authority import AuthorityFenced, AuthorityToken
 from backend.app.edge_db.postgres import (
     CommitOutcomeUnknown,
@@ -24,8 +23,9 @@ from backend.app.features.audit import postgres_sessions
 from backend.app.features.audit.postgres_store import PostgresAuditStore
 from backend.app.features.audit.postgres_verification import PostgresAuditCheckpoint
 from backend.app.features.audit.sessions import AuditSession
-from backend.app.features.audit.store import AuditEvent, AuditRecord
+from backend.app.features.audit.store import AuditRecord
 from backend.app.features.audit.verification import AuditVerificationError
+from backend.app.shared.audit_values import AuditEvent
 
 _LOGGER = logging.getLogger(__name__)
 _Result = TypeVar("_Result")
@@ -48,7 +48,7 @@ _FAILURE_CODES = (
     (PostgresUnavailable, "database_unavailable"),
     (AuditVerificationError, "verification_failed"),
     (PostgresError, "database_error"),
-    (psycopg.Error, "database_error"),
+    (DatabaseDriverError, "database_error"),
     (OSError, "database_unavailable"),
 )
 
@@ -84,7 +84,7 @@ class AuditMutation:
     def apply(
         self,
         owner: AuditMutationOwner,
-        write: Callable[[Callable[[psycopg.Connection], None]], _Result],
+        write: Callable[[Callable[[DatabaseConnection], None]], _Result],
         *,
         expects_audit: Callable[[_Result], bool] = _always_audit,
     ) -> _Result:
@@ -258,7 +258,7 @@ class PostgresAuditRuntime:
             return True
 
     def _append(
-        self, event: AuditEvent, connection: psycopg.Connection | None
+        self, event: AuditEvent, connection: DatabaseConnection | None
     ) -> tuple[PendingAuditPublication, AuditRecord]:
         with self._lock:
             session = self._session
@@ -287,7 +287,7 @@ class PostgresAuditRuntime:
         return record
 
     def append_borrowed(
-        self, connection: psycopg.Connection, event: AuditEvent
+        self, connection: DatabaseConnection, event: AuditEvent
     ) -> PendingAuditPublication:
         if connection is None:
             raise ValueError("borrowed audit append requires a connection") from None
@@ -305,7 +305,7 @@ class PostgresAuditRuntime:
         self,
         owner: AuditMutationOwner,
         event_factory: Callable[[], AuditEvent],
-        write: Callable[[Callable[[psycopg.Connection], None]], _Result],
+        write: Callable[[Callable[[DatabaseConnection], None]], _Result],
         *,
         expects_audit: Callable[[_Result], bool] = _always_audit,
     ) -> _Result:
@@ -313,7 +313,7 @@ class PostgresAuditRuntime:
         pending: PendingAuditPublication | None = None
         owner_returned = False
 
-        def append(connection: psycopg.Connection) -> None:
+        def append(connection: DatabaseConnection) -> None:
             nonlocal pending
             if pending is not None:
                 raise AuditRuntimeUnavailable("mutation audit callback was repeated")
@@ -340,7 +340,7 @@ class PostgresAuditRuntime:
             if pending is not None:
                 self._publish_mutation_failure(pending, error)
             elif owner_returned or isinstance(
-                error, (PostgresError, psycopg.Error, OSError, AuditRuntimeUnavailable)
+                error, (PostgresError, DatabaseDriverError, OSError, AuditRuntimeUnavailable)
             ):
                 self.record_failure(error)
             raise

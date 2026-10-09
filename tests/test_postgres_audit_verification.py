@@ -27,16 +27,17 @@ from backend.app.edge_db.postgres import (
 )
 from backend.app.features.audit import postgres_store
 from backend.app.features.audit import postgres_verification as native
-from backend.app.features.audit.catalog import AuditAction, camera_probe_detail, empty_detail
+from backend.app.features.audit.catalog import camera_probe_detail, empty_detail
 from backend.app.features.audit.postgres_store import PostgresAuditStore
 from backend.app.features.audit.postgres_verification import PostgresAuditCheckpoint
-from backend.app.features.audit.store import AuditEvent, _payload
+from backend.app.features.audit.store import _payload
 from backend.app.features.audit.verification import (
     AUDIT_ROW_COLUMNS,
     GENESIS_HASH,
     AuditVerificationError,
     verify_row,
 )
+from backend.app.shared.audit_values import AuditAction, AuditEvent
 
 if TYPE_CHECKING:
     from tests_support.postgres_sandbox import ProductSandbox

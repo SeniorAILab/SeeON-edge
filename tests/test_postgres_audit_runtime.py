@@ -26,7 +26,7 @@ from backend.app.edge_db.postgres import (
     PostgresUnavailable,
 )
 from backend.app.features.audit import postgres_sessions
-from backend.app.features.audit.catalog import AuditAction, empty_detail
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.postgres_runtime import (
     AuditRuntimeUnavailable,
     InvalidAuditPublication,
@@ -35,12 +35,12 @@ from backend.app.features.audit.postgres_runtime import (
 )
 from backend.app.features.audit.postgres_store import PostgresAuditStore
 from backend.app.features.audit.postgres_verification import _verify_snapshot
-from backend.app.features.audit.store import AuditEvent
 from backend.app.features.audit.verification import AuditVerificationError
 from backend.app.features.runtime_settings.store import (
     RuntimeSettingsStore,
     RuntimeSettingsVersionConflict,
 )
+from backend.app.shared.audit_values import AuditAction, AuditEvent
 
 if TYPE_CHECKING:
     from tests_support.postgres_sandbox import ProductSandbox

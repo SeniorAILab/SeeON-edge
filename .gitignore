@@ -93,8 +93,4 @@ auto.key
 !.claude/skills/
 
 # Working files written by .github/workflows/edge-images.yml during a run.
-plan-ml-api.json
-plan-ml-api.txt
-plan-ml-worker.json
-plan-ml-worker.txt
 edge-ml-image-refs.env

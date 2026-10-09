@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app.features.audit.catalog import AuditAction
 from backend.app.main import create_app
+from backend.app.shared.audit_values import AuditAction
 from tests_support.postgres_sandbox import ProductSandbox
 from tests_support.sqlite_source import create_schema19_source
 

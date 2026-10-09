@@ -115,11 +115,9 @@ def bundle_from_published_manifest(raw: bytes, source: Source) -> Bundle:
         raise ManifestError(f"published bundle manifest is invalid JSON: {exc}") from exc
     if not isinstance(document, Mapping):
         raise ManifestError("published bundle manifest must be an object")
-    parsed_document = {
-        **document,
-        "sha256": document.get("bundle_sha256"),
-    }
+    parsed_document = {**document, "sha256": document.get("bundle_sha256")}
     parsed_document.pop("bundle_sha256", None)
+    parsed_document.pop("receipts", None)
     bundle = _parse_bundle(
         0,
         {
@@ -127,14 +125,20 @@ def bundle_from_published_manifest(raw: bytes, source: Source) -> Bundle:
             "members": [
                 {**member, "source": source.name, "remote_path": member["path"]}
                 for member in document.get("members", [])
-                if isinstance(member, Mapping)
+                if isinstance(member, Mapping) and "path" in member
             ],
-            "receipts": [
-                {**receipt, "source": source.name, "remote_path": receipt["path"]}
-                for receipt in document.get("receipts", [])
-                if isinstance(receipt, Mapping)
-            ],
-        },
+        }
+        | (
+            {
+                "receipts": [
+                    {**receipt, "source": source.name, "remote_path": receipt["path"]}
+                    for receipt in document["receipts"]
+                    if isinstance(receipt, Mapping) and "path" in receipt
+                ]
+            }
+            if document.get("receipts")
+            else {}
+        ),
         {source.name: source},
     )
     if raw != bundle.manifest_bytes:
@@ -264,9 +268,7 @@ def parse_manifest(raw: object) -> Manifest:
     if not isinstance(raw, Mapping):
         raise ManifestError("manifest must be a JSON object")
     if "published_bundles" in raw:
-        raise ManifestError(
-            "manifest: published_bundles is obsolete; model selection supplies publication identity"
-        )
+        raise ManifestError("manifest: published_bundles is obsolete; list pinned bundles")
     version = _require(raw, "schema_version", "manifest")
     if version != SUPPORTED_SCHEMA_VERSION:
         raise ManifestError(

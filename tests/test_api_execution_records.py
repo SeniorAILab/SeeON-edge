@@ -11,13 +11,13 @@ from pydantic import ValidationError
 
 from backend.app.core.config import Settings, get_settings
 from backend.app.edge_db.postgres import PoolBudget, PostgresDatabase
-from backend.app.features.audit.catalog import AuditAction
 from backend.app.features.audit.postgres_runtime import PostgresAuditRuntime
 from backend.app.features.diagnostics.retention import RetentionBudget
 from backend.app.features.diagnostics.store import ExecutionRecordStore
-from backend.app.features.relay.router import RELAY_TOKEN_HEADER
 from backend.app.lifespan import lifespan
 from backend.app.main import create_app
+from backend.app.shared.audit_values import AuditAction
+from backend.app.shared.http.relay_http import RELAY_TOKEN_HEADER
 from shared.events.execution_records import (
     MAX_EXECUTION_RECORD_BODY_BYTES,
     WireBatch,
@@ -142,6 +142,114 @@ def test_relay_post_requires_token(enabled_client: TestClient) -> None:
     assert wrong.status_code == 403
 
 
+_UNAUTHORIZED = (
+    pytest.param({}, 401, id="no-token"),
+    pytest.param({RELAY_TOKEN_HEADER: "wrong"}, 403, id="wrong-token"),
+)
+_BODY_DEFECTS = (
+    pytest.param(b'{"camera_id":', id="invalid-json"),
+    pytest.param(b'{"camera_id":"\xff"}', id="invalid-utf8"),
+    pytest.param(b'{"camera_id":""}', id="schema-violation"),
+    pytest.param(b"", id="empty"),
+)
+
+
+@pytest.mark.parametrize(("auth", "status"), _UNAUTHORIZED)
+@pytest.mark.parametrize("body", _BODY_DEFECTS)
+@pytest.mark.parametrize("content_type", ["application/json", "text/plain"])
+def test_relay_auth_is_decided_before_the_body_is_read(
+    enabled_client: TestClient,
+    auth: dict[str, str],
+    status: int,
+    body: bytes,
+    content_type: str,
+) -> None:
+    response = enabled_client.post(
+        _PATH, content=body, headers={**auth, "Content-Type": content_type}
+    )
+    assert response.status_code == status
+
+
+@pytest.mark.parametrize(("auth", "status"), _UNAUTHORIZED)
+def test_relay_auth_is_decided_before_a_chunked_oversized_body(
+    enabled_client: TestClient, auth: dict[str, str], status: int
+) -> None:
+    response = enabled_client.post(
+        _PATH,
+        headers={**auth, "Content-Type": "application/json"},
+        content=_oversized_chunks(MAX_EXECUTION_RECORD_BODY_BYTES + 4096),
+    )
+    assert response.status_code == status
+
+
+@pytest.mark.parametrize(("auth", "status"), _UNAUTHORIZED)
+def test_oversized_content_length_is_rejected_before_auth(
+    enabled_client: TestClient, auth: dict[str, str], status: int
+) -> None:
+    response = enabled_client.post(
+        _PATH,
+        headers={
+            **auth,
+            "Content-Type": "application/json",
+            "Content-Length": str(MAX_EXECUTION_RECORD_BODY_BYTES + 1),
+        },
+        content=b"{}",
+    )
+    assert response.status_code == 413
+
+
+@pytest.mark.parametrize("body", _BODY_DEFECTS)
+def test_disabled_feature_answers_503_before_the_body_is_read(
+    product_app: FastAPI, body: bytes
+) -> None:
+    response = TestClient(product_app).post(
+        _PATH,
+        content=body,
+        headers={RELAY_TOKEN_HEADER: _RELAY_TOKEN, "Content-Type": "application/json"},
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == "execution records disabled"
+
+
+def test_disabled_feature_answers_503_before_a_chunked_oversized_body(
+    product_app: FastAPI,
+) -> None:
+    response = TestClient(product_app).post(
+        _PATH,
+        headers={RELAY_TOKEN_HEADER: _RELAY_TOKEN, "Content-Type": "application/json"},
+        content=_oversized_chunks(MAX_EXECUTION_RECORD_BODY_BYTES + 4096),
+    )
+    assert response.status_code == 503
+
+
+@pytest.mark.parametrize(("auth", "status"), _UNAUTHORIZED)
+def test_relay_auth_is_decided_before_the_disabled_feature_answers(
+    product_app: FastAPI, auth: dict[str, str], status: int
+) -> None:
+    response = TestClient(product_app).post(_PATH, json=_batch(_record(0)).to_json(), headers=auth)
+    assert response.status_code == status
+
+
+@pytest.mark.parametrize(
+    "auth",
+    [{}, {RELAY_TOKEN_HEADER: "wrong"}, {RELAY_TOKEN_HEADER: _RELAY_TOKEN}],
+    ids=["no-token", "wrong-token", "valid-token"],
+)
+def test_disabled_feature_rejects_an_oversized_content_length_first(
+    product_app: FastAPI, auth: dict[str, str]
+) -> None:
+    response = TestClient(product_app).post(
+        _PATH,
+        headers={
+            **auth,
+            "Content-Type": "application/json",
+            "Content-Length": str(MAX_EXECUTION_RECORD_BODY_BYTES + 1),
+        },
+        content=b"{}",
+    )
+    assert response.status_code == 413
+
+
 def test_oversized_content_length_is_rejected(enabled_client: TestClient) -> None:
     client = enabled_client
     response = client.post(
@@ -183,7 +291,16 @@ def test_contract_violation_is_422(enabled_client: TestClient) -> None:
     del body["records"][0]["record_id"]
     bad_kind = client.post(_PATH, json=body, headers={RELAY_TOKEN_HEADER: _RELAY_TOKEN})
     assert bad_kind.status_code == 422
-    assert "record_kind" in bad_kind.json()["detail"]
+    assert "record_kind" in str(bad_kind.json()["detail"])
+
+
+def test_body_without_content_type_is_still_accepted(enabled_client: TestClient) -> None:
+    batch = _batch(_record(0))
+    response = enabled_client.post(
+        _PATH, content=batch.encode(), headers={RELAY_TOKEN_HEADER: _RELAY_TOKEN}
+    )
+    assert response.status_code == 200
+    assert response.json()["batch_id"] == batch.batch_id
 
 
 def test_committed_receipt_round_trip_and_idempotent_replay(enabled_client: TestClient) -> None:

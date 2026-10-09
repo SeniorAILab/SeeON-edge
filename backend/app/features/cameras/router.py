@@ -23,15 +23,9 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.core.config import get_settings
-from backend.app.features.audit.catalog import (
-    AuditAction,
-    camera_probe_detail,
-    empty_detail,
-)
+from backend.app.features.audit.catalog import camera_probe_detail, empty_detail
 from backend.app.features.audit.http import mutation_audit
 from backend.app.features.audit.postgres_runtime import AuditMutation
-from backend.app.features.audit.store import AuditEvent
-from backend.app.features.audit.store import utc_now as audit_now
 from backend.app.features.cameras.bed_zone_router import BedZonePayload, BedZoneRegionPayload
 from backend.app.features.cameras.bed_zone_store import BedZone, BedZoneStore
 from backend.app.features.cameras.camera_crud_service import (
@@ -51,9 +45,11 @@ from backend.app.features.cameras.camera_crud_service import (
     update_camera as _service_update_camera,
 )
 from backend.app.features.cameras.dependencies import (
+    camera_ports,
     camera_sync_view,
     sync_camera_roster,
 )
+from backend.app.features.cameras.dependencies import camera_registry as _store
 from backend.app.features.cameras.rtsp_probe_service import (
     RTSPProbeInputs as _RTSPProbeInputs,
 )
@@ -62,7 +58,6 @@ from backend.app.features.cameras.rtsp_probe_service import (
 )
 from backend.app.features.cameras.store import (
     CameraRegistryData,
-    CameraRegistryStore,
     DuplicateCameraError,
     ProbeErrorClass,
     ProbeResult,
@@ -81,16 +76,16 @@ from backend.app.features.cameras.worker_config_service import (
     compute_policy_camera_identities,
 )
 from backend.app.features.clips.storage_location_store import ClipStorageLocationStore
-from backend.app.features.connection.dependencies import get_connection_settings_store
 from backend.app.features.detection_settings.policy_store import (
     DetectionPolicyStore,
     PolicyActivationRefused,
     PolicyCameraIdentity,
 )
 from backend.app.features.detection_settings.store import DetectionSettingsStore
-from backend.app.features.runtime_settings.dependencies import get_runtime_settings_store
-from backend.app.features.status.heartbeat_store import ONLINE, get_heartbeat_store
-from backend.app.shared.dashboard_auth import authorize_dashboard
+from backend.app.shared.audit_values import AuditAction, AuditEvent
+from backend.app.shared.audit_values import utc_now as audit_now
+from backend.app.shared.heartbeat_status import ONLINE
+from backend.app.shared.http.dashboard_auth import authorize_dashboard
 from contracts.edge_provisioning_models import EdgeErrorCode, TopologyFloor, TopologyRoom
 from contracts.worker_config import PulledWorkerConfig
 from shared.boundary import Boundary, isolate
@@ -359,7 +354,7 @@ class WorkerConfigResponse(BaseModel):
 @router.get("", response_model=ListCamerasResponse)
 def list_cameras(request: Request) -> dict[str, object]:
     _authorize(request)
-    heartbeats = get_heartbeat_store(request.app).snapshot()
+    heartbeats = camera_ports(request.app).heartbeats()
     return _public_snapshot(
         request.app,
         _store(request.app).snapshot(),
@@ -774,7 +769,7 @@ def _hub_canonical_id(record: dict[str, object]) -> str | None:
 def _worker_config_response(request: Request, *, require_available: bool) -> dict[str, object]:
     snapshot = _store(request.app).snapshot()
     bed_zones = _bed_zone_store(request.app).get_all()
-    facility_id = get_connection_settings_store(request.app).load().facility_id
+    facility_id = camera_ports(request.app).enrolled_facility_id()
     policy_gen = _detection_policy_store(request.app).generation(facility_id)
     # Resolve policy bundle under the router's HTTP boundary so resolution errors map to 503
     policy_bundle = None
@@ -804,7 +799,7 @@ def _worker_config_response(request: Request, *, require_available: bool) -> dic
         policy_bundle=policy_bundle,
     )
     response = assemble_worker_config(inputs)
-    runtime_setting = get_runtime_settings_store(request.app).get()
+    runtime_setting = camera_ports(request.app).clip_export_setting()
     response["clip_export_enabled"] = runtime_setting.clip_export_enabled
     response["clip_export_version"] = runtime_setting.version
     if require_available and not response.get("cameras"):
@@ -942,7 +937,7 @@ def acknowledge_applied_detection_policies(
     request: Request, *, facility_id: str, config_version: int | None
 ) -> None:
     """Move pending activations to applied only after a restarted worker heartbeats."""
-    enrolled_facility = get_connection_settings_store(request.app).load().facility_id
+    enrolled_facility = camera_ports(request.app).enrolled_facility_id()
     if enrolled_facility != facility_id or config_version is None:
         return
     expected = _worker_config_response(request, require_available=False).get("config_version")
@@ -1238,15 +1233,6 @@ def _snapshot_camera_records(
     if not isinstance(cameras, list):
         return []
     return [record for record in cameras if isinstance(record, dict)]
-
-
-def _store(app: FastAPI) -> CameraRegistryStore:
-    store = getattr(app.state, "camera_registry", None)
-    if store is None:
-        raise RuntimeError("camera registry is not injected")
-    if not isinstance(store, CameraRegistryStore):
-        raise TypeError("camera registry has invalid type")
-    return store
 
 
 def _bed_zone_store(app: FastAPI) -> BedZoneStore:

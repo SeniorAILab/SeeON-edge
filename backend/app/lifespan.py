@@ -44,7 +44,11 @@ from backend.app.features.status.backend_heartbeat_relay import (
     get_heartbeat_relay_state,
     relay_heartbeats_once,
 )
-from backend.app.features.status.heartbeat_store import DEFAULT_STALE_AFTER_SEC, HeartbeatStore
+from backend.app.features.status.heartbeat_store import (
+    DEFAULT_STALE_AFTER_SEC,
+    HeartbeatStore,
+    get_heartbeat_store,
+)
 from backend.app.features.status.runtime_status_store import RuntimeStatusStore
 from backend.app.postgres_root import (
     PostgresRoot,
@@ -52,11 +56,9 @@ from backend.app.postgres_root import (
     install_postgres_stores,
     open_postgres_root,
 )
-from backend.app.shared.backend_client_bundle import (
-    BackendClientBundle,
-    backend_client_bundle,
-)
+from backend.app.shared.backend_client_bundle import BackendClientBundle
 from backend.app.shared.backend_mapping import mark_backend_status
+from backend.app.shared.http.backend_client_bundle import backend_client_bundle
 from backend.app.shared.state_dir import resolve_state_dir
 from contracts.worker_config import (
     PulledCameraConfig,
@@ -64,6 +66,7 @@ from contracts.worker_config import (
     PulledWorkerConfig,
     detection_window_validation_error,
 )
+from shared.boundary import Boundary, isolate
 from shared.events.edge_ingest_client import (
     BackendEvidenceClient,
     EdgeIngestClient,
@@ -88,10 +91,40 @@ class InvalidBackendIngestTimeoutError(ValueError):
 logger = logging.getLogger(__name__)
 
 
+def install_feature_ports(app: FastAPI) -> None:
+    from backend.app.features.cameras.dependencies import CameraPorts, camera_registry
+    from backend.app.features.connection.dependencies import (
+        get_connection_settings_store,
+        topology_retry_coordinator,
+    )
+    from backend.app.features.detection_settings.router import DetectionSettingsPorts
+    from backend.app.features.evidence.router import EvidencePorts
+    from backend.app.features.runtime_settings.dependencies import get_runtime_settings_store
+    from backend.app.features.status.router import StatusPorts
+
+    app.state.camera_ports = CameraPorts(
+        enrolled_facility_id=lambda: get_connection_settings_store(app).load().facility_id,
+        topology=lambda: topology_retry_coordinator(app),
+        heartbeats=lambda: get_heartbeat_store(app).snapshot(),
+        clip_export_setting=lambda: get_runtime_settings_store(app).get(),
+    )
+    app.state.detection_settings_ports = DetectionSettingsPorts(
+        enrolled_facility_id=lambda: get_connection_settings_store(app).load().facility_id,
+        camera_records=lambda: camera_registry(app).snapshot()["cameras"],
+    )
+    app.state.evidence_ports = EvidencePorts(
+        clip_export_enabled=lambda: get_runtime_settings_store(app).get().clip_export_enabled,
+    )
+    app.state.status_ports = StatusPorts(
+        runtime_settings=lambda: get_runtime_settings_store(app).get().as_dict(),
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     reject_retired_backend_environment(os.environ)
     owned = _configure_postgres(app)
+    install_feature_ports(app)
     try:
         async with _gateway_lifespan(app):
             yield
@@ -136,10 +169,11 @@ async def _gateway_lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.backend_config_refresh_executor = refresh_executor
 
-    from backend.app.features.cameras.dependencies import recover_camera_roster_on_boot
+    from backend.app.features.cameras.roster_sync import recover_camera_roster_on_boot
+    from backend.app.features.connection.dependencies import topology_retry_coordinator
 
     await asyncio.get_running_loop().run_in_executor(
-        refresh_executor, recover_camera_roster_on_boot, app
+        refresh_executor, lambda: recover_camera_roster_on_boot(topology_retry_coordinator(app))
     )
     await asyncio.get_running_loop().run_in_executor(
         refresh_executor, _pull_backend_config, app, refresh_stop
@@ -191,12 +225,7 @@ async def _gateway_lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         refresh_stop.set()
         refresh_task = app.state.backend_config_refresh_task
-        try:
-            await asyncio.wait_for(
-                asyncio.shield(refresh_task), timeout=BACKEND_CONFIG_SHUTDOWN_WAIT_SEC
-            )
-        except TimeoutError:
-            refresh_task.cancel()
+        await _stop_background_task(refresh_task, BACKEND_CONFIG_SHUTDOWN_WAIT_SEC)
         refresh_executor.shutdown(wait=False, cancel_futures=True)
         app.state.backend_config_refresh_executor = None
         app.state.backend_config_refresh_task = None
@@ -204,12 +233,7 @@ async def _gateway_lifespan(app: FastAPI) -> AsyncIterator[None]:
         relay_stop.set()
         relay_task = app.state.backend_heartbeat_relay_task
         if relay_task is not None:
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(relay_task), timeout=BACKEND_HEARTBEAT_RELAY_SHUTDOWN_WAIT_SEC
-                )
-            except TimeoutError:
-                relay_task.cancel()
+            await _stop_background_task(relay_task, BACKEND_HEARTBEAT_RELAY_SHUTDOWN_WAIT_SEC)
             relay_executor = app.state.backend_heartbeat_relay_executor
             if relay_executor is not None:
                 relay_executor.shutdown(wait=False, cancel_futures=True)
@@ -219,12 +243,7 @@ async def _gateway_lifespan(app: FastAPI) -> AsyncIterator[None]:
         outbox_stop.set()
         outbox_task = app.state.backend_outbox_sender_task
         if outbox_task is not None:
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(outbox_task), timeout=BACKEND_OUTBOX_SENDER_SHUTDOWN_WAIT_SEC
-                )
-            except TimeoutError:
-                outbox_task.cancel()
+            await _stop_background_task(outbox_task, BACKEND_OUTBOX_SENDER_SHUTDOWN_WAIT_SEC)
             outbox_executor = app.state.backend_outbox_sender_executor
             if outbox_executor is not None:
                 outbox_executor.shutdown(wait=False, cancel_futures=True)
@@ -405,14 +424,23 @@ def refresh_backend_config(app: FastAPI, stop_token: asyncio.Event | None = None
         _mark_app_backend_status(app, True)
         _apply_backend_config(app, cfg)
         if was_reachable is not True:
-            from backend.app.features.cameras.dependencies import (
+            from backend.app.features.cameras.roster_sync import (
                 resume_camera_roster_after_connectivity,
             )
+            from backend.app.features.connection.dependencies import topology_retry_coordinator
 
-            resume_camera_roster_after_connectivity(app)
+            resume_camera_roster_after_connectivity(topology_retry_coordinator(app))
         return True
     finally:
         refresh_lock.release()
+
+
+async def _stop_background_task(task: asyncio.Task[None], timeout: float) -> None:
+    done, _ = await asyncio.wait({task}, timeout=timeout)
+    if not done:
+        task.cancel()
+    elif not task.cancelled() and (error := task.exception()) is not None:
+        logger.error("background task %s ended with an error", task.get_name(), exc_info=error)
 
 
 async def _backend_config_refresh_loop(
@@ -425,9 +453,10 @@ async def _backend_config_refresh_loop(
             pass
         if stop_event.is_set():
             break
-        await asyncio.get_running_loop().run_in_executor(
-            executor, refresh_backend_config, app, stop_event
-        )
+        with isolate(Boundary.SENDER_TICK, stage="backend_config_refresh"):
+            await asyncio.get_running_loop().run_in_executor(
+                executor, refresh_backend_config, app, stop_event
+            )
 
 
 async def _backend_heartbeat_relay_loop(
@@ -445,7 +474,8 @@ async def _backend_heartbeat_relay_loop(
             pass
         if stop_event.is_set():
             break
-        await asyncio.get_running_loop().run_in_executor(executor, relay_heartbeats_once, app)
+        with isolate(Boundary.SENDER_TICK, stage="backend_heartbeat_relay"):
+            await asyncio.get_running_loop().run_in_executor(executor, relay_heartbeats_once, app)
 
 
 async def _backend_outbox_sender_loop(
@@ -712,7 +742,7 @@ def _backend_heartbeat_relay_sec() -> float:
         value = float(raw)
     except ValueError:
         return 0.0
-    return value if value > 0 else 0.0
+    return max(value, 1.0) if value > 0 else 0.0
 
 
 def _utc_now() -> str:

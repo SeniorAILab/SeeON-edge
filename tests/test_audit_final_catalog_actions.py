@@ -3,13 +3,12 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app.features.audit.catalog import AuditAction, empty_detail
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.postgres_runtime import (
     AuditMutation,
     AuditRuntimeUnavailable,
     PostgresAuditRuntime,
 )
-from backend.app.features.audit.store import AuditEvent
 from backend.app.features.cameras.edge_topology_sync_state import (
     EdgeTopologySyncStateStore,
     PendingTopologySnapshot,
@@ -25,6 +24,7 @@ from backend.app.features.connection.topology_retry_coordinator import TopologyR
 from backend.app.features.evidence.event_outbox import EventOutbox, OutboxBudget
 from backend.app.features.evidence.postgres_relay_projection import PostgresRelayEvidenceProjection
 from backend.app.features.evidence.relay_projection import RelayEvent
+from backend.app.shared.audit_values import AuditAction, AuditEvent
 from contracts.edge_provisioning_v1 import (
     MachinePrincipal,
     MutationCounts,

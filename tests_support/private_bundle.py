@@ -10,6 +10,7 @@ _PRIVATE_BUNDLE_MODULES = frozenset(
         "test_episode_metric.py",
         "test_fall_model_family_registry.py",
         "test_fall_contract_fixtures.py",
+        "test_fall_model_env.py",
         "test_fetch_models.py",
         "test_golden_toolchain.py",
         "test_local_env_defaults.py",
@@ -18,7 +19,7 @@ _PRIVATE_BUNDLE_MODULES = frozenset(
         "test_runtime_manifest.py",
         "test_worker_config_lifecycle.py",
         "test_worker_config_local_overrides.py",
-        "test_worker_fall_model_selection.py",
+        "test_worker_fall_bundle.py",
         "test_worker_real_warmup_no_stub.py",
         "test_worker_startup_config_resolution.py",
     }

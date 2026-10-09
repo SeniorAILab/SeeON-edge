@@ -1,16 +1,30 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, FastAPI, Request
 
 from backend.app.features.cameras.store import CameraRegistryStore, registry_expected_cameras
-from backend.app.features.runtime_settings.dependencies import get_runtime_settings_store
 from backend.app.features.status.heartbeat_store import get_heartbeat_store
 from backend.app.features.status.runtime_status_store import get_runtime_status_store
 
 router = APIRouter(tags=["status"])
+
+
+@dataclass(frozen=True, slots=True)
+class StatusPorts:
+    runtime_settings: Callable[[], dict[str, object]]
+
+
+def status_ports(app: FastAPI) -> StatusPorts:
+    ports = getattr(app.state, "status_ports", None)
+    if ports is None:
+        raise RuntimeError("status ports are not injected")
+    if not isinstance(ports, StatusPorts):
+        raise TypeError("status ports have invalid type")
+    return ports
 
 
 @router.get("/status")
@@ -33,7 +47,7 @@ def status(request: Request) -> dict[str, object]:
     runtime["delivery_queue"] = primary.get("delivery_queue") if primary else None
     runtime["clip_export_applied"] = _clip_export_applied(primary)
     response["runtime"] = runtime
-    response["runtime_settings"] = get_runtime_settings_store(request.app).get().as_dict()
+    response["runtime_settings"] = status_ports(request.app).runtime_settings()
     return response
 
 
@@ -137,4 +151,4 @@ def _to_device_diagnostics(gpu: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
-__all__ = ["router"]
+__all__ = ["StatusPorts", "router", "status_ports"]

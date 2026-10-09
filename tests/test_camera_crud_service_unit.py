@@ -6,7 +6,6 @@ from typing import Any
 
 import pytest
 
-from backend.app.features.audit.catalog import AuditAction
 from backend.app.features.cameras.camera_crud_service import (
     AfterWrite,
     CameraCreateInputs,
@@ -21,6 +20,7 @@ from backend.app.features.cameras.camera_crud_service import (
 )
 from backend.app.features.cameras.camera_values import DuplicateCameraError, ProbeResult
 from backend.app.features.cameras.update_command import CameraUpdate
+from backend.app.shared.audit_values import AuditAction
 
 NOW = "2026-10-07T00:00:00.000Z"
 

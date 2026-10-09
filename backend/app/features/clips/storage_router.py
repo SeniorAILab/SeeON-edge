@@ -9,12 +9,12 @@ from typing import Annotated, ClassVar
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict
 
-from backend.app.features.audit.catalog import AuditAction, empty_detail
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.http import mutation_audit
-from backend.app.features.audit.store import AuditEvent, utc_now
 from backend.app.features.clips.storage_location_store import ClipStorageLocationStore
 from backend.app.features.clips.store import CLIP_STORE_DIR_ENV, DEFAULT_CLIP_STORE_DIR
-from backend.app.shared.dashboard_auth import authorize_dashboard
+from backend.app.shared.audit_values import AuditAction, AuditEvent, utc_now
+from backend.app.shared.http.dashboard_auth import authorize_dashboard
 
 router = APIRouter(tags=["clips"])
 
