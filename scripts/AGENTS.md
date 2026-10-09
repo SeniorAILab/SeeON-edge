@@ -10,7 +10,6 @@ spike receipts.
 | Task | Location | Notes |
 | --- | --- | --- |
 | Release tag vs tree identity | `release_guard.py`, `release_notes.py` | Run by `release.yml`. Carrier list pinned by `tests/test_release_workflow_contract.py`. |
-| Per-image build or reuse | `edge_image_plan.py` (`plan`, `decide`, `retag`, `previous-tag`) | The only owner of that decision. Workflows call it; they never use `paths:` filters. |
 | Scope-fidelity gate | `verify_scope_fidelity.py --fixture` / `--repo` | CI lint job runs both. PEP 723 `uv run --script` header. |
 | Deleted-tree leak scan | `deletion_closure_scan.py` | `DELETED_TREES` and `EXCLUDED` are the policy. |
 | Clip catalog audit and rebuild | `catalog_verify.py`, `catalog_backfill.py` | `--clip-store <dir> [--catalog <db>] [--cameras <json>]`. Tests run them through `sys.executable`. |
