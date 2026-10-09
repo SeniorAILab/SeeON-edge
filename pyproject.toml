@@ -536,9 +536,7 @@ type = "acyclic_siblings"
 ancestors = ["backend.app.features"]
 ignore_imports = [
     "backend.app.features.cameras.dependencies -> backend.app.features.connection.dependencies",
-    "backend.app.features.cameras.roster_sync -> backend.app.features.connection.topology_retry_coordinator",
     "backend.app.features.cameras.router -> backend.app.features.connection.dependencies",
-    "backend.app.features.cameras.topology_client -> backend.app.features.connection.enrollment",
     "backend.app.features.cameras.router -> backend.app.features.status.heartbeat_store",
     "backend.app.features.detection_settings.router -> backend.app.features.cameras.store",
     "backend.app.features.detection_settings.router -> backend.app.features.connection.dependencies",

@@ -86,6 +86,20 @@ def verify_enrollment(
         raise EnrollmentVerificationFailure("invalid_response", 502) from None
 
 
+def check_enrollment(
+    events_url: str,
+    facility_code: str,
+    client_installation_ref: str,
+    facility_token: str,
+    timeout_sec: float,
+) -> EnrollmentVerificationResult | None:
+    credentials = EnrollmentCredentials(facility_code, client_installation_ref, facility_token)
+    try:
+        return verify_enrollment(events_url, credentials, timeout_sec=timeout_sec)
+    except EnrollmentVerificationFailure:
+        return None
+
+
 def enrollment_endpoint(events_url: str | None) -> str | None:
     if events_url is None:
         return None

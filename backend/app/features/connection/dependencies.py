@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from backend.app.features.cameras.edge_topology_sync_state import EdgeTopologySyncStateStore
 from backend.app.features.cameras.store import CameraRegistryStore
 from backend.app.features.cameras.topology_client import TopologyClient
+from backend.app.features.connection.enrollment import check_enrollment
 from backend.app.features.connection.store import ConnectionSettingsStore
 from backend.app.features.connection.topology_retry_coordinator import TopologyRetryCoordinator
 from backend.app.shared.http.backend_client_bundle import backend_client_bundle
@@ -30,7 +31,7 @@ def topology_retry_coordinator(app: FastAPI) -> TopologyRetryCoordinator:
 
     def client_provider() -> TopologyClient | None:
         bundle = backend_client_bundle(app)
-        return None if bundle is None else TopologyClient.from_bundle(bundle)
+        return None if bundle is None else TopologyClient.from_bundle(bundle, check_enrollment)
 
     coordinator = TopologyRetryCoordinator(
         registry,

@@ -2,23 +2,42 @@
 
 from __future__ import annotations
 
-from typing import TypeAlias
+from typing import Protocol
 
 from pydantic import JsonValue
 
 from backend.app.features.audit.postgres_runtime import AuditMutation
-from backend.app.features.connection.topology_retry_coordinator import (
-    TopologyRetryCoordinator,
-    TopologyRetryResult,
-    TopologySyncStatus,
-)
 
-SyncStatus: TypeAlias = TopologySyncStatus
-RosterSyncResult: TypeAlias = TopologyRetryResult
+
+class RosterSyncResult(Protocol):
+    @property
+    def status(self) -> str: ...
+
+    @property
+    def error_class(self) -> str | None: ...
+
+    @property
+    def detail(self) -> str | None: ...
+
+    @property
+    def last_ok_at(self) -> str | None: ...
+
+
+class TopologyPublisher(Protocol):
+    def trigger(
+        self,
+        *,
+        force: bool = ...,
+        refresh: bool = ...,
+        now_epoch: float | None = ...,
+        audit: AuditMutation | None = ...,
+    ) -> RosterSyncResult: ...
+
+    def current_result(self) -> RosterSyncResult: ...
 
 
 def sync_camera_roster(
-    coordinator: TopologyRetryCoordinator,
+    coordinator: TopologyPublisher,
     *,
     _now: float | None = None,
     _force: bool = False,
@@ -34,21 +53,19 @@ def sync_camera_roster(
     )
 
 
-def recover_camera_roster_on_boot(coordinator: TopologyRetryCoordinator) -> RosterSyncResult:
+def recover_camera_roster_on_boot(coordinator: TopologyPublisher) -> RosterSyncResult:
     """Resume one pending snapshot or recover one dirty registry snapshot."""
     return sync_camera_roster(coordinator, _force=True)
 
 
 def resume_camera_roster_after_connectivity(
-    coordinator: TopologyRetryCoordinator,
+    coordinator: TopologyPublisher,
 ) -> RosterSyncResult:
     """Resume pending work after backend state and connectivity refresh."""
     return sync_camera_roster(coordinator, _force=True, _refresh=True)
 
 
-def camera_sync_view(
-    coordinator: TopologyRetryCoordinator, _camera_id: str
-) -> dict[str, JsonValue]:
+def camera_sync_view(coordinator: TopologyPublisher, _camera_id: str) -> dict[str, JsonValue]:
     """Expose the durable complete-topology state through the legacy camera view."""
     result = coordinator.current_result()
     return {
@@ -61,7 +78,7 @@ def camera_sync_view(
 
 __all__ = [
     "RosterSyncResult",
-    "SyncStatus",
+    "TopologyPublisher",
     "camera_sync_view",
     "recover_camera_roster_on_boot",
     "resume_camera_roster_after_connectivity",

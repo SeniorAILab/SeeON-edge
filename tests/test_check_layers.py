@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -750,3 +751,44 @@ def test_baseline_lists_only_features_that_exist() -> None:
         if (p / "__init__.py").exists()
     }
     assert set(data["features"]) <= features
+
+
+REVERTED_IMPORTS = {
+    "cameras.roster_sync -> connection.topology_retry_coordinator": (
+        "backend/app/features/cameras/roster_sync.py",
+        f"from {F}.connection.topology_retry_coordinator import TopologyRetryCoordinator\n",
+    ),
+    "cameras.topology_client -> connection.enrollment": (
+        "backend/app/features/cameras/topology_client.py",
+        f"from {F}.connection.enrollment import verify_enrollment\n",
+    ),
+    "connection.router -> cameras.dependencies": (
+        "backend/app/features/connection/router.py",
+        f"from {F}.cameras.dependencies import sync_camera_roster\n",
+    ),
+}
+
+
+def repository_copy(root: Path) -> Path:
+    shutil.copytree(
+        REPO_ROOT / "backend", root / "backend", ignore=shutil.ignore_patterns("__pycache__")
+    )
+    (root / "scripts").mkdir()
+    shutil.copy(REPO_ROOT / "scripts/layer_baseline.json", root / "scripts/layer_baseline.json")
+    shutil.copy(REPO_ROOT / "pyproject.toml", root / "pyproject.toml")
+    return root
+
+
+def test_repository_copy_passes_unchanged(tmp_path: Path) -> None:
+    result = run_checker(repository_copy(tmp_path))
+    assert result.stdout.strip() == "check_layers: ok", result.stdout
+
+
+@pytest.mark.parametrize("edge", sorted(REVERTED_IMPORTS))
+def test_reverting_a_removed_cross_feature_import_fails(tmp_path: Path, edge: str) -> None:
+    path, line = REVERTED_IMPORTS[edge]
+    target = repository_copy(tmp_path) / path
+    target.write_text(target.read_text(encoding="utf-8") + line, encoding="utf-8")
+    result = run_checker(tmp_path)
+    assert result.returncode == 1, result.stdout
+    assert f"CROSS_FEATURE_EDGE {edge}" in result.stdout, result.stdout
