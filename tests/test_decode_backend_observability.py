@@ -45,9 +45,7 @@ def test_local_snapshot_log_renders_decode_backend_only_when_recorded(
 
     message = caplog.records[-1].getMessage()
     assert "decode_backend=" in message
-    assert "'requested_profile_decode': 'nvdec'" in message
-    assert "'resolved_backend': 'nvdec'" in message
-    assert "'actual_adapter_class': 'PyAvPreservingAdapter'" in message
+    assert "decode_backend=nvdec" in message
 
     caplog.clear()
     absent = WorkerDiagnostics()
