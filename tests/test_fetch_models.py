@@ -11,7 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from tests_support.pose_bbox56_bundle_artifact import write_pose_bbox56_bundle
+from contracts.model_reference import parse_model_reference
+from tests_support.pose_bbox56_bundle_artifact import (
+    write_admitted_pose_bbox56_bundle,
+    write_pose_bbox56_bundle,
+)
 from worker.tools.fetch_models import cli
 from worker.tools.fetch_models.fetcher import (
     PART_SUFFIX,
@@ -19,6 +23,7 @@ from worker.tools.fetch_models.fetcher import (
     fetch_all,
     fetch_artifact,
     fetch_bundle,
+    fetch_reference,
     sha256_of,
 )
 from worker.tools.fetch_models.http_source import (
@@ -765,3 +770,74 @@ def test_dev_wrapper_delegates_to_the_module() -> None:
     script = (REPO_ROOT / "scripts" / "fetch-models.sh").read_text(encoding="utf-8")
     assert "python -m worker.tools.fetch_models" in script
     assert "curl" not in script, "no second download path to drift from the manifest"
+
+
+REVISION = "c" * 40
+REFERENCE = parse_model_reference(f"owner/model@{REVISION}")
+
+
+def _published_model(tmp_path: Path) -> tuple[FakeSource, dict[str, bytes]]:
+    admitted = write_admitted_pose_bbox56_bundle(tmp_path / "src")
+    members = json.loads((admitted / "manifest.json").read_text(encoding="utf-8"))["members"]
+    digest = hashlib.sha256(
+        canonical_json({"members": members, "payload": {}}).encode()
+    ).hexdigest()
+    manifest = (
+        canonical_json(
+            {
+                "bundle_sha256": digest,
+                "members": members,
+                "payload": {},
+                "receipts": [],
+                "runtime_format": "onnxruntime",
+                "schema_version": 1,
+            }
+        )
+        + "\n"
+    ).encode()
+    base = f"https://huggingface.co/owner/model/resolve/{REVISION}/"
+    files = {"manifest.json": manifest} | {
+        member["path"]: (admitted / member["path"]).read_bytes() for member in members
+    }
+    return FakeSource({base + path: body for path, body in files.items()}), files
+
+
+def test_reference_lands_at_the_revision_dir_verified_and_idempotent(tmp_path: Path) -> None:
+    source, files = _published_model(tmp_path)
+    root = tmp_path / "models"
+
+    first = fetch_reference(REFERENCE, root, source, env={}, retry=_no_sleep_policy())
+    landed = REFERENCE.bundle_dir(root)
+    second = fetch_reference(REFERENCE, root, source, env={}, retry=_no_sleep_policy())
+
+    assert landed == root / "bundles" / REVISION
+    assert (landed / "model.onnx").read_bytes() == files["model.onnx"]
+    assert [result.outcome for result in first.results] == ["fetched"] * 3
+    assert second.is_noop
+
+
+def test_reference_refuses_a_tampered_member_and_lands_nothing(tmp_path: Path) -> None:
+    source, files = _published_model(tmp_path)
+    url = f"https://huggingface.co/owner/model/resolve/{REVISION}/model.onnx"
+    source.bodies[url] = b"\x00" * len(files["model.onnx"])
+    root = tmp_path / "models"
+
+    with pytest.raises(VerificationError, match="sha256 mismatch"):
+        fetch_reference(REFERENCE, root, source, env={}, retry=_no_sleep_policy())
+
+    assert not REFERENCE.bundle_dir(root).exists()
+
+
+def test_cli_refuses_a_mutable_ref_before_any_download(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = cli.main(
+        ["--dest", str(tmp_path), "--check"], env={"ML_WORKER_FALL_MODEL": "owner/model@main"}
+    )
+
+    assert code == 1
+    assert (
+        "fetch_models: FAILED: ML_WORKER_FALL_MODEL: model reference must be "
+        "'<owner>/<name>@<40-hex commit>', got 'owner/model@main'; "
+        "branch and tag names are not allowed"
+    ) in capsys.readouterr().err

@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Literal
 
+from contracts.model_reference import ModelReference
 from worker.tools.fetch_models.http_source import (
     ByteSource,
     RetryableSourceError,
@@ -21,11 +22,16 @@ from worker.tools.fetch_models.manifest import (
     Artifact,
     Bundle,
     Manifest,
+    ManifestError,
+    Source,
+    bundle_from_published_manifest,
 )
 
 HF_TOKEN_ENV: Final = "HF_TOKEN"
 PART_SUFFIX: Final = ".part"
 _HASH_CHUNK: Final = 1 << 20
+_PUBLISHED_BUNDLE_MANIFEST_PATH: Final = "manifest.json"
+_MAX_PUBLISHED_MANIFEST_SIZE: Final = 1 << 20
 _FALL_BUNDLE_ROOT: Final = "fall/pose-bbox56-gru"
 _FALL_PT_PATH: Final = f"{_FALL_BUNDLE_ROOT}/model.pt"
 _FALL_ONNX_PATH: Final = f"{_FALL_BUNDLE_ROOT}/model.onnx"
@@ -231,9 +237,10 @@ def fetch_bundle(
     env: Mapping[str, str],
     retry: RetryPolicy,
     log: Callable[[str], None] = lambda _message: None,
+    name: str | None = None,
 ) -> FetchReport:
     bundles_root = root / "bundles"
-    destination = bundles_root / bundle.sha256
+    destination = bundles_root / (name or bundle.sha256)
     if destination.exists() or destination.is_symlink():
         _verify_bundle_tree(bundle, destination)
         return FetchReport(
@@ -329,3 +336,69 @@ def _require_loadable_fall_bundle(root: Path) -> None:
             f"provisioned pose+bbox56 fall bundle at {bundle} is not loadable by the Flow "
             f"runner: {error}; the published bundle manifest must list the exported model.onnx"
         ) from error
+
+
+def _read_published_bundle_manifest(
+    source: Source, byte_source: ByteSource, env: Mapping[str, str]
+) -> Bundle:
+    body = bytearray()
+    url = source.url_for(_PUBLISHED_BUNDLE_MANIFEST_PATH)
+    headers = _headers_for(
+        Artifact(
+            path=_PUBLISHED_BUNDLE_MANIFEST_PATH,
+            source=source,
+            remote_path=_PUBLISHED_BUNDLE_MANIFEST_PATH,
+            size=1,
+            sha256="0" * 64,
+        ),
+        env,
+    )
+    try:
+        for chunk in byte_source.stream(url, headers):
+            body.extend(chunk)
+            if len(body) > _MAX_PUBLISHED_MANIFEST_SIZE:
+                raise VerificationError(
+                    f"published bundle manifest at {url} exceeds "
+                    f"{_MAX_PUBLISHED_MANIFEST_SIZE} bytes"
+                )
+        return bundle_from_published_manifest(bytes(body), source)
+    except SourceError as exc:
+        raise VerificationError(
+            f"{source.source_locator}@{source.ref} is unreachable: {exc}"
+        ) from exc
+    except ManifestError as exc:
+        raise VerificationError(f"published bundle manifest at {url}: {exc}") from exc
+
+
+def fetch_reference(
+    reference: ModelReference,
+    root: Path,
+    byte_source: ByteSource,
+    *,
+    env: Mapping[str, str],
+    retry: RetryPolicy,
+    log: Callable[[str], None] = lambda _message: None,
+) -> FetchReport:
+    source = Source(
+        name="fall-model",
+        kind="huggingface",
+        source_locator=reference.source_locator,
+        ref=reference.revision,
+    )
+    bundle = _read_published_bundle_manifest(source, byte_source, env)
+    report = fetch_bundle(
+        bundle, root, byte_source, env=env, retry=retry, log=log, name=reference.revision
+    )
+    _require_loadable_bundle(bundle, reference.bundle_dir(root))
+    return report
+
+
+def _require_loadable_bundle(bundle: Bundle, directory: Path) -> None:
+    from worker.adapters.model import ort_pose_bbox56
+    from worker.adapters.model.errors import ModelLoadError
+
+    digests = {artifact.path: artifact.sha256 for artifact in (*bundle.members, *bundle.receipts)}
+    try:
+        _ = ort_pose_bbox56.OrtPoseBbox56Runner.from_admitted_bundle(directory, digests)
+    except ModelLoadError as error:
+        raise VerificationError(f"bundle at {directory} is not loadable: {error}") from error

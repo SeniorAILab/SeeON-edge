@@ -9,6 +9,7 @@ from typing import ClassVar, Final, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing_extensions import override
 
+from contracts.model_reference import ModelReference
 from shared.detection_policies import PolicyBundle, default_policy_bundle
 from worker.domains.registry import DOMAIN_REGISTRY
 from worker.runtime.config.camera_models import CameraRuntimeConfig, RelayConfig
@@ -76,25 +77,26 @@ class WorkerModelsConfig(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
     fall: FallModelConfig | None = None
-    fall_bundle_dir: Path | None = None
+    fall_model: ModelReference | None = None
+    models_root: Path = Path("/models")
     box_source: Literal["pose", "person"] = "pose"
 
     @model_validator(mode="after")
     def _validate_fall_model_source(self) -> WorkerModelsConfig:
-        if (self.fall is None) == (self.fall_bundle_dir is None):
+        if (self.fall is None) == (self.fall_model is None):
             raise ConfigValidationError(
                 "no fall model configured"
                 if self.fall is None
-                else "packaged fall model and fall bundle dir cannot coexist"
+                else "packaged fall model and fall model reference cannot coexist"
             )
-        if self.fall_bundle_dir is not None and self.box_source != "pose":
-            raise ConfigValidationError("fall bundle dir requires box_source=pose")
+        if self.fall_model is not None and self.box_source != "pose":
+            raise ConfigValidationError("fall model reference requires box_source=pose")
         return self
 
-    @field_validator("fall_bundle_dir")
+    @field_validator("models_root")
     @classmethod
-    def _expand_fall_bundle_dir(cls, value: Path | None) -> Path | None:
-        return None if value is None else Path(os.path.expanduser(str(value))).resolve()
+    def _expand_models_root(cls, value: Path) -> Path:
+        return Path(os.path.expanduser(str(value))).resolve()
 
 
 class DevMjpegConfig(BaseModel):

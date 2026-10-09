@@ -103,11 +103,13 @@ re-export and rebuild, never delete the identity.
 ## Swapping the fall model
 
 A fall model bundle is a directory holding `manifest.json`, `model.onnx`,
-`calibration.json` and one `conformance/` file. To swap the model, place the
-directory under `/models/bundles/` on the host volume, set
-`ML_WORKER_FALL_BUNDLE_DIR` to its path in the deployment env, and restart
-`ml-worker`. To roll back, unset the variable and restart; the worker then uses
-the packaged default.
+`calibration.json` and one `conformance/` file. To swap the model, set
+`ML_WORKER_FALL_MODEL=<owner>/<name>@<40-hex commit>` in the deployment env and
+run `docker compose up -d`. `edge-model-fetch` downloads the published bundle at
+that commit, verifies every member against the bundle's own `manifest.json`, and
+lands it at `/models/bundles/<commit>`; `ml-worker` waits for it. A branch or tag
+name is refused. To roll back, clear the variable and run `up -d`; the worker
+then uses the packaged default.
 
 Admission reads only `manifest.json`: it must be canonical JSON, every member
 must match its recorded sha256 and size, the file tree must match exactly, and
@@ -435,8 +437,8 @@ for path in (
 
 The worker has dual mounts of the same model volume. `/app/models` preserves
 the packaged pose+bbox56 bundle; `/models` holds admitted bundles at
-`/models/bundles/<name>`. The image ships no bundle. A bundle selected with
-`ML_WORKER_FALL_BUNDLE_DIR` must pass `admit → construct → warm → persist`
+`/models/bundles/<commit>`. The image ships no bundle. A model selected with
+`ML_WORKER_FALL_MODEL` must pass `admit → construct → warm → persist`
 before camera activation. Any failure refuses boot; no fallback is permitted
 while the variable is set.
 

@@ -356,7 +356,7 @@ def test_evidence_delivery_init_failure_under_the_lock_is_a_typed_fatal_error(
 def provenance_runtime(tmp_path: Path, bundle_dir: Path | None) -> WorkerRuntime:
     runtime = object.__new__(WorkerRuntime)
     runtime.config = relay_config()
-    runtime.config.models = SimpleNamespace(fall_bundle_dir=bundle_dir)
+    runtime.config.models = SimpleNamespace(fall_model=bundle_dir)
     runtime._shared_graph = SimpleNamespace(identities=())
     runtime._module_registry = object()
     runtime._module_versions = {}
@@ -385,7 +385,7 @@ def test_runtime_provenance_failure_drops_the_manifest_and_lets_activation_conti
     assert record.exc_info is not None
 
 
-def test_runtime_provenance_failure_is_fatal_when_a_fall_bundle_dir_is_configured(
+def test_runtime_provenance_failure_is_fatal_when_a_fall_model_is_configured(
     tmp_path: Path,
 ) -> None:
     runtime = provenance_runtime(tmp_path, bundle_dir=tmp_path / "bundle")

@@ -7,6 +7,7 @@ Define every cross-layer **protocol, constant, enum, and shared data shape** her
 - `frame.py`: `Frame` and `FrameSource`.
 - `observation.py`: boxes, labels, detection results, and `FrameObservation`.
 - `model.py`: model module protocol and shared confidence defaults.
+- `model_reference.py`: `ML_WORKER_FALL_MODEL` parser (`<owner>/<name>@<40-hex commit>`) and `bundle_dir`.
 - `artifacts.py`: model/weight path helpers.
 - `tracker.py`: shared tracker protocol surface.
 - `event.py`: event severity, levels, `EVENT_TYPE_REGISTRY`, and frontend event-type mapping.

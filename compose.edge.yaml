@@ -224,6 +224,7 @@ services:
       # Optional Hugging Face token for rate-limited or gated pulls. Sent to
       # Hugging Face sources only and never logged; leave empty for public.
       HF_TOKEN: ${HF_TOKEN:-}
+      ML_WORKER_FALL_MODEL: ${ML_WORKER_FALL_MODEL:-}
     volumes:
       - worker-models:/models:rw
     command:
@@ -300,8 +301,8 @@ services:
       ML_WORKER_FLOW_RECORD_CACHE_SECONDS: "30"
       ML_WORKER_FLOW_FRAME_WIDTH: "640"
       ML_WORKER_FLOW_FRAME_HEIGHT: "360"
-      # Optional fall model bundle directory under /models; empty uses the packaged default.
-      ML_WORKER_FALL_BUNDLE_DIR: ${ML_WORKER_FALL_BUNDLE_DIR:-}
+      # Optional fall model reference <owner>/<name>@<40-hex commit>; empty uses the packaged default.
+      ML_WORKER_FALL_MODEL: ${ML_WORKER_FALL_MODEL:-}
       # Enable after the site soak.
       ML_WORKER_CLIP_ANALYSIS_CPU: ${ML_WORKER_CLIP_ANALYSIS_CPU:-}
       ML_WORKER_FLOW_BATCH_SIZE: ${ML_WORKER_FLOW_BATCH_SIZE:?ML_WORKER_FLOW_BATCH_SIZE is required}

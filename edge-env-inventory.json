@@ -299,10 +299,10 @@
       "behavior": "retired profile selector; compose pins ML_WORKER_PROFILE=flow"
     },
     {
-      "name": "ML_WORKER_FALL_BUNDLE_DIR",
+      "name": "ML_WORKER_FALL_MODEL",
       "category": "deployment artifact",
       "authority": "deployment env",
-      "behavior": "optional directory of a fall model bundle; absent or blank uses the packaged default; a bundle that fails admission refuses worker start",
+      "behavior": "optional fall model reference <owner>/<name>@<40-hex commit>; edge-model-fetch downloads and verifies it into /models/bundles/<commit>; absent or blank uses the packaged default; a reference that fails fetch or admission refuses start",
       "compose": true,
       "example": true
     },

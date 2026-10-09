@@ -948,8 +948,9 @@ class WorkerRuntime:
 
     def _create_fall_model(self) -> FallModelProtocol:
         models = self._fall_models()
-        bundle_dir = models.fall_bundle_dir
-        if bundle_dir is not None:
+        reference = models.fall_model
+        if reference is not None:
+            bundle_dir = reference.bundle_dir(models.models_root)
             if models.box_source != "pose":
                 raise RuntimeError("fall bundle requires box_source=pose")
             try:
@@ -959,7 +960,7 @@ class WorkerRuntime:
                 _validate_fall_bundle_conformance(runner.conformance)
             except ModelLoadError as exc:
                 cause = " ".join(str(exc).split())
-                raise ModelLoadError(f"fall bundle {bundle_dir}: {cause}") from exc
+                raise ModelLoadError(f"fall model {reference}: {cause}") from exc
             self._loaded_fall_bundle = ort_pose_bbox56.PackagedFallBundle(
                 runner, runner.artifact_digest, runner.preprocessing_identity
             )
@@ -1401,7 +1402,7 @@ class WorkerRuntime:
             )
         except Exception:
             self._runtime_manifest = None
-            if self._fall_models().fall_bundle_dir is not None:
+            if self._fall_models().fall_model is not None:
                 raise
             LOGGER.warning(
                 "runtime provenance could not be applied; continuing without it",

@@ -8,6 +8,7 @@ from typing import Final, Literal
 from pydantic import ValidationError
 
 from contracts.model import POSE_BBOX56_PREPROCESSING_IDENTITY
+from contracts.model_reference import parse_model_reference
 from worker.runtime.config.errors import WorkerConfigError
 from worker.runtime.config.worker_models import (
     ClipRecordingConfig,
@@ -19,7 +20,7 @@ from worker.runtime.config.worker_models import (
 
 ML_WORKER_CLIP_RECORDING_ENABLED_ENV: Final = "ML_WORKER_CLIP_RECORDING_ENABLED"
 WORKER_REPLAY_TRACE_DIR_ENV: Final = "WORKER_REPLAY_TRACE_DIR"
-ML_WORKER_FALL_BUNDLE_DIR_ENV: Final = "ML_WORKER_FALL_BUNDLE_DIR"
+ML_WORKER_FALL_MODEL_ENV: Final = "ML_WORKER_FALL_MODEL"
 
 _RETIRED_WORKER_ENV: Final = frozenset(
     {
@@ -114,9 +115,12 @@ def worker_models_config_from_environment(
     environ: Mapping[str, str] | None = None,
 ) -> WorkerModelsConfig:
     env = os.environ if environ is None else environ
-    bundle_dir = env.get(ML_WORKER_FALL_BUNDLE_DIR_ENV, "").strip()
-    if bundle_dir:
-        return WorkerModelsConfig(fall_bundle_dir=Path(bundle_dir))
+    reference = env.get(ML_WORKER_FALL_MODEL_ENV, "").strip()
+    if reference:
+        try:
+            return WorkerModelsConfig(fall_model=parse_model_reference(reference))
+        except ValueError as error:
+            raise WorkerConfigError(f"{ML_WORKER_FALL_MODEL_ENV}: {error}") from error
     return WorkerModelsConfig(
         fall=fall_model_config_from_environment(environ),
     )
@@ -137,10 +141,10 @@ def resolve_local_overrides(
     dev_mjpeg = (
         yaml_config.dev_mjpeg if yaml_config is not None and yaml_config.dev_mjpeg.enabled else None
     )
-    if environment_models.fall_bundle_dir is not None:
+    if environment_models.fall_model is not None:
         if yaml_models is not None:
             raise WorkerConfigError(
-                f"{ML_WORKER_FALL_BUNDLE_DIR_ENV} cannot coexist with a packaged fall model"
+                f"{ML_WORKER_FALL_MODEL_ENV} cannot coexist with a packaged fall model"
             )
         return environment_models, clip, dev_mjpeg
     models = WorkerModelsConfig(
@@ -168,7 +172,7 @@ def replay_trace_directory_from_environment(
 
 __all__ = [
     "ML_WORKER_CLIP_RECORDING_ENABLED_ENV",
-    "ML_WORKER_FALL_BUNDLE_DIR_ENV",
+    "ML_WORKER_FALL_MODEL_ENV",
     "fall_model_config_from_environment",
     "reject_retired_worker_environment",
     "replay_trace_directory_from_environment",

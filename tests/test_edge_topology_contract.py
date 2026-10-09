@@ -148,7 +148,7 @@ def test_edge_worker_runtime_status_environment_contract() -> None:
         "ML_WORKER_FLOW_FRAME_WIDTH",
         "ML_WORKER_FLOW_FRAME_HEIGHT",
         "ML_WORKER_FLOW_BATCH_SIZE",
-        "ML_WORKER_FALL_BUNDLE_DIR",
+        "ML_WORKER_FALL_MODEL",
         "ML_WORKER_CLIP_ANALYSIS_CPU",
         "ML_WORKER_FLOW_ENGINE_PATH",
         "ML_WORKER_FLOW_ENGINE_IDENTITY_PATH",
@@ -180,7 +180,7 @@ def test_edge_worker_runtime_status_environment_contract() -> None:
         "${ML_RTSP_ALLOW_LOCAL_DESTINATIONS:-0}"
     )
     assert worker_environment["ML_WORKER_PROFILE"] == "flow"
-    assert worker_environment["ML_WORKER_FALL_BUNDLE_DIR"] == "${ML_WORKER_FALL_BUNDLE_DIR:-}"
+    assert worker_environment["ML_WORKER_FALL_MODEL"] == "${ML_WORKER_FALL_MODEL:-}"
     assert worker_environment["ML_WORKER_CLIP_ANALYSIS_CPU"] == ("${ML_WORKER_CLIP_ANALYSIS_CPU:-}")
     assert not any("EVENT_CLIP_EXPORT" in key for key in worker_environment)
     assert "API_FACILITY_ID" not in worker_environment
@@ -413,8 +413,12 @@ def test_edge_model_fetch_owns_the_models_volume_before_worker_start() -> None:
         "/models",
     ]
     assert _list_field(fetch, "volumes") == [f"{MODELS_VOLUME}:/models:rw"]
-    assert set(_mapping_field(fetch, "environment")) == {"HF_TOKEN"}, (
-        "only the optional HF token crosses into the fetcher; no relay secret, no profile"
+    assert set(_mapping_field(fetch, "environment")) == {
+        "HF_TOKEN",
+        "ML_WORKER_FALL_MODEL",
+    }, (
+        "only the optional HF token and fall model reference cross into the fetcher; "
+        "no relay secret, no profile"
     )
     assert _mapping_field(fetch, "environment")["HF_TOKEN"] == "${HF_TOKEN:-}"
     assert "depends_on" not in fetch, "model provisioning is independent of the database cutover"

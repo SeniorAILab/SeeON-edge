@@ -108,6 +108,44 @@ class Bundle:
         ).encode()
 
 
+def bundle_from_published_manifest(raw: bytes, source: Source) -> Bundle:
+    try:
+        document = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise ManifestError(f"published bundle manifest is invalid JSON: {exc}") from exc
+    if not isinstance(document, Mapping):
+        raise ManifestError("published bundle manifest must be an object")
+    parsed_document = {**document, "sha256": document.get("bundle_sha256")}
+    parsed_document.pop("bundle_sha256", None)
+    parsed_document.pop("receipts", None)
+    bundle = _parse_bundle(
+        0,
+        {
+            **parsed_document,
+            "members": [
+                {**member, "source": source.name, "remote_path": member["path"]}
+                for member in document.get("members", [])
+                if isinstance(member, Mapping) and "path" in member
+            ],
+        }
+        | (
+            {
+                "receipts": [
+                    {**receipt, "source": source.name, "remote_path": receipt["path"]}
+                    for receipt in document["receipts"]
+                    if isinstance(receipt, Mapping) and "path" in receipt
+                ]
+            }
+            if document.get("receipts")
+            else {}
+        ),
+        {source.name: source},
+    )
+    if raw != bundle.manifest_bytes:
+        raise ManifestError("published bundle manifest is not canonical")
+    return bundle
+
+
 def _require(mapping: Mapping[str, object], key: str, where: str) -> object:
     if key not in mapping:
         raise ManifestError(f"{where}: missing {key!r}")
