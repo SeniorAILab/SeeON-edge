@@ -63,6 +63,7 @@ _NEUTRAL_INPUTS = (
     "artifacts/",
     "compose.edge.dev.yaml",
     "compose.edge.yaml",
+    "docs/",
     "edge-env-inventory.json",
     "models/",
     "scripts/",

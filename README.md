@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./docs/assets/readme-hero.webp" alt="SeeON Edge concept artwork: an exploded fanless enclosure with cooling fins and layered circuit boards." width="100%" />
+</p>
+
 <p align="center"><sub>SENIOR AI LAB · SEEON</sub></p>
 
 <h1 align="center">SeeON Edge</h1>
@@ -150,3 +154,7 @@ This project is licensed under the GNU Affero General Public License v3.0
 The `ultralytics` worker dependency is also licensed under AGPL-3.0. This
 project accepts the obligations of that dependency's AGPL-3.0 license,
 including the applicable source-disclosure requirements.
+
+The hero is conceptual artwork. It contains no camera feed, resident data, or production-status evidence.
+
+[Artwork provenance](./docs/assets/ARTWORK.md) · Original procedural Blender/Cycles reconstruction.

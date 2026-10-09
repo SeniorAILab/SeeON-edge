@@ -1,0 +1,595 @@
+# Architecture
+
+The worker is one process that turns RTSP frames into business events. It is
+organised as five layers with one direction of flow, a single canonical
+entrypoint, and an explicit rule about which envelopes may carry pixels. This
+document is the decision record for that shape: what each layer owns, what state
+is per camera, what happens on each class of failure, and which legacy module
+became which worker module.
+
+Read the scoped `AGENTS.md` next to the code you are changing for the
+per-package import ceiling. Boundaries are enforced by import-linter
+(`uv run --group lint lint-imports`), not by convention.
+
+The runtime slot produces media and sends delivery records to the backend. The
+backend owns metadata, database access, and media access. The frontend consumes
+only the backend HTTP API.
+
+## Co-located persistence boundary
+
+The one supported edge deployment is one local Linux host, one Compose release
+unit, one API process, and one worker process. Those processes remain
+import-independent and HTTP remains their command/event notification boundary.
+The backend alone opens PostgreSQL. The `postgres` compose service holds the
+only durable store; the worker slot has no database credentials and never
+opens, migrates, or repairs the database.
+
+### PostgreSQL schemas and provisioning
+
+The backend connects through `open_postgres_root`
+(`backend/app/postgres_root.py`). Three environment values, set in
+`compose.edge.yaml`, name what it needs: `API_POSTGRES_DSN_FILE` (connection
+string file), `API_POSTGRES_AUTHORITY_FILE` (persistence authority file), and
+`API_POSTGRES_SCHEMA` (default `seeon_edge`). The DDL lives in
+`backend/app/edge_db/postgres_product.sql` (ten product tables, including
+`schema_migrations`), `postgres_delivery.sql` (`deployment_authority` and the
+four event-delivery tables), and `postgres_diagnostics.sql` (the six
+`execution_*` record tables).
+
+Only the one-shot `edge-db-migrator` compose service, which runs
+`python -m backend.app.edge_db.migration provision`, creates the schemas, the
+runtime role, and the authority row, before `ml-api` starts. The runtime never
+executes DDL.
+
+| Schema | Content |
+| --- | --- |
+| `<API_POSTGRES_SCHEMA>` (default `seeon_edge`) | product tables and event delivery |
+| `<API_POSTGRES_SCHEMA>_diagnostics` (default `seeon_edge_diagnostics`) | execution-record telemetry |
+
+Execution-record telemetry (the six `execution_*` tables) is written on every
+worker flush (~250 ms) and pruned toward its retention budget on that same hot
+path. It lives in its own schema so that write load stays apart from alerts,
+incidents, and policy writes in the product schema.
+
+### Authority fence
+
+`deployment_authority` holds one row: `generation`, `writer_token`,
+`accepting`, and `egress_enabled`. The backend reads its token from the
+authority file, and every write transaction calls `require_authority`, which
+locks the row `FOR SHARE` and refuses when the generation, token, or
+`accepting` flag does not match. `freeze_authority` closes the fence, so a
+runtime holding a stale token can no longer write.
+
+### Connection budget
+
+The backend pool is fixed by `DEFAULT_POOL_BUDGET`: at most 8 connections, 32
+waiting requests, a 2 s acquire timeout, a 5000 ms statement timeout, a
+3000 ms lock timeout, and a 10 s startup timeout. Transactions are short:
+never hold one across hash, fsync, HTTP, or other external work.
+
+### Retired SQLite file
+
+The runtime does not read `edge.sqlite3` or `edge-diagnostics.sqlite3`. Only
+`backend/app/edge_db/migration/` opens the retired `edge.sqlite3`, once, to
+copy it into PostgreSQL through the `edge-db-cutover` compose service (ops
+profile); import-linter contracts in `pyproject.toml` keep every other module
+from importing `sqlite3`.
+
+### Image rollback preserves the state
+
+Rollback is binary-only and image-digest based. Pin the previous `@sha256:`
+digests in `ML_API_IMAGE` / `ML_WORKER_IMAGE`, never a mutable tag, and restart
+in the fixed order `edge-db-migrator` -> `ml-api` (healthy) -> `ml-worker`.
+There is no in-process downgrade path. Never run `down -v`, never delete the
+`edge-pgdata` volume, and never repair the database with direct SQL.
+
+## Layers
+
+Flow is one-way. A layer may depend on the layer above it and on
+`worker/types` and `worker/interfaces`; it may never reach back down.
+
+```text
+        ┌─────────────────────────────────────────────────────────────┐
+        │ 1. FLOW MEDIA PLANE  worker/runtime/flow/media_plane.py     │
+        │    RTSP source -> Flow packet -> policy pump                │
+        │    one process-owned media plane and lifecycle supervisor   │
+        └─────────────────────────────────────────────────────────────┘
+                                   │  FramePacket  (carries an image)
+                                   ▼
+        ┌─────────────────────────────────────────────────────────────┐
+        │ 2. FLOW POLICY        worker/runtime/flow/policy_pump.py    │
+        │    metadata slots, bounded decisions, and observable drops  │
+        └─────────────────────────────────────────────────────────────┘
+                                   │  FramePacket  (fan-out, see below)
+                                   ▼
+        ┌─────────────────────────────────────────────────────────────┐
+        │ 3. ANALYTICS         worker/pipeline/perception/            │
+        │                      worker/pipeline/analytics/             │
+        │    extractors (person/pose/bed-seg) -> FrameObservation;    │
+        │    tracker, SceneState, window buffer -> DecisionInput      │
+        └─────────────────────────────────────────────────────────────┘
+                                   │  DecisionInput  (numeric only)
+                                   ▼
+        ┌─────────────────────────────────────────────────────────────┐
+        │ 4. DECISION          worker/domains/                        │
+        │                      worker/pipeline/decision/              │
+        │    fall + bed-exit detectors, latches, incident manager,    │
+        │    event aggregation -> BusinessEvent                       │
+        └─────────────────────────────────────────────────────────────┘
+                                   │  BusinessEvent  (+ explicit snapshot)
+                                   ▼
+        ┌──────────────────────────────┐  ┌──────────────────────────┐
+        │ 5a. OUTPUT                   │  │ 5b. TELEMETRY            │
+        │  worker/pipeline/output/     │  │  worker/runtime/telemetry│
+        │  relay event sink, evidence  │  │  heartbeat, runtime      │
+        │  clips + outbox, overlay,    │  │  status, diagnostics,    │
+        │  MJPEG live view             │  │  local metrics           │
+        └──────────────────────────────┘  └──────────────────────────┘
+```
+
+`worker/runtime/` is the composition root: it builds the layers, owns the
+bootstrap gates, the GPU lease, the watchdog, and the fault handler. It is the
+only package permitted to import everything.
+
+## Types and the contracts boundary
+
+Worker-internal ports and envelopes live under `worker/`; cross-instance L0 data
+stays in `contracts`. `contracts/` is the ADR-0006 typed-vocabulary leaf and the
+authority for it; the copy in the archived `eldercare-dataset-ops` is historical
+only, and no test compares the two. Never edit anything under it as part of
+worker work, and never duplicate or shadow a contract type inside `worker/`.
+
+| Envelope | Module | Carries pixels |
+| --- | --- | --- |
+| `FramePacket` | `worker/types/frame_packet.py` | yes |
+| `ModuleResult` | `worker/types/module_result.py` | no |
+| `DecisionInput` | `worker/types/decision_input.py` | no |
+| `BusinessEvent` | `worker/types/business_event.py` | no |
+
+## Provider/consumer contract between backend and worker
+
+`backend` and `worker` are deployed independently and never import each
+other (import-linter keeps both directions forbidden). They still meet at two
+runtime seams -- the ml-api proxies calling the worker's live-view server on
+`ml-worker:8090` (stream, snapshot, pose overlay, bed-zone recognize, RTSP
+probe), and the `clips/<clip_id>/manifest.json` the worker writes and ml-api
+reads back.
+
+The rule for both: **each side owns its own definition of the interface, and
+a test -- not a shared module -- catches drift.** The provider owns the schema
+it serves or writes; the consumer owns the schema it expects. `contracts/` is
+the ADR-0006 ML vocabulary (this repository holds the authoritative copy; the
+archived eldercare-dataset-ops copy is historical only), not an edge-internal
+interface package, so neither seam is defined there.
+
+| Seam | Provider (worker) | Consumer (backend) |
+| --- | --- | --- |
+| `:8090` HTTP | `worker/pipeline/output/live_view_api.py` -- route matchers, relay-token header, MJPEG media type, request/response bodies | `backend/app/features/cameras/streams_router.py`, `bed_zone_router.py`, `router.py` (probe) -- path builders and response parsers |
+| `manifest.json` | `worker/pipeline/output/evidence/manifest_models.py` + `clip_manifest_payload.py` -- the fields the writer emits | `backend/app/features/clips/manifest.py` (lenient serving parser) |
+
+`tests/test_backend_worker_runtime_contracts.py` is the drift guard and the
+one sanctioned place that imports both packages: it publishes a manifest with
+the worker writer, parses it with the backend serving parser and lists it
+through the PostgreSQL clip catalogue, asserts every path
+the backend builds is matched by the worker's route and by no other, and
+round-trips each worker response body (probe, pose overlay, bed zone) through
+the backend parser. A field either side adds must pass there before it ships.
+
+### Live preview overlays
+
+Preview overlay selection is camera-local: person and bed rendering are
+independent toggles over the clean SDK frame. Person boxes and track IDs come
+from SDK metadata; every persisted bed region is scaled from its recorded image
+dimensions. The preview does not invent a region or run continuous bed
+segmentation.
+
+Bed recognition consumes a clean snapshot, never the annotated preview cache.
+The non-saving recognize request accepts a confidence and returns multiple
+candidate regions. The operator may edit polygons, then explicitly persists
+them with `PUT /cameras/{id}/bed-zone`. The backend stores the canonical
+`{regions, image_width, image_height, recognized_at}` value as compact JSON in
+PostgreSQL and sends all regions to the worker; `regions: []` explicitly clears
+the bed zone. The shared snapshot tiler/OSD/file bridge serializes requests
+across cameras.
+Operator preview selections do not disable overlays on alert-evidence JPEGs
+and do not change the original Smart Record video bytes. Host tests cover
+toggle routing and polygon pixels; actual SDK rendering still needs runtime
+visual verification.
+
+## Raw-image vs numeric fan-out
+
+`FramePacket` is the only envelope permitted to carry an image. Four
+subscribers may receive it, and no others:
+
+| Subscriber | Why it needs pixels |
+| --- | --- |
+| Model extraction | runs the person/pose/bed-seg adapters |
+| Derivative evidence | feeds the per-camera segment encoder for clips |
+| Overlay / MJPEG live view | draws debug output for operators |
+| Alert snapshot | encodes the single bounded JPEG attached to an alert |
+
+Everything downstream of analytics is numeric.
+`DecisionInput` carries exactly the seven fields `observation`, `frame_width`,
+`frame_height`, `live_track_ids`, `time_sec`, `frame_index`, and `bed_region` —
+no array, no buffer, no handle from which a frame could be recovered. A domain
+detector that needs a pixel is a design error: add an extractor in layer 3 and
+pass the number it produced.
+
+## Per-camera state vs shared state
+
+Anything temporal belongs to exactly one camera. Anything expensive and
+stateless is built once per process. `tests/test_worker_per_camera_fall_state.py`
+guards both halves.
+
+| State | Scope | Owner |
+| --- | --- | --- |
+| SceneState | per camera | `worker/pipeline/perception/scene_state.py` |
+| Window buffer and fall probabilities | per camera | `worker/pipeline/perception/window_buffer.py` |
+| Fall latch | per camera | `worker/domains/fall/detector.py` |
+| Bed assignments, grace/hold, night window | per camera | `worker/domains/bed_exit/` |
+| IncidentManager | per camera | `worker/pipeline/decision/incident_manager.py` |
+| Flow metadata slot and policy state | per camera | `worker/runtime/flow/metadata_slot.py`, `policy_pump.py` |
+| Flow evidence state | per camera | `worker/runtime/flow/evidence.py` |
+| Flow lifecycle supervision | shared, one per process | `worker/runtime/flow/lifecycle_supervisor.py` |
+| Model objects and extractor instances | shared, one per task per process | `worker/runtime/model_composition.py` |
+| Flow runtime descriptor | shared, one per process | `worker/runtime/profile/` |
+| GPU lease | shared, one per process | `worker/runtime/lease.py` |
+| Config / LKG store | shared, one per process | `worker/runtime/config/` |
+| Evidence delivery queue | shared, one per process | `shared/events/delivery_queue.py` (`DeliveryQueue`), composed by `worker/pipeline/output/evidence/evidence_runtime.py` and `evidence_stager.py` |
+| Clip store lock | shared, one per host directory | `worker/pipeline/output/evidence/clip_store_lock.py` |
+
+Sharing a per-camera row across cameras is a correctness bug, not an
+optimisation: it leaks one resident's motion history into another's fall
+decision.
+
+## Model artifacts
+
+Model weights are a pinned external artifact owned by the worker side, never
+part of an image and never a host bind mount. `worker/tools/fetch_models/
+manifest.json` pins each file to an upstream revision (Hugging Face commit or
+GitHub release tag), a byte size, and a SHA-256; the one-shot `edge-model-fetch`
+compose service runs `python -m worker.tools.fetch_models` from the worker
+image into the `worker-models` named volume before `ml-worker` starts, skips
+files that already verify, and exits non-zero on any mismatch. `ml-worker`
+mounts that volume read-only at `/app/models`; `ml-api` does not mount it at
+all. `worker/tools/` is out-of-band operator tooling, not a worker entrypoint:
+import-linter forbids every runtime layer from importing it, and the fetcher is
+stdlib-only so it runs before torch or any adapter is loaded.
+
+## Entrypoint
+
+The canonical and only command is:
+
+```sh
+python -m worker
+```
+
+`worker/__main__.py` owns the CLI: it parses argv, loads config, constructs
+`WorkerRuntime` directly, and maps outcomes to exit codes. `worker/runtime/worker.py`
+stays composition-only and exports exactly three classes —
+`CameraRuntimeContext`, `HeartbeatReporter`, `WorkerRuntime`. There is no
+module-level `main` there and no delegate indirection; earlier drafts of this
+document claimed one, and that claim was wrong. Do not add an alias module, a
+console script, or a per-submodule `python -m` target: one entrypoint is a plan
+requirement.
+
+| Exit code | Meaning |
+| --- | --- |
+| 0 | clean shutdown |
+| 1 | generic runtime error |
+| 2 | config or resolution error |
+| 3 | refuse-to-start (a bootstrap gate failed) |
+| 4 | fatal accelerator fault (`worker/runtime/faults/handler.py`, hard exit) |
+
+## Failure matrix
+
+Global faults kill the process loudly. Per-camera faults degrade exactly one
+camera. There is no silent CPU or OpenCV fallback, and `auto` device selection
+is a loud failure, per ADR-0002.
+
+| Fault | Scope | Behaviour |
+| --- | --- | --- |
+| Flow runtime configuration invalid | global | refuse to start, exit 3 |
+| Model artifact missing or unloadable | global | refuse to start, exit 3 |
+| Real warmup inference fails | global | refuse to start, exit 3 |
+| GPU lease already held by another process | global | refuse to start, exit 3 |
+| Config invalid and no LKG available | global | exit 2 |
+| Config invalid but LKG present | global | run from LKG, report degraded status |
+| Accelerator fault mid-run (device lost, unrecoverable) | global | record first fault, hard exit 4 for supervised restart |
+| Inference deadline exceeded | global | watchdog records and escalates to the fault path |
+| RTSP connect/auth failure | per camera | that camera retries with backoff; others unaffected |
+| Decode stall or stream EOF | per camera | reopen the source; camera reports unhealthy meanwhile |
+| Frame bus full | per camera | drop oldest, increment drop metric; never block ingest |
+| Extractor raises on one frame | per camera | frame dropped, camera continues |
+| Clip encode failure | per camera | alert still relays; evidence marked incomplete |
+| Relay POST failure | per camera | durable outbox retries; no event is lost in memory |
+| Clip store locked by another process | global | worker refuses to start: two workers must not share one outbox (ADR-0003) |
+| Evidence delivery enabled but misconfigured or unable to initialise | global | worker refuses to start rather than run with alerts stranded in the local outbox (ADR-0003) |
+
+Rollback of a bad worker image is image-digest based; see
+[Image rollback preserves the state volume](#image-rollback-preserves-the-state-volume).
+
+## Source-to-target ownership
+
+Every non-`__init__` source file in the legacy tree has exactly one owner below.
+These rows are historical citations of a migration, not operator instructions.
+`tests/test_worker_architecture_docs.py`, which asserted that the map was
+complete and unambiguous while the legacy tree existed, has been deleted, so no
+test constrains these rows any more.
+
+| Current source | Final owner |
+| --- | --- |
+| `edge/AGENTS.md` | `worker/AGENTS.md` |
+| `edge/__main__.py` | `worker/__main__.py` (argparse, exit codes, `python -m worker`) |
+| `edge/pyproject.toml` | `worker/pyproject.toml` (`project.name = "eldercare-worker"`) |
+| `edge/ml-worker.example.yaml` | `worker/ml-worker.example.yaml` |
+| `edge/domains/AGENTS.md` | `worker/domains/AGENTS.md` |
+| `edge/domains/base.py` | `worker/domains/base.py` |
+| `edge/domains/bed_exit/AGENTS.md` | folded into `worker/domains/AGENTS.md` |
+| `edge/domains/bed_exit/detector.py` | `worker/domains/bed_exit/detector.py` |
+| `edge/domains/bed_exit/latch.py` | `worker/domains/bed_exit/latch.py` |
+| `edge/domains/bed_exit/schema.py` | `worker/domains/bed_exit/schema.py` |
+| `edge/domains/fall/AGENTS.md` | folded into `worker/domains/AGENTS.md` |
+| `edge/domains/fall/detector.py` | `worker/domains/fall/detector.py` |
+| `edge/domains/fall/schema.py` | `worker/domains/fall/schema.py` |
+| `edge/evidence/clip_recorder.py` | retired; primary recording is `worker/pipeline/output/evidence/smart_record_actor.py` (`SmartRecordActor`); publication is `flow_clip_publication.py` / `clip_publication.py` |
+| `edge/evidence/clip_store_lock.py` | `worker/pipeline/output/evidence/clip_store_lock.py` |
+| `edge/evidence/event_identity.py` | `worker/pipeline/decision/event_identity.py` (`EventIdentityStore`) |
+| `edge/evidence/evidence_manifest.py` | `worker/pipeline/output/evidence/evidence_manifest.py` |
+| `edge/evidence/evidence_media.py` | `worker/pipeline/output/evidence/evidence_media.py` |
+| `edge/evidence/evidence_outbox.py` | retired; durable staging is `worker/pipeline/output/evidence/evidence_stager.py` (`DurableEvidenceStager`) over `shared/events/delivery_queue.py` |
+| `edge/evidence/evidence_outbox_clips.py` | retired with the SQLite outbox cluster; clip publish state lives in `evidence_outbox_types.py` and `evidence_sender.py` |
+| `edge/evidence/evidence_outbox_delivery.py` | retired; delivery is `worker/pipeline/output/evidence/evidence_sender.py` (`EvidenceSender`) |
+| `edge/evidence/evidence_outbox_schema.py` | retired with the SQLite outbox cluster |
+| `edge/evidence/evidence_outbox_stage.py` | retired; staging is `worker/pipeline/output/evidence/evidence_stager.py` |
+| `edge/evidence/evidence_outbox_types.py` | `worker/pipeline/output/evidence/evidence_outbox_types.py` |
+| `edge/evidence/evidence_reconciliation.py` | retired (deleted with the outbox cluster); no replacement module |
+| `edge/evidence/evidence_retention.py` | retired; `clip_config.py` still defines unused `configured_retention_days()` / `configured_disk_high_watermark()` (no callers; see [#595](https://github.com/SeniorAILab/SeeON-edge/issues/595)) |
+| `edge/evidence/evidence_runtime.py` | `worker/pipeline/output/evidence/evidence_runtime.py` |
+| `edge/evidence/evidence_sender.py` | `worker/pipeline/output/evidence/evidence_sender.py` |
+| `edge/evidence/evidence_stager.py` | `worker/pipeline/output/evidence/evidence_stager.py` |
+| `edge/evidence/snapshot_store.py` | `worker/pipeline/output/evidence/snapshot_store.py` |
+| `edge/features/AGENTS.md` | folded into `worker/pipeline/AGENTS.md` |
+| `edge/features/geometry.py` | `worker/pipeline/perception/features/geometry.py` |
+| `edge/features/pose_normalization.py` | `worker/pipeline/perception/features/pose_normalization.py` |
+| `edge/features/window_features.py` | `worker/pipeline/perception/features/window_features.py` |
+| `edge/perception/AGENTS.md` | folded into `worker/pipeline/AGENTS.md` |
+| `edge/perception/domain_input.py` | `worker/pipeline/perception/decision_input.py` |
+| `edge/perception/fall_window_classifier.py` | `worker/domains/fall/classifier.py` |
+| `edge/perception/observation_builder.py` | `worker/pipeline/perception/observation_builder.py` |
+| `edge/perception/scene_state.py` | `worker/pipeline/perception/scene_state.py` |
+| `edge/perception/window_buffer.py` | `worker/pipeline/perception/window_buffer.py` |
+| `edge/runners/AGENTS.md` | folded into `worker/adapters/AGENTS.md` |
+| `edge/runners/device.py` | `worker/runtime/profile/device.py` |
+| `edge/runners/registry.py` | `worker/adapters/model/registry.py` |
+| `edge/runners/sklearn_fall.py` | `worker/adapters/model/sklearn_fall.py` plus `sklearn_metadata.py` |
+| `edge/runners/torch_lstm_fall.py` | `worker/adapters/model/torch_lstm_fall.py` plus `lstm_manifest.py` |
+| `edge/runners/warmup.py` | `worker/adapters/model/warmup.py` |
+| `edge/runners/yolo_bed_seg.py` | `worker/adapters/model/yolo_bed_seg.py` |
+| `edge/runners/yolo_person.py` | `worker/adapters/model/yolo_person.py` |
+| `edge/runners/yolo_pose.py` | `worker/adapters/model/yolo_pose.py` |
+| `edge/serving_client/base.py` | `worker/interfaces/serving.py` |
+| `edge/serving_client/in_process.py` | `worker/adapters/model/in_process.py` |
+| `edge/sources/AGENTS.md` | folded into `worker/pipeline/AGENTS.md` |
+| `edge/sources/*` | retired; `worker/runtime/flow/media_plane.py` owns the sole flow media plane |
+| `edge/runtime/camera_worker.py` | `worker/runtime/flow/lifecycle_supervisor.py` and `worker/runtime/worker.py` |
+| `edge/runtime/config_pull.py` | `worker/runtime/config/config_pull.py` plus `http_transport.py`, `pull_models.py` |
+| `edge/runtime/config_resolver.py` | `worker/runtime/config/config_resolver.py` |
+| `edge/runtime/edge_worker.py` | `worker/runtime/worker.py` (`WorkerRuntime`); its CLI half is `worker/__main__.py` |
+| `edge/runtime/edge_worker_config.py` | `worker/runtime/config/worker_models.py` plus `camera_models.py`, `domain_models.py`, `loader.py` |
+| `edge/runtime/edge_worker_supervisor.py` | `worker/runtime/flow/lifecycle_supervisor.py`; restart policy is in `worker/runtime/worker.py` |
+| `edge/runtime/incident_manager.py` | `worker/pipeline/decision/incident_manager.py` |
+| `edge/runtime/latest_frame.py` | `worker/pipeline/output/live_view.py` (`LatestFrameStore`) |
+| `edge/runtime/lkg_store.py` | `worker/runtime/config/lkg_store.py` |
+| `edge/runtime/mjpeg_server.py` | `worker/pipeline/output/mjpeg_server.py` plus `_mjpeg_http.py` |
+| `edge/runtime/pipeline_bootstrap.py` | `worker/runtime/bootstrap.py` |
+| `edge/runtime/runtime_diagnostics.py` | `worker/runtime/telemetry/runtime_diagnostics.py` |
+| `edge/runtime/runtime_status_sender.py` | `worker/runtime/telemetry/runtime_status_sender.py` plus `wire.py` |
+| `edge/runtime/scheduler.py` | `worker/runtime/flow/policy_pump.py` |
+| `edge/runtime/status_store.py` | `worker/runtime/telemetry/status_store.py` |
+
+Deployment identity is deliberately unchanged by this map: the image and service
+stay `ml-worker`, and `Dockerfile.edge`, `compose.edge.yaml`, `.env.edge.prod*`,
+and the `ML_WORKER_*` / `WORKER_*` / `ML_API_*` / `API_*` prefixes keep their
+legacy names. Only the Python package and the entrypoint change.
+
+## Feature parity ledger
+
+The ownership table above maps *files*. This ledger maps *user-observable
+behaviour* from the original repository onto its v2 owner, so `edge/` can be
+deleted without silently dropping a capability. It is the parity criterion for
+the v2 cutover.
+
+**Baseline: `eldercare-fall-ml` at committed `aeed6a8`.** Uncommitted work in
+that checkout is out of scope for parity except where a row says otherwise.
+
+Disposition vocabulary:
+
+- `ported` — behaviour lives in the v2 owner and is covered by a behaviour test.
+- `tracked-deferred` — intentionally not ported yet; a GitHub issue tracks it.
+- `out-of-scope (uncommitted)` — present only as uncommitted work in the
+  baseline checkout, so it is not part of the committed parity baseline.
+
+Missing-capability rule: a missing **runtime feature** is reported to the user
+and then restored; a missing **script or tool** is filed as a GitHub issue and
+deferred; a missing **behaviour-coverage test** is restored as part of the
+feature it proves. Developer-convenience harnesses are deferred with the tools.
+
+| Capability | v2 owner | Behaviour test | Disposition |
+| --- | --- | --- | --- |
+| RTSP ingest and reconnect policy | `worker/adapters/deepstream/sources.py` (`SourceTable`), `worker/adapters/deepstream/service_maker.py` (`DeepStreamMediaPlane`), `worker/runtime/flow/media_plane.py` (`FlowMediaPlane`), `worker/runtime/flow/lifecycle_supervisor.py` (`FlowLifecycleSupervisor`) | `tests/test_deepstream_adapter_plane.py`, `tests/test_flow_lifecycle_supervisor.py` | ported |
+| CPU decode adapter and capability probe | retired host `cpu_av` path; decode is owned by the DeepStream Flow media plane (`worker/adapters/deepstream/service_maker.py`, `worker/runtime/flow/media_plane.py`) | `tests/test_deepstream_adapter_plane.py` (plane/source surface); no separate CPU-decode probe remains | ported |
+| NVDEC decode probe | retired host `nvdec_cuvid` path; decode is owned by the DeepStream Flow media plane (`worker/adapters/deepstream/service_maker.py`, `worker/runtime/flow/media_plane.py`) | `tests/test_deepstream_adapter_plane.py`; no separate NVDEC probe remains | ported |
+| CUDA device selection and verification | `worker/adapters/device/cuda/probe.py` | `tests/test_worker_cuda_device_probe.py` | ported |
+| Model registry, warmup, inference | `worker/adapters/model/registry.py`, `worker/interfaces/serving.py` | `tests/test_worker_production_boot_dependencies.py` | ported |
+| Fall interpretation and episode policy | `worker/domains/fall/` | `tests/test_worker_fall_decider.py`, `tests/test_fall_policy.py` | ported |
+| Bed-exit interpretation and latching | `worker/domains/bed_exit/` | `tests/test_domains_bed_exit.py`, `tests/test_worker_domains_bed_exit.py` | ported |
+| Incident cooldown and duplicate suppression | `worker/pipeline/decision/incident_manager.py` | `tests/test_worker_incident_manager.py` | ported |
+| Relay heartbeat and alert egress | `shared/events/edge_ingest_client.py` | `tests/test_e2e_night_bed_exit_relay.py` | ported |
+| Evidence clip recording and finalisation | `worker/pipeline/output/evidence/smart_record_actor.py` (recording), `worker/pipeline/output/evidence/flow_clip_publication.py` and `worker/pipeline/output/evidence/clip_publication.py` (finalisation and publication) | `tests/test_smart_record_actor.py`, `tests/test_flow_clip_publication.py`, `tests/test_worker_clip_publication.py` | ported |
+| Snapshot store | `worker/pipeline/output/evidence/snapshot_store.py` | `tests/test_snapshot_store.py` | ported |
+| Evidence outbox and export delivery | `worker/pipeline/output/evidence/evidence_runtime.py` (`EvidenceExportRuntime`), `evidence_stager.py` (`DurableEvidenceStager`), `evidence_sender.py` (`EvidenceSender`), `shared/events/delivery_queue.py` (`DeliveryQueue`) | `tests/test_evidence_stager.py`, `tests/test_evidence_sender.py`, `tests/test_evidence_delivery_queue_restart.py` | ported |
+| Worker config load and LKG fallback | `worker/runtime/config/loader.py` | `tests/test_ml_worker_yaml_config.py` | ported |
+| Runtime status and diagnostics | `worker/runtime/telemetry/status_store.py`, `worker/runtime/telemetry/runtime_status_sender.py` | `tests/test_worker_runtime_status_sender_composition.py` | ported |
+| CLI entrypoint and bounded-run cap | `worker/__main__.py` | `tests/test_worker_entrypoint.py`, `tests/test_worker_max_frames_per_camera_composition.py` | ported |
+| Per-frame perception: tracking, scene state, window buffering | `worker/pipeline/perception/`, `worker/runtime/flow/policy_pump.py` (`NativePolicyPump`) | `tests/test_perception_observation_builder.py`, `tests/test_flow_policy_pump_preview.py` | ported |
+| Operator MJPEG live view | `worker/pipeline/output/mjpeg_server.py`, `worker/pipeline/output/live_view.py`, composed in `worker/runtime/worker.py` | `tests/test_worker_live_view_composition.py` | ported |
+| GPU stability preflight installer | — | — | tracked-deferred (`scripts/edge-preflight/gpu-stability-install.sh`, untracked at baseline) |
+| GPU telemetry preflight | — | — | tracked-deferred (`scripts/edge-preflight/gpu-telemetry.sh`, untracked at baseline) |
+
+### Baseline uncommitted work
+
+`eldercare-fall-ml@aeed6a8` carries ten uncommitted entries in its checkout.
+Two are tracked above; the remaining eight are `out-of-scope (uncommitted)`:
+
+Listed as a bullet list rather than a table: a two-column table row whose first
+cell is a backticked `edge/` path is reserved for the ownership map above.
+
+- tracked-modified: `compose.edge.yaml`
+- untracked: `docs/research/blackwell-gsp-halt-edge-gpu.md`
+- untracked: `backend/app/features/AGENTS.md`
+- untracked: `edge/evidence/AGENTS.md`
+- untracked: `edge/runtime/AGENTS.md`
+- untracked: `.codex/`
+- untracked: `auto.crt`
+- untracked: `auto.key`
+
+## Open gaps
+
+These are known divergences between the plan and the tree. They are recorded
+here so nobody documents an intention as a fact.
+
+**Resolved: the clip recording row used to be unprovable on macOS.** Two of
+its cited tests, in `tests/test_clip_recorder.py`, failed on macOS, and the row
+was recorded as Linux-only because
+`worker/pipeline/output/evidence/evidence_media.py` handed `ffprobe` a
+`/proc/self/fd/{descriptor}` reference. Neither holds any more. The recorder and
+that test file were deleted in `db09fc1`, and the row now cites the Smart Record
+and clip publication tests. Since `5e9c485`, `_probe_media()` in
+`evidence_media.py` passes `/proc/self/fd/{descriptor}` when `/proc/self/fd`
+exists and `/dev/fd/{descriptor}` otherwise. In both cases the path names the
+file that `inspect_finalized_media()` already holds open, so the probe still
+cannot be TOCTOU-swapped for a different file, and it does not require `/proc`.
+`tests/test_evidence_trust_boundaries.py::test_media_probe_uses_same_open_inode_when_path_is_swapped`
+pins the same-inode probe: `ffprobe` still reads the original bytes when the
+path is swapped mid-probe. The test picks its descriptor root by the same rule.
+
+On macOS, `tests/test_clip_export_reconciliation.py` and
+`tests/test_evidence_trust_boundaries.py` now pass locally (19 passed), so the
+row is dev-verified as well as CI-verified.
+
+**Snapshot store used to be listed here too, and no longer is.** Three of its
+cited tests also failed on macOS, but for an entirely different reason: they
+read `/proc/self/fd` purely as *test instrumentation* to resolve a descriptor
+back to a path and to count open descriptors. `snapshot_store.py` itself never
+touches `/proc`, so nothing about the capability was Linux-only. Those tests now
+use `fcntl(F_GETPATH)` and `/dev/fd` on macOS and the same `/proc` reads on
+Linux, so the row is dev-verified on both. The distinction worth keeping: a
+cited test failing on your machine may be pinning a real runtime floor, or may
+just be instrumentation that was never written to be portable, and the two look
+identical from the test report.
+
+**Resolved: the shipped example config pinned a fall contract nothing produced.**
+`worker/ml-worker.example.yaml` used to pin `models.fall.schema_version: 2`
+and the current coco17 `preprocessing_identity`, while
+`models/fall/lstm/metadata.yaml` declares neither — so it loads as
+`LEGACY_SCHEMA_VERSION` (1) with the legacy identity, and the pinned pair was
+refused. Neither side was malformed: the loader supports both generations as
+first-class cases (`worker/adapters/model/lstm_manifest.py`,
+`SUPPORTED_PREPROCESSING_IDENTITIES`), but the archived `eldercare-dataset-ops`
+emitted `schema_version: 1` for fall and no preprocessing identity
+(`ml/training/model_artifacts.py::build_fall_lstm_metadata`, which never
+wrote either field), so schema_version 2 was not a contract any export path
+produced — the example was documenting an aspirational target, not the
+artifact it ships with.
+
+The example was corrected to pin the legacy contract
+(`schema_version: 1`, `legacy-coco17-xyc-frame-normalized-zero-fill-v1`) that
+the shipped artifact satisfies and the archived training pipeline emitted, so
+copying the example boots the fall model it ships with. If a fall artifact is
+ever exported with `schema_version: 2` and the current coco17 identity,
+replace `models/fall/lstm` with it and bump the example's pins back to the
+v2 values at the same time — the fail-closed validation in
+`_validate_expected_identity` (`worker/adapters/model/torch_lstm_fall.py`)
+stays unchanged either way; only the pinned values move. The regression is
+covered by
+`tests/test_worker_real_warmup_no_stub.py::test_example_config_fall_contract_matches_the_local_artifact`.
+
+**Operator scripts hang on heredocs larger than `PIPE_BUF`.**
+Bash 5.3.15 writes a heredoc body into a pipe before exec'ing the reader, so a
+body over `PIPE_BUF` blocks forever against a pipe nobody is draining — bash
+never execs the command. The boundary is exact: on macOS (`PIPE_BUF` 512) a
+512-byte body passes and 513 hangs; bash 3.2.57 stages heredocs in a temp file
+and is unaffected at any size. The bash scripts under `scripts/` that pin
+`#!/bin/bash` do so for this reason, which on macOS resolves to 3.2.57.
+
+**That pin does not help on Linux.** There `PIPE_BUF` is 4096 and `/bin/bash` is
+itself a modern bash, so only the threshold moves. Any heredoc body large enough
+to cross the platform `PIPE_BUF` is exposed on a Linux edge host; moving such a
+body into a file is the durable fix.
+
+`tests/test_shell_script_heredoc_contract.py` enforces the rule at the 512-byte
+threshold. It is a general contract: it walks every remaining `scripts/**/*.sh`
+rather than naming individual scripts, so it keeps holding as the script surface
+changes.
+
+**`worker/pipeline/camera_pipeline.py` is gone.** It held `CameraPipelinePump`
+and was deleted in `db09fc1` with the rest of the host media pipeline the
+DeepStream Flow profile made redundant. Per-camera perception and decision
+pumping now live in `worker/pipeline/perception/` and
+`worker/runtime/flow/policy_pump.py` (`NativePolicyPump`). Lifecycle and
+reconnect supervision live in `worker/runtime/flow/lifecycle_supervisor.py`
+(`FlowLifecycleSupervisor`); composition and restart policy stay in
+`worker/runtime/worker.py`. Do not cite `camera_pipeline.py` as a current owner.
+
+**No `worker/runtime/supervisor.py` and no host `latest_frame.py` under a Flow
+media-plane package.** The plan named both. Supervision landed in
+`worker/runtime/flow/lifecycle_supervisor.py` as `FlowLifecycleSupervisor` with
+restart policy in `worker/runtime/worker.py`, and the latest-frame store landed
+in `worker/pipeline/output/live_view.py` as `LatestFrameStore` (a non-consuming
+latest-value store, not a queue). The rows above reflect the real locations.
+
+**ADR-0001 source-packet preservation is complete for primary clean clips.**
+The worker keeps bounded encoded-packet history per camera and remuxes one
+keyframe-aligned stream epoch/configuration without transcoding. Decoded frames
+remain analysis and optional snapshot taps. Transformed derivative publication
+is not a current production surface.
+
+Decision-trace replay is written by the worker as bounded on-disk JSONL
+(`worker/pipeline/trace/replay_trace_writer.py`), enabled only when a replay
+trace directory is configured. It is a replay-fidelity input, not the
+original-run observability record (that is the execution-record path,
+`worker/pipeline/diagnostics/`). There is no backend
+analysis-trace HTTP or database warehouse.
+
+### Replay trace v2
+
+Flow policy pumps may emit replay-trace-v2 JSONL under the trace root only when
+its environment gate is enabled. Files are named from a hashed camera id
+and remain contained beneath that root, with bounded rotations. Every row has
+unit coordinates and its frame dimensions; `seq` is ordered within a boot
+segment across rotations. `open` starts a new boot segment and resets replay
+state; `reconnect` retains it, and `lost` contributes no observation. Control
+rows carry no tracks, and only `frame` rows enter PTS resampling. Persisted
+bed polygons also carry `bed_polygon_image_size`, their original image-space
+dimensions, so replay reconstructs the production geometry.
+
+This supersedes the abbreviated replay schema in the approved plan.
+
+The authenticated clip artifact projection exposes clean video plus an optional
+snapshot. There is no persisted analysis or overlay artifact view, and no
+overlay fallback to clean playback. Snapshot JPEG derivatives may contain
+burned overlay pixels; primary clip bytes never do.
+
+**Encoder-lifecycle work is risk reduction, not a GPU fix.** The per-camera
+encoder session, segment ring, and their instrumentation reduce the window in
+which a hardware encoder is left in a bad state and make faults observable.
+They do not diagnose or repair any Xid GPU fault, and nothing in this migration
+may be presented as fixing one.
+
+## Related
+
+- [`docs/decisions/`](decisions/) — decision records, index in
+  [`decisions/README.md`](decisions/README.md)
+- [`worker/AGENTS.md`](../worker/AGENTS.md) — worker package rules and the
+  per-layer import ceilings

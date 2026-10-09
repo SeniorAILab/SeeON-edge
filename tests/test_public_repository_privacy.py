@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import csv
 import functools
+import hashlib
 import json
 import os
 import re
@@ -103,6 +104,11 @@ _MEDIA_OR_ARCHIVE_MAGIC = (
     b"\xff\xd8\xff",
     b"version https://git-lfs.github.com/spec/v1",
 )
+_APPROVED_DOCUMENTATION_ART_PATH = Path("docs/assets/readme-hero.webp")
+_APPROVED_DOCUMENTATION_ART_SHA256 = (
+    "800af6f6bf3dde48c66c29f6bbebec18471c60cde05b789a8ed53ebb76a8c820"
+)
+_APPROVED_DOCUMENTATION_ART_SIZE = 168_648
 _SYNTHETIC_RTSP_FIXTURES = {
     Path(".claude/skills/edge-bringup/references/worker-roster.md"): {
         "rtsp://{CAM_USER}:{CAM_PASSWORD}@{camera_ip}:554/trackID=2",
@@ -324,6 +330,14 @@ def _looks_like_media_or_archive(blob: bytes) -> bool:
     if len(blob) >= 132 and blob[128:132] == b"DICM":
         return True
     return len(blob) >= 262 and blob[257:262] == b"ustar"
+
+
+def _is_approved_documentation_art(relative: Path, blob: bytes) -> bool:
+    return (
+        relative == _APPROVED_DOCUMENTATION_ART_PATH
+        and len(blob) == _APPROVED_DOCUMENTATION_ART_SIZE
+        and hashlib.sha256(blob).hexdigest() == _APPROVED_DOCUMENTATION_ART_SHA256
+    )
 
 
 def _collect_mapping_keys(value: object) -> set[str]:
@@ -566,6 +580,8 @@ def _is_prohibited_path(relative: Path) -> bool:
 def test_tracked_tree_contains_no_data_or_private_binary_assets() -> None:
     violations: list[str] = []
     for relative, blob in _index_blobs():
+        if _is_approved_documentation_art(relative, blob):
+            continue
         if _is_prohibited_path(relative):
             violations.append(str(relative))
             continue
@@ -651,6 +667,43 @@ def test_text_scanner_allows_short_encoded_looking_text() -> None:
 )
 def test_path_policy_rejects_case_and_double_extension_evasions(path: Path) -> None:
     assert _is_prohibited_path(path)
+
+
+def test_approved_documentation_art_requires_exact_path_and_digest() -> None:
+    blob = (ROOT / _APPROVED_DOCUMENTATION_ART_PATH).read_bytes()
+
+    assert _is_approved_documentation_art(_APPROVED_DOCUMENTATION_ART_PATH, blob)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        Path("docs/assets/other.webp"),
+        Path("docs/assets/README-HERO.webp"),
+    ],
+)
+def test_approved_documentation_art_rejects_other_paths(path: Path) -> None:
+    blob = (ROOT / _APPROVED_DOCUMENTATION_ART_PATH).read_bytes()
+
+    assert not _is_approved_documentation_art(path, blob)
+    assert _is_prohibited_path(path)
+
+
+def test_approved_documentation_art_rejects_modified_bytes() -> None:
+    blob = (ROOT / _APPROVED_DOCUMENTATION_ART_PATH).read_bytes()
+    modified = blob[:-1] + bytes([blob[-1] ^ 1])
+
+    assert not _is_approved_documentation_art(_APPROVED_DOCUMENTATION_ART_PATH, modified)
+    assert _is_prohibited_path(_APPROVED_DOCUMENTATION_ART_PATH)
+
+
+def test_approved_documentation_art_rejects_arbitrary_webp() -> None:
+    arbitrary_webp = b"RIFF\x00\x00\x00\x00WEBPVP8 arbitrary"
+
+    assert not _is_approved_documentation_art(
+        _APPROVED_DOCUMENTATION_ART_PATH, arbitrary_webp
+    )
+    assert _is_prohibited_path(_APPROVED_DOCUMENTATION_ART_PATH)
 
 
 @pytest.mark.parametrize(
