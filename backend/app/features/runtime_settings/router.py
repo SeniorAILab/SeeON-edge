@@ -12,7 +12,7 @@ from backend.app.features.runtime_settings.dependencies import get_runtime_setti
 from backend.app.features.runtime_settings.store import (
     RuntimeSettingsVersionConflict,
 )
-from backend.app.shared.dashboard_auth import authorize_dashboard
+from backend.app.shared.http.dashboard_auth import authorize_dashboard
 
 router = APIRouter(prefix="/runtime-settings", tags=["runtime-settings"])
 

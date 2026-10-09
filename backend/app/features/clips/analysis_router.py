@@ -18,7 +18,7 @@ from backend.app.features.clips.analysis_status import assemble_clip_analysis_st
 from backend.app.features.clips.router import _clip_store, _get_located_clip_or_404
 from backend.app.features.clips.schemas import ClipAnalysisResponse
 from backend.app.features.clips.store import ClipStore, LocatedClip
-from backend.app.shared.dashboard_auth import authorize_dashboard
+from backend.app.shared.http.dashboard_auth import authorize_dashboard
 
 router = APIRouter(tags=["clips"])
 

@@ -52,11 +52,9 @@ from backend.app.postgres_root import (
     install_postgres_stores,
     open_postgres_root,
 )
-from backend.app.shared.backend_client_bundle import (
-    BackendClientBundle,
-    backend_client_bundle,
-)
+from backend.app.shared.backend_client_bundle import BackendClientBundle
 from backend.app.shared.backend_mapping import mark_backend_status
+from backend.app.shared.http.backend_client_bundle import backend_client_bundle
 from backend.app.shared.state_dir import resolve_state_dir
 from contracts.worker_config import (
     PulledCameraConfig,

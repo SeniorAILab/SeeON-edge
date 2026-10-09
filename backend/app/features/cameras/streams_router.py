@@ -17,8 +17,8 @@ from starlette.background import BackgroundTask
 
 from backend.app.core.config import get_settings
 from backend.app.features.cameras.store import CameraRegistryStore
-from backend.app.shared.dashboard_auth import authorize_dashboard
-from backend.app.shared.head_response import drop_body_for_head
+from backend.app.shared.http.dashboard_auth import authorize_dashboard
+from backend.app.shared.http.head_response import drop_body_for_head
 
 router = APIRouter(tags=["streams"])
 
