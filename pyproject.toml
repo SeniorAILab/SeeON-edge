@@ -168,6 +168,7 @@ select = [
     "PLR1714",  # `a == x or a == y` -> `a in (x, y)`
     "PLR5501",  # `else: if` -> `elif`
     "PLC0207",  # `.split(sep)[0]` without maxsplit
+    "PGH004",   # blanket `# noqa` — every suppression names its codes
 ]
 # FAST (FastAPI rules) enabled with the backend vertical-slice; Header/Query deps
 # use typing.Annotated (FAST002).
@@ -191,6 +192,11 @@ ignore = ["TRY003"]
 "shared/boundary/**" = ["BLE001"]
 "backend/**" = ["SIM102", "SIM105", "SIM117"]
 "backend/app/features/cameras/router.py" = ["RUF100"]
+"!backend/app/features/**" = ["TID251"]
+"backend/app/features/*/controller/**" = ["TID251"]
+"backend/app/features/*/{router,dependencies,http,auth,schemas,responses,media_response,wire}.py" = ["TID251"]
+"backend/app/features/*/*_router.py" = ["TID251"]
+"backend/app/features/cameras/update_command.py" = ["TID251"]
 # Literals here are split on purpose so the repository privacy scan does not match
 # its own fixtures; joining them (ISC001) makes the scan fail.
 "tests/test_public_repository_privacy.py" = ["ISC001", "ISC004"]
@@ -215,6 +221,18 @@ markers = [
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
+
+# TID251 runs only on feature service and repository code. per-file-ignores turns
+# it off everywhere else, so a second banned API needs its own scoping.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"pydantic.BaseModel".msg = "DTOs live in the controller; convert to a dataclass value there"
+"pydantic.RootModel".msg = "DTOs live in the controller; convert to a dataclass value there"
+"pydantic.main.BaseModel".msg = "DTOs live in the controller; convert to a dataclass value there"
+"pydantic.root_model.RootModel".msg = "DTOs live in the controller; convert to a dataclass value there"
+"pydantic.dataclasses.dataclass".msg = "DTOs live in the controller; use dataclasses.dataclass here"
+"pydantic.v1.BaseModel".msg = "DTOs live in the controller; convert to a dataclass value there"
+"pydantic.v1.main.BaseModel".msg = "DTOs live in the controller; convert to a dataclass value there"
+"pydantic.v1.dataclasses.dataclass".msg = "DTOs live in the controller; use dataclasses.dataclass here"
 
 # Declarative architecture contracts (deep-interview → ralplan plan). Boundaries
 # between the front/backend/edge instances + shared, and 2-depth ownership inside
@@ -401,31 +419,121 @@ allowed_importers = [
 ]
 
 [[tool.importlinter.contracts]]
-# New per-slice router/dependencies modules are covered automatically.
-# A new *_router file must be added to source_modules explicitly.
-name = "backend routers do not import psycopg directly"
+# The first block of exceptions is the repository-role files. The second block is
+# debt, a service-role file that still holds SQL. The first migrated feature adds
+# "backend.app.features.*.repository.** -> psycopg".
+name = "backend features import psycopg only in repository files"
 type = "forbidden"
-source_modules = [
-    "backend.app.features.*.router",
-    "backend.app.features.*.dependencies",
+source_modules = ["backend.app.features"]
+forbidden_modules = ["psycopg", "psycopg_pool"]
+allow_indirect_imports = true
+ignore_imports = [
+    "backend.app.features.audit.history_repository -> psycopg",
+    "backend.app.features.audit.postgres_sessions -> psycopg",
+    "backend.app.features.audit.postgres_store -> psycopg",
+    "backend.app.features.audit.postgres_verification -> psycopg",
+    "backend.app.features.cameras.bed_zone_store -> psycopg",
+    "backend.app.features.cameras.camera_repository -> psycopg",
+    "backend.app.features.cameras.store -> psycopg",
+    "backend.app.features.clips.storage_location_store -> psycopg",
+    "backend.app.features.connection.repository -> psycopg",
+    "backend.app.features.detection_settings.policy_rows -> psycopg",
+    "backend.app.features.detection_settings.policy_store -> psycopg",
+    "backend.app.features.detection_settings.store -> psycopg",
+    "backend.app.features.diagnostics.store -> psycopg",
+    "backend.app.features.evidence.postgres_receipt_sql -> psycopg",
+    "backend.app.features.evidence.postgres_receipts -> psycopg",
+    "backend.app.features.evidence.postgres_relay_projection -> psycopg",
+    "backend.app.features.evidence.record_store -> psycopg",
+    "backend.app.features.runtime_settings.store -> psycopg",
+    "backend.app.features.cameras.edge_topology_sync_state -> psycopg",
+    "backend.app.features.cameras.location_operations -> psycopg",
+    "backend.app.features.cameras.topology -> psycopg",
+    "backend.app.features.cameras.topology_confirmation_state -> psycopg",
+    "backend.app.features.clips.artifacts -> psycopg",
+    "backend.app.features.clips.catalog_indexer -> psycopg",
+    "backend.app.features.detection_settings.policy_mutations -> psycopg",
+    "backend.app.features.diagnostics.coverage -> psycopg",
+    "backend.app.features.diagnostics.ingest -> psycopg",
+    "backend.app.features.diagnostics.prune -> psycopg",
+    "backend.app.features.diagnostics.query -> psycopg",
+    "backend.app.features.diagnostics.retention -> psycopg",
+    "backend.app.features.diagnostics.segments -> psycopg",
+    "backend.app.features.diagnostics.terminals -> psycopg",
+    "backend.app.features.evidence.event_outbox -> psycopg",
+    "backend.app.features.evidence.outbox_delivery -> psycopg",
+]
+
+[[tool.importlinter.contracts]]
+name = "backend unmigrated controller files are imported only by controllers and the app entry"
+type = "protected"
+protected_modules = [
+    "backend.app.features.audit.http",
+    "backend.app.features.audit.router",
+    "backend.app.features.auth.router",
     "backend.app.features.cameras.bed_zone_router",
+    "backend.app.features.cameras.dependencies",
+    "backend.app.features.cameras.router",
     "backend.app.features.cameras.streams_router",
     "backend.app.features.clips.analysis_router",
+    "backend.app.features.clips.media_response",
+    "backend.app.features.clips.responses",
+    "backend.app.features.clips.router",
+    "backend.app.features.clips.schemas",
     "backend.app.features.clips.storage_router",
+    "backend.app.features.connection.dependencies",
+    "backend.app.features.connection.router",
     "backend.app.features.connection.topology_confirmation_router",
+    "backend.app.features.detection_settings.router",
+    "backend.app.features.diagnostics.router",
+    "backend.app.features.diagnostics.schemas",
+    "backend.app.features.diagnostics.wire",
     "backend.app.features.evidence.operator_router",
+    "backend.app.features.evidence.router",
+    "backend.app.features.relay.router",
+    "backend.app.features.runtime_settings.dependencies",
+    "backend.app.features.runtime_settings.router",
+    "backend.app.features.status.router",
     "backend.app.features.status.system_router",
-    "backend.app.features.audit.http",
-    "backend.app.routes",
 ]
-forbidden_modules = ["psycopg"]
-allow_indirect_imports = true
+allowed_importers = [
+    "backend.app.features.audit.http",
+    "backend.app.features.audit.router",
+    "backend.app.features.auth.router",
+    "backend.app.features.cameras.bed_zone_router",
+    "backend.app.features.cameras.dependencies",
+    "backend.app.features.cameras.router",
+    "backend.app.features.cameras.streams_router",
+    "backend.app.features.clips.analysis_router",
+    "backend.app.features.clips.media_response",
+    "backend.app.features.clips.responses",
+    "backend.app.features.clips.router",
+    "backend.app.features.clips.schemas",
+    "backend.app.features.clips.storage_router",
+    "backend.app.features.connection.dependencies",
+    "backend.app.features.connection.router",
+    "backend.app.features.connection.topology_confirmation_router",
+    "backend.app.features.detection_settings.router",
+    "backend.app.features.diagnostics.router",
+    "backend.app.features.diagnostics.schemas",
+    "backend.app.features.diagnostics.wire",
+    "backend.app.features.evidence.operator_router",
+    "backend.app.features.evidence.router",
+    "backend.app.features.relay.router",
+    "backend.app.features.runtime_settings.dependencies",
+    "backend.app.features.runtime_settings.router",
+    "backend.app.features.status.router",
+    "backend.app.features.status.system_router",
+    "backend.app.features.*.controller",
+    "backend.app.routes",
+    "backend.app.main",
+    "backend.app.lifespan",
+    "backend.app.audit_lifecycle",
+]
+ignore_imports = [
+    "backend.app.features.diagnostics -> backend.app.features.diagnostics.wire",
+]
 
-# Backend feature layers. Each feature keeps code in controller/, service/ and
-# repository/ only (scripts/check_layers.py owns the folder shape and the
-# shrink-only baseline in scripts/layer_baseline.json). The contracts below
-# apply to a feature as soon as its layer folders exist, so a feature that is
-# not migrated yet passes them with nothing to check.
 [[tool.importlinter.contracts]]
 name = "backend feature layers run controller -> service -> repository"
 type = "layers"
@@ -453,38 +561,86 @@ forbidden_modules = ["psycopg", "psycopg_pool"]
 allow_indirect_imports = true
 
 [[tool.importlinter.contracts]]
-# Features meet only service to service. A feature not migrated yet is carved
-# out by its MIGRATION pair; scripts/check_layers.py keeps the pairs in step
-# with scripts/layer_baseline.json and ratchets the imports they hide.
+# Features meet only service to service. Each line below is one existing import
+# of a feature not migrated yet. import-linter fails on a line that no longer
+# matches, and scripts/check_layers.py --against fails on a line that is new, so
+# the list only shrinks. The first migrated feature adds
+# "backend.app.features.*.service.** -> backend.app.features.*.service.**".
 name = "backend features meet only service to service"
 type = "independence"
 modules = ["backend.app.features.*"]
-unmatched_ignore_imports_alerting = "warn"
 ignore_imports = [
-    "backend.app.features.*.service.** -> backend.app.features.*.service.**",
     "backend.app.features.connection.router -> backend.app.lifespan",
-    "backend.app.features.audit.* -> backend.app.features.**",
-    "backend.app.features.** -> backend.app.features.audit.*",
-    "backend.app.features.auth.* -> backend.app.features.**",
-    "backend.app.features.** -> backend.app.features.auth.*",
-    "backend.app.features.cameras.* -> backend.app.features.**",
-    "backend.app.features.** -> backend.app.features.cameras.*",
-    "backend.app.features.clips.* -> backend.app.features.**",
-    "backend.app.features.** -> backend.app.features.clips.*",
-    "backend.app.features.connection.* -> backend.app.features.**",
-    "backend.app.features.** -> backend.app.features.connection.*",
-    "backend.app.features.detection_settings.* -> backend.app.features.**",
-    "backend.app.features.** -> backend.app.features.detection_settings.*",
-    "backend.app.features.diagnostics.* -> backend.app.features.**",
-    "backend.app.features.** -> backend.app.features.diagnostics.*",
-    "backend.app.features.evidence.* -> backend.app.features.**",
-    "backend.app.features.** -> backend.app.features.evidence.*",
-    "backend.app.features.relay.* -> backend.app.features.**",
-    "backend.app.features.** -> backend.app.features.relay.*",
-    "backend.app.features.runtime_settings.* -> backend.app.features.**",
-    "backend.app.features.** -> backend.app.features.runtime_settings.*",
-    "backend.app.features.status.* -> backend.app.features.**",
-    "backend.app.features.** -> backend.app.features.status.*",
+    "backend.app.features.auth.router -> backend.app.features.audit.catalog",
+    "backend.app.features.auth.router -> backend.app.features.audit.http",
+    "backend.app.features.cameras.bed_zone_router -> backend.app.features.audit.catalog",
+    "backend.app.features.cameras.bed_zone_router -> backend.app.features.audit.http",
+    "backend.app.features.cameras.bed_zone_router -> backend.app.features.audit.postgres_runtime",
+    "backend.app.features.cameras.dependencies -> backend.app.features.audit.postgres_runtime",
+    "backend.app.features.cameras.roster_sync -> backend.app.features.audit.postgres_runtime",
+    "backend.app.features.cameras.router -> backend.app.features.audit.catalog",
+    "backend.app.features.cameras.router -> backend.app.features.audit.http",
+    "backend.app.features.cameras.router -> backend.app.features.audit.postgres_runtime",
+    "backend.app.features.cameras.router -> backend.app.features.clips.storage_location_store",
+    "backend.app.features.cameras.router -> backend.app.features.detection_settings.policy_store",
+    "backend.app.features.cameras.router -> backend.app.features.detection_settings.store",
+    "backend.app.features.cameras.topology_confirmation -> backend.app.features.audit.postgres_runtime",
+    "backend.app.features.cameras.worker_config_service -> backend.app.features.detection_settings.policy_models",
+    "backend.app.features.cameras.worker_config_service -> backend.app.features.detection_settings.store",
+    "backend.app.features.clips.router -> backend.app.features.audit.http",
+    "backend.app.features.clips.storage_router -> backend.app.features.audit.catalog",
+    "backend.app.features.clips.storage_router -> backend.app.features.audit.http",
+    "backend.app.features.connection.dependencies -> backend.app.features.cameras.edge_topology_sync_state",
+    "backend.app.features.connection.dependencies -> backend.app.features.cameras.store",
+    "backend.app.features.connection.dependencies -> backend.app.features.cameras.topology_client",
+    "backend.app.features.connection.router -> backend.app.features.audit.catalog",
+    "backend.app.features.connection.router -> backend.app.features.audit.http",
+    "backend.app.features.connection.router -> backend.app.features.status.backend_heartbeat_relay",
+    "backend.app.features.connection.topology_confirmation_router -> backend.app.features.audit.catalog",
+    "backend.app.features.connection.topology_confirmation_router -> backend.app.features.audit.http",
+    "backend.app.features.connection.topology_confirmation_router -> backend.app.features.cameras.edge_topology_sync_state",
+    "backend.app.features.connection.topology_confirmation_router -> backend.app.features.cameras.topology_client",
+    "backend.app.features.connection.topology_confirmation_router -> backend.app.features.cameras.topology_confirmation",
+    "backend.app.features.connection.topology_retry_coordinator -> backend.app.features.audit.postgres_runtime",
+    "backend.app.features.connection.topology_retry_coordinator -> backend.app.features.cameras.edge_topology_sync_state",
+    "backend.app.features.connection.topology_retry_coordinator -> backend.app.features.cameras.store",
+    "backend.app.features.connection.topology_retry_coordinator -> backend.app.features.cameras.topology_client",
+    "backend.app.features.connection.topology_retry_coordinator -> backend.app.features.cameras.topology_confirmation",
+    "backend.app.features.connection.topology_retry_coordinator -> backend.app.features.cameras.topology_confirmation_state",
+    "backend.app.features.connection.topology_retry_result -> backend.app.features.cameras.edge_topology_sync_state",
+    "backend.app.features.connection.topology_retry_result -> backend.app.features.cameras.store",
+    "backend.app.features.detection_settings.router -> backend.app.features.audit.catalog",
+    "backend.app.features.detection_settings.router -> backend.app.features.audit.http",
+    "backend.app.features.evidence.event_outbox -> backend.app.features.audit.catalog",
+    "backend.app.features.evidence.event_outbox -> backend.app.features.audit.postgres_runtime",
+    "backend.app.features.evidence.operator_router -> backend.app.features.audit.catalog",
+    "backend.app.features.evidence.operator_router -> backend.app.features.audit.http",
+    "backend.app.features.evidence.postgres_receipt_sql -> backend.app.features.clips.listing",
+    "backend.app.features.evidence.postgres_receipts -> backend.app.features.clips.store",
+    "backend.app.features.evidence.receipt_files -> backend.app.features.clips.descriptor_files",
+    "backend.app.features.evidence.receipt_files -> backend.app.features.clips.manifest",
+    "backend.app.features.evidence.receipt_files -> backend.app.features.clips.store",
+    "backend.app.features.evidence.receipt_store -> backend.app.features.clips.manifest",
+    "backend.app.features.evidence.router -> backend.app.features.audit.catalog",
+    "backend.app.features.evidence.router -> backend.app.features.audit.http",
+    "backend.app.features.evidence.router -> backend.app.features.clips.store",
+    "backend.app.features.relay.router -> backend.app.features.audit.catalog",
+    "backend.app.features.relay.router -> backend.app.features.audit.http",
+    "backend.app.features.relay.router -> backend.app.features.cameras.router",
+    "backend.app.features.relay.router -> backend.app.features.cameras.store",
+    "backend.app.features.relay.router -> backend.app.features.cameras.update_command",
+    "backend.app.features.relay.router -> backend.app.features.evidence.event_outbox",
+    "backend.app.features.relay.router -> backend.app.features.evidence.outbox_delivery",
+    "backend.app.features.relay.router -> backend.app.features.evidence.outbox_dispatch",
+    "backend.app.features.relay.router -> backend.app.features.evidence.postgres_relay_projection",
+    "backend.app.features.relay.router -> backend.app.features.evidence.relay_projection",
+    "backend.app.features.relay.router -> backend.app.features.status.heartbeat_store",
+    "backend.app.features.relay.router -> backend.app.features.status.runtime_status_store",
+    "backend.app.features.runtime_settings.router -> backend.app.features.audit.catalog",
+    "backend.app.features.runtime_settings.router -> backend.app.features.audit.http",
+    "backend.app.features.status.backend_heartbeat_relay -> backend.app.features.cameras.store",
+    "backend.app.features.status.router -> backend.app.features.cameras.store",
+    "backend.app.features.status.system_router -> backend.app.features.clips.store",
 ]
 
 [[tool.importlinter.contracts]]

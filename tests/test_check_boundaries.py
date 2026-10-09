@@ -6,11 +6,7 @@ import pytest
 
 from scripts.check_boundaries import (
     ADVICE,
-    BARE_EXCEPT,
-    BLANKET_NOQA,
-    BLE_NOQA,
     BROAD_EXCEPT,
-    FILE_NOQA,
     SUPPRESS_BROAD,
     UNPARSEABLE,
     ZERO_ENFORCED_ROOTS,
@@ -45,10 +41,7 @@ def copied_exporter_source() -> str:
 
 
 RECORDED_BASELINE = {
-    "BLANKET_NOQA": 0,
-    "BLE_NOQA": 38,
     "BROAD_EXCEPT": 107,
-    "FILE_NOQA": 0,
     "SUPPRESS_BROAD": 4,
 }
 
@@ -67,14 +60,13 @@ def test_flags_the_catch_copied_into_the_exporter_in_71978e50() -> None:
         number for number, text in enumerate(source.splitlines(), start=1) if COPIED_REASON in text
     ]
     found = kinds_at(source, Path(COPIED_PATH))
-    assert (line, BLE_NOQA) in found
     assert (line, BROAD_EXCEPT) in found
 
 
 def test_advice_names_the_helper_to_use() -> None:
     source = "try:\n    pass\nexcept Exception:  # noqa: BLE001\n    pass\n"
     rendered = [finding.render() for finding in check_source(SAMPLE, source)]
-    assert rendered[1].startswith("worker/sample.py:3: BROAD_EXCEPT: ")
+    assert rendered[0].startswith("worker/sample.py:3: BROAD_EXCEPT: ")
     for helper in (
         "isolate()",
         "degrade(message=...)",
@@ -84,29 +76,7 @@ def test_advice_names_the_helper_to_use() -> None:
         "translate()",
         "root_sink()",
     ):
-        assert helper in rendered[1]
-    assert "shared.boundary helper" in rendered[0]
-
-
-def test_flags_a_blanket_noqa_on_a_broad_except_line() -> None:
-    source = "try:\n    pass\nexcept Exception:  # noqa\n    pass\n"
-    assert kinds(source) == [(3, BLANKET_NOQA), (3, BROAD_EXCEPT)]
-
-
-def test_a_blanket_noqa_away_from_an_except_line_is_not_a_boundary_finding() -> None:
-    assert kinds("import os  # noqa\n") == []
-
-
-@pytest.mark.parametrize(
-    "directive",
-    ["# ruff: noqa", "# ruff: noqa: BLE001", "# ruff: noqa: E501, BLE001", "#ruff:noqa"],
-)
-def test_flags_file_level_ruff_noqa_that_covers_blind_except(directive: str) -> None:
-    assert kinds(f"{directive}\nx = 1\n") == [(1, FILE_NOQA)]
-
-
-def test_file_level_ruff_noqa_for_other_codes_is_ignored() -> None:
-    assert kinds("# ruff: noqa: E501\nx = 1\n") == []
+        assert helper in rendered[0]
 
 
 def test_known_limit_an_aliased_exception_name_is_not_flagged() -> None:
@@ -141,7 +111,7 @@ def test_cli_reports_drift_against_the_baseline() -> None:
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
-        ("try:\n    pass\nexcept:\n    raise\n", [(3, BARE_EXCEPT)]),
+        ("try:\n    pass\nexcept:\n    raise\n", [(3, BROAD_EXCEPT)]),
         ("try:\n    pass\nexcept BaseException:\n    raise\n", [(3, BROAD_EXCEPT)]),
         ("try:\n    pass\nexcept (OSError, Exception):\n    pass\n", [(3, BROAD_EXCEPT)]),
         ("try:\n    pass\nexcept builtins.Exception:\n    pass\n", [(3, BROAD_EXCEPT)]),
