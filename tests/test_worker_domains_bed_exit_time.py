@@ -212,7 +212,7 @@ def test_night_window_suppressed_onset_does_not_poison_later_in_window_exit() ->
     assert events[0].bed_id == 0
 
 
-def test_none_time_sec_frame_neither_advances_dwell_nor_emits() -> None:
+def test_repeated_time_sec_frame_neither_advances_dwell_nor_emits() -> None:
     monitor = _night_monitor(_clock_at(22), in_bed_dwell_sec=1.0, outside_dwell_sec=3.0)
     assert monitor.update(_decision_input(IN_BED, BED, 0)) == ()
     assert monitor.update(_decision_input(IN_BED, BED, 1, bed_pose_features=_lying_pose())) == ()
@@ -220,7 +220,7 @@ def test_none_time_sec_frame_neither_advances_dwell_nor_emits() -> None:
     assert monitor.update(_decision_input(OUTSIDE, BED, 2)) == ()
     assert monitor._assignments[PERSON_ID].outside_dwell_sec == pytest.approx(1.0)
 
-    gap = replace(_decision_input(OUTSIDE, BED, 3), time_sec=None)
+    gap = replace(_decision_input(OUTSIDE, BED, 3), time_sec=2.0)
     assert monitor.update(gap) == ()
     assert monitor._assignments[PERSON_ID].outside_dwell_sec == pytest.approx(1.0)
 

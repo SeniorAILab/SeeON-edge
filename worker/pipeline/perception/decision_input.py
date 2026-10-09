@@ -32,7 +32,7 @@ def build_decision_input(
     frame_width: int,
     frame_height: int,
     live_track_ids: tuple[int, ...],
-    time_sec: float | None,
+    time_sec: float,
     frame_index: int,
     scene_state: SceneState,
     bed_scheduled: bool,

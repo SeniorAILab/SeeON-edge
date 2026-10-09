@@ -77,7 +77,7 @@ def test_build_decision_input_does_not_require_a_new_argument() -> None:
         frame_width=640,
         frame_height=480,
         live_track_ids=(),
-        time_sec=None,
+        time_sec=0.0,
         frame_index=0,
         scene_state=scene,
         bed_scheduled=False,

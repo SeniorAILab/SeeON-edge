@@ -246,16 +246,15 @@ class NativePolicyPump:
             ),
             track_ids=resolved_track_ids,
         )
+        source_pts = frame.identity.source_pts
+        if source_pts is None:
+            raise RuntimeError("pts missing after slot admission")
         decision_input = build_decision_input(
             observation,
             frame_width=metadata.source_width,
             frame_height=metadata.source_height,
             live_track_ids=association.live_track_ids,
-            time_sec=(
-                None
-                if frame.identity.source_pts is None
-                else frame.identity.source_pts / 1_000_000_000
-            ),
+            time_sec=source_pts / 1_000_000_000,
             frame_index=frame.identity.seq,
             scene_state=self._scene,
             bed_scheduled=frame.bed_region.state is not ChannelState.SKIPPED,

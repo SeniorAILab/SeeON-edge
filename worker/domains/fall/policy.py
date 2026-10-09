@@ -311,8 +311,7 @@ class FallDomainDecider:
             if track_id is not None and index < len(observation.keypoints)
         )
         rows = dict(pose_bbox56_tracks(tracks, input_value.frame_width, input_value.frame_height))
-        seconds = 0.0 if input_value.time_sec is None else input_value.time_sec
-        pts_ns = int(seconds * 1_000_000_000)
+        pts_ns = int(input_value.time_sec * 1_000_000_000)
         self._reset_on_pts_rollback(pts_ns)
         classifier = self.classifier
         if not hasattr(classifier, "update") or not hasattr(
@@ -338,7 +337,7 @@ class FallDomainDecider:
             probabilities,
             input_value.live_track_ids,
             frame_index=input_value.frame_index,
-            time_sec=0.0 if input_value.time_sec is None else input_value.time_sec,
+            time_sec=input_value.time_sec,
             missing_score_reasons=missing_score_reasons,
         )
 
