@@ -8,12 +8,12 @@ import cv2
 import numpy as np
 
 from contracts.observation import BoundingBox
-from worker.domains.bed_exit.geometry import containment_ratio
-from worker.domains.fall.preprocessing import (
+from tests_support.fall_feature_reference import (
     NormalizedPose,
     extract_window_features,
     normalize_pose,
 )
+from worker.domains.bed_exit.geometry import containment_ratio
 from worker.pipeline.perception.features.window_features import (
     extract_window_features as oracle_extract_window_features,
 )

@@ -19,6 +19,7 @@ shared across suites and operator scripts. Earned a file as a distinct domain
 | Local backend over real HTTP | `local_backend_fixture.py` | 3 |
 | Connection API server double | `connection_api.py` | 3 |
 | Exact golden-episode metrics from replay traces; has a CLI `main()` | `episode_metric.py` | 2 |
+| Plain-Python 45-feature fall window reference, oracle for the numpy extractor in `tests/test_domains_hardware_free_parity.py` | `fall_feature_reference.py` | 1 |
 | Production callables that own each audit action | `audit_production_owners.py` | 1 |
 
 ## Conventions
