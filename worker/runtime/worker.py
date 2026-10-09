@@ -139,7 +139,7 @@ from worker.runtime.provenance.environment import (
     RuntimeEnvironmentFacts,
     collect_runtime_environment_facts,
 )
-from worker.runtime.provenance.model_bundle import ModelBundleProof, admit_model_bundle
+from worker.runtime.provenance.model_bundle import admit_model_bundle
 from worker.runtime.provenance.store import AppliedRuntimeManifestStore
 from worker.runtime.state_dir import resolve_state_dir
 from worker.runtime.telemetry.runtime_diagnostics import WorkerDiagnostics
@@ -171,47 +171,35 @@ CLIP_ANALYSIS_CPU_ENV: Final = "ML_WORKER_CLIP_ANALYSIS_CPU"
 def _validate_fall_bundle_conformance(
     conformance: ort_pose_bbox56.PoseBbox56Conformance,
 ) -> None:
-    if conformance.keypoint_order != COCO17_KEYPOINT_ORDER:
-        raise ModelLoadError(
-            "bundle conformance keypoint_order differs from COCO-17 domain order: "
-            f"bundle {list(conformance.keypoint_order)!r}, "
-            f"runner {list(COCO17_KEYPOINT_ORDER)!r}"
-        )
-    if conformance.confidence_gate != POSE_BBOX56_CONFIDENCE_GATE:
-        raise ModelLoadError(
-            "bundle conformance confidence.gate differs from domain contract: "
-            f"bundle {conformance.confidence_gate:g}, "
-            f"runner {POSE_BBOX56_CONFIDENCE_GATE:g}"
-        )
-    coordinate_system = conformance.coordinate_system
-    expected_coordinates = {
-        "origin": "top_left",
-        "xy_normalization_denominators": {
-            "x": "frame_width",
-            "y": "frame_height",
+    expected = {
+        "keypoint_order": COCO17_KEYPOINT_ORDER,
+        "confidence_gate": POSE_BBOX56_CONFIDENCE_GATE,
+        "coordinate_system": {
+            "origin": "top_left",
+            "xy_normalization_denominators": {"x": "frame_width", "y": "frame_height"},
+            "xy_normalization_rule": (
+                "clip finite raw coordinates to inclusive raw bounds, then divide "
+                "x by frame_width and y by frame_height"
+            ),
         },
-        "xy_normalization_rule": (
-            "clip finite raw coordinates to inclusive raw bounds, then divide "
-            "x by frame_width and y by frame_height"
-        ),
+        "window_frames": FALL_WINDOW_FRAMES,
+        "stride_frames": FALL_STRIDE_FRAMES,
+        "fps": CURRENT_TEMPORAL_PROFILE.pose_fps,
     }
-    observed_coordinates = {key: coordinate_system.get(key) for key in expected_coordinates}
-    if observed_coordinates != expected_coordinates:
+    observed = {
+        "keypoint_order": conformance.keypoint_order,
+        "confidence_gate": conformance.confidence_gate,
+        "coordinate_system": {
+            k: conformance.coordinate_system.get(k) for k in expected["coordinate_system"]
+        },
+        "window_frames": conformance.window_frames,
+        "stride_frames": conformance.stride_frames,
+        "fps": conformance.fps,
+    }
+    if observed != expected:
         raise ModelLoadError(
-            "bundle conformance coordinate normalization differs from pose_bbox56 domain "
-            f"contract: bundle {observed_coordinates!r}, runner {expected_coordinates!r}"
-        )
-    if conformance.window_frames != FALL_WINDOW_FRAMES:
-        raise ModelLoadError(
-            "bundle conformance temporal.window_frames differs from domain contract: "
-            f"bundle {conformance.window_frames}, runner {FALL_WINDOW_FRAMES}"
-        )
-    expected_fps = CURRENT_TEMPORAL_PROFILE.pose_fps
-    if conformance.stride_frames != FALL_STRIDE_FRAMES or conformance.fps != expected_fps:
-        raise ModelLoadError(
-            "bundle conformance temporal stride/fps differs from domain temporal profile: "
-            f"bundle stride_frames={conformance.stride_frames}, fps={conformance.fps:g}; "
-            f"runner stride_frames={FALL_STRIDE_FRAMES}, fps={expected_fps:g}"
+            f"bundle conformance differs from the domain contract: bundle {observed!r}, "
+            f"runner {expected!r}"
         )
 
 
@@ -639,7 +627,6 @@ class WorkerRuntime:
         self._native_policy_pumps: tuple[NativePolicyPump, ...] = ()
         self._native_policy_pumps_by_camera: dict[str, NativePolicyPump] = {}
         self._policy_pump_threads: tuple[threading.Thread, ...] = ()
-        self._selected_bundle_admission: ModelBundleProof | None = None
         self._execution_record_lanes = None
         self._execution_record_exporter = None
 
@@ -853,7 +840,6 @@ class WorkerRuntime:
 
     def _initialize_models(self, boot: BootContext) -> SharedComponentGraph:
         self._boot = boot
-        self._admit_selected_fall_bundle()
         self.fault_handler = FaultHandler(
             boot.profile.name, hard_exit=self._hard_exit, state_dir=self._state_dir
         )
@@ -865,15 +851,6 @@ class WorkerRuntime:
         if models is None:
             raise RuntimeError("fall model must be explicitly configured; refusing to boot")
         return models
-
-    def _admit_selected_fall_bundle(self) -> None:
-        models = self._fall_models()
-        selected = models.selected
-        if selected is None:
-            return
-        if models.box_source != "pose":
-            raise RuntimeError("selected fall bundle requires box_source=pose")
-        self._selected_bundle_admission = admit_model_bundle(selected.models_root, selected.desired)
 
     def _initialize_flow_media_plane(self, boot: BootContext) -> SharedComponentGraph:
         self._flow_engine_identity = verify_flow_boot_inputs(
@@ -971,24 +948,19 @@ class WorkerRuntime:
 
     def _create_fall_model(self) -> FallModelProtocol:
         models = self._fall_models()
-        selected = models.selected
-        if selected is not None:
-            selection = selected.desired.selection
-            if selection is None:
-                raise RuntimeError("selected fall bundle has no selection contract")
-            artifact_dir = selected.models_root / "bundles" / selected.desired.bundle_sha256
-            if selection.runtime_format != "onnxruntime":
-                raise RuntimeError(
-                    "flow profile refuses a Torch fall bundle; the selected runtime_format "
-                    "must be onnxruntime (export model.onnx with worker.tools.export_fall_onnx)"
+        reference = models.fall_model
+        if reference is not None:
+            bundle_dir = reference.bundle_dir(models.models_root)
+            if models.box_source != "pose":
+                raise RuntimeError("fall bundle requires box_source=pose")
+            try:
+                runner = ort_pose_bbox56.OrtPoseBbox56Runner.from_admitted_bundle(
+                    bundle_dir, admit_model_bundle(bundle_dir)
                 )
-            proof = self._selected_bundle_admission
-            if proof is None:
-                raise RuntimeError("selected fall bundle must be admitted before construction")
-            runner = ort_pose_bbox56.OrtPoseBbox56Runner.from_admitted_bundle(
-                artifact_dir, proof, selection
-            )
-            _validate_fall_bundle_conformance(runner.conformance)
+                _validate_fall_bundle_conformance(runner.conformance)
+            except ModelLoadError as exc:
+                cause = " ".join(str(exc).split())
+                raise ModelLoadError(f"fall model {reference}: {cause}") from exc
             self._loaded_fall_bundle = ort_pose_bbox56.PackagedFallBundle(
                 runner, runner.artifact_digest, runner.preprocessing_identity
             )
@@ -1172,18 +1144,8 @@ class WorkerRuntime:
             plane.metadata.set_execution_record_sink(lanes)
 
     def _fall_calibration_digest(self) -> str | None:
-        models = self._fall_models()
-        root = None if models.fall is None else models.fall.artifact_dir
-        if root is None and models.selected is not None:
-            root = models.selected.models_root / "bundles" / models.selected.desired.bundle_sha256
-        if root is None:
-            return None
-        try:
-            from worker.adapters.model.pose_bbox56_bundle_support import member_digest, read_json
-
-            return member_digest(read_json(root / "bundle-manifest.json"), "calibration.json")
-        except Exception:  # noqa: BLE001
-            return None
+        bundle = self._loaded_fall_bundle
+        return None if bundle is None else bundle.runner.calibration_digest
 
     @staticmethod
     def _replay_sealed_clips(bindings: Sequence[FlowEvidenceBinding]) -> int:
@@ -1440,7 +1402,7 @@ class WorkerRuntime:
             )
         except Exception:
             self._runtime_manifest = None
-            if self._selected_bundle_admission is not None:
+            if self._fall_models().fall_model is not None:
                 raise
             LOGGER.warning(
                 "runtime provenance could not be applied; continuing without it",

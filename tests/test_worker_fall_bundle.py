@@ -10,13 +10,12 @@ from typing import final
 import numpy as np
 import pytest
 
-from contracts.model_selection import (
-    ModelPublication,
-    ModelSelection,
-)
 from contracts.runner import Image, RunnerResult
 from shared.detection_policies import default_policy_bundle
-from tests_support.pose_bbox56_bundle_artifact import write_pose_bbox56_bundle
+from tests_support.pose_bbox56_bundle_artifact import (
+    write_admitted_pose_bbox56_bundle,
+    write_pose_bbox56_bundle,
+)
 from worker.adapters.model import ort_pose_bbox56
 from worker.adapters.model.errors import ModelLoadError
 from worker.adapters.model.ort_pose_bbox56 import OrtPoseBbox56Runner
@@ -26,13 +25,12 @@ from worker.domains.fall import FallPolicyDecider, FallWindowClassifier
 from worker.domains.registry import _audit_snapshot, _effective_transition_threshold
 from worker.interfaces.fall_model import BinaryFallScoreEvidence, FallProbabilities
 from worker.runtime import bootstrap
-from worker.runtime.config import WorkerConfig, local_env
-from worker.runtime.config.worker_models import SelectedFallBundleConfig
+from worker.runtime.config import WorkerConfig
 from worker.runtime.lease import GpuLease
 from worker.runtime.profile.boot import BootContext
 from worker.runtime.profile.registry import PROFILE_REGISTRY
 from worker.runtime.provenance.manifest import RuntimeEnvironmentFacts
-from worker.runtime.provenance.model_bundle import DesiredModelBundle, admit_model_bundle
+from worker.runtime.provenance.model_bundle import admit_model_bundle
 from worker.runtime.worker import WorkerRuntime, _validate_fall_bundle_conformance
 from worker.tools.export_fall_onnx import export_fall_onnx
 from worker.tools.fetch_models.fetcher import VerificationError, _require_loadable_fall_bundle
@@ -127,7 +125,7 @@ def test_exported_onnx_is_idempotent_and_loadable_by_the_flow_runner(tmp_path: P
 
     assert second_digest == first_digest
     assert manifest_path.read_bytes() == manifest_after_first_export
-    assert OrtPoseBbox56Runner.from_artifact_dir(artifact_dir, "cpu").device == "cpu"
+    assert OrtPoseBbox56Runner.from_artifact_dir(artifact_dir).device == "cpu"
 
 
 def _config(*, with_fall: dict[str, object] | None = None) -> WorkerConfig:
@@ -178,85 +176,6 @@ def _flow_boot() -> BootContext:
         encode=profile.encode,
         requested_profile="flow",
     )
-
-
-def _selected_onnx_bundle(
-    tmp_path: Path,
-    *,
-    temperature: float = 1.0,
-    transition_threshold: float = 0.5,
-    threshold_source: str = "default",
-    calibration_grants: tuple[bool, float] | None = None,
-    class_order: list[str] | None = None,
-    temporal_rule: object = None,
-) -> tuple[Path, DesiredModelBundle]:
-    source = write_pose_bbox56_bundle(tmp_path / "source", temperature=temperature)
-    grants_receipt = threshold_source == "receipt"
-    if calibration_grants is None and grants_receipt:
-        calibration_grants = (True, transition_threshold)
-    if class_order is not None or temporal_rule is not None or calibration_grants is not None:
-        calibration_path = source / "calibration.json"
-        calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
-        if calibration_grants is not None:
-            calibration["promotion_eligible"], calibration["threshold"] = calibration_grants
-        if class_order is not None:
-            calibration["class_order"] = class_order
-        if temporal_rule is not None:
-            if temporal_rule == "missing":
-                del calibration["temporal_rule"]
-            else:
-                calibration["temporal_rule"] = temporal_rule
-        calibration_path.write_text(
-            json.dumps(calibration, sort_keys=True),
-            encoding="utf-8",
-        )
-    members = {
-        path: (source / path).read_bytes()
-        for path in (
-            "model.onnx",
-            "calibration.json",
-            "conformance/pose-bbox56-v1.json",
-            "bundle-manifest.json",
-        )
-    }
-    member_records = [
-        {"path": path, "sha256": hashlib.sha256(content).hexdigest(), "size": len(content)}
-        for path, content in members.items()
-    ]
-    payload = {"identities": {}}
-    bundle_sha256 = hashlib.sha256(
-        json.dumps(
-            {"members": member_records, "payload": payload},
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-    ).hexdigest()
-    root = tmp_path / "models" / "bundles" / bundle_sha256
-    root.mkdir(parents=True)
-    for path, content in members.items():
-        (root / path).parent.mkdir(parents=True, exist_ok=True)
-        (root / path).write_bytes(content)
-    (root / "manifest.json").write_bytes(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "bundle_sha256": bundle_sha256,
-                "runtime_format": "onnxruntime",
-                "members": member_records,
-                "payload": payload,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-        + b"\n"
-    )
-    selection = ModelSelection(
-        model_publication=ModelPublication("facility/fall", "a" * 40, bundle_sha256),
-        runtime_format="onnxruntime",
-        transition_threshold=transition_threshold,
-        threshold_source=threshold_source,
-    )
-    return tmp_path / "models", DesiredModelBundle(bundle_sha256, selection)
 
 
 def test_probability_only_result_has_no_inferred_binary_evidence() -> None:
@@ -317,15 +236,11 @@ def test_packaged_onnx_result_retains_per_call_binary_score_evidence(
 def test_admitted_non_promotable_onnx_result_still_applies_loaded_temperature(
     tmp_path: Path,
 ) -> None:
-    models_root, desired = _selected_onnx_bundle(tmp_path, temperature=4.0)
-    selection = desired.selection
-    assert selection is not None
-    proof = admit_model_bundle(models_root, desired)
+    bundle_dir = write_admitted_pose_bbox56_bundle(tmp_path, temperature=4.0)
     session = _ControlledLogitSession(-2.0)
     runner = OrtPoseBbox56Runner.from_admitted_bundle(
-        models_root / "bundles" / desired.bundle_sha256,
-        proof,
-        selection,
+        bundle_dir,
+        admit_model_bundle(bundle_dir),
         session_factory=lambda _path, _providers: session,
     )
 
@@ -432,10 +347,7 @@ def test_packaged_bundle_refuses_conformance_preprocessing_identity(
 
     with pytest.raises(
         ModelLoadError,
-        match=(
-            "bundle 'replacement-preprocessing-v2'.*"
-            "runner 'coco17-xyc-plus-pose-head-xyxy-valid-f32-v1'"
-        ),
+        match="preprocessing_identity 'replacement-preprocessing-v2'",
     ):
         OrtPoseBbox56Runner.from_artifact_dir(
             root, session_factory=lambda *_args: _ControlledLogitSession()
@@ -445,10 +357,10 @@ def test_packaged_bundle_refuses_conformance_preprocessing_identity(
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        (lambda document: document["vector"].update(length=57), "vector length 57"),
+        (lambda document: document["vector"].update(length=57), "vector.length"),
         (
             lambda document: document["temporal"].update(window_frames=31),
-            "temporal.window_frames 31",
+            "temporal.window_frames",
         ),
     ],
 )
@@ -478,10 +390,7 @@ def test_packaged_bundle_refuses_calibration_for_other_preprocessing(
 
     with pytest.raises(
         ModelLoadError,
-        match=(
-            "declared 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'.*"
-            "coco17-xyc-plus-pose-head-xyxy-valid-f32-v1.*6ab6d816"
-        ),
+        match="preprocessing_identity_digest",
     ):
         OrtPoseBbox56Runner.from_artifact_dir(
             root, session_factory=lambda *_args: _ControlledLogitSession()
@@ -512,15 +421,15 @@ def test_packaged_bundle_refuses_calibration_for_other_preprocessing(
                     },
                 },
             ),
-            "coordinate normalization",
+            "differs from the domain contract",
         ),
         (
             lambda contract: replace(contract, stride_frames=1),
-            "stride/fps",
+            "differs from the domain contract",
         ),
         (
             lambda contract: replace(contract, fps=30.0),
-            "stride/fps",
+            "differs from the domain contract",
         ),
     ],
 )
@@ -695,68 +604,14 @@ def test_packaged_bundle_applies_a_runtime_manifest_with_nvdec_camera(
     assert camera["effective_decode_backend"] == "nvdec"
 
 
-def test_selected_bundle_composes_a_runtime_manifest_with_runner_preprocessing_identity(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    models_root, desired = _selected_onnx_bundle(tmp_path)
-    selection = desired.selection
-    assert selection is not None
-    selected_config = SelectedFallBundleConfig(models_root=models_root, desired=desired)
-    selection_path = tmp_path / "model-selection.json"
-    selection_path.write_bytes(
-        json.dumps(
-            selection.as_dict(),
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-    )
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(local_env, "FALL_SELECTION_PATH", selection_path)
-    monkeypatch.setattr(local_env, "FALL_MODELS_ROOT", models_root)
-    models = local_env.worker_models_config_from_environment({})
-    assert models.fall is None
-    assert models.selected == selected_config
-    config = _config().model_copy(update={"models": models})
-    runtime = _runtime(config, _ForbiddenServingClient(), tmp_path)
-    runtime._admit_selected_fall_bundle()
-    boot = _flow_boot()
-    runtime._boot = boot
-    graph = runtime._initialize_flow_policy_graph(boot)
-    [fall] = [
-        identity for identity in graph.identities if identity.component_id == "fall-classifier"
-    ]
-
-    assert fall.preprocessing_identity == selection.preprocessing_identity
-    assert fall.preprocessing_identity != selection.input_observation_schema
-
-    plan = runtime._preflight_camera_graph(config.cameras[0])
-    runtime._apply_runtime_manifest(boot, {"camera-a": plan})
-
-    manifest = runtime._runtime_manifest
-    assert manifest is not None
-    [camera] = json.loads(manifest.canonical_json)["cameras"]
-    assert camera["effective_decode_backend"] == "nvdec"
-    components = json.loads(manifest.canonical_json)["components"]
-    [manifest_fall] = [
-        component for component in components if component["component_id"] == "fall-classifier"
-    ]
-    assert manifest_fall["preprocessing_identity"] == selection.preprocessing_identity
-
-
 def test_selected_bundle_uses_the_admitted_onnx_member_without_model_pt(tmp_path: Path) -> None:
-    models_root, desired = _selected_onnx_bundle(
-        tmp_path, transition_threshold=0.31, threshold_source="receipt"
+    artifact_dir = write_admitted_pose_bbox56_bundle(
+        tmp_path, receipt_threshold=0.31, promotion_eligible=True
     )
-    selection = desired.selection
-    assert selection is not None
-    proof = admit_model_bundle(models_root, desired)
-    artifact_dir = models_root / "bundles" / desired.bundle_sha256
 
     runner = OrtPoseBbox56Runner.from_admitted_bundle(
         artifact_dir,
-        proof,
-        selection,
+        admit_model_bundle(artifact_dir),
         session_factory=lambda _path, _providers: _ControlledLogitSession(),
     )
 
@@ -864,103 +719,24 @@ def test_packaged_loaders_ignore_contradictory_evaluation_receipt(
     ],
 )
 def test_bundle_refuses_malformed_temporal_rule(tmp_path: Path, temporal_rule: object) -> None:
-    models_root, desired = _selected_onnx_bundle(tmp_path, temporal_rule=temporal_rule)
-    selection = desired.selection
-    assert selection is not None
-    proof = admit_model_bundle(models_root, desired)
+    bundle_dir = write_admitted_pose_bbox56_bundle(tmp_path, temporal_rule=temporal_rule)
 
     with pytest.raises(ModelLoadError, match="temporal_rule"):
         OrtPoseBbox56Runner.from_admitted_bundle(
-            models_root / "bundles" / desired.bundle_sha256,
-            proof,
-            selection,
-            session_factory=lambda _path, _providers: _ControlledLogitSession(),
-        )
-
-
-def test_selected_receipt_without_threshold_refuses_construction(tmp_path: Path) -> None:
-    models_root, desired = _selected_onnx_bundle(tmp_path, threshold_source="receipt")
-    selection = desired.selection
-    assert selection is not None
-    proof = admit_model_bundle(models_root, desired)
-
-    with pytest.raises(ModelLoadError, match="receipt threshold"):
-        OrtPoseBbox56Runner.from_admitted_bundle(
-            models_root / "bundles" / desired.bundle_sha256,
-            proof,
-            replace(selection, transition_threshold=None),  # type: ignore[arg-type]
-            session_factory=lambda _path, _providers: _ControlledLogitSession(),
-        )
-
-
-def test_selected_default_source_with_a_non_default_threshold_refuses(tmp_path: Path) -> None:
-    models_root, desired = _selected_onnx_bundle(tmp_path)
-    selection = desired.selection
-    assert selection is not None
-    proof = admit_model_bundle(models_root, desired)
-
-    with pytest.raises(ModelLoadError, match="threshold_source is 'default'"):
-        OrtPoseBbox56Runner.from_admitted_bundle(
-            models_root / "bundles" / desired.bundle_sha256,
-            proof,
-            replace(selection, threshold_source="default", transition_threshold=0.3),
-            session_factory=lambda _path, _providers: _ControlledLogitSession(),
-        )
-
-
-def test_selected_receipt_claim_refuses_when_the_calibration_grants_none(tmp_path: Path) -> None:
-    models_root, desired = _selected_onnx_bundle(
-        tmp_path, threshold_source="receipt", calibration_grants=(False, 0.5)
-    )
-    selection = desired.selection
-    assert selection is not None
-    bundle_dir = models_root / "bundles" / desired.bundle_sha256
-    proof = admit_model_bundle(models_root, desired)
-
-    with pytest.raises(ModelLoadError, match="not promotion-eligible"):
-        OrtPoseBbox56Runner.from_admitted_bundle(
             bundle_dir,
-            proof,
-            selection,
-            session_factory=lambda _path, _providers: _ControlledLogitSession(),
-        )
-
-
-def test_selected_receipt_claim_refuses_when_the_granted_threshold_differs(
-    tmp_path: Path,
-) -> None:
-    models_root, desired = _selected_onnx_bundle(
-        tmp_path,
-        threshold_source="receipt",
-        transition_threshold=0.3,
-        calibration_grants=(True, 0.05),
-    )
-    selection = desired.selection
-    assert selection is not None
-    bundle_dir = models_root / "bundles" / desired.bundle_sha256
-    proof = admit_model_bundle(models_root, desired)
-
-    with pytest.raises(ModelLoadError, match=r"declares receipt threshold 0\.3 .*grants 0\.05"):
-        OrtPoseBbox56Runner.from_admitted_bundle(
-            bundle_dir,
-            proof,
-            selection,
+            admit_model_bundle(bundle_dir),
             session_factory=lambda _path, _providers: _ControlledLogitSession(),
         )
 
 
 def test_selected_bundle_refuses_reversed_calibration_class_order(tmp_path: Path) -> None:
     observed_order = ["fall_transition_proxy", "non_fall"]
-    models_root, desired = _selected_onnx_bundle(tmp_path, class_order=observed_order)
-    selection = desired.selection
-    assert selection is not None
-    proof = admit_model_bundle(models_root, desired)
+    bundle_dir = write_admitted_pose_bbox56_bundle(tmp_path, class_order=observed_order)
 
-    with pytest.raises(ModelLoadError, match=r"\['fall_transition_proxy', 'non_fall'\]"):
+    with pytest.raises(ModelLoadError, match="class_order"):
         OrtPoseBbox56Runner.from_admitted_bundle(
-            models_root / "bundles" / desired.bundle_sha256,
-            proof,
-            selection,
+            bundle_dir,
+            admit_model_bundle(bundle_dir),
             session_factory=lambda _path, _providers: _ControlledLogitSession(),
         )
 
@@ -981,29 +757,19 @@ def test_packaged_bundle_refuses_reversed_calibration_class_order(tmp_path: Path
     calibration_member["size"] = calibration_path.stat().st_size
     manifest_path.write_text(json.dumps(manifest, indent=1, sort_keys=True), encoding="utf-8")
 
-    with pytest.raises(ModelLoadError, match=r"\['fall_transition_proxy', 'non_fall'\]"):
+    with pytest.raises(ModelLoadError, match="class_order"):
         ort_pose_bbox56.load_packaged_fall_bundle(artifact_dir)
 
 
 def test_selected_bundle_refuses_calibration_class_order_with_wrong_count(tmp_path: Path) -> None:
-    models_root, desired = _selected_onnx_bundle(tmp_path, class_order=["non_fall"])
-    selection = desired.selection
-    assert selection is not None
-    proof = admit_model_bundle(models_root, desired)
+    bundle_dir = write_admitted_pose_bbox56_bundle(tmp_path, class_order=["non_fall"])
 
-    with pytest.raises(ModelLoadError, match="must contain exactly 2 entries"):
+    with pytest.raises(ModelLoadError, match="class_order"):
         OrtPoseBbox56Runner.from_admitted_bundle(
-            models_root / "bundles" / desired.bundle_sha256,
-            proof,
-            selection,
+            bundle_dir,
+            admit_model_bundle(bundle_dir),
             session_factory=lambda _path, _providers: _ControlledLogitSession(),
         )
-
-
-def test_bundle_runner_refuses_a_non_cpu_device(tmp_path: Path) -> None:
-    artifact_dir = write_pose_bbox56_bundle(tmp_path / "bundle")
-    with pytest.raises(Exception, match="pinned to cpu"):
-        PoseBbox56BundleRunner.from_artifact_dir(artifact_dir, device="cuda")
 
 
 def test_run_refuses_to_start_with_refuse_to_start_exit_code_when_fall_is_unconfigured(

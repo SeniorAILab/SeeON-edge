@@ -224,6 +224,7 @@ services:
       # Optional Hugging Face token for rate-limited or gated pulls. Sent to
       # Hugging Face sources only and never logged; leave empty for public.
       HF_TOKEN: ${HF_TOKEN:-}
+      ML_WORKER_FALL_MODEL: ${ML_WORKER_FALL_MODEL:-}
     volumes:
       - worker-models:/models:rw
     command:
@@ -300,6 +301,8 @@ services:
       ML_WORKER_FLOW_RECORD_CACHE_SECONDS: "30"
       ML_WORKER_FLOW_FRAME_WIDTH: "640"
       ML_WORKER_FLOW_FRAME_HEIGHT: "360"
+      # Optional fall model reference <owner>/<name>@<40-hex commit>; empty uses the packaged default.
+      ML_WORKER_FALL_MODEL: ${ML_WORKER_FALL_MODEL:-}
       # Enable after the site soak.
       ML_WORKER_CLIP_ANALYSIS_CPU: ${ML_WORKER_CLIP_ANALYSIS_CPU:-}
       ML_WORKER_FLOW_BATCH_SIZE: ${ML_WORKER_FLOW_BATCH_SIZE:?ML_WORKER_FLOW_BATCH_SIZE is required}
@@ -322,11 +325,6 @@ services:
     volumes:
       # Fixed image-adjacent model root, populated by edge-model-fetch.
       - worker-models:/models:ro
-      # Deployment owns the fall-model selection, not the image: the read-only
-      # selection mount lives in compose.edge.model-selection.yaml and is added
-      # with `-f` only when a selection document exists on the host. Binding it
-      # unconditionally made Docker create /deployment/model-selection.json as a
-      # directory on a fresh host and the worker refused to boot (#498).
       # The deployed pose+bbox56 bundle is mounted read-only.
       - worker-models:/app/models:ro
       # Engines are prepared explicitly from the image-pinned manifest. Runtime

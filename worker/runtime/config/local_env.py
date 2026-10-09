@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -8,38 +7,24 @@ from typing import Final, Literal
 
 from pydantic import ValidationError
 
-from contracts.model_selection import POSE_BBOX56_PREPROCESSING_IDENTITY
+from contracts.model import POSE_BBOX56_PREPROCESSING_IDENTITY
+from contracts.model_reference import parse_model_reference
 from worker.runtime.config.errors import WorkerConfigError
 from worker.runtime.config.worker_models import (
     ClipRecordingConfig,
     DevMjpegConfig,
     FallModelConfig,
-    SelectedFallBundleConfig,
     WorkerConfig,
     WorkerModelsConfig,
-)
-from worker.runtime.provenance.model_bundle import (
-    ModelBundleAdmissionError,
-    desired_model_bundle_from_selection_document,
 )
 
 ML_WORKER_CLIP_RECORDING_ENABLED_ENV: Final = "ML_WORKER_CLIP_RECORDING_ENABLED"
 WORKER_REPLAY_TRACE_DIR_ENV: Final = "WORKER_REPLAY_TRACE_DIR"
-FALL_SELECTION_PATH: Final = Path("/app/model-selection.json")
-FALL_MODELS_ROOT: Final = Path("/models")
+ML_WORKER_FALL_MODEL_ENV: Final = "ML_WORKER_FALL_MODEL"
 
 _RETIRED_WORKER_ENV: Final = frozenset(
     {
         ML_WORKER_CLIP_RECORDING_ENABLED_ENV,
-        "ML_WORKER_FALL_MODEL_ARCHITECTURE",
-        "ML_WORKER_FALL_MODEL_ARTIFACT_DIR",
-        "ML_WORKER_FALL_MODEL_OPERATING_THRESHOLD",
-        "ML_WORKER_FALL_MODEL_PREPROCESSING_IDENTITY",
-        "ML_WORKER_FALL_MODEL_SCHEMA_VERSION",
-        "ML_WORKER_FALL_MODEL_STRIDE",
-        "ML_WORKER_FALL_MODEL_TYPE",
-        "ML_WORKER_FALL_MODEL_WEIGHTS",
-        "ML_WORKER_FALL_MODEL_WINDOW",
         "CLIP_STORE_DIR",
         "EDGE_CAMERA_CONFIG",
         "EDGE_CAMERA_CONFIG_FILE",
@@ -74,8 +59,7 @@ _DEFAULT_OPERATING_THRESHOLD: Final = 0.5
 _DEFAULT_SCHEMA_VERSION: Final = 2
 _DEFAULT_PREPROCESSING_IDENTITY: Final = POSE_BBOX56_PREPROCESSING_IDENTITY
 _FETCH_MODELS_HINT: Final = (
-    "run scripts/fetch-models.sh to download the packaged pose+bbox56 model "
-    "weights"
+    "run scripts/fetch-models.sh to download the packaged pose+bbox56 model weights"
 )
 
 
@@ -127,43 +111,16 @@ def fall_model_config_from_environment(
         ) from error
 
 
-def selected_fall_bundle_config_from_environment(
-    environ: Mapping[str, str] | None = None,
-    *,
-    selection_path: Path | None = None,
-    models_root: Path | None = None,
-) -> SelectedFallBundleConfig | None:
-    selection_path = FALL_SELECTION_PATH if selection_path is None else selection_path
-    models_root = FALL_MODELS_ROOT if models_root is None else models_root
-    if not selection_path.exists():
-        return None
-    try:
-        raw_selection = selection_path.read_bytes()
-        selection_document = json.loads(raw_selection)
-        canonical_selection = json.dumps(
-            selection_document,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-            allow_nan=False,
-        ).encode()
-        if raw_selection != canonical_selection:
-            raise WorkerConfigError("fall selection must be canonical JSON")
-        desired = desired_model_bundle_from_selection_document(selection_document)
-        return SelectedFallBundleConfig(
-            models_root=models_root,
-            desired=desired,
-        )
-    except (OSError, ValueError, TypeError, ModelBundleAdmissionError) as error:
-        raise WorkerConfigError(f"invalid fall selection: {error}") from error
-
-
 def worker_models_config_from_environment(
     environ: Mapping[str, str] | None = None,
 ) -> WorkerModelsConfig:
-    selected = selected_fall_bundle_config_from_environment(environ)
-    if selected is not None:
-        return WorkerModelsConfig(selected=selected)
+    env = os.environ if environ is None else environ
+    reference = env.get(ML_WORKER_FALL_MODEL_ENV, "").strip()
+    if reference:
+        try:
+            return WorkerModelsConfig(fall_model=parse_model_reference(reference))
+        except ValueError as error:
+            raise WorkerConfigError(f"{ML_WORKER_FALL_MODEL_ENV}: {error}") from error
     return WorkerModelsConfig(
         fall=fall_model_config_from_environment(environ),
     )
@@ -184,10 +141,10 @@ def resolve_local_overrides(
     dev_mjpeg = (
         yaml_config.dev_mjpeg if yaml_config is not None and yaml_config.dev_mjpeg.enabled else None
     )
-    if environment_models.selected is not None:
+    if environment_models.fall_model is not None:
         if yaml_models is not None:
             raise WorkerConfigError(
-                "selected fall bundle cannot coexist with a packaged fall model"
+                f"{ML_WORKER_FALL_MODEL_ENV} cannot coexist with a packaged fall model"
             )
         return environment_models, clip, dev_mjpeg
     models = WorkerModelsConfig(
@@ -214,13 +171,11 @@ def replay_trace_directory_from_environment(
 
 
 __all__ = [
-    "FALL_MODELS_ROOT",
-    "FALL_SELECTION_PATH",
     "ML_WORKER_CLIP_RECORDING_ENABLED_ENV",
+    "ML_WORKER_FALL_MODEL_ENV",
     "fall_model_config_from_environment",
     "reject_retired_worker_environment",
     "replay_trace_directory_from_environment",
     "resolve_local_overrides",
-    "selected_fall_bundle_config_from_environment",
     "worker_models_config_from_environment",
 ]

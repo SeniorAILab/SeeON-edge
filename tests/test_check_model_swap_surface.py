@@ -5,19 +5,16 @@ from pathlib import Path
 import pytest
 
 from scripts.check_model_swap_surface import (
-    ALLOWED_SELECTION_KEYS,
     CEREMONY_LITERAL,
-    SELECTION_KEYS_DRIFT,
     STATUS_COMPARISON,
     UNPARSEABLE,
     ceremony_findings,
     in_scope,
-    selection_keys_findings,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECKER = REPO_ROOT / "scripts" / "check_model_swap_surface.py"
-SAMPLE = Path("contracts/model_selection.py")
+SAMPLE = Path("worker/runtime/provenance/model_bundle.py")
 
 
 def kinds(source: str) -> list[tuple[int, str]]:
@@ -50,20 +47,8 @@ def test_unparseable_source_fails() -> None:
     assert kinds("def (:\n") == [(0, UNPARSEABLE)]
 
 
-def test_matching_selection_keys_pass() -> None:
-    assert selection_keys_findings(ALLOWED_SELECTION_KEYS) == []
-
-
-@pytest.mark.parametrize(
-    "current",
-    [ALLOWED_SELECTION_KEYS | {"receipt"}, ALLOWED_SELECTION_KEYS - {"threshold_source"}],
-)
-def test_selection_keys_drift_fails(current: frozenset[str]) -> None:
-    assert [finding.kind for finding in selection_keys_findings(current)] == [SELECTION_KEYS_DRIFT]
-
-
-def test_scope_is_contract_and_provenance_only() -> None:
-    assert in_scope(Path("contracts/model_selection.py"))
+def test_scope_is_provenance_and_local_env_only() -> None:
+    assert in_scope(Path("worker/runtime/provenance/model_bundle.py"))
     assert in_scope(Path("worker/runtime/provenance/model_bundle.py"))
     assert not in_scope(Path("worker/runtime/worker.py"))
     assert not in_scope(Path("worker/runtime/provenance/notes.md"))

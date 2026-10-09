@@ -75,11 +75,11 @@ def test_default_env_with_no_overrides_resolves_packaged_manifest_defaults(
     assert config.operating_threshold == 0.5
 
 
-def test_model_policy_environment_keys_are_retired_explicitly() -> None:
+def test_policy_environment_keys_are_retired_explicitly() -> None:
     environ = {
-        "ML_WORKER_FALL_MODEL_WINDOW": "45",
-        "ML_WORKER_FALL_MODEL_STRIDE": "9",
-        "ML_WORKER_FALL_MODEL_OPERATING_THRESHOLD": "0.5",
+        "ML_WORKER_DEV_MJPEG_HOST": "0.0.0.0",
+        "ML_WORKER_DEV_MJPEG_PORT": "8090",
+        "RELAY_URL": "http://relay.test",
     }
 
     with pytest.raises(WorkerConfigError) as excinfo:
@@ -89,10 +89,10 @@ def test_model_policy_environment_keys_are_retired_explicitly() -> None:
     assert "versioned worker config authority" in str(excinfo.value)
 
 
-def test_retired_manifest_environment_keys_fail_instead_of_warning() -> None:
+def test_retired_clip_environment_keys_fail_instead_of_warning() -> None:
     environ = {
-        "ML_WORKER_FALL_MODEL_SCHEMA_VERSION": "2",
-        "ML_WORKER_FALL_MODEL_PREPROCESSING_IDENTITY": "some-other-identity",
+        "ML_WORKER_EVENT_CLIP_EXPORT_ENABLED": "1",
+        "ML_WORKER_DEV_MJPEG": "1",
     }
 
     with pytest.raises(WorkerConfigError) as excinfo:

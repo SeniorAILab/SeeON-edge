@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import torch
 from torch import nn
@@ -138,4 +139,42 @@ def write_pose_bbox56_bundle(
     return root
 
 
-__all__ = ["PREPROCESSING_IDENTITY_DIGEST", "write_pose_bbox56_bundle"]
+def write_admitted_pose_bbox56_bundle(
+    root: Path,
+    *,
+    class_order: list[str] | None = None,
+    temporal_rule: object = None,
+    **bundle_kwargs: Any,
+) -> Path:
+    source = write_pose_bbox56_bundle(root / "source", **bundle_kwargs)
+    calibration_path = source / "calibration.json"
+    calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+    if class_order is not None:
+        calibration["class_order"] = class_order
+    if temporal_rule == "missing":
+        del calibration["temporal_rule"]
+    elif temporal_rule is not None:
+        calibration["temporal_rule"] = temporal_rule
+    calibration_path.write_text(json.dumps(calibration, sort_keys=True), encoding="utf-8")
+    bundle = root / "bundle"
+    members = []
+    for relative in ("model.onnx", "calibration.json", "conformance/pose-bbox56-v1.json"):
+        payload = (source / relative).read_bytes()
+        (bundle / relative).parent.mkdir(parents=True, exist_ok=True)
+        (bundle / relative).write_bytes(payload)
+        members.append(
+            {"path": relative, "sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload)}
+        )
+    manifest = {"schema_version": 1, "runtime_format": "onnxruntime", "members": members}
+    (bundle / "manifest.json").write_bytes(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        + b"\n"
+    )
+    return bundle
+
+
+__all__ = [
+    "PREPROCESSING_IDENTITY_DIGEST",
+    "write_admitted_pose_bbox56_bundle",
+    "write_pose_bbox56_bundle",
+]

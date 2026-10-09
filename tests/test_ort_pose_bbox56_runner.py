@@ -60,19 +60,6 @@ def test_ort_runner_matches_torch_proxy_bundle(tmp_path: Path) -> None:
         assert result.fall_transition == pytest.approx(expected)
 
 
-def test_ort_runner_refuses_non_cpu_provider_before_session_creation(tmp_path: Path) -> None:
-    calls: list[object] = []
-
-    with pytest.raises(ModelLoadError, match="CPUExecutionProvider only"):
-        OrtPoseBbox56Runner.from_artifact_dir(
-            write_pose_bbox56_bundle(tmp_path),
-            providers=["CUDAExecutionProvider"],
-            session_factory=lambda *_args: calls.append("called"),
-        )
-
-    assert calls == []
-
-
 def test_ort_runner_refuses_tampered_onnx_before_session_creation(tmp_path: Path) -> None:
     root = write_pose_bbox56_bundle(tmp_path)
     (root / "model.onnx").write_bytes(b"tampered")

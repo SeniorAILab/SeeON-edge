@@ -7,7 +7,8 @@ from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Final
 
-from worker.tools.fetch_models.fetcher import VerificationError, fetch_all
+from contracts.model_reference import parse_model_reference
+from worker.tools.fetch_models.fetcher import VerificationError, fetch_all, fetch_reference
 from worker.tools.fetch_models.http_source import (
     RetryPolicy,
     SourceError,
@@ -16,9 +17,9 @@ from worker.tools.fetch_models.http_source import (
 )
 from worker.tools.fetch_models.manifest import MANIFEST_PATH, ManifestError, load_manifest
 
+MODEL_ENV: Final = "ML_WORKER_FALL_MODEL"
 DEST_ENV: Final = "ML_WORKER_FETCH_MODELS_DEST"
 PROG: Final = "fetch_models"
-MODEL_SELECTION_PATH: Final = Path("/app/model-selection.json")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -59,15 +60,6 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="fetch only public-source artifacts; skip Hugging Face artifacts",
     )
-    parser.add_argument(
-        "--selection-path",
-        type=Path,
-        default=MODEL_SELECTION_PATH,
-        help=(
-            "deployment model selection to provision when present "
-            f"(default: {MODEL_SELECTION_PATH})"
-        ),
-    )
     return parser
 
 
@@ -107,7 +99,24 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
     if environment.get("HF_TOKEN", "").strip():
         log("HF_TOKEN present; sent to Hugging Face sources only")
 
+    raw_model = environment.get(MODEL_ENV, "").strip()
     try:
+        reference = parse_model_reference(raw_model) if raw_model else None
+    except ValueError as exc:
+        log(f"FAILED: {MODEL_ENV}: {exc}")
+        return 1
+
+    try:
+        if reference is not None and not args.check:
+            log(f"fall model {reference}")
+            fetch_reference(
+                reference,
+                dest,
+                source,
+                env=environment,
+                retry=RetryPolicy(attempts=attempts),
+                log=log,
+            )
         report = fetch_all(
             manifest,
             dest,
@@ -116,7 +125,6 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
             retry=RetryPolicy(attempts=attempts),
             force=args.force,
             log=log,
-            selection_path=args.selection_path,
             public_only=args.public_only,
         )
     except (SourceError, VerificationError, OSError) as exc:

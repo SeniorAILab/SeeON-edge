@@ -6,142 +6,80 @@ from pathlib import Path
 
 import pytest
 
-from worker.runtime.provenance.model_bundle import (
-    ModelBundleAdmissionError,
-    admit_model_bundle,
-    desired_model_bundle_from_selection_document,
-)
+from worker.adapters.model.errors import ModelLoadError
+from worker.runtime.provenance.model_bundle import admit_model_bundle
 
 
 def _canonical(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
 
 
-def _selection(bundle_sha256: str) -> dict[str, object]:
-    return {
-        "schema_version": 3,
-        "model_publication": {
-            "source_locator": "seeon/fall-model",
-            "revision": "a" * 40,
-            "bundle_sha256": bundle_sha256,
-        },
-        "runtime_format": "opaque-bundle-format",
-        "transition_threshold": 0.5,
-        "threshold_source": "default",
-    }
+def _record(path: str, content: bytes) -> dict[str, object]:
+    return {"path": path, "sha256": hashlib.sha256(content).hexdigest(), "size": len(content)}
 
 
-def _bundle(
-    tmp_path: Path,
-    members: dict[str, bytes] | None = None,
-    *,
-    receipts: dict[str, bytes] | None = None,
-) -> tuple[Path, object]:
-    members = (
-        {
-            "model.onnx": b"model",
-            "calibration.json": b'{"calibration": true}',
-            "conformance/pose-bbox56-v1.json": b'{"conformance": true}',
-            "bundle-manifest.json": b'{"schema_version":"bundle-manifest/proxy-v0"}',
-        }
-        if members is None
-        else members
-    )
-    payload = {"identities": {"anything": "the producer chooses"}}
-    member_records = [
-        {"path": path, "sha256": hashlib.sha256(content).hexdigest(), "size": len(content)}
-        for path, content in members.items()
-    ]
-    bundle_sha256 = hashlib.sha256(
-        json.dumps(
-            {"members": member_records, "payload": payload},
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-    ).hexdigest()
-    root = tmp_path / "models" / "bundles" / bundle_sha256
-    root.mkdir(parents=True)
-    receipt_records = []
+def _bundle(tmp_path: Path, *, receipts: dict[str, bytes] | None = None) -> Path:
+    members = {"model.onnx": b"model", "calibration.json": b'{"calibration": true}'}
+    root = tmp_path / "bundle"
+    root.mkdir()
     for path, content in {**members, **(receipts or {})}.items():
-        (root / path).parent.mkdir(parents=True, exist_ok=True)
         (root / path).write_bytes(content)
-    for path, content in (receipts or {}).items():
-        receipt_records.append(
-            {"path": path, "sha256": hashlib.sha256(content).hexdigest(), "size": len(content)}
-        )
-    manifest = {
+    manifest: dict[str, object] = {
         "schema_version": 1,
-        "bundle_sha256": bundle_sha256,
-        "runtime_format": "opaque-bundle-format",
-        "members": member_records,
-        "payload": payload,
+        "runtime_format": "onnxruntime",
+        "members": [_record(path, content) for path, content in members.items()],
     }
-    if receipt_records:
-        manifest["receipts"] = receipt_records
+    if receipts:
+        manifest["receipts"] = [_record(path, content) for path, content in receipts.items()]
     (root / "manifest.json").write_bytes(_canonical(manifest))
-    return tmp_path / "models", desired_model_bundle_from_selection_document(
-        _selection(bundle_sha256)
-    )
+    return root
 
 
-def test_admission_returns_immutable_content_proof(tmp_path: Path) -> None:
-    models_root, desired = _bundle(tmp_path)
-    proof = admit_model_bundle(models_root, desired)
-    assert proof.observed["bundle_sha256"] == desired.bundle_sha256
+def test_admission_returns_an_immutable_digest_map(tmp_path: Path) -> None:
+    root = _bundle(tmp_path)
+    digests = admit_model_bundle(root)
+    assert dict(digests) == {
+        "model.onnx": hashlib.sha256(b"model").hexdigest(),
+        "calibration.json": hashlib.sha256(b'{"calibration": true}').hexdigest(),
+    }
     with pytest.raises(TypeError):
-        proof.observed["bundle_sha256"] = "x"  # type: ignore[index]
+        digests["model.onnx"] = "x"  # type: ignore[index]
 
 
 def test_admission_rejects_extra_bundle_member(tmp_path: Path) -> None:
-    models_root, desired = _bundle(tmp_path)
-    root = models_root / "bundles" / desired.bundle_sha256
+    root = _bundle(tmp_path)
     (root / "unexpected").write_text("unexpected")
-    with pytest.raises(ModelBundleAdmissionError, match="bundle tree"):
-        admit_model_bundle(models_root, desired)
+    with pytest.raises(ModelLoadError, match="file tree differs"):
+        admit_model_bundle(root)
 
 
-def test_admission_uses_manifest_declared_member_set(tmp_path: Path) -> None:
-    models_root, desired = _bundle(
-        tmp_path,
-        members={
-            "runtime.bin": b"model",
-            "contract.json": b'{"contract": true}',
-            "calibration.json": b'{"calibration": true}',
-            "conformance/pose-bbox56-v1.json": b'{"conformance": true}',
-            "bundle-manifest.json": b'{"schema_version":"bundle-manifest/proxy-v0"}',
-        },
-    )
-    assert admit_model_bundle(models_root, desired).observed["members"] == (
-        "runtime.bin",
-        "contract.json",
-        "calibration.json",
-        "conformance/pose-bbox56-v1.json",
-        "bundle-manifest.json",
-    )
-
-
-def test_admission_requires_the_manifest_runtime_format(tmp_path: Path) -> None:
-    models_root, desired = _bundle(tmp_path)
-    root = models_root / "bundles" / desired.bundle_sha256
-    manifest_path = root / "manifest.json"
-    manifest = json.loads(manifest_path.read_bytes())
+def test_admission_requires_onnxruntime_runtime_format(tmp_path: Path) -> None:
+    root = _bundle(tmp_path)
+    manifest = json.loads((root / "manifest.json").read_bytes())
     manifest["runtime_format"] = "different-format"
-    manifest_path.write_bytes(_canonical(manifest))
-    with pytest.raises(ModelBundleAdmissionError, match="runtime format"):
-        admit_model_bundle(models_root, desired)
+    (root / "manifest.json").write_bytes(_canonical(manifest))
+    with pytest.raises(ModelLoadError, match="is not onnxruntime"):
+        admit_model_bundle(root)
 
 
+def test_admission_rejects_non_canonical_manifest(tmp_path: Path) -> None:
+    root = _bundle(tmp_path)
+    manifest = json.loads((root / "manifest.json").read_bytes())
+    (root / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    with pytest.raises(ModelLoadError, match="not canonical JSON"):
+        admit_model_bundle(root)
 
 
 def test_admission_rejects_tampered_member_bytes(tmp_path: Path) -> None:
-    models_root, desired = _bundle(tmp_path)
-    root = models_root / "bundles" / desired.bundle_sha256
+    root = _bundle(tmp_path)
     (root / "model.onnx").write_bytes(b"swapped")
-    with pytest.raises(ModelBundleAdmissionError, match="member mismatch"):
-        admit_model_bundle(models_root, desired)
+    with pytest.raises(ModelLoadError, match="declared hash"):
+        admit_model_bundle(root)
 
 
-def test_admission_accepts_receipt_files_without_reading_their_content(tmp_path: Path) -> None:
-    models_root, desired = _bundle(tmp_path, receipts={"evaluation-receipt.json": b"not json"})
-    proof = admit_model_bundle(models_root, desired)
-    assert proof.observed["receipts"] == ("evaluation-receipt.json",)
+def test_admission_hash_checks_receipts_and_includes_them(tmp_path: Path) -> None:
+    root = _bundle(tmp_path, receipts={"evaluation-receipt.json": b"not json"})
+    assert "evaluation-receipt.json" in admit_model_bundle(root)
+    (root / "evaluation-receipt.json").write_bytes(b"forged")
+    with pytest.raises(ModelLoadError, match="declared hash"):
+        admit_model_bundle(root)

@@ -285,60 +285,6 @@
       "behavior": "retired; worker startup rejects injection"
     },
     {
-      "name": "ML_WORKER_FALL_MODEL_ARCHITECTURE",
-      "category": "mutable policy",
-      "authority": "versioned model config",
-      "behavior": "retired; worker startup rejects injection"
-    },
-    {
-      "name": "ML_WORKER_FALL_MODEL_ARTIFACT_DIR",
-      "category": "mutable policy",
-      "authority": "versioned model config with fixed /app/models root",
-      "behavior": "retired; worker startup rejects injection"
-    },
-    {
-      "name": "ML_WORKER_FALL_MODEL_OPERATING_THRESHOLD",
-      "category": "mutable policy",
-      "authority": "versioned policy boundary; detailed numeric policy is Todo 9",
-      "behavior": "retired; worker startup rejects injection"
-    },
-    {
-      "name": "ML_WORKER_FALL_MODEL_PREPROCESSING_IDENTITY",
-      "category": "mutable policy",
-      "authority": "versioned model config/artifact manifest",
-      "behavior": "retired; worker startup rejects injection"
-    },
-    {
-      "name": "ML_WORKER_FALL_MODEL_SCHEMA_VERSION",
-      "category": "mutable policy",
-      "authority": "versioned model config/artifact manifest",
-      "behavior": "retired; worker startup rejects injection"
-    },
-    {
-      "name": "ML_WORKER_FALL_MODEL_STRIDE",
-      "category": "mutable policy",
-      "authority": "versioned model config/artifact manifest",
-      "behavior": "retired; worker startup rejects injection"
-    },
-    {
-      "name": "ML_WORKER_FALL_MODEL_TYPE",
-      "category": "mutable policy",
-      "authority": "versioned model config",
-      "behavior": "retired; worker startup rejects injection"
-    },
-    {
-      "name": "ML_WORKER_FALL_MODEL_WEIGHTS",
-      "category": "mutable policy",
-      "authority": "versioned model config",
-      "behavior": "retired; worker startup rejects injection"
-    },
-    {
-      "name": "ML_WORKER_FALL_MODEL_WINDOW",
-      "category": "mutable policy",
-      "authority": "versioned model config/artifact manifest",
-      "behavior": "retired; worker startup rejects injection"
-    },
-    {
       "name": "ML_WORKER_IMAGE",
       "category": "deployment artifact",
       "authority": "deployment env",
@@ -351,6 +297,14 @@
       "category": "dead",
       "authority": "none; Flow is the only production worker profile",
       "behavior": "retired profile selector; compose pins ML_WORKER_PROFILE=flow"
+    },
+    {
+      "name": "ML_WORKER_FALL_MODEL",
+      "category": "deployment artifact",
+      "authority": "deployment env",
+      "behavior": "optional fall model reference <owner>/<name>@<40-hex commit>; edge-model-fetch downloads and verifies it into /models/bundles/<commit>; absent or blank uses the packaged default; a reference that fails fetch or admission refuses start",
+      "compose": true,
+      "example": true
     },
     {
       "name": "ML_WORKER_CLIP_ANALYSIS_CPU",

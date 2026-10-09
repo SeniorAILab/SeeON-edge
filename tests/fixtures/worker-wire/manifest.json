@@ -19,8 +19,6 @@
     "d/delivery-queue/disposition-d6681ffe537c67cb3880ffbf5edaa522cd5bfe992a5f99a034c3471ba257c405.json": "9370f1b2f2d86c7006e71ec89bc5754b7bd8079ab1ff3939a4e4551095f04d3c",
     "d/delivery-queue/event-a5e15ff2-90fd-4764-be74-a7da4f573cc9.json": "fc7a8aa478a9078bb720b66b6bfd817d92492d530a31f7801e678c1081a8b905",
     "d/engine-identity.json": "d97dffe367deb592f215d04195e143392c785e7d5049b61147f16dc161d71c0c",
-    "d/model-selection.json": "fcd2d328d4770052dbd58c4655b2560292041015ef755aa727ba9ea6a0f05c39",
-    "d/models-bundle-layout.json": "099dcee5335d6e3d6c68c8d2b45ed39be402b42e133821979f63ced33ea3b963",
     "d/models-layout.json": "1a8fb4ed580ba875ec1b90c94fd11c71ac9ae75618a9ce9e87876b95b032cf93",
     "d/replay-engine/bed-exit-v1.input.json": "2df388136c0d8fcc74b7d7c5e9cad3baac187d32dafb27a9dcb1cb347163242e",
     "d/replay-engine/bed-exit-v1.json": "8168fcf787a5c567642aa7470aea0389437de96255dda9f365ebb159b23f5586",
@@ -72,14 +70,6 @@
     "wall_clock_sec": 1787000000.0
   },
   "gaps": [
-    {
-      "missing_producer": "a model-publication tool that writes the selection document",
-      "reason": "no in-repo writer produces the selection document; the golden is ModelSelection.as_dict serialised with canonical_json_bytes",
-      "rows": [
-        2
-      ],
-      "what": "selection document as written in production"
-    },
     {
       "missing_producer": "a GPU execution-record producer (Rust AcceleratorEvidence)",
       "reason": "no Python producer emits an accelerator value: Python execution records have no accelerator field and the CPU ORT runner declares none. The model evidence the record does carry (raw_logit, applied_temperature, class_origins) is recorded in r/execution-records.model-evidence.json",
@@ -388,37 +378,6 @@
       ],
       "sha256": "d97dffe367deb592f215d04195e143392c785e7d5049b61147f16dc161d71c0c",
       "size_bytes": 646,
-      "wire_class": "D"
-    },
-    {
-      "backend_parser": "contracts/model_selection.py:parse_model_selection (round-trip equal); worker/runtime/provenance/model_bundle.py:desired_model_bundle_from_selection_document -> DesiredModelBundle(bundle_sha256=2222222222222222222222222222222222222222222222222222222222222222, selection)",
-      "compare": "bytes",
-      "input": "synthetic digests (repeated hex digits), SeniorAILab/synthetic locators",
-      "normalised": [],
-      "path": "d/model-selection.json",
-      "producer": "contracts/model_selection.py:ModelSelection.as_dict + canonical_json_bytes",
-      "rows": [
-        2
-      ],
-      "sha256": "fcd2d328d4770052dbd58c4655b2560292041015ef755aa727ba9ea6a0f05c39",
-      "size_bytes": 308,
-      "wire_class": "D"
-    },
-    {
-      "backend_parser": "worker/runtime/provenance/model_bundle.py:admit_model_bundle + worker/adapters/model/ort_pose_bbox56.py:OrtPoseBbox56Runner.from_admitted_bundle (run inside fetch_all)",
-      "compare": "json-value",
-      "input": "the seeded pose-bbox56 test bundle published on a synthetic huggingface source, its model-selection document, and two flat github-release artifacts; fetched twice",
-      "normalised": [
-        "log: the fetch_bundle mkdtemp suffix under bundles/.<sha>. is <mkdtemp>"
-      ],
-      "note": "bundle_sha256 depends on bundle-manifest.json, which pins model.pt; torch.save output differs between the arm64 recorder host and x86_64, so the bundle sha is host-specific while model.onnx is not. Recorded with env={}, so no auth header is sent.",
-      "path": "d/models-bundle-layout.json",
-      "producer": "worker/tools/fetch_models/fetcher.py:fetch_all (selection_path set; source faked, sidecar_root under the recorder work dir)",
-      "rows": [
-        22
-      ],
-      "sha256": "099dcee5335d6e3d6c68c8d2b45ed39be402b42e133821979f63ced33ea3b963",
-      "size_bytes": 20813,
       "wire_class": "D"
     },
     {
@@ -1209,7 +1168,6 @@
     "backend/app/features/clips/store.py": "eeda3ffbcafdb695841ccc97da118faaa30c9b51cb5bfe9d65afbc343e7a4367",
     "backend/app/features/diagnostics/router.py": "3a0d50251ffcd218bb0be82c33741c3fad07103b16b8a7f47dfba8720284909f",
     "backend/app/routes/health.py": "ea1e03df38678fffd09818e97afc1cea3568c5c142735e8f92c5225c0a5aaa18",
-    "contracts/model_selection.py": "e5bd89d7b078cd8396441596e0f5179d6e5bc76b53bb531f8fc1ce0de7fa485f",
     "contracts/replay_trace.py": "ef3950d2675cd571030f8b5bf53674a52027986a7ffc9f90c9c3a794a0f96e5b",
     "scripts/ops/replay-runtime-analysis.py": "01ff571d224a4490b68ab54376bb8015e7399d14e1e93a626b721c9b1bec6d29",
     "shared/events/clip_analysis_wire.py": "f23467c8524072219a988390846e04d3712c0a526639fb17b0f1fbc19122bbcd",
@@ -1374,14 +1332,6 @@
         "h/clip-analysis.json"
       ]
     },
-    "2": {
-      "gaps": [
-        "selection document as written in production"
-      ],
-      "goldens": [
-        "d/model-selection.json"
-      ]
-    },
     "21": {
       "gaps": [
         "real TensorRT engine and DeepStream build identity"
@@ -1393,7 +1343,6 @@
     "22": {
       "gaps": [],
       "goldens": [
-        "d/models-bundle-layout.json",
         "d/models-layout.json"
       ]
     },
