@@ -4,13 +4,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar
 
-import psycopg
-
+from backend.app.edge_db import DatabaseConnection
 from backend.app.features.audit.catalog import AuditAction
 from backend.app.features.cameras.camera_values import CameraStatus, ProbeResult, status_from_probe
 from backend.app.features.cameras.update_command import CameraUpdate
 
-AfterWrite = Callable[[psycopg.Connection[Any]], None]
+AfterWrite = Callable[[DatabaseConnection[Any]], None]
 CameraRecord = dict[str, object]
 _Result = TypeVar("_Result")
 
