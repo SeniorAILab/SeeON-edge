@@ -161,13 +161,10 @@ def _patch_minimal_dependencies(
             enrolled_facility_id=lambda: _FakeConnSettingsStore().load().facility_id,
             topology=_unused_topology,
             heartbeats=_unused_heartbeats,
+            clip_export_setting=_FakeRuntimeSettingsStore(
+                enabled=runtime_enabled, version=runtime_version
+            ).get,
         ),
-        raising=True,
-    )
-    monkeypatch.setattr(
-        cameras_router,
-        "get_runtime_settings_store",
-        lambda app: _FakeRuntimeSettingsStore(enabled=runtime_enabled, version=runtime_version),
         raising=True,
     )
     monkeypatch.setattr(

@@ -47,4 +47,6 @@ def test_installed_ports_are_frozen_and_read_the_connection_owner_on_each_call()
     assert not hasattr(app.state, "heartbeat_store")
     assert ports.heartbeats() == {"cameras": {}, "stale_after_sec": DEFAULT_STALE_AFTER_SEC}
     assert isinstance(app.state.heartbeat_store, HeartbeatStore)
+    with pytest.raises(RuntimeError, match="runtime settings store is not injected"):
+        ports.clip_export_setting()
     assert camera_ports(app) is ports

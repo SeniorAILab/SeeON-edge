@@ -31,7 +31,6 @@
       "CROSS_FEATURE_EDGE cameras.router -> clips.storage_location_store": 1,
       "CROSS_FEATURE_EDGE cameras.router -> detection_settings.policy_store": 1,
       "CROSS_FEATURE_EDGE cameras.router -> detection_settings.store": 1,
-      "CROSS_FEATURE_EDGE cameras.router -> runtime_settings.dependencies": 1,
       "CROSS_FEATURE_EDGE cameras.topology_confirmation -> audit.postgres_runtime": 1,
       "CROSS_FEATURE_EDGE cameras.worker_config_service -> detection_settings.policy_models": 1,
       "CROSS_FEATURE_EDGE cameras.worker_config_service -> detection_settings.store": 1,
@@ -164,7 +163,6 @@
       "CROSS_FEATURE_EDGE evidence.router -> audit.catalog": 1,
       "CROSS_FEATURE_EDGE evidence.router -> audit.http": 1,
       "CROSS_FEATURE_EDGE evidence.router -> clips.store": 1,
-      "CROSS_FEATURE_EDGE evidence.router -> runtime_settings.dependencies": 1,
       "FEATURE_ROOT_FILE event_outbox.py": 1,
       "FEATURE_ROOT_FILE operator_router.py": 1,
       "FEATURE_ROOT_FILE outbox_delivery.py": 1,
@@ -205,7 +203,6 @@
     "status": {
       "CROSS_FEATURE_EDGE status.backend_heartbeat_relay -> cameras.store": 1,
       "CROSS_FEATURE_EDGE status.router -> cameras.store": 1,
-      "CROSS_FEATURE_EDGE status.router -> runtime_settings.dependencies": 1,
       "CROSS_FEATURE_EDGE status.system_router -> clips.store": 1,
       "FEATURE_ROOT_FILE backend_heartbeat_relay.py": 1,
       "FEATURE_ROOT_FILE detection_health.py": 1,

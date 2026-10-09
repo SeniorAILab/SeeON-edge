@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
 
 from fastapi import FastAPI
 from pydantic import JsonValue
@@ -19,11 +20,20 @@ from backend.app.features.cameras.roster_sync import (
 from backend.app.features.cameras.store import CameraRegistryStore
 
 
+class ClipExportSetting(Protocol):
+    @property
+    def clip_export_enabled(self) -> bool: ...
+
+    @property
+    def version(self) -> int: ...
+
+
 @dataclass(frozen=True, slots=True)
 class CameraPorts:
     enrolled_facility_id: Callable[[], str | None]
     topology: Callable[[], TopologyPublisher]
     heartbeats: Callable[[], dict[str, object]]
+    clip_export_setting: Callable[[], ClipExportSetting]
 
 
 def camera_ports(app: FastAPI) -> CameraPorts:
@@ -69,6 +79,7 @@ def camera_sync_view(app: FastAPI, _camera_id: str) -> dict[str, JsonValue]:
 
 __all__ = [
     "CameraPorts",
+    "ClipExportSetting",
     "RosterSyncResult",
     "camera_ports",
     "camera_registry",

@@ -82,7 +82,6 @@ from backend.app.features.detection_settings.policy_store import (
     PolicyCameraIdentity,
 )
 from backend.app.features.detection_settings.store import DetectionSettingsStore
-from backend.app.features.runtime_settings.dependencies import get_runtime_settings_store
 from backend.app.shared.audit_values import AuditAction, AuditEvent
 from backend.app.shared.audit_values import utc_now as audit_now
 from backend.app.shared.heartbeat_status import ONLINE
@@ -804,7 +803,7 @@ def _worker_config_response(request: Request, *, require_available: bool) -> dic
         policy_bundle=policy_bundle,
     )
     response = assemble_worker_config(inputs)
-    runtime_setting = get_runtime_settings_store(request.app).get()
+    runtime_setting = camera_ports(request.app).clip_export_setting()
     response["clip_export_enabled"] = runtime_setting.clip_export_enabled
     response["clip_export_version"] = runtime_setting.version
     if require_available and not response.get("cameras"):
