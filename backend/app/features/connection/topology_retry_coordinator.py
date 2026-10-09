@@ -7,8 +7,7 @@ import uuid
 from collections.abc import Callable
 from typing import Protocol, assert_never
 
-import psycopg
-
+from backend.app.edge_db import DatabaseConnection
 from backend.app.features.audit.postgres_runtime import AuditMutation
 from backend.app.features.cameras.edge_topology_sync_state import (
     EdgeTopologySyncState,
@@ -112,7 +111,7 @@ class TopologyRetryCoordinator:
         force: bool,
         refresh: bool,
         now: float,
-        connection: psycopg.Connection | None = None,
+        connection: DatabaseConnection | None = None,
         audit: AuditMutation | None = None,
     ) -> TopologyRetryResult:
         state = self._state_store.ensure_principal(client.principal, connection=connection)
@@ -148,7 +147,7 @@ class TopologyRetryCoordinator:
         return self._record_outcome(outcome, pending.snapshot_id, now, connection=connection)
 
     def current_result(
-        self, *, attempted: bool = False, connection: psycopg.Connection | None = None
+        self, *, attempted: bool = False, connection: DatabaseConnection | None = None
     ) -> TopologyRetryResult:
         return current_retry_result(
             self._registry, self._state_store, attempted=attempted, connection=connection
@@ -171,7 +170,7 @@ class TopologyRetryCoordinator:
         state: EdgeTopologySyncState,
         refresh: bool,
         *,
-        connection: psycopg.Connection | None = None,
+        connection: DatabaseConnection | None = None,
         audit: AuditMutation | None = None,
     ) -> EdgeTopologySyncState:
         pending = state.pending
@@ -194,7 +193,7 @@ class TopologyRetryCoordinator:
         snapshot_id: str,
         now: float,
         *,
-        connection: psycopg.Connection | None = None,
+        connection: DatabaseConnection | None = None,
     ) -> TopologyRetryResult:
         if connection is None:
             return self._state_store.operation(
@@ -239,7 +238,7 @@ class TopologyRetryCoordinator:
         error_class: TopologySyncErrorClass | None,
         detail: str | None,
         *,
-        connection: psycopg.Connection | None = None,
+        connection: DatabaseConnection | None = None,
     ) -> TopologyRetryResult:
         return retry_result(
             self._registry, state, attempted, status, error_class, detail, connection=connection

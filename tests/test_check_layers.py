@@ -11,6 +11,10 @@ CHECKER = REPO_ROOT / "scripts" / "check_layers.py"
 LINT_IMPORTS = Path(sys.executable).parent / "lint-imports"
 F = "backend.app.features"
 
+SHARED_HTTP = "backend base code reaches HTTP frameworks only inside backend.app.shared.http"
+SHARED_HTTP_IMPORTERS = (
+    "backend.app.shared.http is imported only by features, routes and the app entry"
+)
 LAYERS = "backend feature layers run controller -> service -> repository"
 SKIP = "backend controllers reach repositories only through a service"
 HTTP = "backend services and repositories do not import HTTP frameworks or controllers"
@@ -21,6 +25,8 @@ ROUTES = "backend routes reach features only through a service"
 ACYCLIC = "backend features do not depend on each other in a cycle"
 SHARED_PYDANTIC = "shared folders and contracts do not import pydantic"
 LAYER_CONTRACTS = (
+    SHARED_HTTP,
+    SHARED_HTTP_IMPORTERS,
     LAYERS,
     SKIP,
     HTTP,
@@ -66,6 +72,7 @@ def clean_tree() -> dict[str, str]:
         "backend/app/edge_db/__init__.py": "",
         "backend/app/features/__init__.py": "",
         "backend/app/shared/__init__.py": "",
+        "backend/app/shared/http/__init__.py": "",
         "contracts/__init__.py": "",
         "shared/__init__.py": "",
     }
@@ -186,10 +193,30 @@ MUTATIONS = {
     ),
     "fastapi_through_a_shared_http_adapter": (
         {
-            "backend/app/shared/backend_client_bundle.py": "from fastapi import Request\n",
-            f"{ALPHA}/service/logic.py": "from backend.app.shared import backend_client_bundle\n",
+            "backend/app/shared/http/adapter.py": "from fastapi import Request\n",
+            f"{ALPHA}/service/logic.py": "from backend.app.shared.http import adapter\n",
         },
         HTTP,
+    ),
+    "fastapi_in_backend_shared_outside_http": (
+        {"backend/app/shared/values.py": "from fastapi import Request\n"},
+        SHARED_HTTP,
+    ),
+    "starlette_in_edge_db": ({"backend/app/edge_db/rows.py": "import starlette\n"}, SHARED_HTTP),
+    "fastapi_in_core": ({"backend/app/core/web.py": "import fastapi\n"}, SHARED_HTTP),
+    "backend_shared_imports_shared_http": (
+        {
+            "backend/app/shared/http/adapter.py": "import starlette\n",
+            "backend/app/shared/values.py": "from backend.app.shared.http import adapter\n",
+        },
+        SHARED_HTTP_IMPORTERS,
+    ),
+    "edge_db_imports_shared_http": (
+        {
+            "backend/app/shared/http/adapter.py": "",
+            "backend/app/edge_db/rows.py": "from backend.app.shared.http import adapter\n",
+        },
+        SHARED_HTTP_IMPORTERS,
     ),
     "basemodel_in_top_level_shared_used_by_a_service": (
         {
@@ -231,6 +258,22 @@ MUTATIONS = {
         ACYCLIC,
     ),
 }
+
+
+def test_shared_http_adapters_may_import_http_frameworks_for_controllers(tmp_path: Path) -> None:
+    output = lint(
+        tmp_path,
+        {
+            "backend/app/shared/http/adapter.py": "import fastapi\nimport starlette\n",
+            f"{ALPHA}/controller/api.py": (
+                "from backend.app.shared.http import adapter\n"
+                f"from {F}.alpha.service import logic\n"
+            ),
+        },
+    )
+    assert f"{SHARED_HTTP} KEPT" in output, output
+    assert f"{SHARED_HTTP_IMPORTERS} KEPT" in output, output
+    assert f"{HTTP} KEPT" in output, output
 
 
 def test_edge_db_may_reach_pydantic_through_core_config(tmp_path: Path) -> None:

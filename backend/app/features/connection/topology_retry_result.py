@@ -4,8 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal, TypeAlias
 
-import psycopg
-
+from backend.app.edge_db import DatabaseConnection
 from backend.app.features.cameras.edge_topology_sync_state import (
     EdgeTopologySyncState,
     EdgeTopologySyncStateStore,
@@ -39,7 +38,7 @@ def current_retry_result(
     state_store: EdgeTopologySyncStateStore,
     *,
     attempted: bool = False,
-    connection: psycopg.Connection | None = None,
+    connection: DatabaseConnection | None = None,
 ) -> TopologyRetryResult:
     state = state_store.load(connection=connection)
     if state.pause_reason is not None:
@@ -94,7 +93,7 @@ def retry_result(
     error_class: TopologySyncErrorClass | None,
     detail: str | None,
     *,
-    connection: psycopg.Connection | None = None,
+    connection: DatabaseConnection | None = None,
 ) -> TopologyRetryResult:
     return TopologyRetryResult(
         attempted,

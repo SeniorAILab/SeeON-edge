@@ -17,7 +17,7 @@ from backend.app.features.audit.postgres_runtime import PostgresAuditRuntime
 from backend.app.features.diagnostics.records import CoverageKind, StorageState
 from backend.app.features.diagnostics.retention import RetentionBudget
 from backend.app.features.diagnostics.store import ExecutionRecordStore
-from backend.app.features.relay.router import RELAY_TOKEN_HEADER
+from backend.app.shared.http.relay_http import RELAY_TOKEN_HEADER
 from shared.events.execution_records import (
     MAX_EXECUTION_RECORD_BODY_BYTES,
     PROCESS_SCOPE,

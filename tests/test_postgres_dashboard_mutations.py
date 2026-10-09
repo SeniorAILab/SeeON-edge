@@ -17,7 +17,7 @@ from backend.app.features.detection_settings.policy_store import DetectionPolicy
 from backend.app.features.detection_settings.store import DetectionSettingsStore
 from backend.app.features.runtime_settings.store import RuntimeSettingsStore
 from backend.app.main import create_app, no_lifespan
-from backend.app.shared.dashboard_auth import (
+from backend.app.shared.http.dashboard_auth import (
     DASHBOARD_SESSION_COOKIE,
     DashboardSessionStore,
     PlaintextDashboardCredentials,
