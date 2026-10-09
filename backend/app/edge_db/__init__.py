@@ -1,3 +1,4 @@
+from psycopg import Connection as DatabaseConnection
 from psycopg import DataError
 from psycopg import Error as DatabaseDriverError
 from psycopg.errors import CheckViolation, NotNullViolation
@@ -9,6 +10,7 @@ __all__ = [
     "EDGE_STATE_DIRECTORY",
     "CheckViolation",
     "DataError",
+    "DatabaseConnection",
     "DatabaseDriverError",
     "NotNullViolation",
 ]

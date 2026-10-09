@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import psycopg
-
+from backend.app.edge_db import DatabaseConnection
 from backend.app.features.detection_settings.policy_models import PolicyDiff
 from backend.app.features.detection_settings.policy_rows import (
     database_camera_id,
@@ -30,7 +29,7 @@ class PolicyProposal:
     values: object
 
 
-def build_policy_diff(connection: psycopg.Connection, proposal: PolicyProposal) -> PolicyDiff:
+def build_policy_diff(connection: DatabaseConnection, proposal: PolicyProposal) -> PolicyDiff:
     if proposal.values is None and proposal.camera_id is None:
         raise PolicyDocumentError("facility default policy values cannot be null")
     parsed = (
