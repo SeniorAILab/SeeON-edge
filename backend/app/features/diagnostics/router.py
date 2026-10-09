@@ -11,6 +11,7 @@ from backend.app.edge_db.postgres import PostgresError
 from backend.app.features.diagnostics.schemas import (
     ExecutionQueryParams,
     ExecutionQueryResponse,
+    ExecutionRecordBatchRequest,
     ExecutionRecordReceiptResponse,
     query_response_from_result,
 )
@@ -23,7 +24,7 @@ from shared.events.execution_records import ExecutionRecordContractError, WireBa
 DISABLED_DETAIL = "execution records disabled"
 UNAVAILABLE_DETAIL = "diagnostics store unavailable: check PostgreSQL and run migration provision"
 
-router = APIRouter(tags=["diagnostics"], route_class=BoundedBodyRoute)
+router = APIRouter(tags=["diagnostics"], route_class=BoundedBodyRoute, strict_content_type=False)
 
 
 def execution_record_store(request: Request) -> ExecutionRecordStore:
@@ -50,8 +51,9 @@ def backend_build_revision(request: Request) -> str:
 async def ingest_execution_records(
     request: Request,
     _: Annotated[None, Depends(require_relay_execution_records)],
+    store: Annotated[ExecutionRecordStore, Depends(execution_record_store)],
+    _body: ExecutionRecordBatchRequest,
 ) -> dict[str, object]:
-    store = execution_record_store(request)
     try:
         batch = WireBatch.from_json(await request.json())
     except ExecutionRecordContractError as error:

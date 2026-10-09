@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -8,6 +8,76 @@ from backend.app.features.diagnostics.query import QueryResult
 
 _QUERY_LIMIT_DEFAULT = 100
 _QUERY_LIMIT_MAX = 500
+
+
+_IDENTITY = Field(..., min_length=1, max_length=128)
+_COUNT = Field(..., ge=0)
+
+
+class ExecutionRecordProvenanceRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    worker_build_revision: str = _IDENTITY
+    worker_image_digest: str = _IDENTITY
+    model_digest: str = _IDENTITY
+    calibration_digest: str = _IDENTITY
+    preprocessing_identity: str = _IDENTITY
+    config_digest: str = _IDENTITY
+    policy_identity: str = _IDENTITY
+
+
+class ExecutionRecordRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    record_kind: Literal[
+        "sdk.frame",
+        "policy.consume",
+        "model.score",
+        "policy.decision",
+        "event.delivery",
+        "backend.acceptance",
+    ]
+    camera_id: str = _IDENTITY
+    worker_boot_id: str = _IDENTITY
+    source_generation: int = _COUNT
+    stream_epoch: int = _COUNT
+    producer: str = _IDENTITY
+    producer_sequence: int = _COUNT
+    observed_at_ns: int = _COUNT
+    time_quality: Literal["monotonic", "wall", "pts", "unknown"]
+    causal_unit_id: str = _IDENTITY
+    outcome: str = _IDENTITY
+    payload: dict[str, Any]
+    frame_seq: int | None = Field(default=None, ge=0)
+    source_pts_ns: int | None = None
+    parent_record_id: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
+    reason: str | None = Field(default=None, min_length=1, max_length=128)
+    record_id: str | None = None
+
+
+class ExecutionRecordGapRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    producer: str = _IDENTITY
+    from_sequence: int = _COUNT
+    to_sequence: int = _COUNT
+    from_ns: int = _COUNT
+    to_ns: int = _COUNT
+    record_count: int = _COUNT
+    cause: str = _IDENTITY
+    source_generation: int = Field(default=None, ge=0)
+    stream_epoch: int = Field(default=None, ge=0)
+
+
+class ExecutionRecordBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    camera_id: str = _IDENTITY
+    worker_boot_id: str = _IDENTITY
+    provenance: ExecutionRecordProvenanceRequest
+    records: list[ExecutionRecordRequest] = Field(default_factory=list)
+    gaps: list[ExecutionRecordGapRequest] = Field(default_factory=list)
+    batch_id: str | None = None
 
 
 class ExecutionRecordReceiptResponse(BaseModel):
@@ -179,6 +249,7 @@ __all__ = [
     "ExecutionQueryParams",
     "ExecutionQueryResponse",
     "ExecutionQueryableRangeView",
+    "ExecutionRecordBatchRequest",
     "ExecutionRecordReceiptResponse",
     "ExecutionRecordView",
     "ExecutionUnitView",

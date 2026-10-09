@@ -183,7 +183,16 @@ def test_contract_violation_is_422(enabled_client: TestClient) -> None:
     del body["records"][0]["record_id"]
     bad_kind = client.post(_PATH, json=body, headers={RELAY_TOKEN_HEADER: _RELAY_TOKEN})
     assert bad_kind.status_code == 422
-    assert "record_kind" in bad_kind.json()["detail"]
+    assert "record_kind" in str(bad_kind.json()["detail"])
+
+
+def test_body_without_content_type_is_still_accepted(enabled_client: TestClient) -> None:
+    batch = _batch(_record(0))
+    response = enabled_client.post(
+        _PATH, content=batch.encode(), headers={RELAY_TOKEN_HEADER: _RELAY_TOKEN}
+    )
+    assert response.status_code == 200
+    assert response.json()["batch_id"] == batch.batch_id
 
 
 def test_committed_receipt_round_trip_and_idempotent_replay(enabled_client: TestClient) -> None:
