@@ -7,9 +7,7 @@ from dataclasses import dataclass
 from numbers import Real
 from typing import Final, TypeAlias
 
-from contracts.model_selection import (
-    POSE_BBOX56_PREPROCESSING_IDENTITY as _CONTRACT_PREPROCESSING_IDENTITY,
-)
+from contracts.model import POSE_BBOX56_PREPROCESSING_IDENTITY
 
 COCO17_KEYPOINTS: Final = 17
 COCO17_KEYPOINT_ORDER: Final = (
@@ -33,7 +31,6 @@ COCO17_KEYPOINT_ORDER: Final = (
 )
 POSE_BBOX56_DIM: Final = 56
 POSE_BBOX56_CONFIDENCE_GATE: Final = 0.5
-POSE_BBOX56_PREPROCESSING_IDENTITY: Final = _CONTRACT_PREPROCESSING_IDENTITY
 
 Keypoint: TypeAlias = tuple[float, float, float]
 PoseBbox: TypeAlias = tuple[float, float, float, float]

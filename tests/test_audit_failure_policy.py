@@ -7,19 +7,19 @@ from typing import BinaryIO
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app.features.audit.catalog import AuditAction, empty_detail
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.postgres_runtime import (
     AuditMutation,
     AuditRuntimeUnavailable,
     PostgresAuditRuntime,
 )
-from backend.app.features.audit.store import AuditEvent
 from backend.app.features.cameras.store import CameraRegistryStore
 from backend.app.features.clips.store import ClipStore
 from backend.app.features.evidence.record_store import (
     CentralEvidenceReviewStore,
     ReviewDisposition,
 )
+from backend.app.shared.audit_values import AuditAction, AuditEvent
 from tests_support.postgres_api_app import postgres_api_app
 from tests_support.postgres_sandbox import ProductSandbox
 

@@ -25,12 +25,7 @@ from backend.app.edge_db.migration.provision import (
     set_runtime_password,
 )
 from backend.app.edge_db.postgres import PoolBudget, PostgresDatabase
-from backend.app.features.audit.catalog import (
-    AuditAction,
-    AuditActorType,
-    AuditAuthMechanism,
-    empty_detail,
-)
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.verification import GENESIS_HASH
 from backend.app.features.diagnostics.records import (
     BatchReceipt,
@@ -41,6 +36,7 @@ from backend.app.features.diagnostics.records import (
 )
 from backend.app.features.diagnostics.retention import RetentionBudget
 from backend.app.features.diagnostics.store import ExecutionRecordStore
+from backend.app.shared.audit_values import AuditAction, AuditActorType, AuditAuthMechanism
 from tests_support.sqlite_source import create_schema19_source, open_source_writer
 
 NOW = "2026-09-27T03:00:00.123456Z"

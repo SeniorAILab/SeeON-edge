@@ -61,7 +61,6 @@ Read the nearest `AGENTS.md` before changing that package.
 | `tools/export_bed_seg_onnx.py`, `tools/export_fall_onnx.py` | digest-pinned ONNX exports for bed segmentation and the fall bundle |
 | `tools/clip_analysis.py` | isolated child entrypoint for stored-clip re-analysis |
 | `tools/clip_playback_backfill.py` | backfill of browser playback renditions |
-| `tools/promote_model/` | stdlib-only promotion contract schemas |
 | `replay/` | `replay_recovered`, `replay_camera`, `compare_runs`, `assess_reproducibility` |
 
 New seam: Protocol plus two implementations, or one plus a test double.

@@ -6,26 +6,28 @@ import hashlib
 import json
 import logging
 import uuid
-from collections.abc import Callable, Coroutine, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Annotated, Any, Protocol
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
-from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from starlette.types import Message, Receive
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ModelWrapValidatorHandler,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 
 from backend.app.edge_db import CheckViolation, DataError, NotNullViolation
 from backend.app.edge_db.authority import AuthorityFenced
-from backend.app.features.audit.catalog import (
-    AuditAction,
-    AuditActorType,
-    AuditAuthMechanism,
-    empty_detail,
-)
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.http import audit_runtime, mutation_audit
-from backend.app.features.audit.store import AuditEvent
-from backend.app.features.audit.store import utc_now as audit_now
 from backend.app.features.cameras.router import (
     acknowledge_applied_detection_policies,
     worker_config_snapshot,
@@ -50,18 +52,28 @@ from backend.app.features.evidence.relay_projection import (
     RelayEvidenceProjectionMissingEvent,
     RelaySnapshot,
 )
-from backend.app.features.relay.auth import authorize_relay
 from backend.app.features.status.heartbeat_store import get_heartbeat_store
 from backend.app.features.status.runtime_status_store import get_runtime_status_store
+from backend.app.shared.audit_values import (
+    AuditAction,
+    AuditActorType,
+    AuditAuthMechanism,
+    AuditEvent,
+)
+from backend.app.shared.audit_values import utc_now as audit_now
+from backend.app.shared.http.relay_http import (
+    RELAY_TOKEN_HEADER,
+    authorize_relay,
+    authorize_relay_body,
+    bounded_body_route,
+    camera_binding,
+)
 from contracts import AlertEventType
 from contracts.decode_diagnostics import DECODE_BACKENDS, DECODE_FALLBACK_REASONS
 from contracts.worker_config import RESTART_EPOCH_KEY
 from shared.events import envelope_limits
 from shared.events.evidence_export_contract import DeliveryDisposition, DeliveryFailure
-from shared.events.execution_records import MAX_EXECUTION_RECORD_BODY_BYTES
 from shared.events.relay_failure_log import RelayFailureLog
-
-RELAY_TOKEN_HEADER = "X-Edge-Relay-Token"
 
 logger = logging.getLogger(__name__)
 
@@ -79,52 +91,7 @@ _MAX_BODY_BYTES_BY_SUFFIX: dict[str, int] = {
     "/runtime-status": MAX_RELAY_RUNTIME_STATUS_BODY_BYTES,
     "/snapshot-attachments": MAX_RELAY_SNAPSHOT_ATTACHMENT_BODY_BYTES,
     "/snapshot-dispositions": MAX_RELAY_SNAPSHOT_DISPOSITION_BODY_BYTES,
-    "/execution-records": MAX_EXECUTION_RECORD_BODY_BYTES,
 }
-
-
-def _oversized_body_error(max_bytes: int) -> HTTPException:
-    return HTTPException(
-        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-        detail=f"request body exceeds maximum of {max_bytes} bytes",
-    )
-
-
-def _bounded_receive(receive: Receive, max_bytes: int) -> Receive:
-    total = 0
-
-    async def wrapped() -> Message:
-        nonlocal total
-        message = await receive()
-        if message["type"] == "http.request":
-            body = message.get("body", b"")
-            total += len(body)
-            if total > max_bytes:
-                raise _oversized_body_error(max_bytes)
-        return message
-
-    return wrapped
-
-
-class BoundedBodyRoute(APIRoute):
-    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
-        original = super().get_route_handler()
-        max_bytes = next(
-            (
-                limit
-                for suffix, limit in _MAX_BODY_BYTES_BY_SUFFIX.items()
-                if self.path.endswith(suffix)
-            ),
-            None,
-        )
-        if max_bytes is None:
-            return original
-
-        async def bounded_handler(request: Request) -> Response:
-            request._receive = _bounded_receive(request.receive, max_bytes)  # noqa: SLF001
-            return await original(request)
-
-        return bounded_handler
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -133,49 +100,23 @@ _backend_ingest_alert_failures = RelayFailureLog(
     _LOGGER, channel="backend ingest alerts", method="POST"
 )
 
-router = APIRouter(prefix="/relay", tags=["relay"], route_class=BoundedBodyRoute)
-
-
-def _reject_oversized_body(request: Request, *, max_bytes: int) -> None:
-    raw = request.headers.get("content-length")
-    if raw is None:
-        return
-    try:
-        length = int(raw)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="invalid Content-Length",
-        ) from exc
-    if length < 0 or length > max_bytes:
-        raise _oversized_body_error(max_bytes)
-
-
-def _authorize_relay_body(
-    request: Request,
-    *,
-    max_bytes: int,
-    relay_token: str | None,
-    authorization: str | None = None,
-) -> None:
-    _reject_oversized_body(request, max_bytes=max_bytes)
-    authorize_relay(request, relay_token or _bearer_token(authorization))
+router = APIRouter(
+    prefix="/relay", tags=["relay"], route_class=bounded_body_route(_MAX_BODY_BYTES_BY_SUFFIX)
+)
 
 
 def require_relay_alert(
     request: Request,
     relay_token: Annotated[str | None, Header(alias=RELAY_TOKEN_HEADER)] = None,
 ) -> None:
-    _authorize_relay_body(request, max_bytes=MAX_RELAY_REQUEST_BODY_BYTES, relay_token=relay_token)
+    authorize_relay_body(request, max_bytes=MAX_RELAY_REQUEST_BODY_BYTES, relay_token=relay_token)
 
 
 def require_relay_heartbeat(
     request: Request,
     relay_token: Annotated[str | None, Header(alias=RELAY_TOKEN_HEADER)] = None,
 ) -> None:
-    _authorize_relay_body(
-        request, max_bytes=MAX_RELAY_HEARTBEAT_BODY_BYTES, relay_token=relay_token
-    )
+    authorize_relay_body(request, max_bytes=MAX_RELAY_HEARTBEAT_BODY_BYTES, relay_token=relay_token)
 
 
 def require_relay_runtime_status(
@@ -183,22 +124,9 @@ def require_relay_runtime_status(
     relay_token: Annotated[str | None, Header(alias=RELAY_TOKEN_HEADER)] = None,
     authorization: Annotated[str | None, Header()] = None,
 ) -> None:
-    _authorize_relay_body(
+    authorize_relay_body(
         request,
         max_bytes=MAX_RELAY_RUNTIME_STATUS_BODY_BYTES,
-        relay_token=relay_token,
-        authorization=authorization,
-    )
-
-
-def require_relay_execution_records(
-    request: Request,
-    relay_token: Annotated[str | None, Header(alias=RELAY_TOKEN_HEADER)] = None,
-    authorization: Annotated[str | None, Header()] = None,
-) -> None:
-    _authorize_relay_body(
-        request,
-        max_bytes=MAX_EXECUTION_RECORD_BODY_BYTES,
         relay_token=relay_token,
         authorization=authorization,
     )
@@ -208,7 +136,7 @@ def require_relay_snapshot_attachment(
     request: Request,
     relay_token: Annotated[str | None, Header(alias=RELAY_TOKEN_HEADER)] = None,
 ) -> None:
-    _authorize_relay_body(
+    authorize_relay_body(
         request, max_bytes=MAX_RELAY_SNAPSHOT_ATTACHMENT_BODY_BYTES, relay_token=relay_token
     )
 
@@ -217,7 +145,7 @@ def require_relay_snapshot_disposition(
     request: Request,
     relay_token: Annotated[str | None, Header(alias=RELAY_TOKEN_HEADER)] = None,
 ) -> None:
-    _authorize_relay_body(
+    authorize_relay_body(
         request, max_bytes=MAX_RELAY_SNAPSHOT_DISPOSITION_BODY_BYTES, relay_token=relay_token
     )
 
@@ -285,6 +213,46 @@ class RelaySnapshotDispositionRequest(BaseModel):
     audit: RelayAuditEnvelope | None = None
 
 
+def _envelope_encodable(value: object) -> bool:
+    try:
+        json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except ValueError:
+        return False
+    return True
+
+
+class RelayAlertEvidence(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    domain: StrictStr | None = None
+    identity: StrictStr | StrictInt | None = None
+    time_sec: StrictInt | StrictFloat | None = None
+    person_id: StrictInt | None = None
+    bed_id: StrictInt | None = None
+    clip_id: StrictStr | None = None
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def unencodable_evidence_is_left_to_the_envelope(
+        cls, data: Any, handler: ModelWrapValidatorHandler[RelayAlertEvidence]
+    ) -> RelayAlertEvidence:
+        if isinstance(data, dict) and not _envelope_encodable(data):
+            evidence = cls.model_construct()
+            evidence.__pydantic_extra__ = dict(data)
+            return evidence
+        return handler(data)
+
+
+def _evidence_values(evidence: RelayAlertEvidence | None) -> dict[str, Any] | None:
+    if evidence is None:
+        return None
+    known = evidence.model_fields_set & set(RelayAlertEvidence.model_fields)
+    return {**{key: getattr(evidence, key) for key in known}, **(evidence.model_extra or {})}
+
+
+_EVIDENCE_JSON = TypeAdapter(dict[str, Any])
+
+
 class RelayAlertRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -295,7 +263,7 @@ class RelayAlertRequest(BaseModel):
     camera_id: str = Field(min_length=1)
     facility_id: str = Field(min_length=1)
     resident_id: str | None = None
-    evidence: dict[str, Any] | None = None
+    evidence: RelayAlertEvidence | None = None
     audit: RelayAuditEnvelope | None = None
     snapshot_jpeg_base64: str | None = Field(
         default=None, max_length=MAX_INLINE_SNAPSHOT_BASE64_CHARS
@@ -495,7 +463,7 @@ def relay_alert(
     request: Request,
     _: Annotated[None, Depends(require_relay_alert)],
 ) -> dict[str, str]:
-    binding = _camera_binding(request, payload.camera_id, payload.facility_id)
+    binding = camera_binding(request, payload.camera_id, payload.facility_id)
     bound_camera_id = binding.get("backend_camera_id")
     backend_camera_id = (
         bound_camera_id if isinstance(bound_camera_id, str) and bound_camera_id.strip() else None
@@ -557,15 +525,15 @@ _IDLESS_ALERT_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "urn:seeon-edge:relay-a
 def _alert_event_id(payload: RelayAlertRequest) -> str:
     if payload.edge_event_id is not None:
         return payload.edge_event_id
-    canonical = json.dumps(
-        payload.model_dump(
-            exclude={"edge_event_id", "attempt_ordinal", "snapshot_jpeg_base64"},
-            exclude_none=True,
-            mode="json",
-        ),
-        sort_keys=True,
-        separators=(",", ":"),
+    fields = payload.model_dump(
+        exclude={"edge_event_id", "attempt_ordinal", "snapshot_jpeg_base64", "evidence"},
+        exclude_none=True,
+        mode="json",
     )
+    evidence = _evidence_values(payload.evidence)
+    if evidence is not None:
+        fields["evidence"] = _EVIDENCE_JSON.dump_python(evidence, mode="json")
+    canonical = json.dumps(fields, sort_keys=True, separators=(",", ":"))
     return str(uuid.uuid5(_IDLESS_ALERT_NAMESPACE, canonical))
 
 
@@ -631,7 +599,7 @@ def _relay_event(payload: RelayAlertRequest, edge_event_id: str) -> RelayEvent:
         camera_id=payload.camera_id,
         facility_id=payload.facility_id,
         resident_id=payload.resident_id,
-        evidence=payload.evidence,
+        evidence=_evidence_values(payload.evidence),
         audit=None if payload.audit is None else payload.audit.model_dump(exclude_none=True),
     )
 
@@ -829,7 +797,7 @@ def relay_heartbeat(
         config_version=payload.config_version,
     )
     _clear_never_connected_on_first_heartbeat(request, payload.camera_id)
-    binding = _camera_binding(request, payload.camera_id, payload.facility_id)
+    binding = camera_binding(request, payload.camera_id, payload.facility_id)
     bound_camera_id = binding.get("backend_camera_id")
     if not isinstance(bound_camera_id, str) or not bound_camera_id.strip():
         _LOGGER.warning(
@@ -889,15 +857,6 @@ def _record_alert_latency(request: Request, payload: RelayAlertRequest, received
     )
 
 
-def _bearer_token(authorization: str | None) -> str | None:
-    if authorization is None:
-        return None
-    scheme, separator, token = authorization.partition(" ")
-    if separator and scheme.lower() == "bearer" and token:
-        return token
-    return None
-
-
 def _runtime_status_facility_binding(request: Request, facility_id: str) -> None:
     del request, facility_id
 
@@ -907,47 +866,13 @@ def _log_unresolved_runtime_status_cameras(
 ) -> None:
     for camera in payload.cameras:
         try:
-            _camera_binding(request, camera.camera_id, payload.facility_id)
+            camera_binding(request, camera.camera_id, payload.facility_id)
         except HTTPException as exc:
             logger.warning(
                 "runtime-status camera unresolved (recorded anyway): camera_id=%s detail=%s",
                 camera.camera_id,
                 exc.detail,
             )
-
-
-def _camera_binding(request: Request, camera_id: str, facility_id: str) -> dict[str, str | None]:
-    return _camera_binding_from_registry(request, camera_id, facility_id)
-
-
-def _camera_binding_from_registry(
-    request: Request,
-    camera_id: str,
-    facility_id: str,
-) -> dict[str, str | None]:
-    store = getattr(request.app.state, "camera_registry", None)
-    if not isinstance(store, CameraRegistryStore):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="unknown camera")
-    snapshot = store.snapshot()
-    cameras = snapshot.get("cameras")
-    if not isinstance(cameras, list) or not cameras:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="unknown camera")
-    for record in cameras:
-        if not isinstance(record, dict):
-            continue
-        local_id = record.get("id")
-        backend_id = record.get("backend_camera_id")
-        if camera_id in {local_id, backend_id}:
-            canonical_id = backend_id or local_id
-            return {
-                "camera_id": str(canonical_id),
-                "facility_id": facility_id,
-                "resident_id": None,
-                "backend_camera_id": (
-                    backend_id if isinstance(backend_id, str) and backend_id.strip() else None
-                ),
-            }
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="unknown camera")
 
 
 def _clear_never_connected_on_first_heartbeat(request: Request, camera_id: str) -> None:

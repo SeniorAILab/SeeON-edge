@@ -14,10 +14,10 @@ from backend.app.audit_lifecycle import (
     start_audit_verification,
     verify_audit_runtime,
 )
-from backend.app.features.audit.catalog import AuditAction
 from backend.app.features.audit.postgres_runtime import PostgresAuditRuntime
 from backend.app.main import create_app, no_lifespan
 from backend.app.postgres_root import PostgresRoot, install_postgres_stores
+from backend.app.shared.audit_values import AuditAction
 from tests_support.postgres_api_app import postgres_api_app
 from tests_support.postgres_sandbox import ProductSandbox
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import shutil
 import stat
@@ -11,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Literal
 
+from contracts.model_reference import ModelReference
 from worker.tools.fetch_models.http_source import (
     ByteSource,
     RetryableSourceError,
@@ -30,12 +30,11 @@ from worker.tools.fetch_models.manifest import (
 HF_TOKEN_ENV: Final = "HF_TOKEN"
 PART_SUFFIX: Final = ".part"
 _HASH_CHUNK: Final = 1 << 20
+_PUBLISHED_BUNDLE_MANIFEST_PATH: Final = "manifest.json"
+_MAX_PUBLISHED_MANIFEST_SIZE: Final = 1 << 20
 _FALL_BUNDLE_ROOT: Final = "fall/pose-bbox56-gru"
 _FALL_PT_PATH: Final = f"{_FALL_BUNDLE_ROOT}/model.pt"
 _FALL_ONNX_PATH: Final = f"{_FALL_BUNDLE_ROOT}/model.onnx"
-_PUBLISHED_BUNDLE_MANIFEST_PATH: Final = "manifest.json"
-_MAX_PUBLISHED_MANIFEST_SIZE: Final = 1 << 20
-_SELECTED_PUBLICATION_SOURCE_NAME: Final = "selected-model-publication"
 
 Outcome = Literal["present", "fetched", "sidecar-present", "sidecar-written"]
 
@@ -238,9 +237,10 @@ def fetch_bundle(
     env: Mapping[str, str],
     retry: RetryPolicy,
     log: Callable[[str], None] = lambda _message: None,
+    name: str | None = None,
 ) -> FetchReport:
     bundles_root = root / "bundles"
-    destination = bundles_root / bundle.sha256
+    destination = bundles_root / (name or bundle.sha256)
     if destination.exists() or destination.is_symlink():
         _verify_bundle_tree(bundle, destination)
         return FetchReport(
@@ -274,82 +274,6 @@ def fetch_bundle(
     return report
 
 
-def _read_published_bundle_manifest(
-    source: Source, byte_source: ByteSource, env: Mapping[str, str]
-) -> Bundle:
-    body = bytearray()
-    url = source.url_for(_PUBLISHED_BUNDLE_MANIFEST_PATH)
-    headers = _headers_for(
-        Artifact(
-            path=_PUBLISHED_BUNDLE_MANIFEST_PATH,
-            source=source,
-            remote_path=_PUBLISHED_BUNDLE_MANIFEST_PATH,
-            size=1,
-            sha256="0" * 64,
-        ),
-        env,
-    )
-    try:
-        for chunk in byte_source.stream(url, headers):
-            body.extend(chunk)
-            if len(body) > _MAX_PUBLISHED_MANIFEST_SIZE:
-                raise VerificationError(
-                    f"published bundle manifest at {url} exceeds "
-                    f"{_MAX_PUBLISHED_MANIFEST_SIZE} bytes"
-                )
-        return bundle_from_published_manifest(bytes(body), source)
-    except SourceError as exc:
-        raise VerificationError(
-            f"published bundle source {source.source_locator}@{source.ref} is unreachable: {exc}"
-        ) from exc
-    except ManifestError as exc:
-        raise VerificationError(f"published bundle manifest at {url}: {exc}") from exc
-
-
-def _fetch_selected_bundle(
-    root: Path,
-    source: ByteSource,
-    *,
-    selection_path: Path,
-    env: Mapping[str, str],
-    retry: RetryPolicy,
-    log: Callable[[str], None],
-) -> FetchReport:
-    try:
-        selection_raw = json.loads(selection_path.read_text(encoding="utf-8"))
-        from worker.runtime.provenance.model_bundle import (
-            desired_model_bundle_from_selection_document,
-        )
-
-        desired = desired_model_bundle_from_selection_document(selection_raw)
-    except (OSError, ValueError, RuntimeError) as exc:
-        raise VerificationError(f"model selection at {selection_path} is invalid: {exc}") from exc
-
-    publication = desired.selection.model_publication if desired.selection is not None else None
-    if publication is None:  # pragma: no cover
-        raise VerificationError("model selection has no model publication")
-    selected_source = Source(
-        name=_SELECTED_PUBLICATION_SOURCE_NAME,
-        kind="huggingface",
-        source_locator=publication.source_locator,
-        ref=publication.revision,
-    )
-    bundle = _read_published_bundle_manifest(selected_source, source, env)
-    if bundle.sha256 != publication.bundle_sha256:
-        raise VerificationError(
-            f"published bundle manifest identity {bundle.sha256} does not match selected "
-            f"bundle {publication.bundle_sha256}"
-        )
-    destination = root / "bundles" / bundle.sha256
-    if destination.exists() or destination.is_symlink():
-        _require_loadable_selected_fall_bundle(root, desired)
-    report = fetch_bundle(bundle, root, source, env=env, retry=retry, log=log)
-    for result in report.results:
-        log(f"{result.outcome:16} {result.sha256}  bundles/{bundle.sha256}/{result.path}")
-    _require_loadable_selected_fall_bundle(root, desired)
-    return report
-
-
 def fetch_all(
     manifest: Manifest,
     root: Path,
@@ -360,7 +284,6 @@ def fetch_all(
     force: bool = False,
     log: Callable[[str], None] = lambda _message: None,
     sidecar_root: Path = SIDECAR_ROOT,
-    selection_path: Path | None = None,
     public_only: bool = False,
 ) -> FetchReport:
     report = FetchReport()
@@ -392,16 +315,6 @@ def fetch_all(
     artifact_paths = {artifact.path for artifact in manifest.artifacts}
     if not public_only and _FALL_PT_PATH in artifact_paths:
         _require_loadable_fall_bundle(root)
-    if not public_only and selection_path is not None and selection_path.is_file():
-        selected_report = _fetch_selected_bundle(
-            root,
-            source,
-            selection_path=selection_path,
-            env=env,
-            retry=retry,
-            log=log,
-        )
-        report.results.extend(selected_report.results)
     return report
 
 
@@ -425,23 +338,67 @@ def _require_loadable_fall_bundle(root: Path) -> None:
         ) from error
 
 
-def _require_loadable_selected_fall_bundle(root: Path, desired: object) -> None:
-    from worker.adapters.model.errors import ModelLoadError
-    from worker.adapters.model.ort_pose_bbox56 import OrtPoseBbox56Runner
-    from worker.runtime.provenance.model_bundle import (
-        DesiredModelBundle,
-        ModelBundleAdmissionError,
-        admit_model_bundle,
+def _read_published_bundle_manifest(
+    source: Source, byte_source: ByteSource, env: Mapping[str, str]
+) -> Bundle:
+    body = bytearray()
+    url = source.url_for(_PUBLISHED_BUNDLE_MANIFEST_PATH)
+    headers = _headers_for(
+        Artifact(
+            path=_PUBLISHED_BUNDLE_MANIFEST_PATH,
+            source=source,
+            remote_path=_PUBLISHED_BUNDLE_MANIFEST_PATH,
+            size=1,
+            sha256="0" * 64,
+        ),
+        env,
     )
-
-    if not isinstance(desired, DesiredModelBundle):  # pragma: no cover
-        raise VerificationError("selected bundle desired state is invalid")
     try:
-        proof = admit_model_bundle(root, desired)
-        if desired.selection is None:  # pragma: no cover
-            raise VerificationError("selected bundle has no selection")
-        OrtPoseBbox56Runner.from_admitted_bundle(
-            root / "bundles" / desired.bundle_sha256, proof, desired.selection
-        )
-    except (ModelBundleAdmissionError, ModelLoadError) as exc:
-        raise VerificationError(str(exc)) from exc
+        for chunk in byte_source.stream(url, headers):
+            body.extend(chunk)
+            if len(body) > _MAX_PUBLISHED_MANIFEST_SIZE:
+                raise VerificationError(
+                    f"published bundle manifest at {url} exceeds "
+                    f"{_MAX_PUBLISHED_MANIFEST_SIZE} bytes"
+                )
+        return bundle_from_published_manifest(bytes(body), source)
+    except SourceError as exc:
+        raise VerificationError(
+            f"{source.source_locator}@{source.ref} is unreachable: {exc}"
+        ) from exc
+    except ManifestError as exc:
+        raise VerificationError(f"published bundle manifest at {url}: {exc}") from exc
+
+
+def fetch_reference(
+    reference: ModelReference,
+    root: Path,
+    byte_source: ByteSource,
+    *,
+    env: Mapping[str, str],
+    retry: RetryPolicy,
+    log: Callable[[str], None] = lambda _message: None,
+) -> FetchReport:
+    source = Source(
+        name="fall-model",
+        kind="huggingface",
+        source_locator=reference.source_locator,
+        ref=reference.revision,
+    )
+    bundle = _read_published_bundle_manifest(source, byte_source, env)
+    report = fetch_bundle(
+        bundle, root, byte_source, env=env, retry=retry, log=log, name=reference.revision
+    )
+    _require_loadable_bundle(bundle, reference.bundle_dir(root))
+    return report
+
+
+def _require_loadable_bundle(bundle: Bundle, directory: Path) -> None:
+    from worker.adapters.model import ort_pose_bbox56
+    from worker.adapters.model.errors import ModelLoadError
+
+    digests = {artifact.path: artifact.sha256 for artifact in (*bundle.members, *bundle.receipts)}
+    try:
+        _ = ort_pose_bbox56.OrtPoseBbox56Runner.from_admitted_bundle(directory, digests)
+    except ModelLoadError as error:
+        raise VerificationError(f"bundle at {directory} is not loadable: {error}") from error

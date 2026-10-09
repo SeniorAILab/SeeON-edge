@@ -8,7 +8,7 @@ import pytest
 from fastapi import Request
 
 from backend.app.features.evidence import router as evidence
-from backend.app.features.evidence.receipt_store import ArtifactReceiptVerificationError
+from backend.app.shared.artifact_verification import ArtifactReceiptVerificationError
 
 
 def _input(tmp_path):

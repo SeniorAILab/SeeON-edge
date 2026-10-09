@@ -1,3 +1,4 @@
+import { matchesCamera } from '@/shared/api/matchesCamera';
 import type { Camera, Clip } from '@/shared/api/types';
 
 /**
@@ -8,6 +9,7 @@ import type { Camera, Clip } from '@/shared/api/types';
  * has since been deleted.
  */
 export function resolveCameraLabel(cameras: readonly Camera[], clip: Clip): string {
-  const match = clip.camera_id ? cameras.find((camera) => camera.id === clip.camera_id) : undefined;
+  const id = clip.camera_id;
+  const match = id ? cameras.find((camera) => matchesCamera(camera, id)) : undefined;
   return match?.label ?? clip.camera_label;
 }

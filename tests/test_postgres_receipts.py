@@ -14,15 +14,9 @@ import pytest
 
 from backend.app.edge_db.authority import AuthorityFenced, freeze_authority
 from backend.app.edge_db.postgres import CommitOutcomeUnknown
-from backend.app.features.audit.catalog import (
-    AuditAction,
-    AuditActorType,
-    AuditAuthMechanism,
-    empty_detail,
-)
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.postgres_runtime import PostgresAuditRuntime
 from backend.app.features.audit.postgres_store import PostgresAuditStore
-from backend.app.features.audit.store import AuditEvent, utc_now
 from backend.app.features.evidence.event_outbox import EventOutbox, OutboxBudget
 from backend.app.features.evidence.postgres_receipts import PostgresArtifactReceiptStore
 from backend.app.features.evidence.receipt_files import ReceiptHooks
@@ -30,11 +24,18 @@ from backend.app.features.evidence.receipt_store import (
     ArtifactReceipt,
     ArtifactReceiptConflictError,
     ArtifactReceiptPersistenceError,
-    ArtifactReceiptVerificationError,
     ReceiptMissingIncidentError,
     verified_artifact,
 )
 from backend.app.features.evidence.relay_projection import RelayEvent
+from backend.app.shared.artifact_verification import ArtifactReceiptVerificationError
+from backend.app.shared.audit_values import (
+    AuditAction,
+    AuditActorType,
+    AuditAuthMechanism,
+    AuditEvent,
+    utc_now,
+)
 
 pytest_plugins = ("tests_support.postgres_sandbox",)
 _TIME = "2026-09-28T03:00:00.000Z"

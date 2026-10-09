@@ -7,6 +7,7 @@ Define every cross-layer **protocol, constant, enum, and shared data shape** her
 - `frame.py`: `Frame` and `FrameSource`.
 - `observation.py`: boxes, labels, detection results, and `FrameObservation`.
 - `model.py`: model module protocol and shared confidence defaults.
+- `model_reference.py`: `ML_WORKER_FALL_MODEL` parser (`<owner>/<name>@<40-hex commit>`) and `bundle_dir`.
 - `artifacts.py`: model/weight path helpers.
 - `tracker.py`: shared tracker protocol surface.
 - `event.py`: event severity, levels, `EVENT_TYPE_REGISTRY`, and frontend event-type mapping.
@@ -14,7 +15,6 @@ Define every cross-layer **protocol, constant, enum, and shared data shape** her
 - `runner.py`: runner result kinds, `<X>Output` aliases, `RunnerProtocol`.
 - `worker_config.py`: `PulledWorkerConfig` family, `WORKER_CONFIG_PATH` / `WORKER_RESTART_PATH`, version keys.
 - `replay_trace.py`: versioned replay rows + `encode_*` / `decode_*` (document and JSONL).
-- `model_selection.py`: desired/applied model selection, canonical digest, receipt identity validators.
 - `edge_provisioning_*.py` (v1, models, parse, codec, enrollment, response, validation): Hub enrollment and topology vocabulary. `edge_provisioning_v1.py` is the entry.
 - `edge-provisioning-v1/`: byte-frozen `contract-fixtures.json` + `provenance.json`. Synthetic tokens keep the upstream digest (`.gitleaksignore`).
 - `decode_diagnostics.py` / `encode_diagnostics.py`: backend names, fallback reasons, selection shapes.

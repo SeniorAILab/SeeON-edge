@@ -5,7 +5,6 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import Response
 
-from backend.app.features.audit.catalog import AuditAction
 from backend.app.features.audit.http import append_governed
 from backend.app.features.clips.artifacts import CentralClipArtifactQuery
 from backend.app.features.clips.catalog_indexer import ClipCatalogQuery, PostgresClipCatalog
@@ -20,17 +19,19 @@ from backend.app.features.clips.schemas import (
     ListClipsResponse,
     SnapshotArtifactState,
 )
+from backend.app.features.clips.service.camera_filter import camera_filter_ids
 from backend.app.features.clips.store import (
     ClipStore,
     DuplicateClipIdError,
     LocatedClip,
 )
-from backend.app.features.evidence.receipt_store import (
+from backend.app.shared.artifact_verification import (
     ArtifactReceiptVerificationError,
     verify_artifact,
 )
-from backend.app.shared.dashboard_auth import authorize_dashboard
-from backend.app.shared.head_response import drop_body_for_head
+from backend.app.shared.audit_values import AuditAction
+from backend.app.shared.http.dashboard_auth import authorize_dashboard
+from backend.app.shared.http.head_response import drop_body_for_head
 
 router = APIRouter(tags=["clips"])
 
@@ -46,7 +47,9 @@ def list_clips(
         page = _clip_catalog(request).page(
             store,
             ClipCatalogQuery(
-                camera_id=filters.camera_id,
+                camera_ids=camera_filter_ids(
+                    _app_state_value(request, "camera_registry"), filters.camera_id
+                ),
                 event_type=filters.event_type,
                 limit=filters.limit or 100,
                 cursor=filters.cursor,

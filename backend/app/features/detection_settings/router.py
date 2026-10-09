@@ -1,17 +1,15 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import ClassVar, Literal
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from backend.app.features.audit.catalog import AuditAction, empty_detail
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.http import mutation_audit
-from backend.app.features.audit.store import AuditEvent
-from backend.app.features.audit.store import utc_now as audit_now
-from backend.app.features.cameras.store import CameraRegistryStore
-from backend.app.features.connection.dependencies import get_connection_settings_store
 from backend.app.features.detection_settings.policy_store import (
     DetectionPolicyStore,
     PolicyActivationRefused,
@@ -24,7 +22,9 @@ from backend.app.features.detection_settings.store import (
     DetectionSettingsStore,
     DomainDetectionSetting,
 )
-from backend.app.shared.dashboard_auth import authorize_dashboard
+from backend.app.shared.audit_values import AuditAction, AuditEvent
+from backend.app.shared.audit_values import utc_now as audit_now
+from backend.app.shared.http.dashboard_auth import authorize_dashboard
 from contracts.worker_config import PulledWorkerConfig
 from shared.detection_policies import POLICY_DEFINITIONS
 
@@ -149,10 +149,9 @@ def get_detection_policies(
     _authorize(request)
     facility_id = _require_enrolled_facility(request.app)
     store = _policy_store(request.app)
-    registry = _registry(request.app)
     camera_ids = tuple(
         PolicyCameraIdentity(str(record.get("backend_camera_id") or record["id"]))
-        for record in registry.snapshot()["cameras"]
+        for record in detection_settings_ports(request.app).camera_records()
     )
     try:
         effective = store.resolve_bundle(facility_id, camera_ids).as_dict()
@@ -344,7 +343,7 @@ def _policy_store(app: FastAPI) -> DetectionPolicyStore:
 
 
 def _require_enrolled_facility(app: FastAPI) -> str:
-    facility_id = get_connection_settings_store(app).load().facility_id
+    facility_id = detection_settings_ports(app).enrolled_facility_id()
     if facility_id is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -353,19 +352,25 @@ def _require_enrolled_facility(app: FastAPI) -> str:
     return facility_id
 
 
-def _registry(app: FastAPI) -> CameraRegistryStore:
-    registry = getattr(app.state, "camera_registry", None)
-    if registry is None:
-        raise RuntimeError("camera registry is not injected")
-    if not isinstance(registry, CameraRegistryStore):
-        raise TypeError("camera registry has invalid type")
-    return registry
+@dataclass(frozen=True, slots=True)
+class DetectionSettingsPorts:
+    enrolled_facility_id: Callable[[], str | None]
+    camera_records: Callable[[], Sequence[Mapping[str, object]]]
+
+
+def detection_settings_ports(app: FastAPI) -> DetectionSettingsPorts:
+    ports = getattr(app.state, "detection_settings_ports", None)
+    if ports is None:
+        raise RuntimeError("detection settings ports are not injected")
+    if not isinstance(ports, DetectionSettingsPorts):
+        raise TypeError("detection settings ports have invalid type")
+    return ports
 
 
 def _require_policy_camera(app: FastAPI, camera_id: str | None) -> None:
     if camera_id is None:
         return
-    records = _registry(app).snapshot()["cameras"]
+    records = detection_settings_ports(app).camera_records()
     if any(
         camera_id == (record.get("backend_camera_id") or record.get("id")) for record in records
     ):
@@ -377,4 +382,10 @@ def _authorize(request: Request) -> str:
     return authorize_dashboard(request)
 
 
-__all__ = ["DetectionSettingsResponse", "current_settings_snapshot", "router"]
+__all__ = [
+    "DetectionSettingsPorts",
+    "DetectionSettingsResponse",
+    "current_settings_snapshot",
+    "detection_settings_ports",
+    "router",
+]

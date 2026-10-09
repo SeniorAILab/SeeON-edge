@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from typing import TypeAlias
+from typing import Literal, TypeAlias
 
-from backend.app.features.clips.schemas import ClipEventType
 from backend.app.features.clips.store import ClipManifest
 
-EventTypeFacet: TypeAlias = ClipEventType
-_EVENT_TYPE_FACETS: dict[str, ClipEventType] = {
+EventTypeFacet: TypeAlias = Literal["fall", "bed-exit", "other"]
+_EVENT_TYPE_FACETS: dict[str, EventTypeFacet] = {
     "fall": "fall",
     "bed-exit": "bed-exit",
 }

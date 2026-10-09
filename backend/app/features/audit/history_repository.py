@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import psycopg
 
 from backend.app.edge_db.postgres import PostgresDatabase
-from backend.app.features.audit.catalog import AuditAction
+from backend.app.shared.audit_values import AuditAction
 
 SqlValue = str | int | float | bytes | None
 

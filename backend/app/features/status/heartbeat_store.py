@@ -6,12 +6,10 @@ from dataclasses import dataclass, field
 from time import time
 from typing import TypeAlias
 
+from backend.app.shared.heartbeat_status import NEVER_SEEN, ONLINE, STALE
+
 DEFAULT_STALE_AFTER_SEC: float = 90.0
 DEFAULT_MAX_CAMERAS: int = 256
-
-ONLINE = "online"
-STALE = "stale"
-NEVER_SEEN = "never_seen"
 
 JsonObject: TypeAlias = dict[str, object]
 Clock: TypeAlias = Callable[[], float]
