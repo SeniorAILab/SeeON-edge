@@ -1,25 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
-from backend.app.features.audit.catalog import (
-    AuditAction,
-    AuditActorType,
-    AuditAuthMechanism,
-    AuditDetail,
-)
-
-
-@dataclass(frozen=True, slots=True)
-class AuditEvent:
-    occurred_at: str
-    actor_id: str
-    action: AuditAction
-    target_id: str
-    detail: AuditDetail
-    actor_type: AuditActorType = AuditActorType.USER
-    auth_mechanism: AuditAuthMechanism = AuditAuthMechanism.DASHBOARD_SESSION
+from backend.app.shared.audit_values import AuditAction, AuditDetail, AuditEvent
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,10 +17,6 @@ class AuditRecord:
     detail: AuditDetail
     previous_hash: str
     record_hash: str
-
-
-def utc_now() -> str:
-    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _target_type(action: AuditAction) -> str:
@@ -66,4 +45,4 @@ def _payload(event: AuditEvent, recorded_at: str, previous_hash: str) -> dict[st
     }
 
 
-__all__ = ["AuditEvent", "AuditRecord", "utc_now"]
+__all__ = ["AuditRecord"]

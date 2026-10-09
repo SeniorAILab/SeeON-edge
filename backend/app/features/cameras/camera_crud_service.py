@@ -5,9 +5,9 @@ from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar
 
 from backend.app.edge_db import DatabaseConnection
-from backend.app.features.audit.catalog import AuditAction
 from backend.app.features.cameras.camera_values import CameraStatus, ProbeResult, status_from_probe
 from backend.app.features.cameras.update_command import CameraUpdate
+from backend.app.shared.audit_values import AuditAction
 
 AfterWrite = Callable[[DatabaseConnection[Any]], None]
 CameraRecord = dict[str, object]

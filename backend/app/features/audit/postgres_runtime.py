@@ -23,8 +23,9 @@ from backend.app.features.audit import postgres_sessions
 from backend.app.features.audit.postgres_store import PostgresAuditStore
 from backend.app.features.audit.postgres_verification import PostgresAuditCheckpoint
 from backend.app.features.audit.sessions import AuditSession
-from backend.app.features.audit.store import AuditEvent, AuditRecord
+from backend.app.features.audit.store import AuditRecord
 from backend.app.features.audit.verification import AuditVerificationError
+from backend.app.shared.audit_values import AuditEvent
 
 _LOGGER = logging.getLogger(__name__)
 _Result = TypeVar("_Result")

@@ -6,9 +6,9 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.app.features.audit.catalog import AuditAction
 from backend.app.features.audit.history_repository import get_history, list_history
 from backend.app.features.audit.http import append_governed, audit_runtime
+from backend.app.shared.audit_values import AuditAction
 from backend.app.shared.http.dashboard_auth import authorize_dashboard
 
 router = APIRouter(prefix="/audit", tags=["audit"])

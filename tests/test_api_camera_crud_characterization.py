@@ -9,9 +9,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from backend.app.features.audit.catalog import AuditAction
 from backend.app.features.audit.postgres_runtime import PostgresAuditRuntime
 from backend.app.features.cameras.camera_values import ProbeResult
+from backend.app.shared.audit_values import AuditAction
 from tests_support.postgres_api_app import postgres_api_app
 from tests_support.postgres_sandbox import ProductSandbox
 

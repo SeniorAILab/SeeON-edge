@@ -13,14 +13,8 @@ from uuid import UUID
 from fastapi import APIRouter, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from backend.app.features.audit.catalog import (
-    AuditAction,
-    AuditActorType,
-    AuditAuthMechanism,
-    empty_detail,
-)
+from backend.app.features.audit.catalog import empty_detail
 from backend.app.features.audit.http import mutation_audit
-from backend.app.features.audit.store import AuditEvent, utc_now
 from backend.app.features.clips.store import CLIP_STORE_DIR_ENV, DEFAULT_CLIP_STORE_DIR
 from backend.app.features.evidence.postgres_receipts import PostgresArtifactReceiptStore
 from backend.app.features.evidence.receipt_store import (
@@ -32,6 +26,13 @@ from backend.app.features.evidence.receipt_store import (
     verified_artifact,
 )
 from backend.app.features.runtime_settings.dependencies import get_runtime_settings_store
+from backend.app.shared.audit_values import (
+    AuditAction,
+    AuditActorType,
+    AuditAuthMechanism,
+    AuditEvent,
+    utc_now,
+)
 from backend.app.shared.http.backend_client_bundle import backend_client_bundle
 from backend.app.shared.http.relay_http import RELAY_TOKEN_HEADER, camera_binding
 from backend.app.shared.http.relay_http import authorize_relay as _authorize

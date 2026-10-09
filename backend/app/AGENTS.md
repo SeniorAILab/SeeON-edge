@@ -17,7 +17,7 @@ with the worker.
 
 One capability per `features/<slice>/`. The slice owns its router and store. Extra routers stay in the same slice.
 
-- `audit`: hash-chained audit log + closed `AuditAction` catalog. Owns `AuditStore`; every governed mutation appends through `audit.http`.
+- `audit`: hash-chained audit log + detail catalog. The values other slices share (`AuditAction`, `AuditEvent`, actor and auth enums, `utc_now`) live in `shared/audit_values.py`. Owns `AuditStore`; every governed mutation appends through `audit.http`.
 - `auth`: dashboard session + credential rotation (`shared/http/dashboard_auth.py`, `shared/dashboard_credentials.py`). The `admin`/`admin` constants there are a known-insecure pair to reject, never a runtime fallback.
 - `cameras`: registry, topology, bed zones, worker-config, MJPEG proxy. Owns `camera_registry`, `bed_zone_store`.
 - `clips`: listing, media, storage, catalog. Owns compact `clips` / `artifacts` access, `catalog_store`, and `clip_storage_location_store`.
@@ -30,7 +30,7 @@ One capability per `features/<slice>/`. The slice owns its router and store. Ext
 - `status`: `/status` and `/system` from relay-derived liveness. Owns `heartbeat_store`, `runtime_status_store`.
 - `qa`: retired. No QA/replay table is a runtime owner.
 - `routes/`: app-level health + models. See `routes/AGENTS.md`.
-- `core/` is `Settings` (`ML_API_`). `shared/` is infra (mapping, sessions, state dir), never feature state. `shared/http/` holds the only FastAPI and Starlette code in `shared/`; controllers import it, services and repositories do not.
+- `core/` is `Settings` (`ML_API_`). `shared/` is infra (mapping, sessions, state dir) and shared values (`audit_values.py`), never feature state. `shared/http/` holds the only FastAPI and Starlette code in `shared/`; controllers import it, services and repositories do not.
 
 ## Wire models
 

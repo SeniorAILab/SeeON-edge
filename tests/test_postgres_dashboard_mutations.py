@@ -6,7 +6,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.edge_db.postgres import CommitOutcomeUnknown
-from backend.app.features.audit.catalog import AuditAction
 from backend.app.features.cameras.bed_zone_store import BedZoneRegion, BedZoneStore
 from backend.app.features.cameras.edge_topology_sync_state import EdgeTopologySyncStateStore
 from backend.app.features.cameras.store import CameraRegistryStore, ProbeResult
@@ -17,6 +16,7 @@ from backend.app.features.detection_settings.policy_store import DetectionPolicy
 from backend.app.features.detection_settings.store import DetectionSettingsStore
 from backend.app.features.runtime_settings.store import RuntimeSettingsStore
 from backend.app.main import create_app, no_lifespan
+from backend.app.shared.audit_values import AuditAction
 from backend.app.shared.http.dashboard_auth import (
     DASHBOARD_SESSION_COOKIE,
     DashboardSessionStore,
