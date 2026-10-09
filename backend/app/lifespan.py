@@ -135,10 +135,11 @@ async def _gateway_lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.backend_config_refresh_executor = refresh_executor
 
-    from backend.app.features.cameras.dependencies import recover_camera_roster_on_boot
+    from backend.app.features.cameras.roster_sync import recover_camera_roster_on_boot
+    from backend.app.features.connection.dependencies import topology_retry_coordinator
 
     await asyncio.get_running_loop().run_in_executor(
-        refresh_executor, recover_camera_roster_on_boot, app
+        refresh_executor, lambda: recover_camera_roster_on_boot(topology_retry_coordinator(app))
     )
     await asyncio.get_running_loop().run_in_executor(
         refresh_executor, _pull_backend_config, app, refresh_stop
@@ -389,11 +390,12 @@ def refresh_backend_config(app: FastAPI, stop_token: asyncio.Event | None = None
         _mark_app_backend_status(app, True)
         _apply_backend_config(app, cfg)
         if was_reachable is not True:
-            from backend.app.features.cameras.dependencies import (
+            from backend.app.features.cameras.roster_sync import (
                 resume_camera_roster_after_connectivity,
             )
+            from backend.app.features.connection.dependencies import topology_retry_coordinator
 
-            resume_camera_roster_after_connectivity(app)
+            resume_camera_roster_after_connectivity(topology_retry_coordinator(app))
         return True
     finally:
         refresh_lock.release()

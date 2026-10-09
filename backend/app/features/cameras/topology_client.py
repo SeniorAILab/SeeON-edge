@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Literal, TypeAlias
+from typing import Literal, Protocol, TypeAlias
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
@@ -12,12 +12,8 @@ from backend.app.features.cameras.edge_topology_sync_state import (
     TopologyPauseReason,
 )
 from backend.app.features.cameras.topology_query import RegistryTopologySnapshot
-from backend.app.features.connection.enrollment import (
-    EnrollmentCredentials,
-    EnrollmentVerificationFailure,
-    verify_enrollment,
-)
 from backend.app.shared.backend_client_bundle import BackendClientBundle
+from contracts.edge_provisioning_models import EnrollmentVerificationResult
 from contracts.edge_provisioning_v1 import (
     ContractViolation,
     MachinePrincipal,
@@ -79,6 +75,17 @@ class TopologySnapshotBuilder:
         ).encode()
 
 
+class EnrollmentCheck(Protocol):
+    def __call__(
+        self,
+        events_url: str,
+        facility_code: str,
+        client_installation_ref: str,
+        facility_token: str,
+        timeout_sec: float,
+    ) -> EnrollmentVerificationResult | None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class TopologyClient:
     events_url: str
@@ -87,9 +94,12 @@ class TopologyClient:
     facility_code: str
     client_installation_ref: str
     timeout_sec: float
+    check_enrollment: EnrollmentCheck = field(repr=False, compare=False)
 
     @classmethod
-    def from_bundle(cls, bundle: BackendClientBundle) -> TopologyClient:
+    def from_bundle(
+        cls, bundle: BackendClientBundle, check_enrollment: EnrollmentCheck
+    ) -> TopologyClient:
         return cls(
             bundle.events_url,
             bundle.facility_token,
@@ -97,6 +107,7 @@ class TopologyClient:
             bundle.facility_code,
             bundle.client_installation_ref,
             bundle.ingest_client.timeout_sec,
+            check_enrollment,
         )
 
     def put(self, pending: PendingTopologySnapshot) -> TopologyPutResult:
@@ -177,16 +188,14 @@ class TopologyClient:
                 return TopologyRetryable("unreachable")
 
     def refresh_server_revision(self) -> int | None:
-        credentials = EnrollmentCredentials(
+        result = self.check_enrollment(
+            self.events_url,
             self.facility_code,
             self.client_installation_ref,
             self.bearer_token,
+            self.timeout_sec,
         )
-        try:
-            result = verify_enrollment(self.events_url, credentials, timeout_sec=self.timeout_sec)
-        except EnrollmentVerificationFailure:
-            return None
-        if result.principal != self.principal:
+        if result is None or result.principal != self.principal:
             return None
         return result.server_revision
 
