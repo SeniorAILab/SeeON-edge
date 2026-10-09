@@ -137,7 +137,7 @@ line-length = 100
 target-version = "py311"
 exclude = [".scratch", ".venv"]
 
-# Stability deny-list (docs/rules/code-stability.md, ADR):
+# Stability deny-list:
 #   B    bugbear — B904 raise-from, B006 mutable defaults
 #   S110/S112  try-except-pass / try-except-continue
 #   TRY  tryceratops — TRY002 vanilla raise, TRY400 logging.exception in handlers

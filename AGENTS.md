@@ -56,7 +56,7 @@ the sole composition root. The worker is an RTSP client only.
 
 Read the nearest scoped `AGENTS.md` before changing a package: `worker/`,
 `backend/app/`, `shared/`, `contracts/`, `front/`, `tests/`, `tests_support/`,
-`scripts/`, and `docs/` each have one, most with deeper files beneath them.
+and `scripts/` each have one, most with deeper files beneath them.
 
 ## Commands
 
