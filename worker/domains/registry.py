@@ -92,7 +92,7 @@ class _ArtifactProvenance(Protocol):
 @runtime_checkable
 class _ThresholdReceipt(Protocol):
     receipt_threshold: float | None
-    promotion_eligible: bool
+    calibration_applies: bool
 
 
 @runtime_checkable
@@ -270,8 +270,8 @@ def _effective_transition_threshold(
     receipt_window = (
         model.receipt_transition_window if isinstance(model, _ConfirmationRuleReceipt) else None
     )
-    promotion_eligible = model.promotion_eligible if isinstance(model, _ThresholdReceipt) else False
-    if promotion_eligible and receipt_threshold is not None:
+    calibration_applies = isinstance(model, _ThresholdReceipt) and model.calibration_applies
+    if calibration_applies and receipt_threshold is not None:
         threshold = receipt_threshold
         threshold_source = "receipt"
         unapplied_threshold = None
@@ -283,7 +283,7 @@ def _effective_transition_threshold(
         threshold = FALL_POLICY_V2_DEFAULT.transition_threshold
         threshold_source = "default"
         unapplied_threshold = policy.transition_threshold
-    if promotion_eligible and receipt_votes is not None and receipt_window is not None:
+    if calibration_applies and receipt_votes is not None and receipt_window is not None:
         transition_votes = receipt_votes
         transition_window = receipt_window
         confirmation_source = "receipt"
