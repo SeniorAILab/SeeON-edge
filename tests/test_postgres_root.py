@@ -9,9 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.edge_db.postgres import PoolBudget, PostgresError
-from backend.app.features.cameras.store import CameraRegistryStore
-from backend.app.main import create_app
-from backend.app.postgres_root import (
+from backend.app.edge_db.root import (
     API_POSTGRES_AUTHORITY_FILE_ENV,
     API_POSTGRES_DSN_FILE_ENV,
     API_POSTGRES_SCHEMA_ENV,
@@ -19,6 +17,8 @@ from backend.app.postgres_root import (
     PostgresRootError,
     open_postgres_root,
 )
+from backend.app.features.cameras.store import CameraRegistryStore
+from backend.app.main import create_app
 from tests_support.connection_api import closed_port
 from tests_support.postgres_sandbox import ProductSandbox
 

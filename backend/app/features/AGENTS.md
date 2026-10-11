@@ -32,8 +32,9 @@ Read or call. Do not construct the other slice's store.
   settings, and heartbeat age. `worker_config_snapshot` is the only place
   local detection overrides meet pulled config.
 - `connection` drives cameras roster/topology helpers and heartbeat-relay
-  state. After enroll it calls `lifespan.apply_connection_settings` and
-  `refresh_backend_config`. That callback is the approved lifespan import.
+  state. After enroll it calls the injected `ConnectionPorts`
+  (`apply_settings`, `refresh_backend_config`) that `bootstrap/lifespan.py`
+  binds. It never imports the composition root.
 - `status` reads the cameras expected set and runtime settings. `/status`
   merges heartbeat plus runtime snapshot. `/system` is disk and image
   metadata, not camera liveness.
@@ -41,7 +42,7 @@ Read or call. Do not construct the other slice's store.
   writes `app.state.pulled_config`.
 - `streams` lives in cameras. It proxies worker MJPEG and duplicates the
   relay header constant so it does not import cameras-router privates.
-Hard edges: no `backend.app.main` imports. Only connection imports `lifespan`.
+Hard edges: no `backend.app.main`, `backend.app.bootstrap`, or `backend.app.routes` imports.
 No `qa/` package exists (retired); nothing imports one.
 ## HTTP, stores, tests
 

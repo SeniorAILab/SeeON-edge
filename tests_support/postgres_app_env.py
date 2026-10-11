@@ -6,13 +6,13 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 
-from backend.app.features.audit.postgres_runtime import PostgresAuditRuntime
-from backend.app.postgres_root import (
+from backend.app.edge_db.root import (
     API_POSTGRES_AUTHORITY_FILE_ENV,
     API_POSTGRES_DSN_FILE_ENV,
     API_POSTGRES_SCHEMA_ENV,
     PostgresRoot,
 )
+from backend.app.features.audit.postgres_runtime import PostgresAuditRuntime
 from tests_support.postgres_sandbox import ProductSandbox
 
 

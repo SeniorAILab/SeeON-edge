@@ -8,7 +8,8 @@ with the worker.
 
 - `create_app()` seeds `app.state.edge_relay_token` from `API_EDGE_RELAY_TOKEN`, mounts unversioned `probe_router`, then registers product routers under `Settings.api_v1_prefix` (`/api/v1`). Front dist mounts at `/` from `API_FRONT_DIST` when that dir exists.
 - Auth reads only `app.state.edge_relay_token`. Handlers never re-read env. Lifespan seeding is `hasattr`-guarded so the factory (and tests) win. `no_lifespan` is the test hook.
-- `lifespan.py` rejects retired env keys, resolves the ml-api state dir, then assembles in-memory `heartbeat_store` / `runtime_status_store`, `camera_registry`, and the connection-derived ingest / evidence bundle. Clip listing is compact-authority on request.
+- `bootstrap/` is the composition root: `lifespan.py` (lifespan + feature ports), `stores.py` (PostgreSQL store wiring), `audit.py` (audit readiness and session), `clip_catalog.py` (catalog lifecycle). Opening and closing PostgreSQL is infra and lives in `edge_db/root.py`. Features never import `bootstrap` or `edge_db/root.py`; they receive injected stores and ports.
+- `bootstrap/lifespan.py` rejects retired env keys, resolves the ml-api state dir, then assembles in-memory `heartbeat_store` / `runtime_status_store`, `camera_registry`, and the connection-derived ingest / evidence bundle. Clip listing is compact-authority on request.
 - Config refresh and heartbeat relay each get a dedicated 1-worker executor. `API_BACKEND_HEARTBEAT_RELAY_SEC=0` kills the relay loop.
 - Shutdown cancels both loops, then `catalog_store.close()`. The factory maps `AuditUnavailableError` to `audit_unavailable_handler`.
 - Lifespan does not build detectors or RTSP. Pulled ml-config `cameras` are not admission; the dashboard registry is the camera SSOT.
@@ -40,7 +41,7 @@ HTTP schemas are Pydantic `BaseModel`, never `dataclass`. They live in the slice
 - `model_config = ConfigDict(extra="forbid")`. Every field uses `Field(...)`. Routes declare `response_model=...`. Header/Query deps are `Annotated`.
 - Settings: `BaseSettings` + `SettingsConfigDict(env_prefix="ML_API_", extra="ignore")`.
 - One `APIRouter(prefix=..., tags=[...])` per slice. Thin handlers. Product routes under `/api/v1`. `/health/{live,ready,release-identity}` stay unversioned. End with `__all__ = ["router"]`.
-- Injected collaborators are `typing.Protocol`s bound in `lifespan.py`.
+- Injected collaborators are `typing.Protocol`s bound in `bootstrap/lifespan.py`.
 
 ## Store ownership
 
@@ -64,13 +65,13 @@ Connection and runtime settings load through their slice `from_env()` helpers. A
 
 ## Anti-patterns
 
-- Do not assemble camera loops, detectors, or worker runtime in `lifespan.py`.
+- Do not assemble camera loops, detectors, or worker runtime in `bootstrap/`.
 - Do not seed cameras from env, YAML, or a pulled backend roster.
 - Do not re-read `API_EDGE_RELAY_TOKEN`. `app.state` is the only source.
 - Hub ingest needs a Hub-issued `backend_camera_id`. Skip egress until that mapping exists; keep the local catalog / heartbeat write anyway. Answer the worker `accepted_local` only when something local actually persisted the alert; that receipt is terminal and the alert is never pushed later.
 - Stamp `/relay/heartbeat` `received_at` after auth, before binding and before egress. Local liveness is edge truth even when registry or Hub fails.
 - Wire models stay out of `contracts`. Feature state stays out of `shared/`.
-- `core/` and `shared/` cannot import `features`, `routes`, `main`, or `lifespan`. `worker` is import-forbidden. Relay HTTP only.
+- `core/` and `shared/` cannot import `features`, `routes`, `main`, or `bootstrap`. `worker` is import-forbidden. Relay HTTP only.
 - Retired env keys fail boot via `reject_retired_backend_environment`.
 - Config-refresh and heartbeat-relay keep separate executors.
 - Relay bodies stay inside the per-route caps each router passes to `shared/http/relay_http.bounded_body_route`.

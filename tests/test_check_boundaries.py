@@ -149,7 +149,7 @@ def test_unparseable_source_is_reported() -> None:
 
 def test_scope_excludes_tests_and_the_boundary_owner() -> None:
     assert in_scope(Path("worker/runtime/worker.py"))
-    assert in_scope(Path("backend/app/lifespan.py"))
+    assert in_scope(Path("backend/app/bootstrap/lifespan.py"))
     assert in_scope(Path("scripts/check_no_comments.py"))
     assert not in_scope(Path("shared/boundary/__init__.py"))
     assert not in_scope(Path("tests/test_check_boundaries.py"))

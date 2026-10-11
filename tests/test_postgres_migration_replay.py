@@ -19,15 +19,15 @@ from backend.app.edge_db.migration.sqlite_fence import fence_sqlite
 from backend.app.edge_db.migration.transfer import transfer
 from backend.app.edge_db.migration.worker_state import queue_digest
 from backend.app.edge_db.postgres import PoolBudget
-from backend.app.features.audit.postgres_runtime import PostgresAuditRuntime
-from backend.app.features.audit.postgres_store import PostgresAuditStore
-from backend.app.postgres_root import (
+from backend.app.edge_db.root import (
     API_POSTGRES_AUTHORITY_FILE_ENV,
     API_POSTGRES_DSN_FILE_ENV,
     API_POSTGRES_SCHEMA_ENV,
     close_postgres_database,
     open_postgres_root,
 )
+from backend.app.features.audit.postgres_runtime import PostgresAuditRuntime
+from backend.app.features.audit.postgres_store import PostgresAuditStore
 from tests_support.alert_amplification_runtime import ServedFixture, hub_client
 from tests_support.postgres_migration import (
     NOW,

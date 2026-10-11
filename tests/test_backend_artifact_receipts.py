@@ -12,6 +12,7 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.app.bootstrap.lifespan import install_feature_ports
 from backend.app.features.audit.postgres_runtime import PostgresAuditRuntime
 from backend.app.features.audit.postgres_store import PostgresAuditStore
 from backend.app.features.cameras.store import CameraRegistryStore
@@ -27,7 +28,6 @@ from backend.app.features.evidence.receipt_store import (
 )
 from backend.app.features.evidence.relay_projection import RelayEvent
 from backend.app.features.runtime_settings.store import RuntimeSettingsStore
-from backend.app.lifespan import install_feature_ports
 from backend.app.main import create_app, no_lifespan
 from backend.app.shared.artifact_verification import (
     ArtifactReceiptVerificationError,

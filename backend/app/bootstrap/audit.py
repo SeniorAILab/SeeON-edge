@@ -9,14 +9,14 @@ from dataclasses import dataclass
 from fastapi import FastAPI
 
 from backend.app.edge_db.postgres import CommitOutcomeUnknown
+from backend.app.edge_db.root import PostgresRoot
 from backend.app.features.audit.http import publish_audit_readiness
 from backend.app.features.audit.postgres_runtime import (
     AuditRuntimeUnavailable,
     PostgresAuditRuntime,
 )
 from backend.app.features.audit.postgres_store import PostgresAuditStore
-from backend.app.features.audit.startup import verify_audit_runtime as refresh_audit_runtime
-from backend.app.postgres_root import PostgresRoot
+from backend.app.features.audit.startup import verify_audit_runtime
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -61,19 +61,16 @@ def configure_audit_readiness(app: FastAPI, *, clock: Callable[[], float] = time
         maximum_snapshot_age_sec=_MAXIMUM_SNAPSHOT_AGE_SEC,
         clock=clock,
     )
-    try:
-        runtime.verify_once()
-        runtime.start_session_once()
-    except (AuditRuntimeUnavailable, CommitOutcomeUnknown):
-        _LOGGER.warning("audit startup verification failed; audit is degraded")
+    verify_audit_runtime(runtime)
     app.state.audit_runtime = runtime
     app.state.audit_owner = _OwnedAudit(runtime, threading.Event())
     return runtime.snapshot().eligible_to_attempt
 
 
-def verify_audit_runtime(app: FastAPI, runtime: PostgresAuditRuntime) -> bool:
-    refresh_audit_runtime(runtime)
+def refresh_audit_readiness(app: FastAPI, runtime: PostgresAuditRuntime) -> bool:
+    verify_audit_runtime(runtime)
     return publish_audit_readiness(app, runtime)
+
 
 def start_audit_verification(
     app: FastAPI, *, verify_interval_sec: float = _VERIFY_INTERVAL_SEC
@@ -86,7 +83,7 @@ def start_audit_verification(
 
     def verify_until_stopped() -> None:
         while not owned.stop.wait(verify_interval_sec):
-            verify_audit_runtime(app, runtime)
+            refresh_audit_readiness(app, runtime)
 
     owned.thread = threading.Thread(target=verify_until_stopped, name="audit-verifier", daemon=True)
     owned.thread.start()
@@ -117,6 +114,6 @@ def close_audit_session(app: FastAPI) -> bool:
 __all__ = [
     "close_audit_session",
     "configure_audit_readiness",
+    "refresh_audit_readiness",
     "start_audit_verification",
-    "verify_audit_runtime",
 ]

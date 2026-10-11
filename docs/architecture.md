@@ -27,7 +27,7 @@ opens, migrates, or repairs the database.
 ### PostgreSQL schemas and provisioning
 
 The backend connects through `open_postgres_root`
-(`backend/app/postgres_root.py`). Three environment values, set in
+(`backend/app/edge_db/root.py`). Three environment values, set in
 `compose.edge.yaml`, name what it needs: `API_POSTGRES_DSN_FILE` (connection
 string file), `API_POSTGRES_AUTHORITY_FILE` (persistence authority file), and
 `API_POSTGRES_SCHEMA` (default `seeon_edge`). The DDL lives in
