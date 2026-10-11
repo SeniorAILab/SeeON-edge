@@ -17,7 +17,7 @@ under `models/` and are never committed.
 | Package | Ownership |
 | --- | --- |
 | `front` | React/Vite SPA. Feature-sliced: `src/features/*`, `src/shared/{ui,api}`, `src/app`. Talks to the backend only over same-origin `/api/v1`. |
-| `backend` | FastAPI gateway. Eleven vertical slices under `app/features/*` (router + store); `app/lifespan.py` is its composition root. |
+| `backend` | FastAPI gateway. Eleven vertical slices under `app/features/*` (router + store); `app/bootstrap/` is its composition root (lifespan, store wiring, audit and clip-catalog lifecycles). |
 | `worker` | DeepStream Flow worker. SDK media plane, CPU domain decisions, evidence, and relay egress. |
 | `shared` | `shared.events` (backend↔worker wire). |
 | `contracts` | ADR-0006 canonical typed-vocabulary leaf and the contract authority; the archived `eldercare-dataset-ops` copy is historical only. |

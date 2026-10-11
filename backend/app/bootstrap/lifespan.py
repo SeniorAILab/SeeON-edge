@@ -18,17 +18,23 @@ from typing import Protocol, TypeGuard
 
 from fastapi import FastAPI
 
-from backend.app.audit_lifecycle import (
+from backend.app.bootstrap.audit import (
     close_audit_session,
     configure_audit_readiness,
     start_audit_verification,
 )
-from backend.app.clip_catalog_lifecycle import (
+from backend.app.bootstrap.clip_catalog import (
     start_clip_catalog_indexer,
     stop_clip_catalog_indexer,
 )
+from backend.app.bootstrap.stores import install_postgres_stores
 from backend.app.core.config import get_settings, reject_retired_backend_environment
 from backend.app.edge_db.postgres import PostgresDatabase
+from backend.app.edge_db.root import (
+    PostgresRoot,
+    close_postgres_database,
+    open_postgres_root,
+)
 from backend.app.features.diagnostics.postgres_database import open_diagnostics_database
 from backend.app.features.diagnostics.retention import RetentionBudget
 from backend.app.features.diagnostics.store import ExecutionRecordStore
@@ -50,12 +56,6 @@ from backend.app.features.status.heartbeat_store import (
     get_heartbeat_store,
 )
 from backend.app.features.status.runtime_status_store import RuntimeStatusStore
-from backend.app.postgres_root import (
-    PostgresRoot,
-    close_postgres_database,
-    install_postgres_stores,
-    open_postgres_root,
-)
 from backend.app.shared.backend_client_bundle import BackendClientBundle
 from backend.app.shared.backend_mapping import mark_backend_status
 from backend.app.shared.http.backend_client_bundle import backend_client_bundle
@@ -97,6 +97,7 @@ def install_feature_ports(app: FastAPI) -> None:
         get_connection_settings_store,
         topology_retry_coordinator,
     )
+    from backend.app.features.connection.router import ConnectionPorts
     from backend.app.features.detection_settings.router import DetectionSettingsPorts
     from backend.app.features.evidence.router import EvidencePorts
     from backend.app.features.runtime_settings.dependencies import get_runtime_settings_store
@@ -107,6 +108,10 @@ def install_feature_ports(app: FastAPI) -> None:
         topology=lambda: topology_retry_coordinator(app),
         heartbeats=lambda: get_heartbeat_store(app).snapshot(),
         clip_export_setting=lambda: get_runtime_settings_store(app).get(),
+    )
+    app.state.connection_ports = ConnectionPorts(
+        apply_settings=lambda: apply_connection_settings(app),
+        refresh_backend_config=lambda: refresh_backend_config(app),
     )
     app.state.detection_settings_ports = DetectionSettingsPorts(
         enrolled_facility_id=lambda: get_connection_settings_store(app).load().facility_id,

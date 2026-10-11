@@ -11,9 +11,9 @@ from typing import Self
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.app.bootstrap.lifespan import BACKEND_CONFIG_SHUTDOWN_WAIT_SEC, refresh_backend_config
 from backend.app.features.cameras.store import CameraRegistryStore
 from backend.app.features.connection.store import ConnectionSettingsStore
-from backend.app.lifespan import BACKEND_CONFIG_SHUTDOWN_WAIT_SEC, refresh_backend_config
 from backend.app.main import create_app
 from contracts.worker_config import CONFIG_VERSION_KEY, RESTART_EPOCH_KEY, PulledNightWindow
 from tests_support.postgres_sandbox import ProductSandbox

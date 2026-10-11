@@ -67,7 +67,7 @@ relay tokens.
 The backend stores durable state only in PostgreSQL. A local run needs a
 PostgreSQL 18 server whose schemas were created by
 `python -m backend.app.edge_db.migration provision`, and three environment values
-(`backend/app/postgres_root.py`):
+(`backend/app/edge_db/root.py`):
 
 | Env var | Meaning |
 | --- | --- |

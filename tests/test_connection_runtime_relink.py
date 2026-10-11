@@ -3,14 +3,15 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app import lifespan as lifespan_module
-from backend.app.features.connection.store import API_BACKEND_BASE_URL_ENV, ConnectionSettingsStore
-from backend.app.lifespan import (
+from backend.app.bootstrap import lifespan as lifespan_module
+from backend.app.bootstrap.lifespan import (
     API_EDGE_RELAY_TOKEN_ENV,
     apply_connection_settings,
 )
+from backend.app.bootstrap.stores import install_postgres_stores
+from backend.app.edge_db.root import PostgresRoot
+from backend.app.features.connection.store import API_BACKEND_BASE_URL_ENV, ConnectionSettingsStore
 from backend.app.main import create_app, no_lifespan
-from backend.app.postgres_root import PostgresRoot, install_postgres_stores
 from contracts.worker_config import PulledWorkerConfig
 from tests_support.postgres_sandbox import ProductSandbox
 

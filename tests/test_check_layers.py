@@ -39,14 +39,7 @@ LAYER_CONTRACTS = (
     SHARED_PYDANTIC,
 )
 
-COMPOSITION_ROOT = (
-    "main",
-    "lifespan",
-    "postgres_root",
-    "audit_lifecycle",
-    "clip_catalog_lifecycle",
-    "routes",
-)
+COMPOSITION_ROOT = ("main", "bootstrap", "routes")
 
 
 def feature_files(name: str) -> dict[str, str]:
@@ -181,7 +174,7 @@ MUTATIONS = {
         DRIVERS,
     ),
     "feature_imports_composition_root": (
-        {f"{ALPHA}/service/logic.py": "from backend.app import lifespan\n"},
+        {f"{ALPHA}/service/logic.py": "from backend.app import bootstrap\n"},
         COMPOSITION,
     ),
     "routes_import_a_repository": (

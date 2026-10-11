@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.app.bootstrap.lifespan import API_BACKEND_HEARTBEAT_RELAY_SEC_ENV
 from backend.app.features.cameras.store import CameraRegistryStore
 from backend.app.features.status.backend_heartbeat_relay import (
     HeartbeatRelayState,
@@ -14,7 +15,6 @@ from backend.app.features.status.backend_heartbeat_relay import (
     relay_heartbeats_once,
 )
 from backend.app.features.status.heartbeat_store import HeartbeatStore
-from backend.app.lifespan import API_BACKEND_HEARTBEAT_RELAY_SEC_ENV
 from backend.app.main import create_app
 from tests_support.postgres_sandbox import ProductSandbox
 

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app import lifespan as lifespan_module
+from backend.app.bootstrap import lifespan as lifespan_module
 from backend.app.edge_db.postgres import PostgresError
 from backend.app.features.cameras.store import CameraRegistryStore
 from backend.app.features.status.heartbeat_store import HeartbeatStore
@@ -173,7 +173,7 @@ def test_shutdown_finishes_cleanup_when_a_background_task_already_died(
     monkeypatch.setattr(lifespan_module, "_backend_config_refresh_loop", dead_refresh_loop)
     app = create_app()
 
-    with caplog.at_level(logging.ERROR, logger="backend.app.lifespan"):
+    with caplog.at_level(logging.ERROR, logger="backend.app.bootstrap.lifespan"):
         with TestClient(app):
             assert app.state.backend_heartbeat_relay_task is not None
 
@@ -181,7 +181,7 @@ def test_shutdown_finishes_cleanup_when_a_background_task_already_died(
     assert app.state.backend_config_refresh_executor is None
     assert app.state.backend_heartbeat_relay_task is None
     assert app.state.backend_heartbeat_relay_executor is None
-    [record] = [r for r in caplog.records if r.name == "backend.app.lifespan"]
+    [record] = [r for r in caplog.records if r.name == "backend.app.bootstrap.lifespan"]
     assert record.getMessage() == "background task backend-config-refresh ended with an error"
     assert record.exc_info is not None
     assert str(record.exc_info[1]) == "config refresh loop died"

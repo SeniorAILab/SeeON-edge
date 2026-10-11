@@ -8,6 +8,7 @@ from typing import BinaryIO
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.app.bootstrap.lifespan import install_feature_ports
 from backend.app.edge_db.postgres import CommitOutcomeUnknown
 from backend.app.features.audit.postgres_runtime import (
     AuditRuntimeUnavailable,
@@ -20,7 +21,6 @@ from backend.app.features.evidence.event_outbox import EventOutbox, OutboxBudget
 from backend.app.features.evidence.postgres_receipts import PostgresArtifactReceiptStore
 from backend.app.features.evidence.relay_projection import RelayEvent
 from backend.app.features.runtime_settings.store import RuntimeSettingsStore
-from backend.app.lifespan import install_feature_ports
 from backend.app.main import create_app, no_lifespan
 from backend.app.shared.postgres_dashboard_credentials import PostgresDashboardCredentialsStore
 from shared.events.evidence_export_contract import (

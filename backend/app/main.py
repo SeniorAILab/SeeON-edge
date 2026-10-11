@@ -12,6 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from backend.app.bootstrap.lifespan import lifespan as serving_lifespan
 from backend.app.core.config import get_settings
 from backend.app.edge_db.postgres import PostgresError
 from backend.app.features.audit.http import (
@@ -39,7 +40,6 @@ from backend.app.features.relay.router import router as relay_router
 from backend.app.features.runtime_settings.router import router as runtime_settings_router
 from backend.app.features.status.router import router as status_router
 from backend.app.features.status.system_router import router as system_router
-from backend.app.lifespan import lifespan as serving_lifespan
 from backend.app.routes import health as health_routes
 from backend.app.routes.models import router as models_router
 from backend.app.shared.dashboard_credentials import DashboardCredentialsStoreError

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from backend.app import lifespan
+from backend.app.bootstrap import lifespan
 from backend.app.features.clips import catalog_indexer
 from worker.adapters.model.errors import FatalAcceleratorError
 from worker.pipeline.decision import incident_manager

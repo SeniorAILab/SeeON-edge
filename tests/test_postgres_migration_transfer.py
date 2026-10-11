@@ -23,8 +23,7 @@ from backend.app.edge_db.migration.sqlite_fence import fence_sqlite
 from backend.app.edge_db.migration.transfer import freeze, pending_authority_path, transfer
 from backend.app.edge_db.migration.worker_state import queue_digest
 from backend.app.edge_db.postgres import PoolBudget, PostgresUnavailable
-from backend.app.features.diagnostics.postgres_database import DIAGNOSTICS_POOL_BUDGET
-from backend.app.postgres_root import (
+from backend.app.edge_db.root import (
     API_POSTGRES_AUTHORITY_FILE_ENV,
     API_POSTGRES_DSN_FILE_ENV,
     API_POSTGRES_SCHEMA_ENV,
@@ -32,6 +31,7 @@ from backend.app.postgres_root import (
     close_postgres_database,
     open_postgres_root,
 )
+from backend.app.features.diagnostics.postgres_database import DIAGNOSTICS_POOL_BUDGET
 from tests_support.postgres_migration import (
     NOW,
     MigrationTarget,

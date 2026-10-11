@@ -5,11 +5,11 @@ from dataclasses import FrozenInstanceError
 import pytest
 from fastapi import FastAPI
 
+from backend.app.bootstrap.lifespan import install_feature_ports
 from backend.app.features.detection_settings.router import (
     DetectionSettingsPorts,
     detection_settings_ports,
 )
-from backend.app.lifespan import install_feature_ports
 
 
 def test_getter_refuses_missing_ports_without_installing_a_fallback() -> None:

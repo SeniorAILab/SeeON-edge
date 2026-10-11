@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 from fastapi import APIRouter, BackgroundTasks, FastAPI, Request
 from fastapi.exceptions import HTTPException
@@ -24,7 +26,6 @@ from backend.app.features.connection.topology_retry_coordinator import (
     TopologySyncStatus,
 )
 from backend.app.features.status.backend_heartbeat_relay import HeartbeatRelayState
-from backend.app.lifespan import apply_connection_settings, refresh_backend_config
 from backend.app.shared.audit_values import AuditAction, AuditEvent, utc_now
 from backend.app.shared.http.dashboard_auth import authorize_dashboard as _authorize
 from shared.boundary import Boundary, isolate
@@ -43,6 +44,21 @@ _ENROLLMENT_DETAIL: dict[EnrollmentErrorClass, str] = {
     "unreachable": "외부 백엔드에 연결할 수 없습니다.",
     "invalid_response": "외부 백엔드의 등록 응답이 올바르지 않습니다.",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectionPorts:
+    apply_settings: Callable[[], None]
+    refresh_backend_config: Callable[[], bool]
+
+
+def connection_ports(app: FastAPI) -> ConnectionPorts:
+    ports = getattr(app.state, "connection_ports", None)
+    if ports is None:
+        raise RuntimeError("connection ports are not injected")
+    if not isinstance(ports, ConnectionPorts):
+        raise TypeError("connection ports have invalid type")
+    return ports
 
 
 class HeartbeatRelayStatus(BaseModel):
@@ -157,7 +173,7 @@ def put_connection(
             after_write=append,
         ),
     )
-    apply_connection_settings(request.app)
+    connection_ports(request.app).apply_settings()
     _kick_backend_config_refresh(request.app)
     background_tasks.add_task(_trigger_roster_sync, request.app)
     return _status_response(request.app)
@@ -281,10 +297,11 @@ def _kick_backend_config_refresh(app: FastAPI) -> None:
     executor = getattr(app.state, "backend_config_refresh_executor", None)
     if not isinstance(executor, ThreadPoolExecutor):
         return
+    refresh = connection_ports(app).refresh_backend_config
     try:
-        executor.submit(refresh_backend_config, app)
+        executor.submit(refresh)
     except RuntimeError:
         pass
 
 
-__all__ = ["router"]
+__all__ = ["ConnectionPorts", "connection_ports", "router"]

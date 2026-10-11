@@ -14,12 +14,13 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from typing_extensions import override
 
+from backend.app.bootstrap.lifespan import API_EDGE_RELAY_TOKEN_ENV, install_feature_ports
+from backend.app.bootstrap.stores import install_postgres_stores
 from backend.app.core.config import get_settings
+from backend.app.edge_db.root import PostgresRoot
 from backend.app.features.audit.postgres_runtime import PostgresAuditRuntime
 from backend.app.features.connection.store import API_BACKEND_BASE_URL_ENV, ConnectionSettingsStore
-from backend.app.lifespan import API_EDGE_RELAY_TOKEN_ENV, install_feature_ports
 from backend.app.main import create_app, no_lifespan
-from backend.app.postgres_root import PostgresRoot, install_postgres_stores
 from tests_support.postgres_sandbox import ProductSandbox
 
 DASHBOARD_LOGIN: Mapping[str, JsonValue] = {

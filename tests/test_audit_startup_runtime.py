@@ -8,15 +8,16 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from backend.app.audit_lifecycle import (
+from backend.app.bootstrap.audit import (
     close_audit_session,
     configure_audit_readiness,
+    refresh_audit_readiness,
     start_audit_verification,
-    verify_audit_runtime,
 )
+from backend.app.bootstrap.stores import install_postgres_stores
+from backend.app.edge_db.root import PostgresRoot
 from backend.app.features.audit.postgres_runtime import PostgresAuditRuntime
 from backend.app.main import create_app, no_lifespan
-from backend.app.postgres_root import PostgresRoot, install_postgres_stores
 from backend.app.shared.audit_values import AuditAction
 from tests_support.postgres_api_app import postgres_api_app
 from tests_support.postgres_sandbox import ProductSandbox
@@ -89,7 +90,7 @@ def test_boot_publishes_ready_and_owned_close_writes_one_session_close(
     assert configure_audit_readiness(app, clock=lambda: 0.0) is True
     client = TestClient(app)
     try:
-        assert verify_audit_runtime(app, app.state.audit_runtime) is True
+        assert refresh_audit_readiness(app, app.state.audit_runtime) is True
 
         assert _readiness(client) == (503, {"ready": False, "reason": "booting"})
         start_audit_verification(app, verify_interval_sec=_IDLE_INTERVAL_SEC)
@@ -166,7 +167,7 @@ def test_postgres_failure_degrades_readiness_until_verification_heals_it(
             assert _readiness(client) == (503, _DEGRADED)
 
             sandbox.admin.execute("DROP TRIGGER reject_site_test ON edge_site")
-            healed = verify_audit_runtime(app, app.state.audit_runtime)
+            healed = refresh_audit_readiness(app, app.state.audit_runtime)
 
             assert healed is True
             assert _readiness(client) == (200, _READY)
@@ -181,7 +182,7 @@ def test_degraded_close_leaves_an_unclean_marker_that_the_next_owner_fences(
     first = _root_app(sandbox)
     assert configure_audit_readiness(first, clock=lambda: 0.0) is True
     _reject_audit_inserts(sandbox)
-    assert verify_audit_runtime(first, first.state.audit_runtime) is False
+    assert refresh_audit_readiness(first, first.state.audit_runtime) is False
 
     closed = close_audit_session(first)
     sandbox.admin.execute("DROP TRIGGER reject_audit_test ON audit_events")

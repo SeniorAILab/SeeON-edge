@@ -287,7 +287,7 @@ forbidden_modules = ["backend", "shared.events", "backend.app.edge_db", "worker"
 name = "backend base (core/shared) does not import upper layers"
 type = "forbidden"
 source_modules = ["backend.app.core", "backend.app.shared"]
-forbidden_modules = ["backend.app.features", "backend.app.routes", "backend.app.main", "backend.app.lifespan"]
+forbidden_modules = ["backend.app.features", "backend.app.routes", "backend.app.main", "backend.app.bootstrap"]
 
 [[tool.importlinter.contracts]]
 # worker/types/AGENTS.md: the bottom of the ladder — imports only the standard
@@ -415,7 +415,7 @@ allowed_importers = [
     "backend.app.features",
     "backend.app.routes",
     "backend.app.main",
-    "backend.app.lifespan",
+    "backend.app.bootstrap",
 ]
 
 [[tool.importlinter.contracts]]
@@ -527,8 +527,7 @@ allowed_importers = [
     "backend.app.features.*.controller",
     "backend.app.routes",
     "backend.app.main",
-    "backend.app.lifespan",
-    "backend.app.audit_lifecycle",
+    "backend.app.bootstrap",
 ]
 ignore_imports = [
     "backend.app.features.diagnostics -> backend.app.features.diagnostics.wire",
@@ -570,7 +569,6 @@ name = "backend features meet only service to service"
 type = "independence"
 modules = ["backend.app.features.*"]
 ignore_imports = [
-    "backend.app.features.connection.router -> backend.app.lifespan",
     "backend.app.features.auth.router -> backend.app.features.audit.catalog",
     "backend.app.features.auth.router -> backend.app.features.audit.http",
     "backend.app.features.cameras.bed_zone_router -> backend.app.features.audit.catalog",
@@ -665,15 +663,13 @@ allow_indirect_imports = true
 name = "backend features do not import the composition root"
 type = "forbidden"
 source_modules = ["backend.app.features"]
-forbidden_modules = [
-    "backend.app.main",
-    "backend.app.lifespan",
-    "backend.app.postgres_root",
-    "backend.app.audit_lifecycle",
-    "backend.app.clip_catalog_lifecycle",
-    "backend.app.routes",
-]
-ignore_imports = ["backend.app.features.connection.router -> backend.app.lifespan"]
+forbidden_modules = ["backend.app.main", "backend.app.bootstrap", "backend.app.routes"]
+
+[[tool.importlinter.contracts]]
+name = "backend features receive PostgreSQL from the composition root"
+type = "forbidden"
+source_modules = ["backend.app.features"]
+forbidden_modules = ["backend.app.edge_db.root"]
 
 [[tool.importlinter.contracts]]
 name = "backend routes reach features only through a service"

@@ -1422,8 +1422,8 @@ def _optional_positive_int(value: object) -> int | None:
 
 def _expected_relay_token(request: Request) -> str | None:
     # `app.state.edge_relay_token`이 유일한 출처다. 부팅 때
-    # `lifespan._configure_backend_ingest`가 `API_EDGE_RELAY_TOKEN`에서 한 번
-    # 채운다(`lifespan.py:105`가 반드시 부른다). 여기서 env를 또 읽으면
+    # `bootstrap.lifespan._configure_backend_ingest`가 `API_EDGE_RELAY_TOKEN`에서 한 번
+    # 채운다(`bootstrap/lifespan.py`가 반드시 부른다). 여기서 env를 또 읽으면
     # state에 `None`을 명시적으로 넣어 미설정을 재현하려는 경우까지
     # env가 조용히 덮어써서, 실제로 무엇이 유효한지 두 곳을 봐야 한다.
     expected = getattr(request.app.state, "edge_relay_token", None)

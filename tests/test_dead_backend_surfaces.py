@@ -104,7 +104,7 @@ def test_dead_backend_modules_are_absent_from_the_package() -> None:
 def test_create_app_import_graph_does_not_reach_dead_backend_modules() -> None:
     roots = (
         ROOT / "backend" / "app" / "main.py",
-        ROOT / "backend" / "app" / "lifespan.py",
+        *sorted((BACKEND_APP / "bootstrap").glob("*.py")),
     )
     offenders: list[str] = []
     for path in roots:
@@ -142,7 +142,7 @@ def test_backend_image_copy_tree_cannot_ship_dead_backend_modules() -> None:
 
 
 def test_lifespan_has_no_declaration_only_facility_or_config_constants() -> None:
-    text = (ROOT / "backend" / "app" / "lifespan.py").read_text(encoding="utf-8")
+    text = (BACKEND_APP / "bootstrap" / "lifespan.py").read_text(encoding="utf-8")
     assert "API_FACILITY_ID_ENV" not in text
     assert "API_BACKEND_CONFIG_URL_ENV" not in text
     tree = ast.parse(text, filename="lifespan.py")
