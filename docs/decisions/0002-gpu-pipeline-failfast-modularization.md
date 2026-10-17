@@ -1,9 +1,9 @@
 # 2. GPU Inference Pipeline Fail-Fast Modularization
 
-- Status: Accepted
+- Status: Accepted (historical: the `edge/...` module paths below predate the current repository layout and no longer exist at those paths; see [0009](0009-rust-worker-postgresql.md))
 - Date: 2026-07-20
 - Deciders: product owner + agent (deep-interview → ralplan consensus)
-- Sources: `.gjc/_session-019f7fb9-5e69-7000-a7f8-682734d93ae9/specs/deep-interview-gpu-pipeline-failfast.md`, ralplan `pending-approval.md`
+- Sources: deep-interview spec and ralplan `pending-approval.md` (agent-session artifacts, not tracked in this repository)
 
 ## Context
 

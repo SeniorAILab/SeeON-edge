@@ -12,7 +12,8 @@
 `contracts/` is the canonical typed vocabulary for data that crosses an instance
 boundary. It is mirrored byte-for-byte into a sibling repository, and
 `tests/test_vendor_drift.py` snapshots every file beneath it so the two copies
-cannot silently diverge.
+cannot silently diverge (historical: that test and the byte mirror have since
+been removed; see 0009).
 
 That arrangement has been load-bearing since the vendor-drift remediation, but it
 was never written down. Thirteen citations across ten files referenced

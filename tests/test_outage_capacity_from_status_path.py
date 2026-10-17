@@ -155,8 +155,9 @@ def test_the_seventy_two_hour_target_is_not_met_at_either_roster(
 
         assert survivable < TARGET_OUTAGE_HOURS, (
             f"{cameras} cameras now survive {survivable:.1f}h, which meets the "
-            f"{TARGET_OUTAGE_HOURS:.0f}h target. That is good news, but the cutover "
-            f"runbook still records the shortfall -- update it and this test together."
+            f"{TARGET_OUTAGE_HOURS:.0f}h target. That is good news, but this test "
+            f"still asserts the shortfall -- update the capacity guidance and "
+            f"this test together."
         )
 
 
@@ -173,7 +174,7 @@ def test_the_entry_bound_binds_before_the_byte_bound(
 
     assert entry_headroom < byte_headroom, (
         "the byte ceiling now binds before the entry ceiling, which inverts the "
-        "runbook's capacity guidance; re-derive both and update the runbook"
+        "expected ordering; re-derive both bounds and update this test"
     )
 
 

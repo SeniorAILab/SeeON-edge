@@ -167,7 +167,7 @@ def test_backend_only_sqlite_cutover_is_atomic() -> None:
     runtime_image = (ROOT / "Dockerfile.edge").read_text()
     assert "COPY scripts/ops" in backend_image, (
         "the API image does not ship scripts/ops, so the documented ops "
-        "commands do not exist in the image the runbooks tell an operator to use"
+        "commands do not exist in the image operators are told to use"
     )
     assert "COPY backend" not in runtime_image, (
         "the runtime image copies the backend package, which would carry the "
