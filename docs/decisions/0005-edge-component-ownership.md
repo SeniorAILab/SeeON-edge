@@ -67,6 +67,7 @@ own single capacity authority; there is no separate persisted ledger.
 
 ## Status note
 
-The ownership boundary is structurally enforced: the migrator and API mount
-`edge-state`; the inference runtime mounts `worker-local-state` and no
-`edge-state` volume.
+The ownership boundary is structurally enforced: `ml-api` mounts `edge-state` and receives the
+PostgreSQL runtime DSN; `edge-db-migrator` receives the owner and runtime DSNs and
+mounts `edge-pg-authority`; the inference runtime mounts `worker-local-state` and
+has no `edge-state` volume and no database DSN.

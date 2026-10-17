@@ -1,6 +1,6 @@
 # ADR 0008: Evidence Overlay Is Not Persisted with Clip Media
 
-- Status: Accepted
+- Status: Accepted (amended from the 2026-09-01 sidecar decision)
 - Date: 2026-09-03
 - Scope: Evidence clip analysis display
 

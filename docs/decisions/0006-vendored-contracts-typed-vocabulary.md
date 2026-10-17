@@ -3,7 +3,7 @@
 - Status: Accepted; the byte-mirror clauses are superseded by
   [0009](0009-rust-worker-postgresql.md). The typed vocabulary rules stand.
 - Date: 2026-08-21
-- Relates to: `contracts/`, `contracts/AGENTS.md`, `tests/test_vendor_drift.py`,
+- Relates to: `contracts/`, `contracts/AGENTS.md`,
   `tests/test_worker_event_payload_boundary.py`, `pyproject.toml` (import-linter
   layer contracts).
 
@@ -66,14 +66,9 @@ as its own follow-up.
 
 - The twelve incorrect citations outside ADR 0002 and ADR 0003 now resolve to
   this record.
-- **One incorrect citation is knowingly left in place.** ADR
-  [0003](0003-explicit-fallback-only.md) still reads "Consistent with ADR-0004
-  (vendored `contracts/`)". That line is the origin of the phantom, but the
-  minimal-repair decision governing this work forbids editing the bodies of
-  ADR 0002 and ADR 0003. Correcting it is a separate, deliberate act on an
-  accepted record; it is recorded here as known and routed as a follow-up rather
-  than silently patched.
-- ADR numbers are stable. `tests/test_worker_architecture_docs.py` pins ADR
-  0003's filename, status, and prose, so no existing record is renumbered.
+- ADR [0003](0003-explicit-fallback-only.md) read "Consistent with ADR-0004
+  (vendored `contracts/`)" when this record was written. That line is the origin
+  of the phantom citation; it was corrected to ADR-0006 on 2026-10-17.
+- ADR numbers are stable; no existing record is renumbered.
 - No behavior changes. `tests/test_vendor_drift.py` already enforced this rule
-  before it had a record.
+  before it had a record. (Note 2026-10-17: the vendor-drift test and the byte mirror no longer exist; see 0009.)

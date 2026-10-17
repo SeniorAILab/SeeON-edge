@@ -2,8 +2,9 @@
 
 - Status: Accepted
 - Date: 2026-08-01
+- Note (2026-10-17): The `CpuAvAdapter` compatibility cascade named last in Context no longer exists in the tree.
 - Relates to: [0002](0002-gpu-pipeline-failfast-modularization.md) (fail-fast GPU
-  pipeline). Consistent with ADR-0004 (vendored `contracts/`), which this
+  pipeline). Consistent with ADR-0006 (vendored `contracts/`), which this
   decision does not touch.
 
 ## Context

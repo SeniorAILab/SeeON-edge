@@ -1,6 +1,7 @@
 # 0009 — Rust inference runtime and API-owned PostgreSQL
 
 - Status: Accepted target; implementation and deployment **not yet qualified**.
+- Date: 2026-09-26
 - Issue: [#607](https://github.com/SeniorAILab/SeeON-edge/issues/607).
 - Governing approval: stage-04-final SHA-256
   `d85da142704cc466184ec8295aae87bb7ea6022a938ff2f1ef38ecce5c27d7d3`.

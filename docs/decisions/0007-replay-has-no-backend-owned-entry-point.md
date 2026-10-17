@@ -55,9 +55,11 @@ Build the backend-owned replay path. It requires:
   authenticated worker replay endpoint over the existing `:8090` channel;
 - refusal rather than approximation when input is missing or truncated. A replay
   result that does not correspond to the decision actually made must never be
-  persisted through `QaStore.record_run()`, because it would look authoritative
+  persisted, because it would look authoritative
   while being wrong.
 
 The only claim from the original version that survives is that last one: faking
 a result is worse than having no command. Everything used to argue that one could
 not be built was mistaken.
+
+Note (2026-10-17): the implemented path is `scripts/ops/replay-runtime-analysis.py`, which takes a captured timeline (`--trace-json`) and sends it to the authenticated worker replay endpoint. The `runtime_analysis_*` ingest described under Current decision is retired; the runtime is PostgreSQL-only.

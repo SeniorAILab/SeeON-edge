@@ -66,7 +66,7 @@ From the repo root:
 uv sync
 uv run pytest -q
 uv run pytest -q -m "not real_stack and not heavy and not integration"  # CI filter
-uvx ruff check .
+uv run --group lint ruff check .
 uv run --group lint lint-imports  # architecture boundaries
 uv run --group lint mypy contracts shared
 docker build -f Dockerfile.backend .
