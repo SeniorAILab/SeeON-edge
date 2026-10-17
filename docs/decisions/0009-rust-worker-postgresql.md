@@ -192,6 +192,29 @@ changed. The change is `analyze.py` `57f2edb7…` → `03e174c9…` (harness dig
 validation only, and `R_m` is frozen from the first five uncontaminated runs of
 the clean series under the new digest.
 
+## Rust execution-record configuration identity
+
+Stage 4 replaces the caller-supplied `cfg-1` value with lowercase SHA-256 of
+the effective runtime configuration after secret redaction. The input is the
+resolved configuration, including applied defaults and policies, not arbitrary
+process environment variables or an unvalidated relay payload.
+
+Before serialization, recursively replace values under `token`, `relay_token`,
+`access_token`, `refresh_token`, `password`, `client_secret`, `authorization`,
+and `rtsp_url` with the string `[redacted]`. Field matching is ASCII
+case-insensitive. Entire RTSP addresses are secret, not just their credentials.
+Preserve other values and array order. Serialize as strict canonical UTF-8 JSON:
+keys sorted by Unicode code point, compact separators, `ensure_ascii=False`,
+`allow_nan=False`, and the existing Python-compatible numeric representation.
+This is the existing `FetchModelsManifest` serialization mode; no new codec is
+introduced. Duplicate keys and non-finite numbers refuse digest construction.
+
+Secret changes alone must not change this digest; effective policy changes
+must. The digest is supplied to record provenance before record IDs are built.
+The helper and its independent Python oracle do not establish runtime wiring
+or image qualification; those require the assembled Stage 4 and final-image
+checks.
+
 ## DeepStream graceful stop and RTSP reconnect
 
 `pyservicemaker` `Pipeline.stop()` only sends EOS. With `nvurisrcbin` reconnect
