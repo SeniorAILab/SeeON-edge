@@ -10,8 +10,7 @@ nvinfer letterbox capture).
 - `conftest.py`: autouse hermetic isolation.
 - `edge_worker_fixtures.py`: typed worker config payloads.
 - `observability_stack_fixtures.py`: in-process Backend over real uvicorn, `wait_until`, honest `mediamtx`/`ffmpeg`/`pyservicemaker` probes.
-- `observability_load_harness.py` + `fanout_benchmark_metrics.py`: recorded-stream load measurements. Product code stays unpatched.
-- `fanout_benchmark_metrics.py` (`RunMetrics`, `take_sample`, `capacity_verdict`, `write_document`) emits `null` for unobserved fields so a bench JSON never looks healthy on defaults. Orphaned today: no `test_fanout_benchmark` module or `fanout_benchmark_harness.py` exists, nothing imports it, and `-k fanout_benchmark` selects nothing. Restore the harness before quoting a bench command or `BENCH_*` knobs.
+- `observability_load_harness.py`: recorded-stream load measurements. Product code stays unpatched.
 - `receipt_helpers.py`, `replay_fixtures.py`, `compact_cutover_sensitive_fixture.py`: one schema-valid payload shared across suites. Hand-built variants drift from the CHECK constraints.
 - `_yolo_load_timeout_exit_repro.py`, `_yolo_offline_guard_repro.py`: not collected. `test_worker_yolo_adapters.py` runs them in a fresh interpreter with a bounded `subprocess.run(timeout=...)`.
 - `sqlite_ownership_baseline.txt`: ADR-0005 ratchet read by `test_sqlite_ownership_boundary.py`. Entries are removed, never added.
