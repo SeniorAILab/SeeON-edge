@@ -2,8 +2,7 @@
 
 Leaf executables for release, edge-host operations, and QA measurement. Invoked
 by path, by CI workflows, or by tests; never imported by product packages.
-Earned a file as a distinct domain (score 8): 57 source files plus 29 immutable
-spike receipts.
+Earned a file as a distinct domain (score 8): 36 source files.
 
 ## Where to look
 
@@ -20,8 +19,6 @@ spike receipts.
 | One-shot operator tools | `ops/` | Refused-evidence review, clip-consistency repair, replay analysis, enrollment smoke, alert-amplification diagnostic (918 lines). |
 | Serving QA ladder | `qa/trace_continuity.py`, `ort_batch_parity.py`, `batch_probe.py`, `batch_probe_compare.py` | Diagnostic only. |
 | Golden episode toolchain | `qa/golden_worksheet.py`, `golden_from_worksheet.py`, `golden_labeller_html.py`, `export_incident_corpus.py` | Imported by tests as `scripts.qa.*`. |
-| Canary stack | `qa/deepstream-canary/`, `qa/deepstream_canary_browser.mjs` | `CANARY_*` env; gate policy is JSON. |
-| DeepStream spike | `qa/pyservicemaker-spike/` | Recorded measurements and the letterbox fixture capture. |
 
 ## Conventions
 
@@ -38,8 +35,6 @@ spike receipts.
 ## Anti-patterns
 
 - Editing `release_guard.py` carriers to match a tag, or adding `front/src/shared/releaseIdentity.ts` or `worker/runtime/provenance/environment.py` to them. The tree decides; the tag follows.
-- Rewriting anything under `qa/pyservicemaker-spike/receipts/`. Recorded measurements; scans exclude them.
-- Committing ONNX or TensorRT engine outputs from the spike.
 - `cp` plus digest in `archive_preserved_sidecars.py`. It uses `link(2)`, never overwrites, and destroys no source that drifted or vanished.
 - JNU targets or hostnames in `ops/cloud-enrollment-smoke.sh`. Only `happy-nursing-home-raw` is approved.
 - Cleartext public Hub URLs or default `admin/admin` passing `check-env.sh`.

@@ -22,7 +22,6 @@ EXCLUDED: tuple[str, ...] = (
     "front/pnpm-lock.yaml",
     "uv.lock",
     "front/design-handoff/",
-    "scripts/qa/pyservicemaker-spike/receipts/",
     "scripts/deletion_closure_scan.py",
     ".gjc/",
 )

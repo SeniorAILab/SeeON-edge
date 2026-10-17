@@ -240,7 +240,6 @@ def test_line_one_shebang_with_an_absolute_interpreter_path_passes(shebang: str)
         "scripts/ops/replay-runtime-analysis.py",
         "scripts/ops/review-refused-evidence.py",
         "scripts/qa/fall_model_recall_at_gate.py",
-        "scripts/qa/pyservicemaker-spike/spike.py",
         "scripts/verify_scope_fidelity.py",
     ],
 )
